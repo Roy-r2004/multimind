@@ -9,38 +9,278 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TemplatesRouteImport } from './routes/templates'
+import { Route as SignupRouteImport } from './routes/signup'
+import { Route as SharedRouteImport } from './routes/shared'
+import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as OnboardingRouteImport } from './routes/onboarding'
+import { Route as ModelSetsRouteImport } from './routes/model-sets'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as ChatRouteImport } from './routes/chat'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as TemplatesNewRouteImport } from './routes/templates.new'
+import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
+import { Route as ModelSetsNewRouteImport } from './routes/model-sets.new'
 
+const TemplatesRoute = TemplatesRouteImport.update({
+  id: '/templates',
+  path: '/templates',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SharedRoute = SharedRouteImport.update({
+  id: '/shared',
+  path: '/shared',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsRoute = ProjectsRouteImport.update({
+  id: '/projects',
+  path: '/projects',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OnboardingRoute = OnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ModelSetsRoute = ModelSetsRouteImport.update({
+  id: '/model-sets',
+  path: '/model-sets',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ChatRoute = ChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TemplatesNewRoute = TemplatesNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => TemplatesRoute,
+} as any)
+const ProjectsIdRoute = ProjectsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ProjectsRoute,
+} as any)
+const ModelSetsNewRoute = ModelSetsNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => ModelSetsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/chat': typeof ChatRoute
+  '/login': typeof LoginRoute
+  '/model-sets': typeof ModelSetsRouteWithChildren
+  '/onboarding': typeof OnboardingRoute
+  '/projects': typeof ProjectsRouteWithChildren
+  '/settings': typeof SettingsRoute
+  '/shared': typeof SharedRoute
+  '/signup': typeof SignupRoute
+  '/templates': typeof TemplatesRouteWithChildren
+  '/model-sets/new': typeof ModelSetsNewRoute
+  '/projects/$id': typeof ProjectsIdRoute
+  '/templates/new': typeof TemplatesNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/chat': typeof ChatRoute
+  '/login': typeof LoginRoute
+  '/model-sets': typeof ModelSetsRouteWithChildren
+  '/onboarding': typeof OnboardingRoute
+  '/projects': typeof ProjectsRouteWithChildren
+  '/settings': typeof SettingsRoute
+  '/shared': typeof SharedRoute
+  '/signup': typeof SignupRoute
+  '/templates': typeof TemplatesRouteWithChildren
+  '/model-sets/new': typeof ModelSetsNewRoute
+  '/projects/$id': typeof ProjectsIdRoute
+  '/templates/new': typeof TemplatesNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/chat': typeof ChatRoute
+  '/login': typeof LoginRoute
+  '/model-sets': typeof ModelSetsRouteWithChildren
+  '/onboarding': typeof OnboardingRoute
+  '/projects': typeof ProjectsRouteWithChildren
+  '/settings': typeof SettingsRoute
+  '/shared': typeof SharedRoute
+  '/signup': typeof SignupRoute
+  '/templates': typeof TemplatesRouteWithChildren
+  '/model-sets/new': typeof ModelSetsNewRoute
+  '/projects/$id': typeof ProjectsIdRoute
+  '/templates/new': typeof TemplatesNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/admin'
+    | '/chat'
+    | '/login'
+    | '/model-sets'
+    | '/onboarding'
+    | '/projects'
+    | '/settings'
+    | '/shared'
+    | '/signup'
+    | '/templates'
+    | '/model-sets/new'
+    | '/projects/$id'
+    | '/templates/new'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/admin'
+    | '/chat'
+    | '/login'
+    | '/model-sets'
+    | '/onboarding'
+    | '/projects'
+    | '/settings'
+    | '/shared'
+    | '/signup'
+    | '/templates'
+    | '/model-sets/new'
+    | '/projects/$id'
+    | '/templates/new'
+  id:
+    | '__root__'
+    | '/'
+    | '/admin'
+    | '/chat'
+    | '/login'
+    | '/model-sets'
+    | '/onboarding'
+    | '/projects'
+    | '/settings'
+    | '/shared'
+    | '/signup'
+    | '/templates'
+    | '/model-sets/new'
+    | '/projects/$id'
+    | '/templates/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRoute
+  ChatRoute: typeof ChatRoute
+  LoginRoute: typeof LoginRoute
+  ModelSetsRoute: typeof ModelSetsRouteWithChildren
+  OnboardingRoute: typeof OnboardingRoute
+  ProjectsRoute: typeof ProjectsRouteWithChildren
+  SettingsRoute: typeof SettingsRoute
+  SharedRoute: typeof SharedRoute
+  SignupRoute: typeof SignupRoute
+  TemplatesRoute: typeof TemplatesRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/templates': {
+      id: '/templates'
+      path: '/templates'
+      fullPath: '/templates'
+      preLoaderRoute: typeof TemplatesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/shared': {
+      id: '/shared'
+      path: '/shared'
+      fullPath: '/shared'
+      preLoaderRoute: typeof SharedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/projects': {
+      id: '/projects'
+      path: '/projects'
+      fullPath: '/projects'
+      preLoaderRoute: typeof ProjectsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/onboarding': {
+      id: '/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof OnboardingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/model-sets': {
+      id: '/model-sets'
+      path: '/model-sets'
+      fullPath: '/model-sets'
+      preLoaderRoute: typeof ModelSetsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/chat': {
+      id: '/chat'
+      path: '/chat'
+      fullPath: '/chat'
+      preLoaderRoute: typeof ChatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,22 +288,79 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/templates/new': {
+      id: '/templates/new'
+      path: '/new'
+      fullPath: '/templates/new'
+      preLoaderRoute: typeof TemplatesNewRouteImport
+      parentRoute: typeof TemplatesRoute
+    }
+    '/projects/$id': {
+      id: '/projects/$id'
+      path: '/$id'
+      fullPath: '/projects/$id'
+      preLoaderRoute: typeof ProjectsIdRouteImport
+      parentRoute: typeof ProjectsRoute
+    }
+    '/model-sets/new': {
+      id: '/model-sets/new'
+      path: '/new'
+      fullPath: '/model-sets/new'
+      preLoaderRoute: typeof ModelSetsNewRouteImport
+      parentRoute: typeof ModelSetsRoute
+    }
   }
 }
 
+interface ModelSetsRouteChildren {
+  ModelSetsNewRoute: typeof ModelSetsNewRoute
+}
+
+const ModelSetsRouteChildren: ModelSetsRouteChildren = {
+  ModelSetsNewRoute: ModelSetsNewRoute,
+}
+
+const ModelSetsRouteWithChildren = ModelSetsRoute._addFileChildren(
+  ModelSetsRouteChildren,
+)
+
+interface ProjectsRouteChildren {
+  ProjectsIdRoute: typeof ProjectsIdRoute
+}
+
+const ProjectsRouteChildren: ProjectsRouteChildren = {
+  ProjectsIdRoute: ProjectsIdRoute,
+}
+
+const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
+  ProjectsRouteChildren,
+)
+
+interface TemplatesRouteChildren {
+  TemplatesNewRoute: typeof TemplatesNewRoute
+}
+
+const TemplatesRouteChildren: TemplatesRouteChildren = {
+  TemplatesNewRoute: TemplatesNewRoute,
+}
+
+const TemplatesRouteWithChildren = TemplatesRoute._addFileChildren(
+  TemplatesRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRoute,
+  ChatRoute: ChatRoute,
+  LoginRoute: LoginRoute,
+  ModelSetsRoute: ModelSetsRouteWithChildren,
+  OnboardingRoute: OnboardingRoute,
+  ProjectsRoute: ProjectsRouteWithChildren,
+  SettingsRoute: SettingsRoute,
+  SharedRoute: SharedRoute,
+  SignupRoute: SignupRoute,
+  TemplatesRoute: TemplatesRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
