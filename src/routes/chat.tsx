@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { toast } from "sonner";
 import {
   Plus,
   Send,
@@ -17,9 +18,13 @@ import {
   AlertCircle,
   Info,
   Share2,
+  Check,
+  Settings2,
+  Sparkles,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
+import { CreateModelSetModal } from "@/components/CreateModelSetModal";
 import {
   MODEL_SETS,
   MODELS,
@@ -29,6 +34,7 @@ import {
   TEMPLATES,
   VERDICT,
   modelById,
+  type ModelSet,
 } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 
@@ -40,8 +46,9 @@ export const Route = createFileRoute("/chat")({
 type Msg = { role: "user" | "ai"; question?: string };
 
 export function ChatPage() {
+  const [sets, setSets] = useState<ModelSet[]>(MODEL_SETS);
   const [setId, setSetId] = useState("balanced");
-  const set = MODEL_SETS.find((s) => s.id === setId)!;
+  const set = sets.find((s) => s.id === setId) ?? sets[0];
   const [messages, setMessages] = useState<Msg[]>([
     { role: "user", question: "What's the best framework for a fast SaaS landing page in 2026?" },
     { role: "ai" },
@@ -55,7 +62,10 @@ export function ChatPage() {
   const [showRef, setShowRef] = useState(false);
   const [showExcel, setShowExcel] = useState(false);
   const [showPlus, setShowPlus] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing] = useState<ModelSet | null>(null);
   const [loading, setLoading] = useState(false);
+
 
   function send() {
     if (!input.trim()) return;

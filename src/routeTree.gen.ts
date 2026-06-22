@@ -18,11 +18,9 @@ import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as ModelSetsRouteImport } from './routes/model-sets'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ChatRouteImport } from './routes/chat'
-import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TemplatesNewRouteImport } from './routes/templates.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
-import { Route as ModelSetsNewRouteImport } from './routes/model-sets.new'
 
 const TemplatesRoute = TemplatesRouteImport.update({
   id: '/templates',
@@ -69,11 +67,6 @@ const ChatRoute = ChatRouteImport.update({
   path: '/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AdminRoute = AdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -89,58 +82,47 @@ const ProjectsIdRoute = ProjectsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ProjectsRoute,
 } as any)
-const ModelSetsNewRoute = ModelSetsNewRouteImport.update({
-  id: '/new',
-  path: '/new',
-  getParentRoute: () => ModelSetsRoute,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
-  '/model-sets': typeof ModelSetsRouteWithChildren
+  '/model-sets': typeof ModelSetsRoute
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/shared': typeof SharedRoute
   '/signup': typeof SignupRoute
   '/templates': typeof TemplatesRouteWithChildren
-  '/model-sets/new': typeof ModelSetsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/templates/new': typeof TemplatesNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
-  '/model-sets': typeof ModelSetsRouteWithChildren
+  '/model-sets': typeof ModelSetsRoute
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/shared': typeof SharedRoute
   '/signup': typeof SignupRoute
   '/templates': typeof TemplatesRouteWithChildren
-  '/model-sets/new': typeof ModelSetsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/templates/new': typeof TemplatesNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
-  '/model-sets': typeof ModelSetsRouteWithChildren
+  '/model-sets': typeof ModelSetsRoute
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/shared': typeof SharedRoute
   '/signup': typeof SignupRoute
   '/templates': typeof TemplatesRouteWithChildren
-  '/model-sets/new': typeof ModelSetsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/templates/new': typeof TemplatesNewRoute
 }
@@ -148,7 +130,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/admin'
     | '/chat'
     | '/login'
     | '/model-sets'
@@ -158,13 +139,11 @@ export interface FileRouteTypes {
     | '/shared'
     | '/signup'
     | '/templates'
-    | '/model-sets/new'
     | '/projects/$id'
     | '/templates/new'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/admin'
     | '/chat'
     | '/login'
     | '/model-sets'
@@ -174,13 +153,11 @@ export interface FileRouteTypes {
     | '/shared'
     | '/signup'
     | '/templates'
-    | '/model-sets/new'
     | '/projects/$id'
     | '/templates/new'
   id:
     | '__root__'
     | '/'
-    | '/admin'
     | '/chat'
     | '/login'
     | '/model-sets'
@@ -190,17 +167,15 @@ export interface FileRouteTypes {
     | '/shared'
     | '/signup'
     | '/templates'
-    | '/model-sets/new'
     | '/projects/$id'
     | '/templates/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AdminRoute: typeof AdminRoute
   ChatRoute: typeof ChatRoute
   LoginRoute: typeof LoginRoute
-  ModelSetsRoute: typeof ModelSetsRouteWithChildren
+  ModelSetsRoute: typeof ModelSetsRoute
   OnboardingRoute: typeof OnboardingRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
   SettingsRoute: typeof SettingsRoute
@@ -274,13 +249,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/admin': {
-      id: '/admin'
-      path: '/admin'
-      fullPath: '/admin'
-      preLoaderRoute: typeof AdminRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -302,27 +270,8 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsIdRouteImport
       parentRoute: typeof ProjectsRoute
     }
-    '/model-sets/new': {
-      id: '/model-sets/new'
-      path: '/new'
-      fullPath: '/model-sets/new'
-      preLoaderRoute: typeof ModelSetsNewRouteImport
-      parentRoute: typeof ModelSetsRoute
-    }
   }
 }
-
-interface ModelSetsRouteChildren {
-  ModelSetsNewRoute: typeof ModelSetsNewRoute
-}
-
-const ModelSetsRouteChildren: ModelSetsRouteChildren = {
-  ModelSetsNewRoute: ModelSetsNewRoute,
-}
-
-const ModelSetsRouteWithChildren = ModelSetsRoute._addFileChildren(
-  ModelSetsRouteChildren,
-)
 
 interface ProjectsRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
@@ -350,10 +299,9 @@ const TemplatesRouteWithChildren = TemplatesRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AdminRoute: AdminRoute,
   ChatRoute: ChatRoute,
   LoginRoute: LoginRoute,
-  ModelSetsRoute: ModelSetsRouteWithChildren,
+  ModelSetsRoute: ModelSetsRoute,
   OnboardingRoute: OnboardingRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
   SettingsRoute: SettingsRoute,
