@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { toast } from "sonner";
 import {
   Plus,
   Send,
@@ -17,9 +18,12 @@ import {
   AlertCircle,
   Info,
   Share2,
+  Settings2,
+
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
+import { CreateModelSetModal } from "@/components/CreateModelSetModal";
 import {
   MODEL_SETS,
   MODELS,
@@ -29,6 +33,7 @@ import {
   TEMPLATES,
   VERDICT,
   modelById,
+  type ModelSet,
 } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 
@@ -40,8 +45,9 @@ export const Route = createFileRoute("/chat")({
 type Msg = { role: "user" | "ai"; question?: string };
 
 export function ChatPage() {
+  const [sets, setSets] = useState<ModelSet[]>(MODEL_SETS);
   const [setId, setSetId] = useState("balanced");
-  const set = MODEL_SETS.find((s) => s.id === setId)!;
+  const set = sets.find((s) => s.id === setId) ?? sets[0];
   const [messages, setMessages] = useState<Msg[]>([
     { role: "user", question: "What's the best framework for a fast SaaS landing page in 2026?" },
     { role: "ai" },
@@ -55,7 +61,10 @@ export function ChatPage() {
   const [showRef, setShowRef] = useState(false);
   const [showExcel, setShowExcel] = useState(false);
   const [showPlus, setShowPlus] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing] = useState<ModelSet | null>(null);
   const [loading, setLoading] = useState(false);
+
 
   function send() {
     if (!input.trim()) return;
@@ -174,26 +183,56 @@ export function ChatPage() {
 
       {/* Modals */}
       <Modal open={showSet} onClose={() => setShowSet(false)} title="Switch Model Set" size="lg">
-        <div className="space-y-2">
-          {MODEL_SETS.map((s) => (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-primary/30 bg-primary/5 p-3">
+            <div className="text-xs font-medium uppercase tracking-wider text-primary">Currently active</div>
+            <div className="mt-1 flex items-center gap-2">
+              <span className="font-medium">{set.name}</span>
+              <span className="text-xs text-muted-foreground">· Verdict: {set.strategy}</span>
+              <button
+                onClick={() => { setShowSet(false); setEditing(set); setShowCreate(true); }}
+                className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1 text-xs hover:bg-accent"
+              >
+                <Settings2 className="size-3" /> Edit
+              </button>
+            </div>
+          </div>
+
+          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Other sets</div>
+          <div className="space-y-1.5">
+            {sets.filter((s) => s.id !== setId).map((s) => (
+              <button
+                key={s.id}
+                onClick={() => { setSetId(s.id); setShowSet(false); toast.success(`${s.name} is now active.`); }}
+                className="flex w-full items-center gap-3 rounded-xl border border-border p-3 text-left hover:bg-accent"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium">{s.name}</div>
+                  <div className="truncate text-xs text-muted-foreground">{s.description}</div>
+                </div>
+                <div className="flex gap-1">
+                  {s.models.map((id) => <span key={id} className="size-2 rounded-full" style={{ background: modelById(id).color }} />)}
+                </div>
+                <span className="text-xs text-muted-foreground">{s.strategy}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-2 pt-2">
             <button
-              key={s.id}
-              onClick={() => { setSetId(s.id); setShowSet(false); }}
-              className={cn("flex w-full items-center gap-3 rounded-xl border p-3 text-left hover:bg-accent", s.id === setId ? "border-primary bg-accent/50" : "border-border")}
+              onClick={() => { setShowSet(false); setEditing(null); setShowCreate(true); }}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
-              <div className="flex-1">
-                <div className="font-medium">{s.name}</div>
-                <div className="text-xs text-muted-foreground">{s.description}</div>
-              </div>
-              <div className="flex gap-1">
-                {s.models.map((id) => <span key={id} className="size-2 rounded-full" style={{ background: modelById(id).color }} />)}
-              </div>
-              <span className="text-xs text-muted-foreground">{s.strategy}</span>
+              <Plus className="size-4" /> Create new set
             </button>
-          ))}
-          <Link to="/model-sets" onClick={() => setShowSet(false)} className="block rounded-xl border border-dashed border-border p-3 text-center text-sm hover:bg-accent">
-            Manage all Model Sets →
-          </Link>
+            <Link
+              to="/model-sets"
+              onClick={() => setShowSet(false)}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-accent"
+            >
+              <LayoutGridIcon /> Manage sets
+            </Link>
+          </div>
         </div>
       </Modal>
 
@@ -208,12 +247,36 @@ export function ChatPage() {
         </div>
       </Modal>
 
+      <CreateModelSetModal
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        initial={editing ?? undefined}
+        onCreate={(newSet) => {
+          if (editing) {
+            setSets((arr) => arr.map((s) => (s.id === editing.id ? { ...newSet, id: editing.id } : s)));
+            setSetId(editing.id);
+            toast.success(`${newSet.name} updated.`);
+          } else {
+            setSets((arr) => [...arr, newSet]);
+            setSetId(newSet.id);
+            toast.success(`${newSet.name} is now active.`);
+          }
+          setShowCreate(false);
+          setEditing(null);
+        }}
+      />
+
       <PromptBuilderModal open={showPrompt} onClose={() => setShowPrompt(false)} onUse={(t) => { setInput(t); setShowPrompt(false); }} />
       <ChatReferenceModal open={showRef} onClose={() => setShowRef(false)} onPick={(c) => { setRefChat(c); setShowRef(false); }} />
       <ExcelPreviewModal open={showExcel} onClose={() => setShowExcel(false)} />
     </AppShell>
   );
 }
+
+function LayoutGridIcon() {
+  return <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>;
+}
+
 
 function MenuItem({ icon: Icon, label, onClick }: { icon: React.ComponentType<{ className?: string }>; label: string; onClick: () => void }) {
   return (
