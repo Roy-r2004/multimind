@@ -18,9 +18,8 @@ import {
   AlertCircle,
   Info,
   Share2,
-  Check,
   Settings2,
-  Sparkles,
+
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
