@@ -7,7 +7,6 @@ import {
   FolderKanban,
   LayoutGrid,
   FileText,
-  Shield,
   Sparkles,
   Menu,
   X,
@@ -17,11 +16,9 @@ import { SAMPLE_CHATS } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { to: "/chat", label: "New Chat", icon: MessageSquarePlus },
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/model-sets", label: "Model Sets", icon: LayoutGrid },
   { to: "/templates", label: "Templates", icon: FileText },
-  { to: "/admin", label: "Admin", icon: Shield },
 ];
 
 export function AppShell({ children, rightPanel }: { children: ReactNode; rightPanel?: ReactNode }) {
@@ -35,7 +32,7 @@ export function AppShell({ children, rightPanel }: { children: ReactNode; rightP
         <button onClick={() => setOpen(true)} className="p-2 -ml-2 cursor-pointer">
           <Menu className="size-5" />
         </button>
-        <Link to="/chat" className="flex items-center gap-2 font-display font-semibold">
+        <Link to="/" className="flex items-center gap-2 font-display font-semibold">
           <Sparkles className="size-4 text-primary" /> MultiAI
         </Link>
         <div className="w-8" />
@@ -49,7 +46,7 @@ export function AppShell({ children, rightPanel }: { children: ReactNode; rightP
         )}
       >
         <div className="flex h-14 items-center justify-between px-4 border-b border-sidebar-border">
-          <Link to="/chat" onClick={() => setOpen(false)} className="flex items-center gap-2 font-display font-semibold">
+          <Link to="/" onClick={() => setOpen(false)} className="flex items-center gap-2 font-display font-semibold">
             <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
             MultiAI
           </Link>
@@ -58,7 +55,7 @@ export function AppShell({ children, rightPanel }: { children: ReactNode; rightP
 
         <div className="px-3 pt-3">
           <Link
-            to="/chat"
+            to="/"
             onClick={() => setOpen(false)}
             className="flex w-full items-center gap-2 rounded-xl bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:opacity-90"
           >
@@ -73,8 +70,27 @@ export function AppShell({ children, rightPanel }: { children: ReactNode; rightP
           </div>
         </div>
 
+        <div className="px-3 mt-4">
+          <div className="flex items-center gap-2 px-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <History className="size-3.5" /> Recent
+          </div>
+          <div className="mt-1 max-h-[35vh] overflow-y-auto space-y-0.5">
+            {SAMPLE_CHATS.map((c) => (
+              <Link
+                key={c.id}
+                to="/"
+                onClick={() => setOpen(false)}
+                className="block truncate rounded-lg px-3 py-2 text-sm text-sidebar-foreground/80 hover:bg-accent/60"
+                title={c.title}
+              >
+                {c.title}
+              </Link>
+            ))}
+          </div>
+        </div>
+
         <nav className="px-3 pt-4 space-y-0.5">
-          {NAV.slice(1).map((n) => {
+          {NAV.map((n) => {
             const active = path.startsWith(n.to);
             return (
               <Link
@@ -91,25 +107,6 @@ export function AppShell({ children, rightPanel }: { children: ReactNode; rightP
             );
           })}
         </nav>
-
-        <div className="px-3 mt-4">
-          <div className="flex items-center gap-2 px-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            <History className="size-3.5" /> Recent
-          </div>
-          <div className="mt-1 max-h-[40vh] overflow-y-auto space-y-0.5">
-            {SAMPLE_CHATS.map((c) => (
-              <Link
-                key={c.id}
-                to="/chat"
-                onClick={() => setOpen(false)}
-                className="block truncate rounded-lg px-3 py-2 text-sm text-sidebar-foreground/80 hover:bg-accent/60"
-                title={c.title}
-              >
-                {c.title}
-              </Link>
-            ))}
-          </div>
-        </div>
 
         <div className="mt-auto border-t border-sidebar-border p-3">
           <Link
