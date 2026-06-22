@@ -39,7 +39,7 @@ export const Route = createFileRoute("/chat")({
 
 type Msg = { role: "user" | "ai"; question?: string };
 
-function ChatPage() {
+export function ChatPage() {
   const [setId, setSetId] = useState("balanced");
   const set = MODEL_SETS.find((s) => s.id === setId)!;
   const [messages, setMessages] = useState<Msg[]>([
