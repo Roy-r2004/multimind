@@ -1,7 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
 import { Plus, FolderKanban, Users } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { PROJECTS } from "@/lib/mock";
+import { CreateProjectModal } from "@/components/CreateProjectModal";
+import { useChatStore } from "@/lib/store";
 
 export const Route = createFileRoute("/projects")({
   head: () => ({ meta: [{ title: "Projects — MultiAI" }] }),
@@ -9,6 +11,9 @@ export const Route = createFileRoute("/projects")({
 });
 
 function ProjectsPage() {
+  const { projects, projectChatCount } = useChatStore();
+  const [showCreate, setShowCreate] = useState(false);
+
   return (
     <AppShell>
       <div className="mx-auto max-w-5xl px-6 py-10">
@@ -19,12 +24,15 @@ function ProjectsPage() {
               Group related chats, files and Model Sets.
             </p>
           </div>
-          <button className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground">
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
             <Plus className="size-4" /> New project
           </button>
         </div>
         <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {PROJECTS.map((p) => (
+          {projects.map((p) => (
             <Link
               key={p.id}
               to="/projects/$id"
@@ -38,7 +46,7 @@ function ProjectsPage() {
                 <div className="font-medium">{p.name}</div>
               </div>
               <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-                <span>{p.chats} chats</span>
+                <span>{projectChatCount(p.id)} chats</span>
                 <span className="inline-flex items-center gap-1">
                   <Users className="size-3" /> {p.members}
                 </span>
@@ -48,6 +56,8 @@ function ProjectsPage() {
           ))}
         </div>
       </div>
+
+      <CreateProjectModal open={showCreate} onClose={() => setShowCreate(false)} />
     </AppShell>
   );
 }

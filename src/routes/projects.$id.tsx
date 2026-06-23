@@ -2,7 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { FolderKanban, MessageSquare, Users, FileText, LayoutGrid, Settings } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { PROJECTS, SAMPLE_CHATS, MODEL_SETS } from "@/lib/mock";
+import { MODEL_SETS } from "@/lib/mock";
+import { useChatStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/projects/$id")({
@@ -12,7 +13,9 @@ export const Route = createFileRoute("/projects/$id")({
 
 function ProjectDetail() {
   const { id } = Route.useParams();
-  const p = PROJECTS.find((x) => x.id === id) ?? PROJECTS[0];
+  const { projects, chats, projectChatCount } = useChatStore();
+  const p = projects.find((x) => x.id === id) ?? projects[0];
+  const projectChats = chats.filter((c) => c.projectId === p.id);
   const [tab, setTab] = useState<"chats" | "files" | "sets" | "settings">("chats");
   const tabs = [
     { id: "chats", label: "Chats", icon: MessageSquare },
@@ -34,7 +37,7 @@ function ProjectDetail() {
           <div className="flex-1 min-w-0">
             <h1 className="truncate text-2xl font-semibold">{p.name}</h1>
             <div className="text-xs text-muted-foreground">
-              {p.chats} chats ·{" "}
+              {projectChatCount(p.id)} chats ·{" "}
               <span className="inline-flex items-center gap-1">
                 <Users className="size-3" /> {p.members} members
               </span>{" "}
@@ -65,16 +68,22 @@ function ProjectDetail() {
         <div className="mt-6">
           {tab === "chats" && (
             <div className="space-y-2">
-              {SAMPLE_CHATS.map((c) => (
-                <Link
-                  key={c.id}
-                  to="/chat"
-                  className="flex items-center justify-between rounded-xl border border-border bg-card p-3 hover:bg-accent"
-                >
-                  <div className="text-sm font-medium">{c.title}</div>
-                  <div className="text-xs text-muted-foreground">{c.updated}</div>
-                </Link>
-              ))}
+              {projectChats.length === 0 ? (
+                <div className="grid place-items-center rounded-2xl border border-dashed border-border bg-card p-12 text-center text-sm text-muted-foreground">
+                  No chats in this project yet. Add one from the Recent Chats menu.
+                </div>
+              ) : (
+                projectChats.map((c) => (
+                  <Link
+                    key={c.id}
+                    to="/chat"
+                    className="flex items-center justify-between rounded-xl border border-border bg-card p-3 hover:bg-accent"
+                  >
+                    <div className="text-sm font-medium">{c.title}</div>
+                    <div className="text-xs text-muted-foreground">{c.updated}</div>
+                  </Link>
+                ))
+              )}
             </div>
           )}
           {tab === "files" && (

@@ -158,11 +158,19 @@ export const TEMPLATES: Template[] = [
 
 export type ChatMsg = { role: "user" | "ai"; text: string };
 
-export const SAMPLE_CHATS = [
-  { id: "c1", title: "Best framework for SaaS landing page", updated: "2h ago" },
-  { id: "c2", title: "Pricing model for indie tool", updated: "Yesterday" },
-  { id: "c3", title: "Capital of Lebanon", updated: "3 days ago" },
-  { id: "c4", title: "Refactor strategy for monorepo", updated: "Last week" },
+export type Chat = {
+  id: string;
+  title: string;
+  updated: string;
+  /** Project this chat belongs to, if any. */
+  projectId?: string | null;
+};
+
+export const SAMPLE_CHATS: Chat[] = [
+  { id: "c1", title: "Best framework for SaaS landing page", updated: "2h ago", projectId: null },
+  { id: "c2", title: "Pricing model for indie tool", updated: "Yesterday", projectId: null },
+  { id: "c3", title: "Capital of Lebanon", updated: "3 days ago", projectId: null },
+  { id: "c4", title: "Refactor strategy for monorepo", updated: "Last week", projectId: null },
 ];
 
 export const SAMPLE_ANSWERS = [
@@ -190,10 +198,41 @@ export const VERDICT = {
     "Astro wins on pure static performance, but Next/TanStack wins on long-term flexibility. The synthesis chooses based on the user's actual future plans.",
 };
 
-export const PROJECTS = [
-  { id: "p1", name: "Acme Marketing", chats: 12, members: 4, updated: "2h ago" },
-  { id: "p2", name: "Internal Tools", chats: 7, members: 2, updated: "Yesterday" },
-  { id: "p3", name: "Q4 Research", chats: 23, members: 6, updated: "3 days ago" },
+export type Project = {
+  id: string;
+  name: string;
+  description?: string;
+  /** Baseline chat count (seed data); live assignments are added on top. */
+  chats: number;
+  members: number;
+  updated: string;
+};
+
+export const PROJECTS: Project[] = [
+  {
+    id: "p1",
+    name: "Acme Marketing",
+    description: "Campaign copy, positioning and launch research.",
+    chats: 12,
+    members: 4,
+    updated: "2h ago",
+  },
+  {
+    id: "p2",
+    name: "Internal Tools",
+    description: "Engineering specs and tooling decisions.",
+    chats: 7,
+    members: 2,
+    updated: "Yesterday",
+  },
+  {
+    id: "p3",
+    name: "Q4 Research",
+    description: "Market and competitor analysis for Q4.",
+    chats: 23,
+    members: 6,
+    updated: "3 days ago",
+  },
 ];
 
 export const ADMIN_USERS = [

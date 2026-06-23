@@ -10,8 +10,18 @@ import {
   Menu,
   X,
   History,
+  MoreHorizontal,
+  Pencil,
+  FolderPlus,
+  Trash2,
+  Folder,
+  Plus,
+  Check,
 } from "lucide-react";
-import { SAMPLE_CHATS } from "@/lib/mock";
+import { Modal } from "@/components/Modal";
+import { CreateProjectModal } from "@/components/CreateProjectModal";
+import { useChatStore } from "@/lib/store";
+import type { Chat } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -29,6 +39,12 @@ export function AppShell({
 }) {
   const [open, setOpen] = useState(false);
   const path = useRouterState({ select: (s) => s.location.pathname });
+  const { chats, projectById } = useChatStore();
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<Chat | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Chat | null>(null);
+  const [assignTarget, setAssignTarget] = useState<Chat | null>(null);
+  const [showCreateProject, setShowCreateProject] = useState(false);
 
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground">
@@ -107,17 +123,75 @@ export function AppShell({
             <History className="size-3.5" /> Recent
           </div>
           <div className="mt-1 max-h-[40vh] overflow-y-auto space-y-0.5">
-            {SAMPLE_CHATS.map((c) => (
-              <Link
-                key={c.id}
-                to="/chat"
-                onClick={() => setOpen(false)}
-                className="block truncate rounded-lg px-3 py-2 text-sm text-sidebar-foreground/80 hover:bg-accent/60"
-                title={c.title}
-              >
-                {c.title}
-              </Link>
-            ))}
+            {chats.map((c) => {
+              const project = projectById(c.projectId);
+              return (
+                <div key={c.id} className="group relative rounded-lg hover:bg-accent/60">
+                  <Link
+                    to="/chat"
+                    onClick={() => setOpen(false)}
+                    className="block rounded-lg px-3 py-2 pr-9"
+                    title={c.title}
+                  >
+                    <div className="truncate text-sm text-sidebar-foreground/80">{c.title}</div>
+                    {project && (
+                      <div className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted-foreground">
+                        <Folder className="size-3 shrink-0" />
+                        <span className="truncate">{project.name}</span>
+                      </div>
+                    )}
+                  </Link>
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMenuOpenId((id) => (id === c.id ? null : c.id));
+                    }}
+                    aria-label="Chat actions"
+                    className={cn(
+                      "absolute right-1.5 top-1.5 rounded-md p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground",
+                      menuOpenId === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                    )}
+                  >
+                    <MoreHorizontal className="size-4" />
+                  </button>
+                  {menuOpenId === c.id && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={() => setMenuOpenId(null)} />
+                      <div className="absolute right-1.5 top-9 z-40 w-44 overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-lg">
+                        <button
+                          onClick={() => {
+                            setRenameTarget(c);
+                            setMenuOpenId(null);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent"
+                        >
+                          <Pencil className="size-4 text-muted-foreground" /> Rename
+                        </button>
+                        <button
+                          onClick={() => {
+                            setAssignTarget(c);
+                            setMenuOpenId(null);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent"
+                        >
+                          <FolderPlus className="size-4 text-muted-foreground" /> Add to Project
+                        </button>
+                        <button
+                          onClick={() => {
+                            setDeleteTarget(c);
+                            setMenuOpenId(null);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-destructive hover:bg-destructive/10"
+                        >
+                          <Trash2 className="size-4" /> Delete
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -163,6 +237,177 @@ export function AppShell({
           )}
         </div>
       </main>
+
+      <RenameChatModal chat={renameTarget} onClose={() => setRenameTarget(null)} />
+      <DeleteChatModal chat={deleteTarget} onClose={() => setDeleteTarget(null)} />
+      <AddToProjectModal
+        chat={assignTarget}
+        onClose={() => setAssignTarget(null)}
+        onCreateProject={() => {
+          setAssignTarget(null);
+          setShowCreateProject(true);
+        }}
+      />
+      <CreateProjectModal open={showCreateProject} onClose={() => setShowCreateProject(false)} />
     </div>
+  );
+}
+
+function RenameChatModal({ chat, onClose }: { chat: Chat | null; onClose: () => void }) {
+  const { renameChat } = useChatStore();
+  const [title, setTitle] = useState("");
+
+  // Re-seed the field whenever a different chat is targeted.
+  const [seedId, setSeedId] = useState<string | null>(null);
+  if (chat && chat.id !== seedId) {
+    setSeedId(chat.id);
+    setTitle(chat.title);
+  }
+
+  function save() {
+    if (!chat || !title.trim()) return;
+    renameChat(chat.id, title);
+    onClose();
+  }
+
+  return (
+    <Modal open={!!chat} onClose={onClose} title="Rename chat" size="sm">
+      <div className="space-y-4">
+        <label className="block text-sm">
+          <div className="mb-1 font-medium">Chat Name</div>
+          <input
+            autoFocus
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") save();
+            }}
+            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+          />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={!title.trim()}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteChatModal({ chat, onClose }: { chat: Chat | null; onClose: () => void }) {
+  const { deleteChat } = useChatStore();
+  return (
+    <Modal open={!!chat} onClose={onClose} title="Delete Chat?" size="sm">
+      <div className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Are you sure you want to delete this conversation?
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              if (chat) deleteChat(chat.id);
+              onClose();
+            }}
+            className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:opacity-90"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function AddToProjectModal({
+  chat,
+  onClose,
+  onCreateProject,
+}: {
+  chat: Chat | null;
+  onClose: () => void;
+  onCreateProject: () => void;
+}) {
+  const { projects, assignChatToProject } = useChatStore();
+  const [selected, setSelected] = useState<string | null>(null);
+
+  // Default the selection to the chat's current project each time it opens.
+  const [seedId, setSeedId] = useState<string | null>(null);
+  if (chat && chat.id !== seedId) {
+    setSeedId(chat.id);
+    setSelected(chat.projectId ?? null);
+  }
+
+  function add() {
+    if (!chat || !selected) return;
+    assignChatToProject(chat.id, selected);
+    onClose();
+  }
+
+  return (
+    <Modal open={!!chat} onClose={onClose} title="Add Chat to Project" size="md">
+      <div className="space-y-4">
+        <div className="space-y-1.5">
+          {projects.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => setSelected(p.id)}
+              className={cn(
+                "flex w-full items-center gap-3 rounded-xl border p-3 text-left text-sm transition",
+                selected === p.id
+                  ? "border-primary bg-primary/5"
+                  : "border-border hover:bg-accent/60",
+              )}
+            >
+              <span className="grid size-8 place-items-center rounded-lg bg-accent text-accent-foreground">
+                <Folder className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>
+              {selected === p.id && <Check className="size-4 text-primary" />}
+            </button>
+          ))}
+          <button
+            onClick={onCreateProject}
+            className="flex w-full items-center gap-3 rounded-xl border border-dashed border-border p-3 text-left text-sm text-muted-foreground hover:bg-accent/60"
+          >
+            <span className="grid size-8 place-items-center rounded-lg bg-accent text-accent-foreground">
+              <Plus className="size-4" />
+            </span>
+            Create New Project
+          </button>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={add}
+            disabled={!selected}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
