@@ -184,9 +184,22 @@ export function ChatPage() {
       <ModelSetPickerModal
         open={showSet}
         onClose={() => setShowSet(false)}
-        activeId={setId}
+        activeId={set.id}
+        sets={sets}
         onPick={(id) => { setSetId(id); setShowSet(false); }}
+        onCreate={() => { setShowSet(false); setShowCreate(true); }}
       />
+
+      <CreateModelSetModal
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        onCreate={(newSet) => {
+          setSets((prev) => [...prev, newSet]);
+          setSetId(newSet.id);
+          setShowCreate(false);
+        }}
+      />
+
 
 
       <Modal open={showStrategy} onClose={() => setShowStrategy(false)} title="Verdict strategies" size="lg">
