@@ -39,12 +39,24 @@ export function AppShell({
 }) {
   const [open, setOpen] = useState(false);
   const path = useRouterState({ select: (s) => s.location.pathname });
-  const { chats, projectById } = useChatStore();
+  const { chats, projectById, renameChat, assignChatToProject } = useChatStore();
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
-  const [renameTarget, setRenameTarget] = useState<Chat | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Chat | null>(null);
   const [assignTarget, setAssignTarget] = useState<Chat | null>(null);
   const [showCreateProject, setShowCreateProject] = useState(false);
+
+  function saveRename(chatId: string) {
+    if (!renameTitle.trim()) {
+      setEditingChatId(null);
+      return;
+    }
+    renameChat(chatId, renameTitle.trim());
+    setEditingChatId(null);
+    setRenameTitle("");
+  }
 
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground">
@@ -125,43 +137,82 @@ export function AppShell({
           <div className="mt-1 max-h-[40vh] overflow-y-auto space-y-0.5">
             {chats.map((c) => {
               const project = projectById(c.projectId);
+              const editing = editingChatId === c.id;
               return (
                 <div key={c.id} className="group relative rounded-lg hover:bg-accent/60">
-                  <Link
-                    to="/chat"
-                    onClick={() => setOpen(false)}
-                    className="block rounded-lg px-3 py-2 pr-9"
-                    title={c.title}
-                  >
-                    <div className="truncate text-sm text-sidebar-foreground/80">{c.title}</div>
-                    {project && (
-                      <div className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted-foreground">
-                        <Folder className="size-3 shrink-0" />
-                        <span className="truncate">{project.name}</span>
-                      </div>
-                    )}
-                  </Link>
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setMenuOpenId((id) => (id === c.id ? null : c.id));
-                    }}
-                    aria-label="Chat actions"
-                    className={cn(
-                      "absolute right-1.5 top-1.5 rounded-md p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground",
-                      menuOpenId === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-                    )}
-                  >
-                    <MoreHorizontal className="size-4" />
-                  </button>
-                  {menuOpenId === c.id && (
+                  {editing ? (
+                    <div className="block rounded-lg px-3 py-2 pr-9">
+                      <input
+                        autoFocus
+                        value={renameTitle}
+                        onChange={(e) => setRenameTitle(e.target.value)}
+                        onBlur={() => saveRename(c.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            saveRename(c.id);
+                          }
+                          if (e.key === "Escape") {
+                            setEditingChatId(null);
+                            setRenameTitle("");
+                          }
+                        }}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                      />
+                    </div>
+                  ) : (
+                    <Link
+                      to="/chat"
+                      onClick={() => setOpen(false)}
+                      className="block rounded-lg px-3 py-2 pr-9"
+                      title={c.title}
+                    >
+                      <div className="truncate text-sm text-sidebar-foreground/80">{c.title}</div>
+                      {project && (
+                        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                          📁 {project.name}
+                        </div>
+                      )}
+                    </Link>
+                  )}
+                  {!editing && (
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        setMenuAnchor(rect);
+                        setMenuOpenId((id) => (id === c.id ? null : c.id));
+                      }}
+                      aria-label="Chat actions"
+                      className={cn(
+                        "absolute right-1.5 top-1.5 rounded-md p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground",
+                        menuOpenId === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                      )}
+                    >
+                      <MoreHorizontal className="size-4" />
+                    </button>
+                  )}
+                  {menuOpenId === c.id && menuAnchor && (
                     <>
                       <div className="fixed inset-0 z-30" onClick={() => setMenuOpenId(null)} />
-                      <div className="absolute right-1.5 top-9 z-40 w-44 overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-lg">
+                      <div
+                        style={{
+                          top: Math.min(
+                            Math.max(8, (menuAnchor.bottom || menuAnchor.y) + window.scrollY + 6),
+                            window.innerHeight - 48,
+                          ),
+                          left: Math.min(
+                            Math.max(8, (menuAnchor.right || menuAnchor.x) + window.scrollX - 176),
+                            window.innerWidth - 184,
+                          ),
+                        }}
+                        className="fixed z-60 w-44 overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-lg"
+                      >
                         <button
                           onClick={() => {
-                            setRenameTarget(c);
+                            setEditingChatId(c.id);
+                            setRenameTitle(c.title);
                             setMenuOpenId(null);
                           }}
                           className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent"
@@ -238,70 +289,27 @@ export function AppShell({
         </div>
       </main>
 
-      <RenameChatModal chat={renameTarget} onClose={() => setRenameTarget(null)} />
       <DeleteChatModal chat={deleteTarget} onClose={() => setDeleteTarget(null)} />
       <AddToProjectModal
         chat={assignTarget}
         onClose={() => setAssignTarget(null)}
         onCreateProject={() => {
-          setAssignTarget(null);
           setShowCreateProject(true);
         }}
       />
-      <CreateProjectModal open={showCreateProject} onClose={() => setShowCreateProject(false)} />
+      <CreateProjectModal
+        open={showCreateProject}
+        onClose={() => setShowCreateProject(false)}
+        onCreated={(project) => {
+          // If we were creating a project from the Add->Create flow, assign the targeted chat immediately.
+          if (assignTarget) {
+            assignChatToProject(assignTarget.id, project.id);
+            setAssignTarget(null);
+          }
+          setShowCreateProject(false);
+        }}
+      />
     </div>
-  );
-}
-
-function RenameChatModal({ chat, onClose }: { chat: Chat | null; onClose: () => void }) {
-  const { renameChat } = useChatStore();
-  const [title, setTitle] = useState("");
-
-  // Re-seed the field whenever a different chat is targeted.
-  const [seedId, setSeedId] = useState<string | null>(null);
-  if (chat && chat.id !== seedId) {
-    setSeedId(chat.id);
-    setTitle(chat.title);
-  }
-
-  function save() {
-    if (!chat || !title.trim()) return;
-    renameChat(chat.id, title);
-    onClose();
-  }
-
-  return (
-    <Modal open={!!chat} onClose={onClose} title="Rename chat" size="sm">
-      <div className="space-y-4">
-        <label className="block text-sm">
-          <div className="mb-1 font-medium">Chat Name</div>
-          <input
-            autoFocus
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") save();
-            }}
-            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-          />
-        </label>
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={save}
-            disabled={!title.trim()}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    </Modal>
   );
 }
 

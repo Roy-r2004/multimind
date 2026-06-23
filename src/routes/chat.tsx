@@ -5,6 +5,8 @@ import {
   Send,
   Copy,
   Gavel,
+  Pencil,
+  Trash2,
   ChevronDown,
   Wand2,
   Link2,
@@ -24,6 +26,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
+import { useChatStore } from "@/lib/store";
 import {
   MODEL_SETS,
   MODELS,
@@ -36,6 +39,7 @@ import {
   type ModelSet,
   type Strategy,
 } from "@/lib/mock";
+import ModelSetModal from "@/components/ModelSetModal";
 import { cn } from "@/lib/utils";
 import {
   breakdown,
@@ -55,9 +59,8 @@ export const Route = createFileRoute("/chat")({
 type Msg = { role: "user" | "ai"; question?: string };
 
 export function ChatPage() {
-  const [sets, setSets] = useState<ModelSet[]>(MODEL_SETS);
-  const [setId, setSetId] = useState("balanced");
-  const set = sets.find((s) => s.id === setId) ?? sets[0];
+  const { modelSets, activeModelSetId, setActiveModelSetId, createModelSet } = useChatStore();
+  const set = modelSets.find((s) => s.id === activeModelSetId) ?? modelSets[0];
   const [showCreate, setShowCreate] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([
     { role: "user", question: "What's the best framework for a fast SaaS landing page in 2026?" },
@@ -294,9 +297,9 @@ export function ChatPage() {
         open={showSet}
         onClose={() => setShowSet(false)}
         activeId={set.id}
-        sets={sets}
+        sets={modelSets}
         onPick={(id) => {
-          setSetId(id);
+          setActiveModelSetId(id);
           setShowSet(false);
         }}
         onCreate={() => {
@@ -305,12 +308,12 @@ export function ChatPage() {
         }}
       />
 
-      <CreateModelSetModal
+      <ModelSetModal
         open={showCreate}
         onClose={() => setShowCreate(false)}
         onCreate={(newSet) => {
-          setSets((prev) => [...prev, newSet]);
-          setSetId(newSet.id);
+          createModelSet(newSet);
+          setActiveModelSetId(newSet.id);
           setShowCreate(false);
         }}
       />
@@ -611,49 +614,87 @@ function PromptBuilderModal({
   onClose: () => void;
   onUse: (t: string) => void;
 }) {
-  const [raw, setRaw] = useState("write me a landing page");
-  const improved = `Write a high-converting SaaS landing page for "${raw}". Goal: drive sign-ups. Tone: friendly, confident. Output format: H1, sub-headline, 3 feature cards, a single CTA. Constraints: avoid jargon, keep under 200 words.`;
+  const [raw, setRaw] = useState("");
+  const [improved, setImproved] = useState("");
+
+  function close() {
+    setRaw("");
+    setImproved("");
+    onClose();
+  }
+
+  function generatePrompt() {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      setImproved("");
+      return;
+    }
+
+    const normalized = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+    const prefix = normalized.startsWith("explain")
+      ? "Explain"
+      : normalized.startsWith("write") || normalized.startsWith("create")
+      ? "Create"
+      : "Generate";
+
+    setImproved(
+      `${prefix} ${normalized}. Make the request clear, detailed, and structured so the AI can respond with a helpful, professional result. Include the intended audience, desired format, and any relevant details needed to complete the task well.`,
+    );
+  }
+
+  async function copyPrompt() {
+    if (!improved) return;
+    await navigator.clipboard.writeText(improved);
+  }
+
+  function handleUse() {
+    if (!improved) return;
+    onUse(improved);
+    close();
+  }
+
   return (
-    <Modal open={open} onClose={onClose} title="Prompt Builder" size="lg">
-      <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          {["Goal", "Context", "Output format", "Tone", "Constraints"].map((f) => (
-            <label key={f} className="block text-sm">
-              <div className="mb-1 font-medium">{f}</div>
-              <input
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-                placeholder={`Add ${f.toLowerCase()}…`}
-              />
-            </label>
-          ))}
-        </div>
+    <Modal open={open} onClose={close} title="Prompt Builder" size="lg">
+      <div className="space-y-6">
         <div>
-          <div className="mb-1 text-sm font-medium">Rough prompt</div>
+          <div className="mb-2 text-sm font-medium">What do you want help with?</div>
           <textarea
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
-            rows={3}
-            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            rows={6}
+            placeholder="Write me a landing page for my AI startup"
+            className="w-full rounded-lg border border-border bg-background px-3 py-3 text-sm"
           />
         </div>
-        <button className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
-          <Wand2 className="size-4" /> Improve prompt
+
+        <button
+          onClick={generatePrompt}
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+        >
+          <Wand2 className="size-4" /> Generate Better Prompt
         </button>
+
         <div>
-          <div className="mb-1 text-sm font-medium">Improved prompt</div>
-          <div className="rounded-xl border border-border bg-accent/30 p-3 text-sm">{improved}</div>
+          <div className="mb-2 text-sm font-medium">Improved Prompt</div>
+          <div className="min-h-[120px] rounded-xl border border-border bg-accent/30 p-4 text-sm text-foreground">
+            {improved || (
+              <div className="text-muted-foreground">Your improved prompt will appear here after generation.</div>
+            )}
+          </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <button
-              onClick={() => onUse(improved)}
-              className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
+              onClick={handleUse}
+              disabled={!improved}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
-              Use improved prompt
+              Use Prompt
             </button>
-            <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">
+            <button
+              onClick={copyPrompt}
+              disabled={!improved}
+              className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+            >
               Copy
-            </button>
-            <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">
-              Regenerate
             </button>
           </div>
         </div>
@@ -795,6 +836,10 @@ function ModelSetPickerModal({
   onPick: (id: string) => void;
   onCreate: () => void;
 }) {
+  const { updateModelSet, deleteModelSet } = useChatStore();
+  const [editingSet, setEditingSet] = useState<ModelSet | null>(null);
+  const [showEdit, setShowEdit] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   if (!open) return null;
 
   return (
@@ -816,7 +861,7 @@ function ModelSetPickerModal({
           <div className="flex items-center gap-2">
             <button
               onClick={onCreate}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
               <Plus className="size-4" /> Create New Model Set
             </button>
@@ -835,14 +880,39 @@ function ModelSetPickerModal({
                   key={s.id}
                   onClick={() => onPick(s.id)}
                   className={cn(
-                    "group relative flex flex-col gap-3 rounded-2xl border-2 p-5 text-left transition",
+                    "group relative flex flex-col gap-2 rounded-2xl border-2 p-3 text-left transition",
                     active
                       ? "border-primary bg-primary/5 shadow-md ring-2 ring-primary/20"
                       : "border-border bg-card hover:border-primary/40 hover:bg-accent/40",
                   )}
                 >
+                  {/* Action buttons (do not overlap the Active badge) */}
+                  <div className="absolute right-12 top-3 flex gap-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingSet(s);
+                        setShowEdit(true);
+                      }}
+                      className="rounded-md p-1 hover:bg-accent"
+                      title="Edit"
+                    >
+                      <Pencil className="size-4" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteTarget(s.id);
+                      }}
+                      className="rounded-md p-1 text-destructive hover:bg-destructive/10"
+                      title="Delete"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
+
                   {active && (
-                    <span className="absolute right-4 top-4 inline-flex items-center gap-1 rounded-full bg-primary px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary-foreground">
+                    <span className="absolute right-4 top-3 inline-flex items-center gap-1 rounded-full bg-primary px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary-foreground">
                       <CheckCircle2 className="size-3" /> Active
                     </span>
                   )}
@@ -881,19 +951,23 @@ function ModelSetPickerModal({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 pt-1">
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        Verdict
-                      </div>
-                      <div className="mt-0.5 text-sm font-medium">{s.strategy}</div>
+                  <div className="mt-1 grid gap-1 text-sm">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Verdict AI
                     </div>
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        Best for
-                      </div>
-                      <div className="mt-0.5 text-sm">{s.bestFor}</div>
+                    <div className="text-sm font-medium">{modelById(s.verdictModel).name}</div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mt-2">
+                      Strategy
                     </div>
+                    <div className="text-sm font-medium">{s.strategy}</div>
+                    {s.templateName && (
+                      <>
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mt-2">
+                          Template
+                        </div>
+                        <div className="text-sm font-medium">{s.templateName}</div>
+                      </>
+                    )}
                   </div>
                 </button>
               );
@@ -901,15 +975,46 @@ function ModelSetPickerModal({
           </div>
         </div>
 
-        <div className="border-t border-border bg-background/60 px-6 py-3.5">
-          <Link
-            to="/model-sets"
-            onClick={onClose}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
-          >
-            Manage All Model Sets <ArrowRight className="size-3.5" />
-          </Link>
-        </div>
+        {/* Footer close handled by the modal's top-right X only */}
+        <ModelSetModal
+          open={showEdit}
+          onClose={() => setShowEdit(false)}
+          initial={editingSet}
+          onUpdate={(s) => {
+            updateModelSet(s);
+            setShowEdit(false);
+          }}
+        />
+
+        <Modal
+          open={!!deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          title="Delete Model Set?"
+          size="sm"
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Are you sure you want to delete this model set?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (deleteTarget) deleteModelSet(deleteTarget);
+                  setDeleteTarget(null);
+                }}
+                className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:opacity-90"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </Modal>
       </div>
     </div>
   );
@@ -990,274 +1095,6 @@ function ModelChipPicker({
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-function CreateModelSetModal({
-  open,
-  onClose,
-  onCreate,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onCreate: (s: ModelSet) => void;
-}) {
-  const [name, setName] = useState("");
-  const [desc, setDesc] = useState("");
-  const [picked, setPicked] = useState<string[]>([]);
-  const [verdict, setVerdict] = useState<string | null>(null);
-  const [strategy, setStrategy] = useState<Strategy>("Synthesize");
-  const [custom, setCustom] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  function reset() {
-    setName("");
-    setDesc("");
-    setPicked([]);
-    setVerdict(null);
-    setStrategy("Synthesize");
-    setCustom("");
-    setError(null);
-  }
-
-  function close() {
-    reset();
-    onClose();
-  }
-
-  function submit() {
-    if (!name.trim()) {
-      setError("Please enter a Model Set name.");
-      return;
-    }
-    if (picked.length === 0) {
-      setError("Add at least one answering AI model.");
-      return;
-    }
-    if (!verdict) {
-      setError("Choose a Verdict AI.");
-      return;
-    }
-    const id = `set-${Date.now()}`;
-    onCreate({
-      id,
-      name: name.trim(),
-      description: desc.trim() || "Custom model set.",
-      models: picked,
-      verdictModel: verdict,
-      strategy,
-      bestFor: desc.trim() || "Custom use case",
-    });
-    reset();
-  }
-
-  if (!open) return null;
-
-  const charCount = custom.length;
-  const overrideActive = custom.trim().length > 0;
-
-  return (
-    <div
-      className="fixed inset-0 z-[60] grid place-items-center bg-foreground/40 p-4 backdrop-blur-sm"
-      onClick={close}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
-          <div className="flex items-center gap-2">
-            <span className="grid size-8 place-items-center rounded-lg bg-primary/10 text-primary">
-              <Sparkles className="size-4" />
-            </span>
-            <h3 className="text-lg font-semibold">Create New Model Set</h3>
-          </div>
-          <button onClick={close} className="rounded-md p-1.5 hover:bg-accent" aria-label="Close">
-            <X className="size-4" />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
-          {/* Section 1 — Info */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-sm">
-              <div className="mb-1 font-medium">Model Set Name</div>
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Coding Set"
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-              />
-            </label>
-            <label className="block text-sm">
-              <div className="mb-1 font-medium">
-                Description <span className="font-normal text-muted-foreground">(optional)</span>
-              </div>
-              <input
-                value={desc}
-                onChange={(e) => setDesc(e.target.value)}
-                placeholder="e.g. Great for code review, debugging and architecture decisions."
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-              />
-            </label>
-          </div>
-
-          {/* Section 2 — AI Models */}
-          <div>
-            <div className="mb-0.5 text-sm font-semibold">AI Models (Will Answer)</div>
-            <p className="mb-2 text-xs text-muted-foreground">
-              Add the AI models that will answer the user's question.
-            </p>
-            <ModelChipPicker
-              placeholder="Search any AI model..."
-              exclude={picked}
-              onPick={(id) => setPicked((p) => (p.includes(id) ? p : [...p, id]))}
-            />
-            {picked.length > 0 && (
-              <div className="mt-2.5">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Selected Models
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {picked.map((id) => {
-                    const m = modelById(id);
-                    return (
-                      <span
-                        key={id}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs"
-                      >
-                        <span className="size-2 rounded-full" style={{ background: m.color }} />
-                        {m.name}
-                        <button
-                          onClick={() => setPicked((p) => p.filter((x) => x !== id))}
-                          className="text-muted-foreground hover:text-foreground"
-                          aria-label={`Remove ${m.name}`}
-                        >
-                          <X className="size-3" />
-                        </button>
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Section 3 — Verdict AI */}
-          <div>
-            <div className="mb-0.5 text-sm font-semibold">AI Verdict (One Only)</div>
-            <p className="mb-2 text-xs text-muted-foreground">
-              Choose the AI that will read all answers and generate the final verdict.
-            </p>
-            <ModelChipPicker
-              placeholder="Search any AI model..."
-              exclude={verdict ? [verdict] : []}
-              onPick={(id) => setVerdict(id)}
-            />
-            {verdict && (
-              <div className="mt-2.5 flex flex-wrap gap-1.5">
-                {(() => {
-                  const m = modelById(verdict);
-                  return (
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs">
-                      <Gavel className="size-3 text-primary" />
-                      {m.name}
-                      <button
-                        onClick={() => setVerdict(null)}
-                        className="text-muted-foreground hover:text-foreground"
-                        aria-label={`Remove ${m.name}`}
-                      >
-                        <X className="size-3" />
-                      </button>
-                    </span>
-                  );
-                })()}
-              </div>
-            )}
-          </div>
-
-          {/* Section 4 — Strategy */}
-          <div>
-            <div className="mb-0.5 text-sm font-semibold">Verdict Strategy</div>
-            <p className="mb-2 text-xs text-muted-foreground">
-              Choose how the Verdict AI should combine the answers.
-            </p>
-            <div className={cn("flex flex-wrap gap-1.5", overrideActive && "opacity-50")}>
-              {STRATEGIES.map((s) => (
-                <button
-                  key={s.name}
-                  type="button"
-                  onClick={() => setStrategy(s.name)}
-                  className={cn(
-                    "rounded-full border px-3 py-1.5 text-xs font-medium transition",
-                    strategy === s.name
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border bg-card text-muted-foreground hover:bg-accent",
-                  )}
-                >
-                  {s.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Section 5 — Custom instructions */}
-          <div>
-            <div className="mb-0.5 text-sm font-semibold">
-              Custom Verdict Instructions{" "}
-              <span className="font-normal text-muted-foreground">(Optional)</span>
-            </div>
-            <p className="mb-2 text-xs text-muted-foreground">
-              Customize how the Verdict AI should behave and what to focus on.
-            </p>
-            <textarea
-              value={custom}
-              onChange={(e) => setCustom(e.target.value.slice(0, 1000))}
-              rows={3}
-              placeholder="Be objective and concise. Compare the answers, highlight key differences, and provide the most accurate and useful final conclusion."
-              className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-            />
-            <div className="mt-1 flex items-center justify-between text-[11px]">
-              <span
-                className={cn(
-                  "text-muted-foreground",
-                  overrideActive && "text-primary font-medium",
-                )}
-              >
-                {overrideActive
-                  ? "Custom instructions will override the selected strategy."
-                  : "\u00A0"}
-              </span>
-              <span className="text-muted-foreground tabular-nums">{charCount} / 1000</span>
-            </div>
-          </div>
-
-          {error && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-              <AlertCircle className="mr-1 inline size-3.5" /> {error}
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-2 border-t border-border bg-background/60 px-6 py-3.5">
-          <button
-            onClick={close}
-            className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={submit}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            <Check className="size-4" /> Create Model Set
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

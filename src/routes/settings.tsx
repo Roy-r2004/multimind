@@ -9,7 +9,7 @@ export const Route = createFileRoute("/settings")({
   component: SettingsPage,
 });
 
-const TABS = ["Profile", "Account", "Preferences", "AI Defaults", "Team", "Security"] as const;
+const TABS = ["Profile", "Preferences", "AI Defaults", "Team", "Security"] as const;
 
 function SettingsPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Profile");

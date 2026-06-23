@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Plus, FolderKanban, Users } from "lucide-react";
+import { Plus, FolderKanban } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
 import { useChatStore } from "@/lib/store";
@@ -47,9 +47,6 @@ function ProjectsPage() {
               </div>
               <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
                 <span>{projectChatCount(p.id)} chats</span>
-                <span className="inline-flex items-center gap-1">
-                  <Users className="size-3" /> {p.members}
-                </span>
                 <span>{p.updated}</span>
               </div>
             </Link>

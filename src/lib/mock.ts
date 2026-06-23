@@ -66,6 +66,8 @@ export type ModelSet = {
   verdictModel: string;
   strategy: Strategy;
   bestFor: string;
+  templateName?: string;
+  customInstructions?: string;
 };
 
 export type Strategy = "Reconcile" | "Synthesize" | "Rank" | "Pick Best" | "Debate";

@@ -15,7 +15,6 @@ import { Route as SharedRouteImport } from './routes/shared'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
-import { Route as ModelSetsRouteImport } from './routes/model-sets'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as AdminRouteImport } from './routes/admin'
@@ -54,11 +53,6 @@ const OnboardingRoute = OnboardingRouteImport.update({
   path: '/onboarding',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ModelSetsRoute = ModelSetsRouteImport.update({
-  id: '/model-sets',
-  path: '/model-sets',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
@@ -90,9 +84,9 @@ const ProjectsIdRoute = ProjectsIdRouteImport.update({
   getParentRoute: () => ProjectsRoute,
 } as any)
 const ModelSetsNewRoute = ModelSetsNewRouteImport.update({
-  id: '/new',
-  path: '/new',
-  getParentRoute: () => ModelSetsRoute,
+  id: '/model-sets/new',
+  path: '/model-sets/new',
+  getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
@@ -100,7 +94,6 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
-  '/model-sets': typeof ModelSetsRouteWithChildren
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
@@ -116,7 +109,6 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
-  '/model-sets': typeof ModelSetsRouteWithChildren
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
@@ -133,7 +125,6 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
-  '/model-sets': typeof ModelSetsRouteWithChildren
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
@@ -151,7 +142,6 @@ export interface FileRouteTypes {
     | '/admin'
     | '/chat'
     | '/login'
-    | '/model-sets'
     | '/onboarding'
     | '/projects'
     | '/settings'
@@ -167,7 +157,6 @@ export interface FileRouteTypes {
     | '/admin'
     | '/chat'
     | '/login'
-    | '/model-sets'
     | '/onboarding'
     | '/projects'
     | '/settings'
@@ -183,7 +172,6 @@ export interface FileRouteTypes {
     | '/admin'
     | '/chat'
     | '/login'
-    | '/model-sets'
     | '/onboarding'
     | '/projects'
     | '/settings'
@@ -200,13 +188,13 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   ChatRoute: typeof ChatRoute
   LoginRoute: typeof LoginRoute
-  ModelSetsRoute: typeof ModelSetsRouteWithChildren
   OnboardingRoute: typeof OnboardingRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
   SettingsRoute: typeof SettingsRoute
   SharedRoute: typeof SharedRoute
   SignupRoute: typeof SignupRoute
   TemplatesRoute: typeof TemplatesRouteWithChildren
+  ModelSetsNewRoute: typeof ModelSetsNewRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -253,13 +241,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OnboardingRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/model-sets': {
-      id: '/model-sets'
-      path: '/model-sets'
-      fullPath: '/model-sets'
-      preLoaderRoute: typeof ModelSetsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/login': {
       id: '/login'
       path: '/login'
@@ -304,25 +285,13 @@ declare module '@tanstack/react-router' {
     }
     '/model-sets/new': {
       id: '/model-sets/new'
-      path: '/new'
+      path: '/model-sets/new'
       fullPath: '/model-sets/new'
       preLoaderRoute: typeof ModelSetsNewRouteImport
-      parentRoute: typeof ModelSetsRoute
+      parentRoute: typeof rootRouteImport
     }
   }
 }
-
-interface ModelSetsRouteChildren {
-  ModelSetsNewRoute: typeof ModelSetsNewRoute
-}
-
-const ModelSetsRouteChildren: ModelSetsRouteChildren = {
-  ModelSetsNewRoute: ModelSetsNewRoute,
-}
-
-const ModelSetsRouteWithChildren = ModelSetsRoute._addFileChildren(
-  ModelSetsRouteChildren,
-)
 
 interface ProjectsRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
@@ -353,13 +322,13 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   ChatRoute: ChatRoute,
   LoginRoute: LoginRoute,
-  ModelSetsRoute: ModelSetsRouteWithChildren,
   OnboardingRoute: OnboardingRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
   SettingsRoute: SettingsRoute,
   SharedRoute: SharedRoute,
   SignupRoute: SignupRoute,
   TemplatesRoute: TemplatesRouteWithChildren,
+  ModelSetsNewRoute: ModelSetsNewRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

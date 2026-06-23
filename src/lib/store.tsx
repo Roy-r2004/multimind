@@ -1,11 +1,24 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import { PROJECTS, SAMPLE_CHATS, type Chat, type Project } from "@/lib/mock";
+import {
+  MODEL_SETS,
+  PROJECTS,
+  SAMPLE_CHATS,
+  type Chat,
+  type ModelSet,
+  type Project,
+} from "@/lib/mock";
 
 type CreateProjectInput = { name: string; description?: string };
 
 type ChatStore = {
   chats: Chat[];
   projects: Project[];
+  modelSets: ModelSet[];
+  activeModelSetId: string;
+  setActiveModelSetId: (id: string) => void;
+  createModelSet: (set: ModelSet) => void;
+  updateModelSet: (set: ModelSet) => void;
+  deleteModelSet: (id: string) => void;
   renameChat: (id: string, title: string) => void;
   deleteChat: (id: string) => void;
   assignChatToProject: (chatId: string, projectId: string) => void;
@@ -20,6 +33,8 @@ const ChatStoreContext = createContext<ChatStore | null>(null);
 export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const [chats, setChats] = useState<Chat[]>(() => SAMPLE_CHATS.map((c) => ({ ...c })));
   const [projects, setProjects] = useState<Project[]>(() => PROJECTS.map((p) => ({ ...p })));
+  const [modelSets, setModelSets] = useState<ModelSet[]>(() => MODEL_SETS.map((s) => ({ ...s })));
+  const [activeModelSetId, setActiveModelSetIdState] = useState<string>("balanced");
 
   const renameChat = useCallback((id: string, title: string) => {
     const next = title.trim();
@@ -48,6 +63,26 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     return project;
   }, []);
 
+  const setActiveModelSetId = useCallback((id: string) => {
+    setActiveModelSetIdState(id);
+  }, []);
+
+  const createModelSet = useCallback((set: ModelSet) => {
+    setModelSets((prev) => [set, ...prev]);
+  }, []);
+
+  const updateModelSet = useCallback((set: ModelSet) => {
+    setModelSets((prev) => prev.map((item) => (item.id === set.id ? set : item)));
+  }, []);
+
+  const deleteModelSet = useCallback(
+    (id: string) => {
+      setModelSets((prev) => prev.filter((item) => item.id !== id));
+      setActiveModelSetIdState((activeId) => (activeId === id ? "balanced" : activeId));
+    },
+    [],
+  );
+
   const projectChatCount = useCallback(
     (projectId: string) => {
       const base = projects.find((p) => p.id === projectId)?.chats ?? 0;
@@ -67,6 +102,12 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     () => ({
       chats,
       projects,
+      modelSets,
+      activeModelSetId,
+      setActiveModelSetId,
+      createModelSet,
+      updateModelSet,
+      deleteModelSet,
       renameChat,
       deleteChat,
       assignChatToProject,
@@ -77,6 +118,12 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     [
       chats,
       projects,
+      modelSets,
+      activeModelSetId,
+      setActiveModelSetId,
+      createModelSet,
+      updateModelSet,
+      deleteModelSet,
       renameChat,
       deleteChat,
       assignChatToProject,
