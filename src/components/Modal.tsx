@@ -17,7 +17,10 @@ export function Modal({
 }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4"
+      onClick={onClose}
+    >
       <div
         onClick={(e) => e.stopPropagation()}
         className={cn(
@@ -31,7 +34,9 @@ export function Modal({
         {title && (
           <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
             <h3 className="text-base font-semibold">{title}</h3>
-            <button onClick={onClose} className="rounded-md p-1.5 hover:bg-accent cursor-pointer"><X className="size-4" /></button>
+            <button onClick={onClose} className="rounded-md p-1.5 hover:bg-accent cursor-pointer">
+              <X className="size-4" />
+            </button>
           </div>
         )}
         <div className="max-h-[75vh] overflow-y-auto p-5">{children}</div>

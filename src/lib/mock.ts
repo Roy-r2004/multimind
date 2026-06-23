@@ -7,13 +7,55 @@ export type Model = {
 };
 
 export const MODELS: Model[] = [
-  { id: "gpt-4.1", name: "GPT-4.1", vendor: "OpenAI", color: "oklch(0.75 0.13 155)", blurb: "Reliable generalist" },
-  { id: "claude", name: "Claude 3.5", vendor: "Anthropic", color: "oklch(0.78 0.12 60)", blurb: "Careful reasoner" },
-  { id: "gemini", name: "Gemini 1.5", vendor: "Google", color: "oklch(0.72 0.14 240)", blurb: "Multimodal" },
-  { id: "mistral", name: "Mistral Large", vendor: "Mistral", color: "oklch(0.68 0.16 25)", blurb: "Fast & open" },
-  { id: "deepseek", name: "DeepSeek V3", vendor: "DeepSeek", color: "oklch(0.65 0.17 280)", blurb: "Coding specialist" },
-  { id: "llama", name: "Llama 3.1", vendor: "Meta", color: "oklch(0.72 0.14 200)", blurb: "Open-weight" },
-  { id: "perplex", name: "Perplexity Pro", vendor: "Perplexity", color: "oklch(0.70 0.13 195)", blurb: "Web-grounded" },
+  {
+    id: "gpt-4.1",
+    name: "GPT-4.1",
+    vendor: "OpenAI",
+    color: "oklch(0.75 0.13 155)",
+    blurb: "Reliable generalist",
+  },
+  {
+    id: "claude",
+    name: "Claude 3.5",
+    vendor: "Anthropic",
+    color: "oklch(0.78 0.12 60)",
+    blurb: "Careful reasoner",
+  },
+  {
+    id: "gemini",
+    name: "Gemini 1.5",
+    vendor: "Google",
+    color: "oklch(0.72 0.14 240)",
+    blurb: "Multimodal",
+  },
+  {
+    id: "mistral",
+    name: "Mistral Large",
+    vendor: "Mistral",
+    color: "oklch(0.68 0.16 25)",
+    blurb: "Fast & open",
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek V3",
+    vendor: "DeepSeek",
+    color: "oklch(0.65 0.17 280)",
+    blurb: "Coding specialist",
+  },
+  {
+    id: "llama",
+    name: "Llama 3.1",
+    vendor: "Meta",
+    color: "oklch(0.72 0.14 200)",
+    blurb: "Open-weight",
+  },
+  {
+    id: "perplex",
+    name: "Perplexity Pro",
+    vendor: "Perplexity",
+    color: "oklch(0.70 0.13 195)",
+    blurb: "Web-grounded",
+  },
 ];
 
 export type ModelSet = {
@@ -37,19 +79,81 @@ export const STRATEGIES: { name: Strategy; desc: string }[] = [
 ];
 
 export const MODEL_SETS: ModelSet[] = [
-  { id: "balanced", name: "Balanced Set", description: "Great default for everyday questions.", models: ["gpt-4.1", "claude", "gemini"], verdictModel: "gpt-4.1", strategy: "Synthesize", bestFor: "General questions, everyday use" },
-  { id: "coding", name: "Coding Set", description: "Tuned for code review and debugging.", models: ["gpt-4.1", "deepseek", "claude"], verdictModel: "claude", strategy: "Pick Best", bestFor: "Coding, debugging, architecture" },
-  { id: "business", name: "Business Set", description: "Strategic, concise, action-oriented.", models: ["gpt-4.1", "gemini", "mistral"], verdictModel: "gpt-4.1", strategy: "Reconcile", bestFor: "Strategy, startups, business decisions" },
-  { id: "research", name: "Research Set", description: "Deep, cited, careful reasoning.", models: ["claude", "perplex", "gpt-4.1"], verdictModel: "claude", strategy: "Debate", bestFor: "Research, analysis, fact-checking" },
+  {
+    id: "balanced",
+    name: "Balanced Set",
+    description: "Great default for everyday questions.",
+    models: ["gpt-4.1", "claude", "gemini"],
+    verdictModel: "gpt-4.1",
+    strategy: "Synthesize",
+    bestFor: "General questions, everyday use",
+  },
+  {
+    id: "coding",
+    name: "Coding Set",
+    description: "Tuned for code review and debugging.",
+    models: ["gpt-4.1", "deepseek", "claude"],
+    verdictModel: "claude",
+    strategy: "Pick Best",
+    bestFor: "Coding, debugging, architecture",
+  },
+  {
+    id: "business",
+    name: "Business Set",
+    description: "Strategic, concise, action-oriented.",
+    models: ["gpt-4.1", "gemini", "mistral"],
+    verdictModel: "gpt-4.1",
+    strategy: "Reconcile",
+    bestFor: "Strategy, startups, business decisions",
+  },
+  {
+    id: "research",
+    name: "Research Set",
+    description: "Deep, cited, careful reasoning.",
+    models: ["claude", "perplex", "gpt-4.1"],
+    verdictModel: "claude",
+    strategy: "Debate",
+    bestFor: "Research, analysis, fact-checking",
+  },
 ];
 
-export type Template = { id: string; title: string; description: string; category: string; instructions: string };
+export type Template = {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  instructions: string;
+};
 
 export const TEMPLATES: Template[] = [
-  { id: "t1", title: "Explain simply", description: "Beginner-friendly explanations.", category: "Learning", instructions: "Explain like I'm new to the topic. Use simple words and short examples." },
-  { id: "t2", title: "Short business answer", description: "Concise, decision-oriented.", category: "Business", instructions: "Give a short, business-focused answer. Lead with the recommendation." },
-  { id: "t3", title: "Compare & recommend", description: "Weigh options and pick one.", category: "Decision", instructions: "Compare options in a small table, then recommend the most practical one." },
-  { id: "t4", title: "Step-by-step", description: "Walk through with examples.", category: "Learning", instructions: "Explain step by step with examples for each step." },
+  {
+    id: "t1",
+    title: "Explain simply",
+    description: "Beginner-friendly explanations.",
+    category: "Learning",
+    instructions: "Explain like I'm new to the topic. Use simple words and short examples.",
+  },
+  {
+    id: "t2",
+    title: "Short business answer",
+    description: "Concise, decision-oriented.",
+    category: "Business",
+    instructions: "Give a short, business-focused answer. Lead with the recommendation.",
+  },
+  {
+    id: "t3",
+    title: "Compare & recommend",
+    description: "Weigh options and pick one.",
+    category: "Decision",
+    instructions: "Compare options in a small table, then recommend the most practical one.",
+  },
+  {
+    id: "t4",
+    title: "Step-by-step",
+    description: "Walk through with examples.",
+    category: "Learning",
+    instructions: "Explain step by step with examples for each step.",
+  },
 ];
 
 export type ChatMsg = { role: "user" | "ai"; text: string };
@@ -81,9 +185,9 @@ export const SAMPLE_ANSWERS = [
 
 export const VERDICT = {
   strategy: "Synthesize" as Strategy,
-  text:
-    "All three models agree the framework should prioritize **SEO, speed, and easy components**. If the page is mostly static, start with **Astro** for the leanest output; if you expect a dashboard later, start with **Next.js / TanStack Start + Tailwind + shadcn**. Either way, defer interactivity and ship images as AVIF/WebP.",
-  reason: "Astro wins on pure static performance, but Next/TanStack wins on long-term flexibility. The synthesis chooses based on the user's actual future plans.",
+  text: "All three models agree the framework should prioritize **SEO, speed, and easy components**. If the page is mostly static, start with **Astro** for the leanest output; if you expect a dashboard later, start with **Next.js / TanStack Start + Tailwind + shadcn**. Either way, defer interactivity and ship images as AVIF/WebP.",
+  reason:
+    "Astro wins on pure static performance, but Next/TanStack wins on long-term flexibility. The synthesis chooses based on the user's actual future plans.",
 };
 
 export const PROJECTS = [

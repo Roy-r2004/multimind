@@ -7,30 +7,66 @@ export const Route = createFileRoute("/login")({
 });
 
 function LoginPage() {
-  return <AuthShell title="Welcome back" subtitle="Log in to continue your conversations.">
-    <form onSubmit={(e) => { e.preventDefault(); window.location.href = "/chat"; }} className="space-y-4">
-      <Field label="Email"><input type="email" required defaultValue="sara@acme.co" className="input" /></Field>
-      <Field label="Password" right={<a href="#" className="text-xs text-primary hover:underline">Forgot?</a>}>
-        <input type="password" required defaultValue="••••••••" className="input" />
-      </Field>
-      <button className="btn-primary w-full">Log in</button>
-      <button type="button" className="btn-outline w-full">Continue with Google</button>
-      <p className="text-center text-sm text-muted-foreground">No account? <Link to="/signup" className="text-primary hover:underline">Sign up</Link></p>
-    </form>
-  </AuthShell>;
+  return (
+    <AuthShell title="Welcome back" subtitle="Log in to continue your conversations.">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          window.location.href = "/chat";
+        }}
+        className="space-y-4"
+      >
+        <Field label="Email">
+          <input type="email" required defaultValue="sara@acme.co" className="input" />
+        </Field>
+        <Field
+          label="Password"
+          right={
+            <a href="#" className="text-xs text-primary hover:underline">
+              Forgot?
+            </a>
+          }
+        >
+          <input type="password" required defaultValue="••••••••" className="input" />
+        </Field>
+        <button className="btn-primary w-full">Log in</button>
+        <button type="button" className="btn-outline w-full">
+          Continue with Google
+        </button>
+        <p className="text-center text-sm text-muted-foreground">
+          No account?{" "}
+          <Link to="/signup" className="text-primary hover:underline">
+            Sign up
+          </Link>
+        </p>
+      </form>
+    </AuthShell>
+  );
 }
 
-export function AuthShell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+export function AuthShell({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="grid min-h-screen md:grid-cols-2">
       <div className="hidden md:flex flex-col justify-between bg-[radial-gradient(80%_60%_at_20%_0%,oklch(0.85_0.08_200)_0%,oklch(0.92_0.04_80)_60%,transparent_100%)] p-10">
         <Link to="/" className="flex items-center gap-2 font-display text-lg font-semibold">
-          <span className="grid size-8 place-items-center rounded-xl bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
+          <span className="grid size-8 place-items-center rounded-xl bg-primary text-primary-foreground">
+            <Sparkles className="size-4" />
+          </span>
           MultiAI
         </Link>
         <blockquote className="max-w-md text-2xl font-display leading-tight">
           “I stopped switching tabs between three chatbots. MultiAI just shows me the answer.”
-          <footer className="mt-3 text-sm font-sans text-muted-foreground">— Liam, product designer</footer>
+          <footer className="mt-3 text-sm font-sans text-muted-foreground">
+            — Liam, product designer
+          </footer>
         </blockquote>
         <div className="text-xs text-muted-foreground">© 2026 MultiAI prototype</div>
       </div>
@@ -38,7 +74,9 @@ export function AuthShell({ title, subtitle, children }: { title: string; subtit
         <div className="w-full max-w-sm">
           <div className="md:hidden mb-8">
             <Link to="/" className="flex items-center gap-2 font-display text-lg font-semibold">
-              <span className="grid size-8 place-items-center rounded-xl bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
+              <span className="grid size-8 place-items-center rounded-xl bg-primary text-primary-foreground">
+                <Sparkles className="size-4" />
+              </span>
               MultiAI
             </Link>
           </div>
@@ -52,10 +90,21 @@ export function AuthShell({ title, subtitle, children }: { title: string; subtit
   );
 }
 
-export function Field({ label, children, right }: { label: string; children: React.ReactNode; right?: React.ReactNode }) {
+export function Field({
+  label,
+  children,
+  right,
+}: {
+  label: string;
+  children: React.ReactNode;
+  right?: React.ReactNode;
+}) {
   return (
     <label className="block">
-      <div className="mb-1.5 flex items-center justify-between text-sm font-medium">{label}{right}</div>
+      <div className="mb-1.5 flex items-center justify-between text-sm font-medium">
+        {label}
+        {right}
+      </div>
       {children}
     </label>
   );

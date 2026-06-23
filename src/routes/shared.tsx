@@ -14,18 +14,29 @@ function Shared() {
       <header className="border-b border-border">
         <div className="mx-auto flex h-14 max-w-4xl items-center justify-between px-6">
           <Link to="/" className="flex items-center gap-2 font-display font-semibold">
-            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
+            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
+              <Sparkles className="size-4" />
+            </span>
             MultiAI
           </Link>
           <div className="flex items-center gap-2">
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-accent"><Copy className="size-3.5" /> Copy link</button>
-            <Link to="/signup" className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"><ExternalLink className="size-3.5" /> Open in my account</Link>
+            <button className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-accent">
+              <Copy className="size-3.5" /> Copy link
+            </button>
+            <Link
+              to="/signup"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
+            >
+              <ExternalLink className="size-3.5" /> Open in my account
+            </Link>
           </div>
         </div>
       </header>
 
       <div className="mx-auto max-w-4xl px-6 py-10">
-        <div className="text-xs text-muted-foreground">Shared by Sara K. · Balanced Set · Read-only</div>
+        <div className="text-xs text-muted-foreground">
+          Shared by Sara K. · Balanced Set · Read-only
+        </div>
         <h1 className="mt-1 text-xl font-semibold">Best framework for a fast SaaS landing page?</h1>
 
         <div className="mt-6 flex justify-end">
@@ -53,9 +64,13 @@ function Shared() {
 
         <div className="mt-6 rounded-2xl border border-primary/30 bg-primary/5 p-5">
           <div className="flex items-center gap-2">
-            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Gavel className="size-3.5" /></span>
+            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
+              <Gavel className="size-3.5" />
+            </span>
             <div className="font-medium">Verdict AI</div>
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">{VERDICT.strategy}</span>
+            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+              {VERDICT.strategy}
+            </span>
           </div>
           <p className="mt-3 text-sm leading-relaxed">{VERDICT.text}</p>
         </div>

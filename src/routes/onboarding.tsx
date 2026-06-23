@@ -15,7 +15,9 @@ function Onboarding() {
       <header className="border-b border-border">
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
           <Link to="/" className="flex items-center gap-2 font-display font-semibold">
-            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
+            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
+              <Sparkles className="size-4" />
+            </span>
             MultiAI
           </Link>
           <div className="text-xs text-muted-foreground">Step 1 of 2</div>
@@ -24,9 +26,12 @@ function Onboarding() {
       <div className="mx-auto max-w-5xl px-6 py-12">
         <div className="max-w-2xl">
           <div className="text-xs uppercase tracking-wider text-primary">Welcome, Sara</div>
-          <h1 className="mt-2 text-3xl font-semibold md:text-4xl">Pick a Model Set to start with</h1>
+          <h1 className="mt-2 text-3xl font-semibold md:text-4xl">
+            Pick a Model Set to start with
+          </h1>
           <p className="mt-3 text-muted-foreground">
-            A <strong>Model Set</strong> is a bundle of AI models that answer your question together, plus a Verdict AI that decides on the final answer. You can change it anytime.
+            A <strong>Model Set</strong> is a bundle of AI models that answer your question
+            together, plus a Verdict AI that decides on the final answer. You can change it anytime.
           </p>
         </div>
 
@@ -44,7 +49,9 @@ function Onboarding() {
                     <div className="font-medium">{s.name}</div>
                     <div className="mt-1 text-sm text-muted-foreground">{s.description}</div>
                   </div>
-                  <div className={`grid size-6 place-items-center rounded-full ${active ? "bg-primary text-primary-foreground" : "bg-muted text-transparent"}`}>
+                  <div
+                    className={`grid size-6 place-items-center rounded-full ${active ? "bg-primary text-primary-foreground" : "bg-muted text-transparent"}`}
+                  >
                     <Check className="size-3.5" />
                   </div>
                 </div>
@@ -52,23 +59,35 @@ function Onboarding() {
                   {s.models.map((id) => {
                     const m = modelById(id);
                     return (
-                      <span key={id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs">
-                        <span className="size-1.5 rounded-full" style={{ background: m.color }} /> {m.name}
+                      <span
+                        key={id}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs"
+                      >
+                        <span className="size-1.5 rounded-full" style={{ background: m.color }} />{" "}
+                        {m.name}
                       </span>
                     );
                   })}
                 </div>
-                <div className="mt-3 text-xs text-muted-foreground">Verdict strategy: <span className="text-foreground">{s.strategy}</span></div>
+                <div className="mt-3 text-xs text-muted-foreground">
+                  Verdict strategy: <span className="text-foreground">{s.strategy}</span>
+                </div>
               </button>
             );
           })}
         </div>
 
         <div className="mt-8 flex flex-wrap items-center gap-3">
-          <Link to="/model-sets/new" className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium hover:bg-accent">
+          <Link
+            to="/model-sets/new"
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium hover:bg-accent"
+          >
             <Plus className="size-4" /> Create custom Model Set
           </Link>
-          <Link to="/chat" className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90">
+          <Link
+            to="/chat"
+            className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
             Continue to chat <ArrowRight className="size-4" />
           </Link>
         </div>

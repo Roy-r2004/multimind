@@ -40,9 +40,17 @@ function Admin() {
         <div className="mt-8 rounded-2xl border border-border bg-card p-5">
           <h2 className="font-medium">Usage overview</h2>
           <div className="mt-4 h-40 rounded-xl bg-gradient-to-t from-accent/60 to-transparent relative overflow-hidden">
-            <svg viewBox="0 0 400 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
-              <polyline fill="none" stroke="var(--color-primary)" strokeWidth="2"
-                points="0,80 30,70 60,72 90,55 120,60 150,40 180,42 210,28 240,35 270,22 300,30 330,18 360,22 400,10" />
+            <svg
+              viewBox="0 0 400 100"
+              preserveAspectRatio="none"
+              className="absolute inset-0 h-full w-full"
+            >
+              <polyline
+                fill="none"
+                stroke="var(--color-primary)"
+                strokeWidth="2"
+                points="0,80 30,70 60,72 90,55 120,60 150,40 180,42 210,28 240,35 270,22 300,30 330,18 360,22 400,10"
+              />
             </svg>
           </div>
         </div>
@@ -50,21 +58,39 @@ function Admin() {
         <div className="mt-8 rounded-2xl border border-border bg-card">
           <div className="flex items-center justify-between p-5">
             <h2 className="font-medium">Users</h2>
-            <input placeholder="Search users…" className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm" />
+            <input
+              placeholder="Search users…"
+              className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
+            />
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-accent/30 text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <tr><th className="px-5 py-2">Name</th><th className="px-5 py-2">Email</th><th className="px-5 py-2">Role</th><th className="px-5 py-2">Chats</th><th className="px-5 py-2"></th></tr>
+                <tr>
+                  <th className="px-5 py-2">Name</th>
+                  <th className="px-5 py-2">Email</th>
+                  <th className="px-5 py-2">Role</th>
+                  <th className="px-5 py-2">Chats</th>
+                  <th className="px-5 py-2"></th>
+                </tr>
               </thead>
               <tbody>
                 {ADMIN_USERS.map((u) => (
                   <tr key={u.email} className="border-t border-border">
                     <td className="px-5 py-3 font-medium">{u.name}</td>
                     <td className="px-5 py-3 text-muted-foreground">{u.email}</td>
-                    <td className="px-5 py-3"><span className="rounded-full bg-accent px-2 py-0.5 text-xs">{u.role}</span></td>
+                    <td className="px-5 py-3">
+                      <span className="rounded-full bg-accent px-2 py-0.5 text-xs">{u.role}</span>
+                    </td>
                     <td className="px-5 py-3 text-muted-foreground">{u.chats}</td>
-                    <td className="px-5 py-3 text-right"><button className="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent">View</button> <button className="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent">Edit</button></td>
+                    <td className="px-5 py-3 text-right">
+                      <button className="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent">
+                        View
+                      </button>{" "}
+                      <button className="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent">
+                        Edit
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

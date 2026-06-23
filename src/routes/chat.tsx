@@ -55,7 +55,9 @@ export function ChatPage() {
     { role: "ai" },
   ]);
   const [input, setInput] = useState("");
-  const [files, setFiles] = useState<{ name: string; state: "uploading" | "uploaded" | "error" }[]>([]);
+  const [files, setFiles] = useState<{ name: string; state: "uploading" | "uploaded" | "error" }[]>(
+    [],
+  );
   const [refChat, setRefChat] = useState<string | null>(null);
   const [showSet, setShowSet] = useState(false);
   const [showStrategy, setShowStrategy] = useState(false);
@@ -85,20 +87,37 @@ export function ChatPage() {
             onClick={() => setShowSet(true)}
             className="group flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-accent"
           >
-            <span className="grid size-5 place-items-center rounded-md bg-primary/15 text-primary"><Gavel className="size-3" /></span>
+            <span className="grid size-5 place-items-center rounded-md bg-primary/15 text-primary">
+              <Gavel className="size-3" />
+            </span>
             {set.name}
             <ChevronDown className="size-3.5 text-muted-foreground" />
           </button>
           <div className="hidden sm:flex items-center gap-1.5">
             {set.models.map((id) => {
               const m = modelById(id);
-              return <span key={id} className="size-2.5 rounded-full" style={{ background: m.color }} title={m.name} />;
+              return (
+                <span
+                  key={id}
+                  className="size-2.5 rounded-full"
+                  style={{ background: m.color }}
+                  title={m.name}
+                />
+              );
             })}
             <span className="ml-2 text-xs text-muted-foreground">· Verdict: {set.strategy}</span>
-            <button onClick={() => setShowStrategy(true)} className="ml-1 text-muted-foreground hover:text-foreground"><Info className="size-3.5" /></button>
+            <button
+              onClick={() => setShowStrategy(true)}
+              className="ml-1 text-muted-foreground hover:text-foreground"
+            >
+              <Info className="size-3.5" />
+            </button>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Link to="/shared" className="hidden md:inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs hover:bg-accent">
+            <Link
+              to="/shared"
+              className="hidden md:inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs hover:bg-accent"
+            >
               <Share2 className="size-3.5" /> Share
             </Link>
           </div>
@@ -110,7 +129,9 @@ export function ChatPage() {
             {messages.map((m, i) =>
               m.role === "user" ? (
                 <div key={i} className="flex justify-end">
-                  <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-3 text-sm text-primary-foreground">{m.question}</div>
+                  <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-3 text-sm text-primary-foreground">
+                    {m.question}
+                  </div>
                 </div>
               ) : (
                 <AiTurn key={i} set={set} />
@@ -126,17 +147,30 @@ export function ChatPage() {
             {refChat && (
               <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-border bg-accent/40 px-3 py-1 text-xs">
                 <Link2 className="size-3" /> Referencing: {refChat}
-                <button onClick={() => setRefChat(null)} className="text-muted-foreground hover:text-foreground"><X className="size-3" /></button>
+                <button
+                  onClick={() => setRefChat(null)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="size-3" />
+                </button>
               </div>
             )}
             {files.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {files.map((f, i) => (
-                  <div key={i} className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs">
+                  <div
+                    key={i}
+                    className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs"
+                  >
                     {f.state === "uploading" && <Loader2 className="size-3 animate-spin" />}
                     {f.state === "error" && <AlertCircle className="size-3 text-destructive" />}
                     <span className={cn(f.state === "error" && "text-destructive")}>{f.name}</span>
-                    <button onClick={() => setFiles((arr) => arr.filter((_, j) => j !== i))} className="text-muted-foreground hover:text-foreground"><X className="size-3" /></button>
+                    <button
+                      onClick={() => setFiles((arr) => arr.filter((_, j) => j !== i))}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="size-3" />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -145,37 +179,103 @@ export function ChatPage() {
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    send();
+                  }
+                }}
                 rows={2}
                 placeholder="Ask the model set anything…"
                 className="block w-full resize-none rounded-2xl bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground"
               />
               <div className="flex items-center gap-1 px-2 pb-2">
                 <div className="relative">
-                  <button onClick={() => setShowPlus((v) => !v)} className="rounded-lg p-2 text-muted-foreground hover:bg-accent" title="Attach"><Plus className="size-4" /></button>
+                  <button
+                    onClick={() => setShowPlus((v) => !v)}
+                    className="rounded-lg p-2 text-muted-foreground hover:bg-accent"
+                    title="Attach"
+                  >
+                    <Plus className="size-4" />
+                  </button>
                   {showPlus && (
                     <div className="absolute bottom-11 left-0 z-20 w-56 rounded-xl border border-border bg-popover p-1 shadow-lg">
-                      <MenuItem icon={Upload} label="Upload file" onClick={() => { setShowPlus(false); setFiles((f) => [...f, { name: "spec.pdf", state: "uploading" }]); setTimeout(() => setFiles((f) => f.map((x) => x.name === "spec.pdf" ? { ...x, state: "uploaded" } : x)), 1200); }} />
-                      <MenuItem icon={ImageIcon} label="Upload image" onClick={() => { setShowPlus(false); setFiles((f) => [...f, { name: "screenshot.png", state: "uploaded" }]); }} />
-                      <MenuItem icon={Link2} label="Add reference chat" onClick={() => { setShowPlus(false); setShowRef(true); }} />
-                      <MenuItem icon={FileSpreadsheet} label="Generate Excel" onClick={() => { setShowPlus(false); setShowExcel(true); }} />
-                      <MenuItem icon={AlertCircle} label="Simulate upload error" onClick={() => { setShowPlus(false); setFiles((f) => [...f, { name: "broken.csv", state: "error" }]); }} />
+                      <MenuItem
+                        icon={Upload}
+                        label="Upload file"
+                        onClick={() => {
+                          setShowPlus(false);
+                          setFiles((f) => [...f, { name: "spec.pdf", state: "uploading" }]);
+                          setTimeout(
+                            () =>
+                              setFiles((f) =>
+                                f.map((x) =>
+                                  x.name === "spec.pdf" ? { ...x, state: "uploaded" } : x,
+                                ),
+                              ),
+                            1200,
+                          );
+                        }}
+                      />
+                      <MenuItem
+                        icon={ImageIcon}
+                        label="Upload image"
+                        onClick={() => {
+                          setShowPlus(false);
+                          setFiles((f) => [...f, { name: "screenshot.png", state: "uploaded" }]);
+                        }}
+                      />
+                      <MenuItem
+                        icon={Link2}
+                        label="Add reference chat"
+                        onClick={() => {
+                          setShowPlus(false);
+                          setShowRef(true);
+                        }}
+                      />
+                      <MenuItem
+                        icon={FileSpreadsheet}
+                        label="Generate Excel"
+                        onClick={() => {
+                          setShowPlus(false);
+                          setShowExcel(true);
+                        }}
+                      />
+                      <MenuItem
+                        icon={AlertCircle}
+                        label="Simulate upload error"
+                        onClick={() => {
+                          setShowPlus(false);
+                          setFiles((f) => [...f, { name: "broken.csv", state: "error" }]);
+                        }}
+                      />
                     </div>
                   )}
                 </div>
                 <TemplateMenu onPick={(t) => setInput((v) => `[${t.title}] ${v}`)} />
-                <button onClick={() => setShowPrompt(true)} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent">
+                <button
+                  onClick={() => setShowPrompt(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent"
+                >
                   <Wand2 className="size-3.5" /> Prompt Builder
                 </button>
-                <button onClick={() => setShowRef(true)} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent">
+                <button
+                  onClick={() => setShowRef(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent"
+                >
                   <Link2 className="size-3.5" /> Reference
                 </button>
-                <button onClick={send} className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
+                <button
+                  onClick={send}
+                  className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                >
                   <Send className="size-3.5" /> Send
                 </button>
               </div>
             </div>
-            <div className="mt-2 text-center text-[11px] text-muted-foreground">MultiAI may produce inaccurate information. Verdict AI does its best.</div>
+            <div className="mt-2 text-center text-[11px] text-muted-foreground">
+              MultiAI may produce inaccurate information. Verdict AI does its best.
+            </div>
           </div>
         </div>
       </div>
@@ -186,8 +286,14 @@ export function ChatPage() {
         onClose={() => setShowSet(false)}
         activeId={set.id}
         sets={sets}
-        onPick={(id) => { setSetId(id); setShowSet(false); }}
-        onCreate={() => { setShowSet(false); setShowCreate(true); }}
+        onPick={(id) => {
+          setSetId(id);
+          setShowSet(false);
+        }}
+        onCreate={() => {
+          setShowSet(false);
+          setShowCreate(true);
+        }}
       />
 
       <CreateModelSetModal
@@ -200,45 +306,85 @@ export function ChatPage() {
         }}
       />
 
-
-
-      <Modal open={showStrategy} onClose={() => setShowStrategy(false)} title="Verdict strategies" size="lg">
+      <Modal
+        open={showStrategy}
+        onClose={() => setShowStrategy(false)}
+        title="Verdict strategies"
+        size="lg"
+      >
         <div className="space-y-3">
           {STRATEGIES.map((s) => (
             <div key={s.name} className="rounded-xl border border-border p-4">
-              <div className="flex items-center gap-2 font-medium"><Gavel className="size-4 text-primary" /> {s.name}</div>
+              <div className="flex items-center gap-2 font-medium">
+                <Gavel className="size-4 text-primary" /> {s.name}
+              </div>
               <div className="mt-1 text-sm text-muted-foreground">{s.desc}</div>
             </div>
           ))}
         </div>
       </Modal>
 
-      <PromptBuilderModal open={showPrompt} onClose={() => setShowPrompt(false)} onUse={(t) => { setInput(t); setShowPrompt(false); }} />
-      <ChatReferenceModal open={showRef} onClose={() => setShowRef(false)} onPick={(c) => { setRefChat(c); setShowRef(false); }} />
+      <PromptBuilderModal
+        open={showPrompt}
+        onClose={() => setShowPrompt(false)}
+        onUse={(t) => {
+          setInput(t);
+          setShowPrompt(false);
+        }}
+      />
+      <ChatReferenceModal
+        open={showRef}
+        onClose={() => setShowRef(false)}
+        onPick={(c) => {
+          setRefChat(c);
+          setShowRef(false);
+        }}
+      />
       <ExcelPreviewModal open={showExcel} onClose={() => setShowExcel(false)} />
     </AppShell>
   );
 }
 
-function MenuItem({ icon: Icon, label, onClick }: { icon: React.ComponentType<{ className?: string }>; label: string; onClick: () => void }) {
+function MenuItem({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+}) {
   return (
-    <button onClick={onClick} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent">
+    <button
+      onClick={onClick}
+      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent"
+    >
       <Icon className="size-4 text-muted-foreground" /> {label}
     </button>
   );
 }
 
-function TemplateMenu({ onPick }: { onPick: (t: typeof TEMPLATES[number]) => void }) {
+function TemplateMenu({ onPick }: { onPick: (t: (typeof TEMPLATES)[number]) => void }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
-      <button onClick={() => setOpen((v) => !v)} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent"
+      >
         <LayoutTemplate className="size-3.5" /> Templates
       </button>
       {open && (
         <div className="absolute bottom-11 left-0 z-20 w-64 rounded-xl border border-border bg-popover p-1 shadow-lg">
           {TEMPLATES.map((t) => (
-            <button key={t.id} onClick={() => { onPick(t); setOpen(false); }} className="block w-full rounded-lg px-2.5 py-2 text-left text-sm hover:bg-accent">
+            <button
+              key={t.id}
+              onClick={() => {
+                onPick(t);
+                setOpen(false);
+              }}
+              className="block w-full rounded-lg px-2.5 py-2 text-left text-sm hover:bg-accent"
+            >
               <div className="font-medium">{t.title}</div>
               <div className="text-xs text-muted-foreground">{t.description}</div>
             </button>
@@ -249,7 +395,7 @@ function TemplateMenu({ onPick }: { onPick: (t: typeof TEMPLATES[number]) => voi
   );
 }
 
-function LoadingTurn({ set }: { set: typeof MODEL_SETS[number] }) {
+function LoadingTurn({ set }: { set: (typeof MODEL_SETS)[number] }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-3">
@@ -277,7 +423,7 @@ function LoadingTurn({ set }: { set: typeof MODEL_SETS[number] }) {
   );
 }
 
-function AiTurn({ set }: { set: typeof MODEL_SETS[number] }) {
+function AiTurn({ set }: { set: (typeof MODEL_SETS)[number] }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-3">
@@ -291,19 +437,30 @@ function AiTurn({ set }: { set: typeof MODEL_SETS[number] }) {
                 <span className="size-2 rounded-full" style={{ background: m.color }} />
                 <span className="font-medium">{m.name}</span>
                 <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
-                  <span className={cn("size-1.5 rounded-full", a.confidence > 85 ? "bg-success" : "bg-warning")} />
+                  <span
+                    className={cn(
+                      "size-1.5 rounded-full",
+                      a.confidence > 85 ? "bg-success" : "bg-warning",
+                    )}
+                  />
                   {a.confidence}%
                 </span>
               </div>
               {failed ? (
                 <div className="mt-3 rounded-lg bg-destructive/10 p-3 text-xs text-destructive">
-                  <AlertCircle className="mr-1 inline size-3.5" /> This model failed to answer. <button className="underline">Retry</button>
+                  <AlertCircle className="mr-1 inline size-3.5" /> This model failed to answer.{" "}
+                  <button className="underline">Retry</button>
                 </div>
               ) : (
                 <>
                   <p className="mt-3 text-sm leading-relaxed text-foreground/90">{a.text}</p>
                   <div className="mt-3 flex items-center gap-1">
-                    <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="Copy"><Copy className="size-3.5" /></button>
+                    <button
+                      className="rounded-md p-1.5 text-muted-foreground hover:bg-accent"
+                      title="Copy"
+                    >
+                      <Copy className="size-3.5" />
+                    </button>
                   </div>
                 </>
               )}
@@ -313,10 +470,16 @@ function AiTurn({ set }: { set: typeof MODEL_SETS[number] }) {
       </div>
       <div className="rounded-2xl border border-primary/30 bg-primary/5 p-5">
         <div className="flex items-center gap-2">
-          <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Gavel className="size-3.5" /></span>
+          <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
+            <Gavel className="size-3.5" />
+          </span>
           <div className="font-medium">Verdict AI</div>
-          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">{VERDICT.strategy}</span>
-          <button className="ml-auto rounded-md p-1.5 text-muted-foreground hover:bg-accent"><Copy className="size-3.5" /></button>
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+            {VERDICT.strategy}
+          </span>
+          <button className="ml-auto rounded-md p-1.5 text-muted-foreground hover:bg-accent">
+            <Copy className="size-3.5" />
+          </button>
         </div>
         <p className="mt-3 text-sm leading-relaxed">{VERDICT.text}</p>
         <div className="mt-3 rounded-lg border border-border bg-card p-3 text-xs text-muted-foreground">
@@ -327,7 +490,15 @@ function AiTurn({ set }: { set: typeof MODEL_SETS[number] }) {
   );
 }
 
-function PromptBuilderModal({ open, onClose, onUse }: { open: boolean; onClose: () => void; onUse: (t: string) => void }) {
+function PromptBuilderModal({
+  open,
+  onClose,
+  onUse,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onUse: (t: string) => void;
+}) {
   const [raw, setRaw] = useState("write me a landing page");
   const improved = `Write a high-converting SaaS landing page for "${raw}". Goal: drive sign-ups. Tone: friendly, confident. Output format: H1, sub-headline, 3 feature cards, a single CTA. Constraints: avoid jargon, keep under 200 words.`;
   return (
@@ -337,22 +508,41 @@ function PromptBuilderModal({ open, onClose, onUse }: { open: boolean; onClose: 
           {["Goal", "Context", "Output format", "Tone", "Constraints"].map((f) => (
             <label key={f} className="block text-sm">
               <div className="mb-1 font-medium">{f}</div>
-              <input className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40" placeholder={`Add ${f.toLowerCase()}…`} />
+              <input
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                placeholder={`Add ${f.toLowerCase()}…`}
+              />
             </label>
           ))}
         </div>
         <div>
           <div className="mb-1 text-sm font-medium">Rough prompt</div>
-          <textarea value={raw} onChange={(e) => setRaw(e.target.value)} rows={3} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+          <textarea
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+            rows={3}
+            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+          />
         </div>
-        <button className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"><Wand2 className="size-4" /> Improve prompt</button>
+        <button className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
+          <Wand2 className="size-4" /> Improve prompt
+        </button>
         <div>
           <div className="mb-1 text-sm font-medium">Improved prompt</div>
           <div className="rounded-xl border border-border bg-accent/30 p-3 text-sm">{improved}</div>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button onClick={() => onUse(improved)} className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">Use improved prompt</button>
-            <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">Copy</button>
-            <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">Regenerate</button>
+            <button
+              onClick={() => onUse(improved)}
+              className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
+            >
+              Use improved prompt
+            </button>
+            <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">
+              Copy
+            </button>
+            <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">
+              Regenerate
+            </button>
           </div>
         </div>
       </div>
@@ -360,18 +550,35 @@ function PromptBuilderModal({ open, onClose, onUse }: { open: boolean; onClose: 
   );
 }
 
-function ChatReferenceModal({ open, onClose, onPick }: { open: boolean; onClose: () => void; onPick: (title: string) => void }) {
+function ChatReferenceModal({
+  open,
+  onClose,
+  onPick,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onPick: (title: string) => void;
+}) {
   const [mode, setMode] = useState<"summary" | "full">("summary");
   return (
     <Modal open={open} onClose={onClose} title="Reference a previous chat" size="lg">
       <div className="space-y-4">
-        <input placeholder="Search chats…" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+        <input
+          placeholder="Search chats…"
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+        />
         <div className="rounded-xl bg-accent/30 p-3 text-xs text-muted-foreground">
-          Example: select <strong className="text-foreground">"Capital of Lebanon"</strong>, then ask <strong className="text-foreground">"How many people live there?"</strong> — MultiAI keeps the context.
+          Example: select <strong className="text-foreground">"Capital of Lebanon"</strong>, then
+          ask <strong className="text-foreground">"How many people live there?"</strong> — MultiAI
+          keeps the context.
         </div>
         <div className="space-y-1.5">
           {SAMPLE_CHATS.map((c) => (
-            <button key={c.id} onClick={() => onPick(c.title)} className="flex w-full items-center justify-between rounded-lg border border-border bg-card p-3 text-left hover:bg-accent">
+            <button
+              key={c.id}
+              onClick={() => onPick(c.title)}
+              className="flex w-full items-center justify-between rounded-lg border border-border bg-card p-3 text-left hover:bg-accent"
+            >
               <div>
                 <div className="text-sm font-medium">{c.title}</div>
                 <div className="text-xs text-muted-foreground">{c.updated}</div>
@@ -384,9 +591,20 @@ function ChatReferenceModal({ open, onClose, onPick }: { open: boolean; onClose:
           <div className="mb-2 text-sm font-medium">Reference mode</div>
           <div className="grid grid-cols-2 gap-2">
             {(["summary", "full"] as const).map((m) => (
-              <button key={m} onClick={() => setMode(m)} className={cn("rounded-lg border p-3 text-left text-sm", mode === m ? "border-primary bg-accent/50" : "border-border")}>
-                <div className="font-medium">{m === "summary" ? "Use summary only" : "Use full previous chat"}</div>
-                <div className="text-xs text-muted-foreground">{m === "summary" ? "Lighter, cheaper, focused." : "Full context, slower, richer."}</div>
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={cn(
+                  "rounded-lg border p-3 text-left text-sm",
+                  mode === m ? "border-primary bg-accent/50" : "border-border",
+                )}
+              >
+                <div className="font-medium">
+                  {m === "summary" ? "Use summary only" : "Use full previous chat"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {m === "summary" ? "Lighter, cheaper, focused." : "Full context, slower, richer."}
+                </div>
               </button>
             ))}
           </div>
@@ -409,19 +627,40 @@ function ExcelPreviewModal({ open, onClose }: { open: boolean; onClose: () => vo
       <div className="overflow-x-auto rounded-xl border border-border">
         <table className="w-full text-sm">
           <thead className="bg-accent/40">
-            <tr>{rows[0].map((h) => <th key={h} className="px-3 py-2 text-left font-medium">{h}</th>)}</tr>
+            <tr>
+              {rows[0].map((h) => (
+                <th key={h} className="px-3 py-2 text-left font-medium">
+                  {h}
+                </th>
+              ))}
+            </tr>
           </thead>
           <tbody>
             {rows.slice(1).map((r, i) => (
-              <tr key={i} className="border-t border-border">{r.map((c, j) => <td key={j} className="px-3 py-2">{c}</td>)}</tr>
+              <tr key={i} className="border-t border-border">
+                {r.map((c, j) => (
+                  <td key={j} className="px-3 py-2">
+                    {c}
+                  </td>
+                ))}
+              </tr>
             ))}
           </tbody>
         </table>
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
-        <button className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">Download Excel</button>
-        <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">Regenerate</button>
-        <button onClick={onClose} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">Add to chat</button>
+        <button className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
+          Download Excel
+        </button>
+        <button className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">
+          Regenerate
+        </button>
+        <button
+          onClick={onClose}
+          className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent"
+        >
+          Add to chat
+        </button>
       </div>
     </Modal>
   );
@@ -447,7 +686,10 @@ function ModelSetPickerModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
       <div
         onClick={(e) => e.stopPropagation()}
         className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
@@ -455,7 +697,9 @@ function ModelSetPickerModal({
         <div className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
           <div>
             <h3 className="text-lg font-semibold">Choose a Model Set</h3>
-            <p className="text-xs text-muted-foreground">Each set runs a curated group of AI models, then a Verdict AI gives the final answer.</p>
+            <p className="text-xs text-muted-foreground">
+              Each set runs a curated group of AI models, then a Verdict AI gives the final answer.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -464,7 +708,9 @@ function ModelSetPickerModal({
             >
               <Plus className="size-4" /> Create New Model Set
             </button>
-            <button onClick={onClose} className="rounded-md p-1.5 hover:bg-accent"><X className="size-4" /></button>
+            <button onClick={onClose} className="rounded-md p-1.5 hover:bg-accent">
+              <X className="size-4" />
+            </button>
           </div>
         </div>
 
@@ -489,7 +735,14 @@ function ModelSetPickerModal({
                     </span>
                   )}
                   <div className="flex items-center gap-2">
-                    <span className={cn("grid size-9 place-items-center rounded-xl", active ? "bg-primary text-primary-foreground" : "bg-primary/10 text-primary")}>
+                    <span
+                      className={cn(
+                        "grid size-9 place-items-center rounded-xl",
+                        active
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-primary/10 text-primary",
+                      )}
+                    >
                       <Gavel className="size-4" />
                     </span>
                     <div className="text-base font-semibold">{s.name}</div>
@@ -497,12 +750,17 @@ function ModelSetPickerModal({
                   <p className="text-sm text-muted-foreground">{s.description}</p>
 
                   <div>
-                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Models</div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Models
+                    </div>
                     <div className="flex flex-wrap gap-1.5">
                       {s.models.map((id) => {
                         const m = modelById(id);
                         return (
-                          <span key={id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2 py-0.5 text-xs">
+                          <span
+                            key={id}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2 py-0.5 text-xs"
+                          >
                             <span className="size-2 rounded-full" style={{ background: m.color }} />
                             {m.name}
                           </span>
@@ -513,11 +771,15 @@ function ModelSetPickerModal({
 
                   <div className="grid grid-cols-2 gap-3 pt-1">
                     <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Verdict</div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Verdict
+                      </div>
                       <div className="mt-0.5 text-sm font-medium">{s.strategy}</div>
                     </div>
                     <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Best for</div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Best for
+                      </div>
                       <div className="mt-0.5 text-sm">{s.bestFor}</div>
                     </div>
                   </div>
@@ -555,23 +817,35 @@ function ModelChipPicker({
   const results = MODELS.filter(
     (m) =>
       !exclude.includes(m.id) &&
-      (q.trim() === "" || m.name.toLowerCase().includes(q.toLowerCase()) || m.vendor.toLowerCase().includes(q.toLowerCase())),
+      (q.trim() === "" ||
+        m.name.toLowerCase().includes(q.toLowerCase()) ||
+        m.vendor.toLowerCase().includes(q.toLowerCase())),
   );
-  const selected = highlight && results.find((r) => r.id === highlight) ? highlight : results[0]?.id ?? null;
+  const selected =
+    highlight && results.find((r) => r.id === highlight) ? highlight : (results[0]?.id ?? null);
 
   return (
     <div className="space-y-2">
       <div className="flex gap-2">
         <input
           value={q}
-          onChange={(e) => { setQ(e.target.value); setHighlight(null); }}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setHighlight(null);
+          }}
           placeholder={placeholder}
           className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
         />
         <button
           type="button"
           disabled={!selected}
-          onClick={() => { if (selected) { onPick(selected); setQ(""); setHighlight(null); } }}
+          onClick={() => {
+            if (selected) {
+              onPick(selected);
+              setQ("");
+              setHighlight(null);
+            }
+          }}
           className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
         >
           <Plus className="size-4" /> Add
@@ -586,7 +860,11 @@ function ModelChipPicker({
               <button
                 key={m.id}
                 type="button"
-                onClick={() => { onPick(m.id); setQ(""); setHighlight(null); }}
+                onClick={() => {
+                  onPick(m.id);
+                  setQ("");
+                  setHighlight(null);
+                }}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-accent",
                   selected === m.id && "bg-accent",
@@ -622,16 +900,33 @@ function CreateModelSetModal({
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
-    setName(""); setDesc(""); setPicked([]); setVerdict(null);
-    setStrategy("Synthesize"); setCustom(""); setError(null);
+    setName("");
+    setDesc("");
+    setPicked([]);
+    setVerdict(null);
+    setStrategy("Synthesize");
+    setCustom("");
+    setError(null);
   }
 
-  function close() { reset(); onClose(); }
+  function close() {
+    reset();
+    onClose();
+  }
 
   function submit() {
-    if (!name.trim()) { setError("Please enter a Model Set name."); return; }
-    if (picked.length === 0) { setError("Add at least one answering AI model."); return; }
-    if (!verdict) { setError("Choose a Verdict AI."); return; }
+    if (!name.trim()) {
+      setError("Please enter a Model Set name.");
+      return;
+    }
+    if (picked.length === 0) {
+      setError("Add at least one answering AI model.");
+      return;
+    }
+    if (!verdict) {
+      setError("Choose a Verdict AI.");
+      return;
+    }
     const id = `set-${Date.now()}`;
     onCreate({
       id,
@@ -651,7 +946,10 @@ function CreateModelSetModal({
   const overrideActive = custom.trim().length > 0;
 
   return (
-    <div className="fixed inset-0 z-[60] grid place-items-center bg-foreground/40 p-4 backdrop-blur-sm" onClick={close}>
+    <div
+      className="fixed inset-0 z-[60] grid place-items-center bg-foreground/40 p-4 backdrop-blur-sm"
+      onClick={close}
+    >
       <div
         onClick={(e) => e.stopPropagation()}
         className="relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
@@ -659,10 +957,14 @@ function CreateModelSetModal({
         {/* Header */}
         <div className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
           <div className="flex items-center gap-2">
-            <span className="grid size-8 place-items-center rounded-lg bg-primary/10 text-primary"><Sparkles className="size-4" /></span>
+            <span className="grid size-8 place-items-center rounded-lg bg-primary/10 text-primary">
+              <Sparkles className="size-4" />
+            </span>
             <h3 className="text-lg font-semibold">Create New Model Set</h3>
           </div>
-          <button onClick={close} className="rounded-md p-1.5 hover:bg-accent" aria-label="Close"><X className="size-4" /></button>
+          <button onClick={close} className="rounded-md p-1.5 hover:bg-accent" aria-label="Close">
+            <X className="size-4" />
+          </button>
         </div>
 
         {/* Body */}
@@ -679,7 +981,9 @@ function CreateModelSetModal({
               />
             </label>
             <label className="block text-sm">
-              <div className="mb-1 font-medium">Description <span className="font-normal text-muted-foreground">(optional)</span></div>
+              <div className="mb-1 font-medium">
+                Description <span className="font-normal text-muted-foreground">(optional)</span>
+              </div>
               <input
                 value={desc}
                 onChange={(e) => setDesc(e.target.value)}
@@ -692,23 +996,34 @@ function CreateModelSetModal({
           {/* Section 2 — AI Models */}
           <div>
             <div className="mb-0.5 text-sm font-semibold">AI Models (Will Answer)</div>
-            <p className="mb-2 text-xs text-muted-foreground">Add the AI models that will answer the user's question.</p>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Add the AI models that will answer the user's question.
+            </p>
             <ModelChipPicker
               placeholder="Search any AI model..."
               exclude={picked}
-              onPick={(id) => setPicked((p) => p.includes(id) ? p : [...p, id])}
+              onPick={(id) => setPicked((p) => (p.includes(id) ? p : [...p, id]))}
             />
             {picked.length > 0 && (
               <div className="mt-2.5">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Selected Models</div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Selected Models
+                </div>
                 <div className="flex flex-wrap gap-1.5">
                   {picked.map((id) => {
                     const m = modelById(id);
                     return (
-                      <span key={id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs">
+                      <span
+                        key={id}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs"
+                      >
                         <span className="size-2 rounded-full" style={{ background: m.color }} />
                         {m.name}
-                        <button onClick={() => setPicked((p) => p.filter((x) => x !== id))} className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${m.name}`}>
+                        <button
+                          onClick={() => setPicked((p) => p.filter((x) => x !== id))}
+                          className="text-muted-foreground hover:text-foreground"
+                          aria-label={`Remove ${m.name}`}
+                        >
                           <X className="size-3" />
                         </button>
                       </span>
@@ -722,7 +1037,9 @@ function CreateModelSetModal({
           {/* Section 3 — Verdict AI */}
           <div>
             <div className="mb-0.5 text-sm font-semibold">AI Verdict (One Only)</div>
-            <p className="mb-2 text-xs text-muted-foreground">Choose the AI that will read all answers and generate the final verdict.</p>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Choose the AI that will read all answers and generate the final verdict.
+            </p>
             <ModelChipPicker
               placeholder="Search any AI model..."
               exclude={verdict ? [verdict] : []}
@@ -736,7 +1053,11 @@ function CreateModelSetModal({
                     <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs">
                       <Gavel className="size-3 text-primary" />
                       {m.name}
-                      <button onClick={() => setVerdict(null)} className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${m.name}`}>
+                      <button
+                        onClick={() => setVerdict(null)}
+                        className="text-muted-foreground hover:text-foreground"
+                        aria-label={`Remove ${m.name}`}
+                      >
                         <X className="size-3" />
                       </button>
                     </span>
@@ -749,7 +1070,9 @@ function CreateModelSetModal({
           {/* Section 4 — Strategy */}
           <div>
             <div className="mb-0.5 text-sm font-semibold">Verdict Strategy</div>
-            <p className="mb-2 text-xs text-muted-foreground">Choose how the Verdict AI should combine the answers.</p>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Choose how the Verdict AI should combine the answers.
+            </p>
             <div className={cn("flex flex-wrap gap-1.5", overrideActive && "opacity-50")}>
               {STRATEGIES.map((s) => (
                 <button
@@ -771,8 +1094,13 @@ function CreateModelSetModal({
 
           {/* Section 5 — Custom instructions */}
           <div>
-            <div className="mb-0.5 text-sm font-semibold">Custom Verdict Instructions <span className="font-normal text-muted-foreground">(Optional)</span></div>
-            <p className="mb-2 text-xs text-muted-foreground">Customize how the Verdict AI should behave and what to focus on.</p>
+            <div className="mb-0.5 text-sm font-semibold">
+              Custom Verdict Instructions{" "}
+              <span className="font-normal text-muted-foreground">(Optional)</span>
+            </div>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Customize how the Verdict AI should behave and what to focus on.
+            </p>
             <textarea
               value={custom}
               onChange={(e) => setCustom(e.target.value.slice(0, 1000))}
@@ -781,8 +1109,15 @@ function CreateModelSetModal({
               className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
             />
             <div className="mt-1 flex items-center justify-between text-[11px]">
-              <span className={cn("text-muted-foreground", overrideActive && "text-primary font-medium")}>
-                {overrideActive ? "Custom instructions will override the selected strategy." : "\u00A0"}
+              <span
+                className={cn(
+                  "text-muted-foreground",
+                  overrideActive && "text-primary font-medium",
+                )}
+              >
+                {overrideActive
+                  ? "Custom instructions will override the selected strategy."
+                  : "\u00A0"}
               </span>
               <span className="text-muted-foreground tabular-nums">{charCount} / 1000</span>
             </div>
@@ -797,8 +1132,16 @@ function CreateModelSetModal({
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-2 border-t border-border bg-background/60 px-6 py-3.5">
-          <button onClick={close} className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent">Cancel</button>
-          <button onClick={submit} className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
+          <button
+            onClick={close}
+            className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
             <Check className="size-4" /> Create Model Set
           </button>
         </div>
@@ -806,4 +1149,3 @@ function CreateModelSetModal({
     </div>
   );
 }
-

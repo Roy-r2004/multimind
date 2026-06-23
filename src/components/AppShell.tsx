@@ -20,7 +20,13 @@ const NAV = [
   { to: "/templates", label: "Templates", icon: FileText },
 ];
 
-export function AppShell({ children, rightPanel }: { children: ReactNode; rightPanel?: ReactNode }) {
+export function AppShell({
+  children,
+  rightPanel,
+}: {
+  children: ReactNode;
+  rightPanel?: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const path = useRouterState({ select: (s) => s.location.pathname });
 
@@ -45,11 +51,19 @@ export function AppShell({ children, rightPanel }: { children: ReactNode; rightP
         )}
       >
         <div className="flex h-14 items-center justify-between px-4 border-b border-sidebar-border">
-          <Link to="/chat" onClick={() => setOpen(false)} className="flex items-center gap-2 font-display font-semibold">
-            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
+          <Link
+            to="/chat"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2 font-display font-semibold"
+          >
+            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
+              <Sparkles className="size-4" />
+            </span>
             MultiAI
           </Link>
-          <button onClick={() => setOpen(false)} className="p-2 md:hidden cursor-pointer"><X className="size-4" /></button>
+          <button onClick={() => setOpen(false)} className="p-2 md:hidden cursor-pointer">
+            <X className="size-4" />
+          </button>
         </div>
 
         <div className="px-3 pt-3">
@@ -115,8 +129,14 @@ export function AppShell({ children, rightPanel }: { children: ReactNode; rightP
           >
             <Settings className="size-4" /> Settings
           </Link>
-          <Link to="/settings" onClick={() => setOpen(false)} className="mt-2 flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-accent/60">
-            <div className="grid size-8 place-items-center rounded-full bg-accent text-accent-foreground text-sm font-semibold">S</div>
+          <Link
+            to="/settings"
+            onClick={() => setOpen(false)}
+            className="mt-2 flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-accent/60"
+          >
+            <div className="grid size-8 place-items-center rounded-full bg-accent text-accent-foreground text-sm font-semibold">
+              S
+            </div>
             <div className="min-w-0">
               <div className="truncate text-sm font-medium">Sara K.</div>
               <div className="truncate text-xs text-muted-foreground">Pro plan</div>
@@ -126,12 +146,21 @@ export function AppShell({ children, rightPanel }: { children: ReactNode; rightP
       </aside>
 
       {/* backdrop */}
-      {open && <div onClick={() => setOpen(false)} className="fixed inset-0 z-30 bg-foreground/30 md:hidden" />}
+      {open && (
+        <div
+          onClick={() => setOpen(false)}
+          className="fixed inset-0 z-30 bg-foreground/30 md:hidden"
+        />
+      )}
 
       <main className="flex-1 min-w-0 pt-14 md:pt-0">
         <div className="flex">
           <div className="flex-1 min-w-0">{children}</div>
-          {rightPanel && <div className="hidden xl:block w-80 border-l border-border bg-sidebar/40">{rightPanel}</div>}
+          {rightPanel && (
+            <div className="hidden xl:block w-80 border-l border-border bg-sidebar/40">
+              {rightPanel}
+            </div>
+          )}
         </div>
       </main>
     </div>
