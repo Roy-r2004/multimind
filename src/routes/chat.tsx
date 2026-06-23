@@ -37,6 +37,15 @@ import {
   type Strategy,
 } from "@/lib/mock";
 import { cn } from "@/lib/utils";
+import {
+  breakdown,
+  estimateTokens,
+  formatCost,
+  formatTokens,
+  formatTokensExact,
+  makeUsage,
+  type UsageBreakdown,
+} from "@/lib/cost";
 
 export const Route = createFileRoute("/chat")({
   head: () => ({ meta: [{ title: "Chat — MultiAI" }] }),
@@ -134,7 +143,7 @@ export function ChatPage() {
                   </div>
                 </div>
               ) : (
-                <AiTurn key={i} set={set} />
+                <AiTurn key={i} set={set} question={messages[i - 1]?.question ?? ""} />
               ),
             )}
             {loading && <LoadingTurn set={set} />}
@@ -423,7 +432,27 @@ function LoadingTurn({ set }: { set: (typeof MODEL_SETS)[number] }) {
   );
 }
 
-function AiTurn({ set }: { set: (typeof MODEL_SETS)[number] }) {
+function AiTurn({ set, question }: { set: (typeof MODEL_SETS)[number]; question: string }) {
+  const inputTokens = estimateTokens(question || "");
+
+  // Per-model usage for the answering models (failed models report nothing).
+  const answerUsage = new Map<string, UsageBreakdown>();
+  set.models.forEach((id, i) => {
+    if (id === "mistral") return; // simulated failure — no usage billed
+    const a = SAMPLE_ANSWERS[i] ?? SAMPLE_ANSWERS[0];
+    answerUsage.set(id, breakdown(id, "answer", makeUsage(inputTokens, estimateTokens(a.text))));
+  });
+
+  // The Verdict AI reads every answer, so its input is the sum of their outputs.
+  const verdictInput = Array.from(answerUsage.values()).reduce((s, b) => s + b.usage.output, 0);
+  const verdictUsage = breakdown(
+    set.verdictModel,
+    "verdict",
+    makeUsage(verdictInput, estimateTokens(VERDICT.text)),
+  );
+
+  const summaryItems: UsageBreakdown[] = [...answerUsage.values(), verdictUsage];
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-3">
@@ -431,6 +460,7 @@ function AiTurn({ set }: { set: (typeof MODEL_SETS)[number] }) {
           const m = modelById(id);
           const a = SAMPLE_ANSWERS[i] ?? SAMPLE_ANSWERS[0];
           const failed = id === "mistral";
+          const usage = answerUsage.get(id);
           return (
             <div key={id} className="rounded-2xl border border-border bg-card p-4">
               <div className="flex items-center gap-2 text-sm">
@@ -462,6 +492,7 @@ function AiTurn({ set }: { set: (typeof MODEL_SETS)[number] }) {
                       <Copy className="size-3.5" />
                     </button>
                   </div>
+                  {usage && <CardUsage b={usage} />}
                 </>
               )}
             </div>
@@ -485,7 +516,88 @@ function AiTurn({ set }: { set: (typeof MODEL_SETS)[number] }) {
         <div className="mt-3 rounded-lg border border-border bg-card p-3 text-xs text-muted-foreground">
           <strong className="text-foreground">Why:</strong> {VERDICT.reason}
         </div>
+        <CardUsage b={verdictUsage} />
       </div>
+      <SessionCostSummary items={summaryItems} />
+    </div>
+  );
+}
+
+function CardUsage({ b }: { b: UsageBreakdown }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <span>
+          {formatTokens(b.usage.total)} tokens • {formatCost(b.cost)}
+        </span>
+        <ChevronDown className={cn("size-3 transition", open && "rotate-180")} />
+      </button>
+      {open && (
+        <dl className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 rounded-lg border border-border bg-background/60 p-2.5 text-xs">
+          <dt className="text-muted-foreground">Input</dt>
+          <dd className="text-right text-foreground">{formatTokensExact(b.usage.input)}</dd>
+          <dt className="text-muted-foreground">Output</dt>
+          <dd className="text-right text-foreground">{formatTokensExact(b.usage.output)}</dd>
+          <dt className="text-muted-foreground">Total</dt>
+          <dd className="text-right text-foreground">{formatTokensExact(b.usage.total)}</dd>
+          <dt className="text-muted-foreground">Cost</dt>
+          <dd className="text-right text-foreground">{formatCost(b.cost)}</dd>
+        </dl>
+      )}
+    </div>
+  );
+}
+
+function SessionCostSummary({ items }: { items: UsageBreakdown[] }) {
+  const [open, setOpen] = useState(false);
+  const totalTokens = items.reduce((s, b) => s + b.usage.total, 0);
+  const totalCost = items.reduce((s, b) => s + b.cost, 0);
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+      >
+        <ChevronDown className={cn("size-3.5 transition", open && "rotate-180")} />
+        {open ? "Hide Cost Details" : "Show Cost Details"}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl border border-border bg-card p-4">
+          <div className="text-sm font-semibold">Session Cost Summary</div>
+          <div className="mt-3 space-y-2">
+            {items.map((b, i) => (
+              <div key={i} className="flex items-center justify-between text-xs">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {b.kind === "verdict" ? (
+                    <Gavel className="size-3 shrink-0 text-primary" />
+                  ) : (
+                    <span
+                      className="size-2 shrink-0 rounded-full"
+                      style={{ background: modelById(b.modelId).color }}
+                    />
+                  )}
+                  <span className="truncate font-medium text-foreground">
+                    {b.kind === "verdict" ? `Verdict AI · ${b.modelName}` : b.modelName}
+                  </span>
+                </div>
+                <div className="shrink-0 text-muted-foreground">
+                  {formatTokensExact(b.usage.total)} tokens · {formatCost(b.cost)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex items-center justify-between border-t border-border pt-2.5 text-sm font-semibold">
+            <span>Total</span>
+            <span>
+              {formatTokensExact(totalTokens)} tokens · {formatCost(totalCost)}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
