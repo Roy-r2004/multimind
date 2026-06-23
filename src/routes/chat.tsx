@@ -46,8 +46,10 @@ export const Route = createFileRoute("/chat")({
 type Msg = { role: "user" | "ai"; question?: string };
 
 export function ChatPage() {
+  const [sets, setSets] = useState<ModelSet[]>(MODEL_SETS);
   const [setId, setSetId] = useState("balanced");
-  const set = MODEL_SETS.find((s) => s.id === setId)!;
+  const set = sets.find((s) => s.id === setId) ?? sets[0];
+  const [showCreate, setShowCreate] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([
     { role: "user", question: "What's the best framework for a fast SaaS landing page in 2026?" },
     { role: "ai" },
