@@ -173,29 +173,13 @@ export function ChatPage() {
       </div>
 
       {/* Modals */}
-      <Modal open={showSet} onClose={() => setShowSet(false)} title="Switch Model Set" size="lg">
-        <div className="space-y-2">
-          {MODEL_SETS.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => { setSetId(s.id); setShowSet(false); }}
-              className={cn("flex w-full items-center gap-3 rounded-xl border p-3 text-left hover:bg-accent", s.id === setId ? "border-primary bg-accent/50" : "border-border")}
-            >
-              <div className="flex-1">
-                <div className="font-medium">{s.name}</div>
-                <div className="text-xs text-muted-foreground">{s.description}</div>
-              </div>
-              <div className="flex gap-1">
-                {s.models.map((id) => <span key={id} className="size-2 rounded-full" style={{ background: modelById(id).color }} />)}
-              </div>
-              <span className="text-xs text-muted-foreground">{s.strategy}</span>
-            </button>
-          ))}
-          <Link to="/model-sets" onClick={() => setShowSet(false)} className="block rounded-xl border border-dashed border-border p-3 text-center text-sm hover:bg-accent">
-            Manage all Model Sets →
-          </Link>
-        </div>
-      </Modal>
+      <ModelSetPickerModal
+        open={showSet}
+        onClose={() => setShowSet(false)}
+        activeId={setId}
+        onPick={(id) => { setSetId(id); setShowSet(false); }}
+      />
+
 
       <Modal open={showStrategy} onClose={() => setShowStrategy(false)} title="Verdict strategies" size="lg">
         <div className="space-y-3">
