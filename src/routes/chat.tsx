@@ -33,6 +33,8 @@ import {
   TEMPLATES,
   VERDICT,
   modelById,
+  type ModelSet,
+  type Strategy,
 } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 
