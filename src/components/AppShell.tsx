@@ -5,9 +5,7 @@ import {
   Search,
   Settings,
   FolderKanban,
-  LayoutGrid,
   FileText,
-  Shield,
   Sparkles,
   Menu,
   X,
@@ -19,9 +17,7 @@ import { cn } from "@/lib/utils";
 const NAV = [
   { to: "/chat", label: "New Chat", icon: MessageSquarePlus },
   { to: "/projects", label: "Projects", icon: FolderKanban },
-  { to: "/model-sets", label: "Model Sets", icon: LayoutGrid },
   { to: "/templates", label: "Templates", icon: FileText },
-  { to: "/admin", label: "Admin", icon: Shield },
 ];
 
 export function AppShell({ children, rightPanel }: { children: ReactNode; rightPanel?: ReactNode }) {

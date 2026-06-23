@@ -17,6 +17,10 @@ import {
   AlertCircle,
   Info,
   Share2,
+  Check,
+  CheckCircle2,
+  Sparkles,
+  ArrowRight,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
@@ -173,29 +177,13 @@ export function ChatPage() {
       </div>
 
       {/* Modals */}
-      <Modal open={showSet} onClose={() => setShowSet(false)} title="Switch Model Set" size="lg">
-        <div className="space-y-2">
-          {MODEL_SETS.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => { setSetId(s.id); setShowSet(false); }}
-              className={cn("flex w-full items-center gap-3 rounded-xl border p-3 text-left hover:bg-accent", s.id === setId ? "border-primary bg-accent/50" : "border-border")}
-            >
-              <div className="flex-1">
-                <div className="font-medium">{s.name}</div>
-                <div className="text-xs text-muted-foreground">{s.description}</div>
-              </div>
-              <div className="flex gap-1">
-                {s.models.map((id) => <span key={id} className="size-2 rounded-full" style={{ background: modelById(id).color }} />)}
-              </div>
-              <span className="text-xs text-muted-foreground">{s.strategy}</span>
-            </button>
-          ))}
-          <Link to="/model-sets" onClick={() => setShowSet(false)} className="block rounded-xl border border-dashed border-border p-3 text-center text-sm hover:bg-accent">
-            Manage all Model Sets →
-          </Link>
-        </div>
-      </Modal>
+      <ModelSetPickerModal
+        open={showSet}
+        onClose={() => setShowSet(false)}
+        activeId={setId}
+        onPick={(id) => { setSetId(id); setShowSet(false); }}
+      />
+
 
       <Modal open={showStrategy} onClose={() => setShowStrategy(false)} title="Verdict strategies" size="lg">
         <div className="space-y-3">
@@ -423,3 +411,170 @@ function ExcelPreviewModal({ open, onClose }: { open: boolean; onClose: () => vo
 }
 
 export { MODELS };
+
+function ModelSetPickerModal({
+  open,
+  onClose,
+  activeId,
+  onPick,
+}: {
+  open: boolean;
+  onClose: () => void;
+  activeId: string;
+  onPick: (id: string) => void;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [desc, setDesc] = useState("");
+  const [picked, setPicked] = useState<string[]>(["gpt-4.1", "claude"]);
+  const [strategy, setStrategy] = useState<typeof STRATEGIES[number]["name"]>("Synthesize");
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+      >
+        <div className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
+          <div>
+            <h3 className="text-lg font-semibold">Choose a Model Set</h3>
+            <p className="text-xs text-muted-foreground">Each set runs a curated group of AI models, then a Verdict AI gives the final answer.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCreating((v) => !v)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              <Plus className="size-4" /> {creating ? "Close" : "Create New Model Set"}
+            </button>
+            <button onClick={onClose} className="rounded-md p-1.5 hover:bg-accent"><X className="size-4" /></button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {creating && (
+            <div className="mb-6 rounded-2xl border border-primary/30 bg-primary/5 p-5">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><Sparkles className="size-4 text-primary" /> New Model Set</div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-sm">
+                  <div className="mb-1 font-medium">Name</div>
+                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Marketing Set" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40" />
+                </label>
+                <label className="block text-sm">
+                  <div className="mb-1 font-medium">Best for</div>
+                  <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="e.g. Copywriting, ads, social" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40" />
+                </label>
+              </div>
+              <div className="mt-3">
+                <div className="mb-1.5 text-sm font-medium">Models</div>
+                <div className="flex flex-wrap gap-2">
+                  {MODELS.map((m) => {
+                    const on = picked.includes(m.id);
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={() => setPicked((p) => on ? p.filter((x) => x !== m.id) : [...p, m.id])}
+                        className={cn("flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs", on ? "border-primary bg-primary/10 text-foreground" : "border-border bg-card text-muted-foreground hover:bg-accent")}
+                      >
+                        <span className="size-2 rounded-full" style={{ background: m.color }} />
+                        {m.name}
+                        {on && <Check className="size-3 text-primary" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-3">
+                <div className="mb-1.5 text-sm font-medium">Verdict strategy</div>
+                <div className="flex flex-wrap gap-2">
+                  {STRATEGIES.map((s) => (
+                    <button
+                      key={s.name}
+                      onClick={() => setStrategy(s.name)}
+                      className={cn("rounded-full border px-3 py-1.5 text-xs", strategy === s.name ? "border-primary bg-primary/10" : "border-border bg-card text-muted-foreground hover:bg-accent")}
+                    >
+                      {s.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button onClick={() => setCreating(false)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent">Cancel</button>
+                <button onClick={() => setCreating(false)} className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">Save Model Set</button>
+              </div>
+            </div>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            {MODEL_SETS.map((s) => {
+              const active = s.id === activeId;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => onPick(s.id)}
+                  className={cn(
+                    "group relative flex flex-col gap-3 rounded-2xl border-2 p-5 text-left transition",
+                    active
+                      ? "border-primary bg-primary/5 shadow-md ring-2 ring-primary/20"
+                      : "border-border bg-card hover:border-primary/40 hover:bg-accent/40",
+                  )}
+                >
+                  {active && (
+                    <span className="absolute right-4 top-4 inline-flex items-center gap-1 rounded-full bg-primary px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary-foreground">
+                      <CheckCircle2 className="size-3" /> Active
+                    </span>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <span className={cn("grid size-9 place-items-center rounded-xl", active ? "bg-primary text-primary-foreground" : "bg-primary/10 text-primary")}>
+                      <Gavel className="size-4" />
+                    </span>
+                    <div className="text-base font-semibold">{s.name}</div>
+                  </div>
+                  <p className="text-sm text-muted-foreground">{s.description}</p>
+
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Models</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {s.models.map((id) => {
+                        const m = modelById(id);
+                        return (
+                          <span key={id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2 py-0.5 text-xs">
+                            <span className="size-2 rounded-full" style={{ background: m.color }} />
+                            {m.name}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Verdict</div>
+                      <div className="mt-0.5 text-sm font-medium">{s.strategy}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Best for</div>
+                      <div className="mt-0.5 text-sm">{s.bestFor}</div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="border-t border-border bg-background/60 px-6 py-3.5">
+          <Link
+            to="/model-sets"
+            onClick={onClose}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+          >
+            Manage All Model Sets <ArrowRight className="size-3.5" />
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
