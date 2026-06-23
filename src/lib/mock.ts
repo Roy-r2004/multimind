@@ -23,6 +23,7 @@ export type ModelSet = {
   models: string[];
   verdictModel: string;
   strategy: Strategy;
+  bestFor: string;
 };
 
 export type Strategy = "Reconcile" | "Synthesize" | "Rank" | "Pick Best" | "Debate";
@@ -36,10 +37,10 @@ export const STRATEGIES: { name: Strategy; desc: string }[] = [
 ];
 
 export const MODEL_SETS: ModelSet[] = [
-  { id: "balanced", name: "Balanced Set", description: "Great default for everyday questions.", models: ["gpt-4.1", "claude", "gemini"], verdictModel: "gpt-4.1", strategy: "Synthesize" },
-  { id: "coding", name: "Coding Set", description: "Tuned for code review and debugging.", models: ["gpt-4.1", "deepseek", "claude"], verdictModel: "claude", strategy: "Pick Best" },
-  { id: "business", name: "Business Set", description: "Strategic, concise, action-oriented.", models: ["gpt-4.1", "gemini", "mistral"], verdictModel: "gpt-4.1", strategy: "Reconcile" },
-  { id: "research", name: "Research Set", description: "Deep, cited, careful reasoning.", models: ["claude", "perplex", "gpt-4.1"], verdictModel: "claude", strategy: "Debate" },
+  { id: "balanced", name: "Balanced Set", description: "Great default for everyday questions.", models: ["gpt-4.1", "claude", "gemini"], verdictModel: "gpt-4.1", strategy: "Synthesize", bestFor: "General questions, everyday use" },
+  { id: "coding", name: "Coding Set", description: "Tuned for code review and debugging.", models: ["gpt-4.1", "deepseek", "claude"], verdictModel: "claude", strategy: "Pick Best", bestFor: "Coding, debugging, architecture" },
+  { id: "business", name: "Business Set", description: "Strategic, concise, action-oriented.", models: ["gpt-4.1", "gemini", "mistral"], verdictModel: "gpt-4.1", strategy: "Reconcile", bestFor: "Strategy, startups, business decisions" },
+  { id: "research", name: "Research Set", description: "Deep, cited, careful reasoning.", models: ["claude", "perplex", "gpt-4.1"], verdictModel: "claude", strategy: "Debate", bestFor: "Research, analysis, fact-checking" },
 ];
 
 export type Template = { id: string; title: string; description: string; category: string; instructions: string };
