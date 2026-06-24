@@ -1,7 +1,8 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Plus, Pencil, Trash2, FileText } from "lucide-react";
+import { createFileRoute } from "@tanstack/react-router";
+import { Plus, FileText } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { TEMPLATES, type Template } from "@/lib/mock";
+import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { Modal } from "@/components/Modal";
 
@@ -13,16 +14,39 @@ export const Route = createFileRoute("/templates")({
 function TemplatesPage() {
   const [templates, setTemplates] = useState<Template[]>(() => TEMPLATES.slice());
   const [showNew, setShowNew] = useState(false);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [category, setCategory] = useState("Learning");
   const [description, setDescription] = useState("");
   const [instructions, setInstructions] = useState("");
+
+  const isEditing = editingTemplateId !== null;
 
   function resetForm() {
     setName("");
     setCategory("Learning");
     setDescription("");
     setInstructions("");
+    setEditingTemplateId(null);
+  }
+
+  function openCreateModal() {
+    resetForm();
+    setShowNew(true);
+  }
+
+  function openEditModal(template: Template) {
+    setName(template.title);
+    setCategory(template.category || "Custom");
+    setDescription(template.description);
+    setInstructions(template.instructions);
+    setEditingTemplateId(template.id);
+    setShowNew(true);
+  }
+
+  function closeModal() {
+    setShowNew(false);
+    resetForm();
   }
 
   function createTemplate() {
@@ -34,12 +58,53 @@ function TemplatesPage() {
       instructions: instructions.trim() || "",
     };
     setTemplates((prev) => [t, ...prev]);
-    setShowNew(false);
-    resetForm();
+    closeModal();
+  }
+
+  function saveTemplate() {
+    if (!editingTemplateId) {
+      createTemplate();
+      return;
+    }
+
+    setTemplates((prev) =>
+      prev.map((template) =>
+        template.id === editingTemplateId
+          ? {
+              ...template,
+              title: name.trim() || "Untitled template",
+              description: description.trim() || "",
+              category: category || "Custom",
+              instructions: instructions.trim() || "",
+            }
+          : template,
+      ),
+    );
+    closeModal();
   }
 
   function deleteTemplate(id: string) {
     setTemplates((prev) => prev.filter((p) => p.id !== id));
+    if (editingTemplateId === id) {
+      closeModal();
+    }
+  }
+
+  function categoryBadgeClass(value: string) {
+    switch (value) {
+      case "Learning":
+        return "border-blue-200 bg-blue-50 text-blue-700";
+      case "Business":
+        return "border-emerald-200 bg-emerald-50 text-emerald-700";
+      case "Decision":
+        return "border-orange-200 bg-orange-50 text-orange-700";
+      case "Research":
+        return "border-violet-200 bg-violet-50 text-violet-700";
+      case "Custom":
+        return "border-slate-200 bg-slate-100 text-slate-700";
+      default:
+        return "border-border bg-accent text-foreground";
+    }
   }
 
   return (
@@ -53,7 +118,7 @@ function TemplatesPage() {
             </p>
           </div>
           <button
-            onClick={() => setShowNew(true)}
+            onClick={openCreateModal}
             className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground"
           >
             <Plus className="size-4" /> New template
@@ -77,21 +142,30 @@ function TemplatesPage() {
                     <div className="font-medium">{t.title}</div>
                     <div className="mt-1 text-sm text-muted-foreground">{t.description}</div>
                   </div>
-                  <span className="rounded-full bg-accent px-2 py-0.5 text-xs">{t.category}</span>
+                  <span
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 text-xs font-medium",
+                      categoryBadgeClass(t.category),
+                    )}
+                  >
+                    {t.category}
+                  </span>
                 </div>
                 <div className="mt-3 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground line-clamp-3">
                   {t.instructions}
                 </div>
-                <div className="mt-3 flex items-center gap-1">
-                  <Link to="/templates/new" className="rounded-md p-2 hover:bg-accent" title="Edit">
-                    <Pencil className="size-4" />
-                  </Link>
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    onClick={() => openEditModal(t)}
+                    className="rounded-md px-2.5 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    Edit
+                  </button>
                   <button
                     onClick={() => deleteTemplate(t.id)}
-                    className="rounded-md p-2 text-destructive hover:bg-destructive/10"
-                    title="Delete"
+                    className="rounded-md px-2.5 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10"
                   >
-                    <Trash2 className="size-4" />
+                    Delete
                   </button>
                 </div>
               </div>
@@ -101,12 +175,9 @@ function TemplatesPage() {
 
         <Modal
           open={showNew}
-          onClose={() => {
-            setShowNew(false);
-            resetForm();
-          }}
-          title="Create New Template"
-          size="lg"
+          onClose={closeModal}
+          title={isEditing ? "Edit Template" : "Create New Template"}
+          size="xl"
         >
           <div className="space-y-4">
             <label className="block text-sm">
@@ -148,26 +219,31 @@ function TemplatesPage() {
                 placeholder="e.g. Explain like I am new to the topic. Use simple words, short examples, and avoid unnecessary complexity."
                 value={instructions}
                 onChange={(e) => setInstructions(e.target.value)}
-                rows={6}
+                rows={8}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
               />
             </label>
 
             <div className="flex justify-end gap-2">
+              {isEditing ? (
+                <button
+                  onClick={() => deleteTemplate(editingTemplateId!)}
+                  className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
+                >
+                  Delete
+                </button>
+              ) : null}
               <button
-                onClick={() => {
-                  setShowNew(false);
-                  resetForm();
-                }}
+                onClick={closeModal}
                 className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent"
               >
                 Cancel
               </button>
               <button
-                onClick={createTemplate}
+                onClick={saveTemplate}
                 className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
               >
-                Create Template
+                {isEditing ? "Save Changes" : "Create Template"}
               </button>
             </div>
           </div>
