@@ -66,13 +66,16 @@ function ModelSetsPage() {
                       key={id}
                       className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs"
                     >
-                      <span className="size-1.5 rounded-full" style={{ background: m.color }} /> {m.name}
+                      <span className="size-1.5 rounded-full" style={{ background: m.color }} />{" "}
+                      {m.name}
                     </span>
                   );
                 })}
               </div>
               <div className="mt-3 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Gavel className="size-3.5" /> Verdict: <span className="text-foreground">{s.strategy}</span> via {modelById(s.verdictModel).name}
+                <Gavel className="size-3.5" /> Verdict:{" "}
+                <span className="text-foreground">{s.strategy}</span> via{" "}
+                {modelById(s.verdictModel).name}
               </div>
               {s.templateName && (
                 <div className="mt-2 text-xs text-muted-foreground">
@@ -99,11 +102,24 @@ function ModelSetsPage() {
             setEditing(null);
           }}
         />
-        <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Delete Model Set?" size="sm">
+        <Modal
+          open={!!deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          title="Delete Model Set?"
+          size="sm"
+        >
           <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">Are you sure you want to delete this model set? This will fall back to the Balanced set if it was active.</p>
+            <p className="text-sm text-muted-foreground">
+              Are you sure you want to delete this model set? This will fall back to the Balanced
+              set if it was active.
+            </p>
             <div className="flex justify-end gap-2">
-              <button onClick={() => setDeleteTarget(null)} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent">Cancel</button>
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
+              >
+                Cancel
+              </button>
               <button
                 onClick={() => {
                   if (deleteTarget) deleteModelSet(deleteTarget);
@@ -120,7 +136,6 @@ function ModelSetsPage() {
     </AppShell>
   );
 }
-
 
 function EmptyState() {
   return (

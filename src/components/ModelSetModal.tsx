@@ -78,7 +78,7 @@ export function ModelSetModal({
       verdictModel: verdict,
       strategy,
       bestFor: desc.trim() || "Custom use case",
-      templateName: custom.trim() ? selectedTemplateName ?? "Custom" : undefined,
+      templateName: custom.trim() ? (selectedTemplateName ?? "Custom") : undefined,
       customInstructions: custom.trim() || undefined,
     };
     if (initial && onUpdate) onUpdate(payload);
@@ -88,11 +88,26 @@ export function ModelSetModal({
 
   if (!open) return null;
 
-  const modelResults = MODELS.filter((m) => modelQuery.trim() === '' || m.name.toLowerCase().includes(modelQuery.toLowerCase()) || m.vendor.toLowerCase().includes(modelQuery.toLowerCase()));
-  const verdictResults = MODELS.filter((m) => verdictQuery.trim() === '' || m.name.toLowerCase().includes(verdictQuery.toLowerCase()) || m.vendor.toLowerCase().includes(verdictQuery.toLowerCase()));
+  const modelResults = MODELS.filter(
+    (m) =>
+      modelQuery.trim() === "" ||
+      m.name.toLowerCase().includes(modelQuery.toLowerCase()) ||
+      m.vendor.toLowerCase().includes(modelQuery.toLowerCase()),
+  );
+  const verdictResults = MODELS.filter(
+    (m) =>
+      verdictQuery.trim() === "" ||
+      m.name.toLowerCase().includes(verdictQuery.toLowerCase()) ||
+      m.vendor.toLowerCase().includes(verdictQuery.toLowerCase()),
+  );
 
   return (
-    <Modal open={open} onClose={onClose} title={initial ? "Edit Model Set" : "Create Model Set"} size="lg">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={initial ? "Edit Model Set" : "Create Model Set"}
+      size="lg"
+    >
       <div className="space-y-4">
         <div>
           <label className="block text-sm">
@@ -104,7 +119,9 @@ export function ModelSetModal({
             />
           </label>
           <label className="block text-sm mt-3">
-            <div className="mb-1 font-medium">Description <span className="font-normal text-muted-foreground">(optional)</span></div>
+            <div className="mb-1 font-medium">
+              Description <span className="font-normal text-muted-foreground">(optional)</span>
+            </div>
             <textarea
               value={desc}
               onChange={(e) => setDesc(e.target.value)}
@@ -167,8 +184,12 @@ export function ModelSetModal({
               {picked.map((id) => {
                 const m = modelById(id);
                 return (
-                  <span key={id} className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs">
-                    <span className="size-2 rounded-full" style={{ background: m.color }} /> {m.name}
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs"
+                  >
+                    <span className="size-2 rounded-full" style={{ background: m.color }} />{" "}
+                    {m.name}
                     <button
                       type="button"
                       onClick={() => setPicked((p) => p.filter((x) => x !== id))}
@@ -218,7 +239,10 @@ export function ModelSetModal({
           )}
           {verdict && (
             <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1.5 text-sm">
-              <span className="size-2 rounded-full" style={{ background: modelById(verdict).color }} />
+              <span
+                className="size-2 rounded-full"
+                style={{ background: modelById(verdict).color }}
+              />
               <span className="font-medium">{modelById(verdict).name}</span>
             </div>
           )}
@@ -247,7 +271,10 @@ export function ModelSetModal({
         </div>
 
         <div>
-          <div className="mb-1 font-medium">Custom Verdict Instructions <span className="font-normal text-muted-foreground">(Optional)</span></div>
+          <div className="mb-1 font-medium">
+            Custom Verdict Instructions{" "}
+            <span className="font-normal text-muted-foreground">(Optional)</span>
+          </div>
           <div className="mb-2 text-sm text-muted-foreground">
             Customize how the Verdict AI should judge the answers.
           </div>
@@ -270,8 +297,7 @@ export function ModelSetModal({
                 onClick={() => setShowTemplateMenu((open) => !open)}
                 className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm hover:bg-accent"
               >
-                Choose Template
-+                {selectedTemplateName ? `: ${selectedTemplateName}` : ""}
+                Choose Template + {selectedTemplateName ? `: ${selectedTemplateName}` : ""}
               </button>
             </div>
             {showTemplateMenu && (
@@ -299,8 +325,18 @@ export function ModelSetModal({
         {error && <div className="text-sm text-destructive">{error}</div>}
 
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent">Cancel</button>
-          <button onClick={submit} className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">{initial ? 'Save' : 'Create Model Set'}</button>
+          <button
+            onClick={onClose}
+            className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+          >
+            {initial ? "Save" : "Create Model Set"}
+          </button>
         </div>
       </div>
     </Modal>

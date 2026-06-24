@@ -99,7 +99,15 @@ function TemplatesPage() {
           </div>
         )}
 
-        <Modal open={showNew} onClose={() => { setShowNew(false); resetForm(); }} title="Create New Template" size="lg">
+        <Modal
+          open={showNew}
+          onClose={() => {
+            setShowNew(false);
+            resetForm();
+          }}
+          title="Create New Template"
+          size="lg"
+        >
           <div className="space-y-4">
             <label className="block text-sm">
               <div className="mb-1 font-medium">Template Name</div>
@@ -118,14 +126,7 @@ function TemplatesPage() {
                 onChange={(e) => setCategory(e.target.value)}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
               >
-                {[
-                  "Learning",
-                  "Business",
-                  "Decision",
-                  "Coding",
-                  "Research",
-                  "Custom",
-                ].map((c) => (
+                {["Learning", "Business", "Decision", "Coding", "Research", "Custom"].map((c) => (
                   <option key={c}>{c}</option>
                 ))}
               </select>
@@ -154,7 +155,10 @@ function TemplatesPage() {
 
             <div className="flex justify-end gap-2">
               <button
-                onClick={() => { setShowNew(false); resetForm(); }}
+                onClick={() => {
+                  setShowNew(false);
+                  resetForm();
+                }}
                 className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent"
               >
                 Cancel

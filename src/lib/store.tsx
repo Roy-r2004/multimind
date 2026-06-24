@@ -75,13 +75,10 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     setModelSets((prev) => prev.map((item) => (item.id === set.id ? set : item)));
   }, []);
 
-  const deleteModelSet = useCallback(
-    (id: string) => {
-      setModelSets((prev) => prev.filter((item) => item.id !== id));
-      setActiveModelSetIdState((activeId) => (activeId === id ? "balanced" : activeId));
-    },
-    [],
-  );
+  const deleteModelSet = useCallback((id: string) => {
+    setModelSets((prev) => prev.filter((item) => item.id !== id));
+    setActiveModelSetIdState((activeId) => (activeId === id ? "balanced" : activeId));
+  }, []);
 
   const projectChatCount = useCallback(
     (projectId: string) => {

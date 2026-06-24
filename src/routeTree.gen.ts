@@ -16,6 +16,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as CostsRouteImport } from './routes/costs'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
@@ -58,6 +59,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CostsRoute = CostsRouteImport.update({
+  id: '/costs',
+  path: '/costs',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ChatRoute = ChatRouteImport.update({
   id: '/chat',
   path: '/chat',
@@ -93,6 +99,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
+  '/costs': typeof CostsRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
@@ -108,6 +115,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
+  '/costs': typeof CostsRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
@@ -124,6 +132,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/chat': typeof ChatRoute
+  '/costs': typeof CostsRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/projects': typeof ProjectsRouteWithChildren
@@ -141,6 +150,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/chat'
+    | '/costs'
     | '/login'
     | '/onboarding'
     | '/projects'
@@ -156,6 +166,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/chat'
+    | '/costs'
     | '/login'
     | '/onboarding'
     | '/projects'
@@ -171,6 +182,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/chat'
+    | '/costs'
     | '/login'
     | '/onboarding'
     | '/projects'
@@ -187,6 +199,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
   ChatRoute: typeof ChatRoute
+  CostsRoute: typeof CostsRoute
   LoginRoute: typeof LoginRoute
   OnboardingRoute: typeof OnboardingRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
@@ -246,6 +259,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/costs': {
+      id: '/costs'
+      path: '/costs'
+      fullPath: '/costs'
+      preLoaderRoute: typeof CostsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/chat': {
@@ -321,6 +341,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
   ChatRoute: ChatRoute,
+  CostsRoute: CostsRoute,
   LoginRoute: LoginRoute,
   OnboardingRoute: OnboardingRoute,
   ProjectsRoute: ProjectsRouteWithChildren,

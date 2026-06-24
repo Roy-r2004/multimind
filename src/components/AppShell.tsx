@@ -17,6 +17,7 @@ import {
   Folder,
   Plus,
   Check,
+  CircleDollarSign,
 } from "lucide-react";
 import { Modal } from "@/components/Modal";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
@@ -28,6 +29,7 @@ const NAV = [
   { to: "/chat", label: "New Chat", icon: MessageSquarePlus },
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/templates", label: "Templates", icon: FileText },
+  { to: "/costs", label: "Costs", icon: CircleDollarSign },
 ];
 
 export function AppShell({

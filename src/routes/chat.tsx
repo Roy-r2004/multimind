@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   Sparkles,
   ArrowRight,
+  ShieldCheck,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
@@ -78,6 +79,7 @@ export function ChatPage() {
   const [showExcel, setShowExcel] = useState(false);
   const [showPlus, setShowPlus] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [decisionInsuranceEnabled, setDecisionInsuranceEnabled] = useState(false);
 
   function send() {
     if (!input.trim()) return;
@@ -146,7 +148,12 @@ export function ChatPage() {
                   </div>
                 </div>
               ) : (
-                <AiTurn key={i} set={set} question={messages[i - 1]?.question ?? ""} />
+                <AiTurn
+                  key={i}
+                  set={set}
+                  question={messages[i - 1]?.question ?? ""}
+                  decisionInsuranceEnabled={decisionInsuranceEnabled}
+                />
               ),
             )}
             {loading && <LoadingTurn set={set} />}
@@ -278,8 +285,19 @@ export function ChatPage() {
                   <Link2 className="size-3.5" /> Reference
                 </button>
                 <button
+                  onClick={() => setDecisionInsuranceEnabled((v) => !v)}
+                  className={cn(
+                    "ml-auto inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium transition-colors",
+                    decisionInsuranceEnabled
+                      ? "bg-primary text-primary-foreground"
+                      : "border border-border bg-background/80 text-muted-foreground hover:bg-accent",
+                  )}
+                >
+                  <ShieldCheck className="size-3.5" /> Decision Insurance
+                </button>
+                <button
                   onClick={send}
-                  className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                  className="ml-2 inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
                 >
                   <Send className="size-3.5" /> Send
                 </button>
@@ -435,14 +453,71 @@ function LoadingTurn({ set }: { set: (typeof MODEL_SETS)[number] }) {
   );
 }
 
-function AiTurn({ set, question }: { set: (typeof MODEL_SETS)[number]; question: string }) {
+function buildDecisionInsuranceAnalysis({
+  question,
+  modelResponses,
+  verdictResponse,
+}: {
+  question: string;
+  modelResponses: Array<{ name: string; text: string; confidence: number; failed: boolean }>;
+  verdictResponse: string;
+}) {
+  const combined =
+    `${question} ${modelResponses.map((m) => m.text).join(" ")} ${verdictResponse}`.toLowerCase();
+  const hasRiskSignals =
+    /risk|uncertain|legal|finance|security|medical|contract|critical|deadline|launch|regulator|investment|sensitive/i.test(
+      combined,
+    );
+  const riskLevel = /high|critical|urgent|immediate|must|need to/i.test(combined)
+    ? "High"
+    : hasRiskSignals
+      ? "Medium"
+      : "Low";
+  const verdictSignal = verdictResponse.toLowerCase().includes("recommend")
+    ? "The verdict leans toward a clear next step, which can create upside if the recommendation holds."
+    : "The verdict is cautious, so the main exposure is acting too quickly on a broad recommendation.";
+
+  return {
+    bestCase: `If the recommendation proves sound, the team can move decisively and capture the upside of the suggested path. ${verdictSignal}`,
+    worstCase: `If the recommendation is off, the plan could waste time, budget, or trust before the team notices the mismatch.`,
+    riskLevel,
+    potentialLoss:
+      riskLevel === "High"
+        ? "A high-stakes mistake could lead to rework, missed deadlines, and avoidable spend."
+        : riskLevel === "Medium"
+          ? "The main loss is time, effort, and confidence lost while correcting a suboptimal choice."
+          : "The downside is limited, but a small misstep could still slow execution or reduce quality.",
+    mitigationPlan:
+      "Validate the recommendation with a second source, test it on a small pilot, and define a rollback point before a full commitment.",
+  };
+}
+
+function AiTurn({
+  set,
+  question,
+  decisionInsuranceEnabled,
+}: {
+  set: (typeof MODEL_SETS)[number];
+  question: string;
+  decisionInsuranceEnabled: boolean;
+}) {
   const inputTokens = estimateTokens(question || "");
 
   // Per-model usage for the answering models (failed models report nothing).
   const answerUsage = new Map<string, UsageBreakdown>();
+  const modelResponses: Array<{ name: string; text: string; confidence: number; failed: boolean }> =
+    [];
   set.models.forEach((id, i) => {
-    if (id === "mistral") return; // simulated failure — no usage billed
+    const m = modelById(id);
     const a = SAMPLE_ANSWERS[i] ?? SAMPLE_ANSWERS[0];
+    const failed = id === "mistral";
+    modelResponses.push({
+      name: m.name,
+      text: failed ? "This model failed to answer." : a.text,
+      confidence: a.confidence,
+      failed,
+    });
+    if (failed) return; // simulated failure — no usage billed
     answerUsage.set(id, breakdown(id, "answer", makeUsage(inputTokens, estimateTokens(a.text))));
   });
 
@@ -455,6 +530,13 @@ function AiTurn({ set, question }: { set: (typeof MODEL_SETS)[number]; question:
   );
 
   const summaryItems: UsageBreakdown[] = [...answerUsage.values(), verdictUsage];
+  const decisionInsurance = decisionInsuranceEnabled
+    ? buildDecisionInsuranceAnalysis({
+        question,
+        modelResponses,
+        verdictResponse: VERDICT.text,
+      })
+    : null;
 
   return (
     <div className="space-y-4">
@@ -521,6 +603,61 @@ function AiTurn({ set, question }: { set: (typeof MODEL_SETS)[number]; question:
         </div>
         <CardUsage b={verdictUsage} />
       </div>
+      {decisionInsurance && (
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-50/70 p-5 dark:bg-amber-950/10">
+          <div className="flex items-center gap-2">
+            <span className="grid size-7 place-items-center rounded-lg bg-amber-500/15 text-amber-600">
+              <ShieldCheck className="size-3.5" />
+            </span>
+            <div>
+              <div className="font-medium">🛡 Decision Insurance</div>
+              <div className="text-xs text-muted-foreground">Structured risk analysis</div>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 text-sm">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                Best Case
+              </div>
+              <p className="mt-1 leading-relaxed text-foreground/90">
+                {decisionInsurance.bestCase}
+              </p>
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                Worst Case
+              </div>
+              <p className="mt-1 leading-relaxed text-foreground/90">
+                {decisionInsurance.worstCase}
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Risk Level
+                </div>
+                <p className="mt-1 font-medium text-foreground">{decisionInsurance.riskLevel}</p>
+              </div>
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Potential Loss
+                </div>
+                <p className="mt-1 leading-relaxed text-foreground/90">
+                  {decisionInsurance.potentialLoss}
+                </p>
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                Mitigation Plan
+              </div>
+              <p className="mt-1 leading-relaxed text-foreground/90">
+                {decisionInsurance.mitigationPlan}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       <SessionCostSummary items={summaryItems} />
     </div>
   );
@@ -634,8 +771,8 @@ function PromptBuilderModal({
     const prefix = normalized.startsWith("explain")
       ? "Explain"
       : normalized.startsWith("write") || normalized.startsWith("create")
-      ? "Create"
-      : "Generate";
+        ? "Create"
+        : "Generate";
 
     setImproved(
       `${prefix} ${normalized}. Make the request clear, detailed, and structured so the AI can respond with a helpful, professional result. Include the intended audience, desired format, and any relevant details needed to complete the task well.`,
@@ -678,7 +815,9 @@ function PromptBuilderModal({
           <div className="mb-2 text-sm font-medium">Improved Prompt</div>
           <div className="min-h-[120px] rounded-xl border border-border bg-accent/30 p-4 text-sm text-foreground">
             {improved || (
-              <div className="text-muted-foreground">Your improved prompt will appear here after generation.</div>
+              <div className="text-muted-foreground">
+                Your improved prompt will appear here after generation.
+              </div>
             )}
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
