@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Modal } from "@/components/Modal";
-import { Plus, Check } from "lucide-react";
+import { Plus, Check, X } from "lucide-react";
 import type { ModelSet, Strategy } from "@/lib/mock";
 import { MODELS, STRATEGIES, TEMPLATES, modelById } from "@/lib/mock";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,10 @@ export function ModelSetModal({
   const [strategy, setStrategy] = useState<Strategy>("Synthesize");
   const [custom, setCustom] = useState("");
   const [selectedTemplateName, setSelectedTemplateName] = useState<string | null>(null);
-  const [showTemplateMenu, setShowTemplateMenu] = useState(false);
+  const [selectedTemplateDescription, setSelectedTemplateDescription] = useState<string | null>(
+    null,
+  );
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [verdictQuery, setVerdictQuery] = useState("");
@@ -39,6 +42,10 @@ export function ModelSetModal({
       setStrategy(initial.strategy);
       setCustom(initial.customInstructions ?? "");
       setSelectedTemplateName(initial.templateName ?? null);
+      setSelectedTemplateDescription(
+        TEMPLATES.find((t) => t.title === initial.templateName)?.description ?? null,
+      );
+      setShowTemplateModal(false);
       setError(null);
     } else if (open) {
       setName("");
@@ -48,13 +55,28 @@ export function ModelSetModal({
       setStrategy("Synthesize");
       setCustom("");
       setSelectedTemplateName(null);
-      setShowTemplateMenu(false);
+      setSelectedTemplateDescription(null);
+      setShowTemplateModal(false);
       setError(null);
     }
   }, [initial, open]);
 
   function toggle(id: string) {
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  }
+
+  function selectTemplate(template: (typeof TEMPLATES)[number]) {
+    setCustom(template.instructions);
+    setSelectedTemplateName(template.title);
+    setSelectedTemplateDescription(template.description);
+    setShowTemplateModal(false);
+  }
+
+  function removeTemplate() {
+    setCustom("");
+    setSelectedTemplateName(null);
+    setSelectedTemplateDescription(null);
+    setShowTemplateModal(false);
   }
 
   function submit() {
@@ -109,6 +131,28 @@ export function ModelSetModal({
       size="lg"
     >
       <div className="space-y-4">
+        {showTemplateModal && (
+          <Modal
+            open={showTemplateModal}
+            onClose={() => setShowTemplateModal(false)}
+            title="Choose Template"
+            size="md"
+          >
+            <div className="space-y-3">
+              {TEMPLATES.map((template) => (
+                <button
+                  key={template.id}
+                  type="button"
+                  onClick={() => selectTemplate(template)}
+                  className="flex w-full flex-col items-start rounded-2xl border border-border bg-background px-4 py-3 text-left transition hover:border-primary/40 hover:bg-accent"
+                >
+                  <span className="text-sm font-semibold text-foreground">{template.title}</span>
+                  <span className="mt-1 text-sm text-muted-foreground">{template.description}</span>
+                </button>
+              ))}
+            </div>
+          </Modal>
+        )}
         <div>
           <label className="block text-sm">
             <div className="mb-1 font-medium">Name</div>
@@ -290,35 +334,30 @@ export function ModelSetModal({
           </div>
 
           <div className="mt-3">
-            <div className="mb-2 flex items-center justify-between gap-2 text-sm font-medium">
-              <span>Template</span>
-              <button
-                type="button"
-                onClick={() => setShowTemplateMenu((open) => !open)}
-                className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm hover:bg-accent"
-              >
-                Choose Template + {selectedTemplateName ? `: ${selectedTemplateName}` : ""}
-              </button>
-            </div>
-            {showTemplateMenu && (
-              <div className="rounded-lg border border-border bg-popover p-2 shadow-sm">
-                {TEMPLATES.map((template) => (
+            <div className="text-sm font-medium">Template</div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {!selectedTemplateName ? (
+                <button
+                  type="button"
+                  onClick={() => setShowTemplateModal(true)}
+                  className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
+                >
+                  Choose Template
+                </button>
+              ) : (
+                <div className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1.5 text-sm">
+                  <span className="font-medium">{selectedTemplateName}</span>
                   <button
-                    key={template.id}
                     type="button"
-                    onClick={() => {
-                      setCustom(template.instructions);
-                      setSelectedTemplateName(template.title);
-                      setShowTemplateMenu(false);
-                    }}
-                    className="flex w-full flex-col items-start gap-1 rounded-lg px-3 py-2 text-left text-sm hover:bg-accent"
+                    onClick={removeTemplate}
+                    className="rounded-full p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                    aria-label={`Remove ${selectedTemplateName}`}
                   >
-                    <span className="font-medium">{template.title}</span>
-                    <span className="text-xs text-muted-foreground">{template.description}</span>
+                    <X className="size-3.5" />
                   </button>
-                ))}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
