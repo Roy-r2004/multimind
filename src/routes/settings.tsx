@@ -1,7 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { MODEL_SETS, MODELS, STRATEGIES, TEMPLATES } from "@/lib/mock";
+import { OpenRouterModelSearch } from "@/components/OpenRouterModelSearch";
+import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
+import { useAuth } from "@/lib/auth";
+import { useChatStore } from "@/lib/store";
+import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/settings")({
@@ -9,172 +13,103 @@ export const Route = createFileRoute("/settings")({
   component: SettingsPage,
 });
 
-const TABS = ["Profile", "Preferences", "AI Defaults", "Team", "Security"] as const;
-
 function SettingsPage() {
-  const [tab, setTab] = useState<(typeof TABS)[number]>("Profile");
+  const { session, signOut } = useAuth();
+  const { modelSets, activeModelSetId, setActiveModelSetId } = useChatStore();
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+
   return (
     <AppShell>
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <h1 className="text-2xl font-semibold">Settings</h1>
+      <div className="mx-auto max-w-4xl px-6 py-10">
+        <PageHeader
+          eyebrow="Account"
+          title="Settings"
+          description="Profile, defaults, and the live models available through OpenRouter."
+        />
 
-        <div className="mt-6 grid gap-6 md:grid-cols-[200px_1fr]">
-          <aside className="space-y-1">
-            {TABS.map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={cn(
-                  "w-full rounded-lg px-3 py-2 text-left text-sm",
-                  tab === t ? "bg-accent font-medium" : "hover:bg-accent/60",
-                )}
-              >
-                {t}
-              </button>
-            ))}
-          </aside>
+        <div className="mt-10 space-y-6">
+          <GlassCard className="p-6">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Profile</h2>
+            <div className="mt-4 flex items-center gap-4">
+              <div className="grid size-14 place-items-center rounded-full bg-primary/20 text-lg font-semibold text-primary">
+                {session?.user.full_name?.slice(0, 1) ?? "?"}
+              </div>
+              <div>
+                <div className="font-medium">{session?.user.full_name}</div>
+                <div className="text-sm text-muted-foreground">{session?.user.email}</div>
+                <div className="text-xs text-muted-foreground">{session?.organization.name}</div>
+              </div>
+            </div>
+            <button
+              onClick={() => signOut()}
+              className="mt-4 text-sm text-destructive hover:underline"
+            >
+              Sign out
+            </button>
+          </GlassCard>
 
-          <div className="rounded-2xl border border-border bg-card p-6">
-            {tab === "Profile" && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-4">
-                  <div className="grid size-16 place-items-center rounded-full bg-accent text-xl font-semibold">
-                    S
-                  </div>
-                  <button className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-accent">
-                    Change avatar
-                  </button>
+          <GlassCard className="p-6">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Preferences</h2>
+            <div className="mt-4 space-y-4">
+              <div>
+                <div className="mb-2 text-sm font-medium">Default model set</div>
+                <select
+                  value={activeModelSetId}
+                  onChange={(e) => setActiveModelSetId(e.target.value)}
+                  className="w-full rounded-xl border border-white/10 bg-background/60 px-3 py-2 text-sm"
+                >
+                  {modelSets.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium">Appearance</div>
+                <div className="inline-flex rounded-lg border border-white/10 p-0.5">
+                  {(["dark", "light"] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTheme(t)}
+                      className={cn(
+                        "rounded-md px-3 py-1.5 text-xs capitalize",
+                        theme === t ? "bg-primary text-primary-foreground" : "text-muted-foreground",
+                      )}
+                    >
+                      {t}
+                    </button>
+                  ))}
                 </div>
-                <Row label="Full name" defaultValue="Sara Kassem" />
-                <Row label="Email" defaultValue="sara@acme.co" />
+                <p className="mt-1 text-xs text-muted-foreground">Dark mode is the default experience.</p>
               </div>
-            )}
-            {tab === "Account" && (
-              <div className="space-y-4">
-                <Row label="Plan" defaultValue="Pro · $19/mo" readOnly />
-                <Row label="Billing email" defaultValue="billing@acme.co" />
-                <button className="rounded-lg border border-destructive/40 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10">
-                  Delete account
-                </button>
-              </div>
-            )}
-            {tab === "Preferences" && (
-              <div className="space-y-4">
-                <ToggleRow label="Theme" options={["Light", "Dark", "System"]} value="System" />
-                <SelectRow label="Default Model Set" options={MODEL_SETS.map((s) => s.name)} />
-                <SelectRow
-                  label="Default Verdict strategy"
-                  options={STRATEGIES.map((s) => s.name)}
-                />
-                <SelectRow
-                  label="Default response style"
-                  options={["Concise", "Balanced", "Detailed"]}
-                />
-              </div>
-            )}
-            {tab === "AI Defaults" && (
-              <div className="space-y-4">
-                <label className="block text-sm">
-                  <div className="mb-1 font-medium">Default custom Verdict instructions</div>
-                  <textarea
-                    rows={4}
-                    placeholder="e.g. Always cite sources when possible."
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                  />
-                </label>
-                <SelectRow label="Default template" options={TEMPLATES.map((t) => t.title)} />
-                <ToggleRow label="Prompt Builder suggestions" options={["Off", "On"]} value="On" />
-                <div className="text-xs text-muted-foreground">
-                  Models available to you: {MODELS.map((m) => m.name).join(", ")}.
+            </div>
+          </GlassCard>
+
+          <GlassCard glow className="p-6">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-primary/80">Model library</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Search OpenRouter&apos;s live catalog and add models directly to your organization.
+              Built-in defaults are kept in sync with current OpenRouter names and pricing.
+            </p>
+            <div className="mt-4">
+              <OpenRouterModelSearch />
+            </div>
+          </GlassCard>
+
+          <GlassCard className="p-6">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Verdict strategies</h2>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              {STRATEGIES.map((s) => (
+                <div key={s.name} className="rounded-xl border border-white/10 p-3">
+                  <div className="text-sm font-medium">{s.name}</div>
+                  <p className="mt-1 text-xs text-muted-foreground">{s.desc}</p>
                 </div>
-              </div>
-            )}
-            {tab === "Team" && (
-              <div className="space-y-3">
-                <div className="text-sm text-muted-foreground">
-                  Invite teammates to share Model Sets, Templates and Projects.
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    placeholder="teammate@company.com"
-                    className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                  />
-                  <button className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
-                    Invite
-                  </button>
-                </div>
-              </div>
-            )}
-            {tab === "Security" && (
-              <div className="space-y-4">
-                <Row label="Current password" type="password" />
-                <Row label="New password" type="password" />
-                <ToggleRow label="Two-factor auth" options={["Off", "On"]} value="On" />
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          </GlassCard>
         </div>
       </div>
     </AppShell>
-  );
-}
-
-function Row({
-  label,
-  defaultValue,
-  type = "text",
-  readOnly,
-}: {
-  label: string;
-  defaultValue?: string;
-  type?: string;
-  readOnly?: boolean;
-}) {
-  return (
-    <label className="block text-sm">
-      <div className="mb-1 font-medium">{label}</div>
-      <input
-        type={type}
-        defaultValue={defaultValue}
-        readOnly={readOnly}
-        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm read-only:text-muted-foreground"
-      />
-    </label>
-  );
-}
-
-function ToggleRow({ label, options, value }: { label: string; options: string[]; value: string }) {
-  const [v, setV] = useState(value);
-  return (
-    <div className="text-sm">
-      <div className="mb-1 font-medium">{label}</div>
-      <div className="inline-flex rounded-lg border border-border bg-background p-0.5">
-        {options.map((o) => (
-          <button
-            key={o}
-            onClick={() => setV(o)}
-            className={cn(
-              "rounded-md px-3 py-1.5 text-xs",
-              v === o ? "bg-primary text-primary-foreground" : "text-muted-foreground",
-            )}
-          >
-            {o}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SelectRow({ label, options }: { label: string; options: string[] }) {
-  return (
-    <label className="block text-sm">
-      <div className="mb-1 font-medium">{label}</div>
-      <select className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm">
-        {options.map((o) => (
-          <option key={o}>{o}</option>
-        ))}
-      </select>
-    </label>
   );
 }

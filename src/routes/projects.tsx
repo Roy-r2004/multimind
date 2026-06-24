@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { Plus, FolderKanban } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
 import { useChatStore } from "@/lib/store";
 
@@ -17,43 +18,45 @@ function ProjectsPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-5xl px-6 py-10">
-        <div className="flex items-end justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">Projects</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Group related chats, files and Model Sets.
-            </p>
-          </div>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            <Plus className="size-4" /> New project
-          </button>
-        </div>
-        <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {projects.map((p) => (
-            <Link
-              key={p.id}
-              to="/projects/$id"
-              params={{ id: p.id }}
-              className="block rounded-2xl border border-border bg-card p-5 hover:border-foreground/20"
+        <PageHeader
+          eyebrow="Organization"
+          title="Projects"
+          description="Group related chats for context and cost tracking."
+          action={
+            <button
+              onClick={() => setShowCreate(true)}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground"
             >
-              <div className="flex items-center gap-2">
-                <span className="grid size-9 place-items-center rounded-lg bg-accent text-accent-foreground">
-                  <FolderKanban className="size-4" />
-                </span>
-                <div className="font-medium">{p.name}</div>
-              </div>
-              <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-                <span>{projectChatCount(p.id)} chats</span>
-                <span>{p.updated}</span>
-              </div>
-            </Link>
-          ))}
+              <Plus className="size-4" /> New project
+            </button>
+          }
+        />
+
+        <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {projects.length === 0 ? (
+            <GlassCard className="col-span-full p-12 text-center text-sm text-muted-foreground">
+              No projects yet. Create one to organize chats.
+            </GlassCard>
+          ) : (
+            projects.map((p) => (
+              <Link key={p.id} to="/projects/$id" params={{ id: p.id }}>
+                <GlassCard className="p-5 transition hover:border-primary/30">
+                  <div className="flex items-center gap-3">
+                    <span className="grid size-10 place-items-center rounded-xl bg-primary/15 text-primary">
+                      <FolderKanban className="size-5" />
+                    </span>
+                    <div className="font-medium">{p.name}</div>
+                  </div>
+                  <div className="mt-4 flex justify-between text-xs text-muted-foreground">
+                    <span>{projectChatCount(p.id)} chats</span>
+                    <span>{p.updated}</span>
+                  </div>
+                </GlassCard>
+              </Link>
+            ))
+          )}
         </div>
       </div>
-
       <CreateProjectModal open={showCreate} onClose={() => setShowCreate(false)} />
     </AppShell>
   );

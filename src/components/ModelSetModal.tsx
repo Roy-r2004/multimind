@@ -1,8 +1,12 @@
 import { useState, useEffect } from "react";
 import { Modal } from "@/components/Modal";
-import { Plus, Check, X } from "lucide-react";
+import { Plus, Loader2, X } from "lucide-react";
 import type { ModelSet, Strategy } from "@/lib/mock";
-import { MODELS, STRATEGIES, TEMPLATES, modelById } from "@/lib/mock";
+import { STRATEGIES } from "@/lib/mock";
+import { useModels } from "@/lib/models";
+import { useAuth } from "@/lib/auth";
+import { api } from "@/lib/api";
+import type { ApiModelSearchResult, ApiTemplate } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
 export function ModelSetModal({
@@ -25,13 +29,40 @@ export function ModelSetModal({
   const [strategy, setStrategy] = useState<Strategy>("Synthesize");
   const [custom, setCustom] = useState("");
   const [selectedTemplateName, setSelectedTemplateName] = useState<string | null>(null);
-  const [selectedTemplateDescription, setSelectedTemplateDescription] = useState<string | null>(
-    null,
-  );
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [templateOptions, setTemplateOptions] = useState<ApiTemplate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [verdictQuery, setVerdictQuery] = useState("");
+  const { models, modelById, refresh } = useModels();
+  const { authHeaders } = useAuth();
+  const [orResults, setOrResults] = useState<ApiModelSearchResult[]>([]);
+  const [orSearching, setOrSearching] = useState(false);
+  const [orAdding, setOrAdding] = useState<string | null>(null);
+
+  useEffect(() => {
+    const auth = authHeaders();
+    if (!auth || modelQuery.trim().length < 2) {
+      setOrResults([]);
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      setOrSearching(true);
+      void api.models
+        .search(auth, modelQuery.trim(), 8)
+        .then(setOrResults)
+        .catch(() => setOrResults([]))
+        .finally(() => setOrSearching(false));
+    }, 300);
+    return () => window.clearTimeout(handle);
+  }, [modelQuery, authHeaders]);
+
+  useEffect(() => {
+    if (!showTemplateModal) return;
+    const auth = authHeaders();
+    if (!auth) return;
+    void api.templates.list(auth).then(setTemplateOptions).catch(() => setTemplateOptions([]));
+  }, [showTemplateModal, authHeaders]);
 
   useEffect(() => {
     if (initial) {
@@ -42,9 +73,6 @@ export function ModelSetModal({
       setStrategy(initial.strategy);
       setCustom(initial.customInstructions ?? "");
       setSelectedTemplateName(initial.templateName ?? null);
-      setSelectedTemplateDescription(
-        TEMPLATES.find((t) => t.title === initial.templateName)?.description ?? null,
-      );
       setShowTemplateModal(false);
       setError(null);
     } else if (open) {
@@ -55,7 +83,6 @@ export function ModelSetModal({
       setStrategy("Synthesize");
       setCustom("");
       setSelectedTemplateName(null);
-      setSelectedTemplateDescription(null);
       setShowTemplateModal(false);
       setError(null);
     }
@@ -65,17 +92,15 @@ export function ModelSetModal({
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   }
 
-  function selectTemplate(template: (typeof TEMPLATES)[number]) {
+  function selectTemplate(template: ApiTemplate) {
     setCustom(template.instructions);
     setSelectedTemplateName(template.title);
-    setSelectedTemplateDescription(template.description);
     setShowTemplateModal(false);
   }
 
   function removeTemplate() {
     setCustom("");
     setSelectedTemplateName(null);
-    setSelectedTemplateDescription(null);
     setShowTemplateModal(false);
   }
 
@@ -105,18 +130,17 @@ export function ModelSetModal({
     };
     if (initial && onUpdate) onUpdate(payload);
     else if (!initial && onCreate) onCreate(payload);
-    // keep modal open state controlled by parent; parent should close
   }
 
   if (!open) return null;
 
-  const modelResults = MODELS.filter(
+  const modelResults = models.filter(
     (m) =>
       modelQuery.trim() === "" ||
       m.name.toLowerCase().includes(modelQuery.toLowerCase()) ||
       m.vendor.toLowerCase().includes(modelQuery.toLowerCase()),
   );
-  const verdictResults = MODELS.filter(
+  const verdictResults = models.filter(
     (m) =>
       verdictQuery.trim() === "" ||
       m.name.toLowerCase().includes(verdictQuery.toLowerCase()) ||
@@ -138,21 +162,26 @@ export function ModelSetModal({
             title="Choose Template"
             size="md"
           >
-            <div className="space-y-3">
-              {TEMPLATES.map((template) => (
-                <button
-                  key={template.id}
-                  type="button"
-                  onClick={() => selectTemplate(template)}
-                  className="flex w-full flex-col items-start rounded-2xl border border-border bg-background px-4 py-3 text-left transition hover:border-primary/40 hover:bg-accent"
-                >
-                  <span className="text-sm font-semibold text-foreground">{template.title}</span>
-                  <span className="mt-1 text-sm text-muted-foreground">{template.description}</span>
-                </button>
-              ))}
+            <div className="max-h-64 space-y-2 overflow-y-auto">
+              {templateOptions.length === 0 ? (
+                <p className="py-4 text-center text-sm text-muted-foreground">No templates available.</p>
+              ) : (
+                templateOptions.map((template) => (
+                  <button
+                    key={template.id}
+                    type="button"
+                    onClick={() => selectTemplate(template)}
+                    className="flex w-full flex-col items-start rounded-xl border border-white/10 bg-background px-4 py-3 text-left transition hover:border-primary/40 hover:bg-accent"
+                  >
+                    <span className="text-sm font-semibold">{template.title}</span>
+                    <span className="mt-1 text-sm text-muted-foreground">{template.description}</span>
+                  </button>
+                ))
+              )}
             </div>
           </Modal>
         )}
+
         <div>
           <label className="block text-sm">
             <div className="mb-1 font-medium">Name</div>
@@ -182,7 +211,7 @@ export function ModelSetModal({
             <input
               value={modelQuery}
               onChange={(e) => setModelQuery(e.target.value)}
-              placeholder="Search AI models..."
+              placeholder="Search your models or OpenRouter..."
               className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm"
             />
             <button
@@ -201,24 +230,67 @@ export function ModelSetModal({
           </div>
           {modelQuery.trim() !== "" && (
             <div className="rounded-lg border border-border bg-popover p-1 mt-2 shadow-sm">
-              {modelResults.length === 0 ? (
-                <div className="px-3 py-2 text-xs text-muted-foreground">No models match.</div>
-              ) : (
-                modelResults.slice(0, 6).map((m) => (
+              {modelResults.slice(0, 6).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => {
+                    toggle(m.id);
+                    setModelQuery("");
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-accent"
+                >
+                  <span className="size-2 rounded-full" style={{ background: m.color }} />
+                  <span className="font-medium">{m.name}</span>
+                  <span className="text-xs text-muted-foreground">{m.vendor}</span>
+                </button>
+              ))}
+              {orSearching && (
+                <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+                  <Loader2 className="size-3.5 animate-spin" /> Searching OpenRouter…
+                </div>
+              )}
+              {orResults.map((r) => {
+                const existing = models.find((m) => m.openrouter_slug === r.openrouter_slug);
+                return (
                   <button
-                    key={m.id}
+                    key={r.openrouter_slug}
                     type="button"
+                    disabled={orAdding === r.openrouter_slug}
                     onClick={() => {
-                      toggle(m.id);
-                      setModelQuery("");
+                      void (async () => {
+                        const auth = authHeaders();
+                        if (!auth) return;
+                        setOrAdding(r.openrouter_slug);
+                        try {
+                          let id = existing?.id;
+                          if (!id) {
+                            const added = await api.models.add(auth, r.openrouter_slug);
+                            id = added.id;
+                            await refresh();
+                          }
+                          if (id) toggle(id);
+                          setModelQuery("");
+                          setOrResults([]);
+                        } finally {
+                          setOrAdding(null);
+                        }
+                      })();
                     }}
-                    className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-accent"
+                    className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-accent"
                   >
-                    <span className="size-2 rounded-full" style={{ background: m.color }} />
-                    <span className="font-medium">{m.name}</span>
-                    <span className="text-xs text-muted-foreground">{m.vendor}</span>
+                    <div className="min-w-0">
+                      <div className="font-medium">{r.name}</div>
+                      <div className="truncate text-xs text-muted-foreground">{r.openrouter_slug}</div>
+                    </div>
+                    <span className="shrink-0 text-xs text-primary">
+                      {orAdding === r.openrouter_slug ? "Adding…" : existing ? "Select" : "Add & select"}
+                    </span>
                   </button>
-                ))
+                );
+              })}
+              {modelResults.length === 0 && !orSearching && orResults.length === 0 && (
+                <div className="px-3 py-2 text-xs text-muted-foreground">No models match.</div>
               )}
             </div>
           )}
@@ -232,8 +304,7 @@ export function ModelSetModal({
                     key={id}
                     className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs"
                   >
-                    <span className="size-2 rounded-full" style={{ background: m.color }} />{" "}
-                    {m.name}
+                    <span className="size-2 rounded-full" style={{ background: m.color }} /> {m.name}
                     <button
                       type="button"
                       onClick={() => setPicked((p) => p.filter((x) => x !== id))}
@@ -283,10 +354,7 @@ export function ModelSetModal({
           )}
           {verdict && (
             <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1.5 text-sm">
-              <span
-                className="size-2 rounded-full"
-                style={{ background: modelById(verdict).color }}
-              />
+              <span className="size-2 rounded-full" style={{ background: modelById(verdict).color }} />
               <span className="font-medium">{modelById(verdict).name}</span>
             </div>
           )}
@@ -301,7 +369,7 @@ export function ModelSetModal({
                 type="button"
                 onClick={() => setStrategy(s.name)}
                 className={cn(
-                  "group rounded-2xl border px-3 py-3 text-left text-sm transition",
+                  "rounded-2xl border px-3 py-3 text-left text-sm transition",
                   strategy === s.name
                     ? "border-primary bg-primary/5 text-primary"
                     : "border-border bg-background hover:border-primary/40 hover:bg-accent",
@@ -319,20 +387,13 @@ export function ModelSetModal({
             Custom Verdict Instructions{" "}
             <span className="font-normal text-muted-foreground">(Optional)</span>
           </div>
-          <div className="mb-2 text-sm text-muted-foreground">
-            Customize how the Verdict AI should judge the answers.
-          </div>
           <textarea
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
             rows={3}
-            placeholder="Example: Choose the answer that is easiest for a beginner to understand. Focus on clarity, accuracy, and practical usefulness."
+            placeholder="Example: Choose the answer that is easiest for a beginner to understand."
             className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
           />
-          <div className="mt-1 text-xs text-muted-foreground">
-            If filled, these custom instructions override the selected strategy.
-          </div>
-
           <div className="mt-3">
             <div className="text-sm font-medium">Template</div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -340,7 +401,7 @@ export function ModelSetModal({
                 <button
                   type="button"
                   onClick={() => setShowTemplateModal(true)}
-                  className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
+                  className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent"
                 >
                   Choose Template
                 </button>
@@ -350,7 +411,7 @@ export function ModelSetModal({
                   <button
                     type="button"
                     onClick={removeTemplate}
-                    className="rounded-full p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                    className="rounded-full p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
                     aria-label={`Remove ${selectedTemplateName}`}
                   >
                     <X className="size-3.5" />
@@ -364,10 +425,7 @@ export function ModelSetModal({
         {error && <div className="text-sm text-destructive">{error}</div>}
 
         <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent"
-          >
+          <button onClick={onClose} className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent">
             Cancel
           </button>
           <button

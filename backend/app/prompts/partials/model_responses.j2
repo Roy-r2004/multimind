@@ -1,0 +1,13 @@
+{# Renders all model answers for verdict prompts #}
+{% for answer in model_answers %}
+---
+### Model: {{ answer.model_name }} ({{ answer.model_id }})
+{% if answer.failed %}
+**Status**: FAILED — {{ answer.error_message or "Model did not respond" }}
+{% else %}
+**Confidence**: {{ answer.confidence }}%
+**Response**:
+{{ answer.text }}
+{% endif %}
+{% endfor %}
+---

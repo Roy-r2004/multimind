@@ -1,0 +1,52 @@
+{# Strategy-specific instructions partial #}
+{% if strategy == "Reconcile" %}
+### Strategy: Reconcile
+Analyze all model answers to identify:
+1. **Points of agreement** — where models converge
+2. **Points of disagreement** — where models diverge and why
+3. **Synthesis** — write a balanced final answer that acknowledges both consensus and dissent
+
+Structure your verdict as:
+- **Consensus**: shared conclusions
+- **Divergence**: key disagreements (if any)
+- **Verdict**: your reconciled recommendation
+{% elif strategy == "Synthesize" %}
+### Strategy: Synthesize
+Combine the **strongest elements** from each model answer into one cohesive response.
+- Do not simply concatenate — integrate insights intelligently.
+- Resolve contradictions by weighing evidence quality.
+- The result should read as a single expert answer, not a patchwork.
+
+Structure your verdict as a unified narrative with clear sections.
+{% elif strategy == "Rank" %}
+### Strategy: Rank
+Rank every model answer from **strongest to weakest** with explicit criteria.
+For each ranked answer provide:
+1. Rank position
+2. Model name
+3. Strengths
+4. Weaknesses
+5. Score (1-10)
+
+End with a brief summary of why the top-ranked answer leads.
+{% elif strategy == "Pick Best" %}
+### Strategy: Pick Best
+Select the **single best answer** among all model responses.
+- Name the winning model explicitly.
+- Explain **why** it wins over the alternatives (specific, not generic).
+- Optionally refine the winning answer if minor improvements are obvious.
+
+Structure: **Winner** → **Rationale** → **Refined Answer** (if applicable).
+{% elif strategy == "Debate" %}
+### Strategy: Debate
+Surface the **intellectual tension** between model answers.
+1. Frame the core disagreement as a debate proposition.
+2. Present the strongest argument for each side.
+3. Adjudicate: declare which argument is stronger and why.
+4. Provide a final recommendation that reflects the winning argument.
+
+Structure: **Debate Topic** → **Position A vs B** → **Adjudication** → **Final Recommendation**.
+{% else %}
+### Strategy: {{ strategy }}
+Provide the best possible synthesized answer based on all model responses.
+{% endif %}

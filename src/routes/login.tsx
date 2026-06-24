@@ -1,5 +1,7 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Sparkles } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
+import { BrandLogo } from "@/components/BrandLogo";
+import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/login")({
   head: () => ({ meta: [{ title: "Log in — MultiAI" }] }),
@@ -7,17 +9,37 @@ export const Route = createFileRoute("/login")({
 });
 
 function LoginPage() {
+  const { signIn } = useAuth();
+  const navigate = useNavigate();
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
   return (
     <AuthShell title="Welcome back" subtitle="Log in to continue your conversations.">
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          window.location.href = "/chat";
+          setError(null);
+          setLoading(true);
+          const fd = new FormData(e.currentTarget);
+          try {
+            await signIn(String(fd.get("email")), String(fd.get("password")));
+            void navigate({ to: "/chat" });
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Login failed");
+          } finally {
+            setLoading(false);
+          }
         }}
         className="space-y-4"
       >
+        {error && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
         <Field label="Email">
-          <input type="email" required defaultValue="sara@acme.co" className="input" />
+          <input name="email" type="email" required defaultValue="chafic@acme.co" className="input" />
         </Field>
         <Field
           label="Password"
@@ -27,11 +49,10 @@ function LoginPage() {
             </a>
           }
         >
-          <input type="password" required defaultValue="••••••••" className="input" />
+          <input name="password" type="password" required defaultValue="password123" className="input" />
         </Field>
-        <button className="btn-primary w-full">Log in</button>
-        <button type="button" className="btn-outline w-full">
-          Continue with Google
+        <button className="btn-primary w-full" disabled={loading}>
+          {loading ? "Signing in…" : "Log in"}
         </button>
         <p className="text-center text-sm text-muted-foreground">
           No account?{" "}
@@ -54,29 +75,26 @@ export function AuthShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid min-h-screen md:grid-cols-2">
-      <div className="hidden md:flex flex-col justify-between bg-[radial-gradient(80%_60%_at_20%_0%,oklch(0.85_0.08_200)_0%,oklch(0.92_0.04_80)_60%,transparent_100%)] p-10">
+    <div className="relative grid min-h-screen md:grid-cols-2">
+      <div className="grain pointer-events-none absolute inset-0 opacity-40" />
+      <div className="relative hidden flex-col justify-between border-r border-white/5 bg-[radial-gradient(ellipse_80%_60%_at_20%_0%,oklch(0.35_0.12_260)_0%,oklch(0.12_0.02_260)_70%)] p-10 md:flex">
         <Link to="/" className="flex items-center gap-2 font-display text-lg font-semibold">
-          <span className="grid size-8 place-items-center rounded-xl bg-primary text-primary-foreground">
-            <Sparkles className="size-4" />
-          </span>
+          <BrandLogo className="size-8" />
           MultiAI
         </Link>
-        <blockquote className="max-w-md text-2xl font-display leading-tight">
-          “I stopped switching tabs between three chatbots. MultiAI just shows me the answer.”
+        <blockquote className="max-w-md text-2xl font-display leading-tight text-foreground/90">
+          Ask once. Compare frontier models. One verdict.
           <footer className="mt-3 text-sm font-sans text-muted-foreground">
-            — Liam, product designer
+            GPT-4.1 · Claude Sonnet 4 · Gemini 2.5 Pro · DeepSeek V3
           </footer>
         </blockquote>
-        <div className="text-xs text-muted-foreground">© 2026 MultiAI prototype</div>
+        <div className="text-xs text-muted-foreground">© 2026 MultiAI</div>
       </div>
-      <div className="flex items-center justify-center p-8">
+      <div className="relative flex items-center justify-center p-8">
         <div className="w-full max-w-sm">
           <div className="md:hidden mb-8">
             <Link to="/" className="flex items-center gap-2 font-display text-lg font-semibold">
-              <span className="grid size-8 place-items-center rounded-xl bg-primary text-primary-foreground">
-                <Sparkles className="size-4" />
-              </span>
+              <BrandLogo className="size-8" />
               MultiAI
             </Link>
           </div>
@@ -113,9 +131,9 @@ export function Field({
 export function FieldStyles() {
   return (
     <style>{`
-      .input { width: 100%; border: 1px solid var(--color-input); background: var(--color-card); border-radius: 0.625rem; padding: 0.55rem 0.75rem; font-size: 0.9rem; outline: none; }
-      .input:focus { box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-ring) 30%, transparent); border-color: var(--color-ring); }
-      .btn-primary { background: var(--color-primary); color: var(--color-primary-foreground); border-radius: 0.625rem; padding: 0.6rem 0.9rem; font-size: 0.9rem; font-weight: 500; cursor: pointer; }
+      .input { width: 100%; border: 1px solid color-mix(in oklab, white 12%, transparent); background: color-mix(in oklab, var(--color-card) 80%, transparent); border-radius: 0.75rem; padding: 0.55rem 0.75rem; font-size: 0.9rem; outline: none; }
+      .input:focus { box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-primary) 25%, transparent); border-color: var(--color-primary); }
+      .btn-primary { background: var(--color-primary); color: var(--color-primary-foreground); border-radius: 0.75rem; padding: 0.6rem 0.9rem; font-size: 0.9rem; font-weight: 500; cursor: pointer; box-shadow: 0 0 24px -4px color-mix(in oklab, var(--color-primary) 60%, transparent); }
       .btn-primary:hover { opacity: 0.92; }
       .btn-outline { border: 1px solid var(--color-border); background: var(--color-card); border-radius: 0.625rem; padding: 0.55rem 0.9rem; font-size: 0.9rem; font-weight: 500; cursor: pointer; }
       .btn-outline:hover { background: var(--color-accent); }

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">MultiAI logo</title>
+  <desc id="desc">A geometric M mark with connected AI nodes.</desc>
+  <rect width="256" height="256" rx="56" fill="#0f766e"/>
+  <path
+    d="M58 178V78h27l43 58 43-58h27v100h-28v-57l-33 44h-18l-33-44v57H58Z"
+    fill="#f8fafc"
+  />
+  <circle cx="72" cy="68" r="13" fill="#f59e0b"/>
+  <circle cx="128" cy="52" r="13" fill="#38bdf8"/>
+  <circle cx="184" cy="68" r="13" fill="#a78bfa"/>
+  <path d="M83 65l33-9M140 56l33 9" stroke="#f8fafc" stroke-width="8" stroke-linecap="round"/>
+</svg>
