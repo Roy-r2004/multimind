@@ -87,7 +87,7 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search OpenRouter — e.g. claude sonnet 4, gemini 2.5, gpt-4.1"
-          className="w-full rounded-xl border border-white/10 bg-background/60 py-2.5 pl-10 pr-4 text-sm outline-none focus:border-primary/50"
+          className="w-full rounded-xl border border-border bg-background py-2.5 pl-10 pr-4 text-sm outline-none focus:border-primary/50"
         />
         {searching && (
           <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
@@ -101,13 +101,13 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
       )}
 
       {results.length > 0 && (
-        <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-white/10 p-2">
+        <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-border p-2">
           {results.map((r) => {
             const already = addedSlugs.has(r.openrouter_slug);
             return (
               <div
                 key={r.openrouter_slug}
-                className="flex items-start justify-between gap-3 rounded-lg px-2 py-2 hover:bg-white/5"
+                className="flex items-start justify-between gap-3 rounded-lg px-2 py-2 hover:bg-accent"
               >
                 <div className="min-w-0">
                   <div className="font-medium text-sm">{r.name}</div>
@@ -123,7 +123,7 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
                   className={cn(
                     "inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium",
                     already
-                      ? "border border-white/10 text-muted-foreground"
+                      ? "border border-border text-muted-foreground"
                       : "bg-primary text-primary-foreground hover:opacity-90",
                   )}
                 >

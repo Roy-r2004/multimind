@@ -47,7 +47,7 @@ export function PromptBuilderModal({
             onChange={(e) => setRaw(e.target.value)}
             rows={6}
             placeholder="Write me a landing page for my AI startup"
-            className="w-full rounded-xl border border-white/10 bg-background px-3 py-3 text-sm outline-none focus:border-primary/50"
+            className="w-full rounded-xl border border-border bg-background px-3 py-3 text-sm outline-none focus:border-primary/50"
           />
         </div>
         <button
@@ -59,7 +59,7 @@ export function PromptBuilderModal({
         </button>
         <div>
           <div className="mb-2 text-sm font-medium">Improved prompt</div>
-          <div className="min-h-[120px] rounded-xl border border-white/10 bg-accent/20 p-4 text-sm">
+          <div className="min-h-[120px] rounded-xl border border-border bg-accent/20 p-4 text-sm">
             {improved || (
               <span className="text-muted-foreground">Your improved prompt will appear here.</span>
             )}
@@ -82,7 +82,7 @@ export function PromptBuilderModal({
               type="button"
               onClick={() => void navigator.clipboard.writeText(improved)}
               disabled={!improved}
-              className="rounded-xl border border-white/10 px-4 py-2 text-sm hover:bg-white/5 disabled:opacity-50"
+              className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
             >
               Copy
             </button>

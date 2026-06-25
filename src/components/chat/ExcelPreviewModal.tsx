@@ -19,7 +19,7 @@ export function ExcelPreviewModal({
 }) {
   return (
     <Modal open={open} onClose={onClose} title="Excel preview" size="xl">
-      <div className="overflow-x-auto rounded-xl border border-white/10">
+      <div className="overflow-x-auto rounded-xl border border-border">
         <table className="w-full text-sm">
           <thead className="bg-accent/30">
             <tr>
@@ -32,7 +32,7 @@ export function ExcelPreviewModal({
           </thead>
           <tbody>
             {ROWS.slice(1).map((r, i) => (
-              <tr key={i} className="border-t border-white/10">
+              <tr key={i} className="border-t border-border">
                 {r.map((c, j) => (
                   <td key={j} className="px-3 py-2">
                     {c}
@@ -52,7 +52,7 @@ export function ExcelPreviewModal({
         </button>
         <button
           type="button"
-          className="rounded-xl border border-white/10 px-3 py-2 text-sm hover:bg-white/5"
+          className="rounded-xl border border-border px-3 py-2 text-sm hover:bg-accent"
         >
           Regenerate
         </button>
@@ -62,7 +62,7 @@ export function ExcelPreviewModal({
             onAddToChat?.();
             onClose();
           }}
-          className="rounded-xl border border-white/10 px-3 py-2 text-sm hover:bg-white/5"
+          className="rounded-xl border border-border px-3 py-2 text-sm hover:bg-accent"
         >
           Add to chat
         </button>

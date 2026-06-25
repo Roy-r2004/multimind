@@ -118,7 +118,61 @@ export type ApiTurn = {
   model_answers: ApiModelAnswer[];
   verdict?: ApiVerdict | null;
   decision_insurance?: ApiDecisionInsurance | null;
+  lesson_id?: string | null;
   created_at: string;
+};
+
+export type ApiLessonListItem = {
+  id: string;
+  turn_id: string;
+  chat_id: string;
+  title: string;
+  summary: string;
+  user_name: string;
+  verdict_model_name: string;
+  status: string;
+  created_at: string;
+};
+
+export type ApiLessonComparison = {
+  overview: string;
+  user_position_summary: string;
+  model_position_summary: string;
+  agreements: Array<{ topic: string; detail: string }>;
+  disagreements: Array<{
+    topic: string;
+    user_view: string;
+    model_view: string;
+    analysis: string;
+  }>;
+  evidence: Array<{
+    claim: string;
+    user_evidence: string;
+    model_evidence: string;
+    assessment: string;
+  }>;
+  assumptions: { user: string[]; model: string[] };
+  blind_spots: { user: string[]; model: string[] };
+  lesson: {
+    headline: string;
+    key_insight: string;
+    what_to_remember: string[];
+    when_user_might_be_right: string;
+    when_model_might_be_right: string;
+    recommended_next_step: string;
+  };
+};
+
+export type ApiLessonDetail = ApiLessonListItem & {
+  user_message: string;
+  disagreement_reason: string;
+  user_position: string;
+  verdict_model_id: string;
+  verdict_text: string;
+  verdict_reason: string;
+  strategy: Strategy;
+  comparison: ApiLessonComparison;
+  error_message?: string | null;
 };
 
 export type ApiTemplate = {
@@ -168,6 +222,28 @@ export type ApiError = {
   error: string;
   message: string;
   details?: unknown;
+};
+
+export type ApiBrainMemory = {
+  id: string;
+  source: string;
+  source_id?: string | null;
+  title: string;
+  insight: string;
+  likes: string[];
+  dislikes: string[];
+  created_at?: string | null;
+};
+
+export type ApiBrain = {
+  user_name: string;
+  summary: string;
+  thinking_style: string;
+  likes: string[];
+  dislikes: string[];
+  memories: ApiBrainMemory[];
+  lesson_count: number;
+  updated_at?: string | null;
 };
 
 export class ApiClientError extends Error {

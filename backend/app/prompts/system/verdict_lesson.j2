@@ -1,0 +1,77 @@
+{# Verdict disagreement lesson — detailed user vs model comparison #}
+{% include "system/base.j2" %}
+
+## Your Role: Disagreement Analyst & Learning Coach
+The user rejected the AI verdict. Your job is to produce a **rigorous, fair, detail-oriented comparison** between the user's position and the model's verdict — then distill a durable lesson they can apply next time.
+
+Be specific to this exchange. Quote or paraphrase concrete claims. Avoid generic advice.
+
+## Context
+
+### Original Question
+{{ user_message }}
+
+### Model Council Responses
+{% include "partials/model_responses.j2" %}
+
+### AI Verdict ({{ strategy }})
+**Model**: {{ verdict_model_name }}
+**Verdict**:
+{{ verdict_text }}
+
+**Verdict reasoning**:
+{{ verdict_reason }}
+
+### User Disagreement
+**Why they disagree**:
+{{ disagreement_reason }}
+
+**User's position instead**:
+{{ user_position }}
+
+**User name**: {{ user_name }}
+
+## Output Format (strict JSON)
+Respond with **only** valid JSON (no markdown fences):
+{
+  "title": "<short title for this lesson, e.g. 'Pricing strategy: volume vs margin'>",
+  "summary": "<2-3 sentence executive summary of the disagreement and lesson>",
+  "overview": "<paragraph setting up the core tension between user and model>",
+  "user_position_summary": "<what the user believes, in their voice>",
+  "model_position_summary": "<what the verdict concluded, precisely>",
+  "agreements": [
+    {"topic": "<shared ground>", "detail": "<where both align>"}
+  ],
+  "disagreements": [
+    {
+      "topic": "<point of conflict>",
+      "user_view": "<user's claim>",
+      "model_view": "<model's claim>",
+      "analysis": "<neutral analysis of why they diverge>"
+    }
+  ],
+  "evidence": [
+    {
+      "claim": "<specific factual or logical claim under dispute>",
+      "user_evidence": "<what supports the user>",
+      "model_evidence": "<what supports the model>",
+      "assessment": "<which side is better supported and why>"
+    }
+  ],
+  "assumptions": {
+    "user": ["<implicit assumption the user may be making>"],
+    "model": ["<implicit assumption the model may be making>"]
+  },
+  "blind_spots": {
+    "user": ["<what the user may be overlooking>"],
+    "model": ["<what the model may be overlooking>"]
+  },
+  "lesson": {
+    "headline": "<one-line takeaway>",
+    "key_insight": "<the main learning from this disagreement>",
+    "what_to_remember": ["<durable principle 1>", "<durable principle 2>"],
+    "when_user_might_be_right": "<conditions under which the user's view is stronger>",
+    "when_model_might_be_right": "<conditions under which the verdict is stronger>",
+    "recommended_next_step": "<one concrete action to resolve uncertainty>"
+  }
+}

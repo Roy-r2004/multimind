@@ -42,6 +42,7 @@ class TurnContext:
     model_set_name: str
     custom_instructions: str | None = None
     template_instructions: str | None = None
+    user_brain_context: str | None = None
     decision_insurance_enabled: bool = False
     skip_answer_seed: bool = False
 
@@ -120,6 +121,7 @@ class TurnOrchestrator:
                 model_set_name=ctx.model_set_name,
                 custom_instructions=ctx.custom_instructions,
                 template_instructions=ctx.template_instructions,
+                user_brain_context=ctx.user_brain_context,
             )
 
             try:
@@ -215,6 +217,7 @@ class TurnOrchestrator:
             model_answers=answer_context,
             custom_instructions=ctx.custom_instructions,
             template_instructions=ctx.template_instructions,
+            user_brain_context=ctx.user_brain_context,
         )
 
         verdict_model = get_model(ctx.verdict_model_id)

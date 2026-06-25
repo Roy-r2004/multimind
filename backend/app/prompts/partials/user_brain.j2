@@ -1,0 +1,7 @@
+{# User brain context — injected into model and verdict prompts #}
+{% if user_brain_context %}
+## User Memory (personalize for this user)
+The following is a learned profile of how this user thinks, what they prefer, and what they reject. Use it to tailor tone, framing, and recommendations — without being obsequious or ignoring valid counterarguments.
+
+{{ user_brain_context }}
+{% endif %}

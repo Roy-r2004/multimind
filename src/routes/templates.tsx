@@ -116,15 +116,15 @@ function TemplatesPage() {
   function categoryBadgeClass(value: string) {
     switch (value) {
       case "Learning":
-        return "border-blue-500/30 bg-blue-500/10 text-blue-300";
+        return "border-blue-200 bg-blue-50 text-blue-700";
       case "Business":
-        return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+        return "border-emerald-200 bg-emerald-50 text-emerald-700";
       case "Decision":
-        return "border-orange-500/30 bg-orange-500/10 text-orange-300";
+        return "border-orange-200 bg-orange-50 text-orange-700";
       case "Research":
-        return "border-violet-500/30 bg-violet-500/10 text-violet-300";
+        return "border-violet-200 bg-violet-50 text-violet-700";
       default:
-        return "border-white/10 bg-accent text-foreground";
+        return "border-border bg-accent text-foreground";
     }
   }
 
@@ -183,14 +183,14 @@ function TemplatesPage() {
                     </span>
                   )}
                 </div>
-                <div className="mt-3 rounded-lg border border-white/10 bg-background/50 p-3 text-xs text-muted-foreground line-clamp-4">
+                <div className="mt-3 rounded-lg border border-border bg-muted p-3 text-xs text-muted-foreground line-clamp-4">
                   {t.instructions}
                 </div>
                 {!t.is_system && (
                   <div className="mt-3">
                     <button
                       onClick={() => openEdit(t)}
-                      className="rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                      className="rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
                     >
                       Edit
                     </button>

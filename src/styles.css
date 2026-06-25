@@ -40,31 +40,31 @@
 }
 
 :root {
-  --radius: 1rem;
-  --background: oklch(0.13 0.02 265);
-  --foreground: oklch(0.97 0.01 95);
-  --card: oklch(0.17 0.022 265);
-  --card-foreground: oklch(0.97 0.01 95);
-  --popover: oklch(0.17 0.022 265);
-  --popover-foreground: oklch(0.97 0.01 95);
-  --primary: oklch(0.78 0.14 195);
-  --primary-foreground: oklch(0.14 0.02 265);
-  --secondary: oklch(0.22 0.025 265);
-  --secondary-foreground: oklch(0.92 0.01 95);
-  --muted: oklch(0.22 0.02 265);
-  --muted-foreground: oklch(0.68 0.02 265);
-  --accent: oklch(0.24 0.04 280);
-  --accent-foreground: oklch(0.97 0.01 95);
-  --destructive: oklch(0.62 0.21 25);
-  --destructive-foreground: oklch(0.99 0 0);
-  --success: oklch(0.72 0.14 155);
-  --warning: oklch(0.8 0.15 75);
-  --border: oklch(1 0 0 / 9%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.78 0.14 195);
-  --sidebar: oklch(0.11 0.018 265);
-  --sidebar-foreground: oklch(0.92 0.01 95);
-  --sidebar-border: oklch(1 0 0 / 7%);
+  --radius: 0.875rem;
+  --background: oklch(0.995 0.004 240);
+  --foreground: oklch(0.28 0.03 250);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.28 0.03 250);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.28 0.03 250);
+  --primary: oklch(0.58 0.14 240);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.96 0.02 235);
+  --secondary-foreground: oklch(0.35 0.05 250);
+  --muted: oklch(0.96 0.015 235);
+  --muted-foreground: oklch(0.52 0.025 250);
+  --accent: oklch(0.94 0.03 235);
+  --accent-foreground: oklch(0.32 0.05 250);
+  --destructive: oklch(0.55 0.2 25);
+  --destructive-foreground: oklch(1 0 0);
+  --success: oklch(0.55 0.14 155);
+  --warning: oklch(0.72 0.14 75);
+  --border: oklch(0.91 0.02 235);
+  --input: oklch(0.91 0.02 235);
+  --ring: oklch(0.58 0.14 240);
+  --sidebar: oklch(0.98 0.012 235);
+  --sidebar-foreground: oklch(0.35 0.04 250);
+  --sidebar-border: oklch(0.91 0.02 235);
 }
 
 @layer base {
@@ -77,7 +77,7 @@
     height: 100%;
   }
   html {
-    color-scheme: dark;
+    color-scheme: light;
   }
   body {
     background-color: var(--color-background);
@@ -90,13 +90,13 @@
   h3,
   h4 {
     font-family: var(--font-display);
-    letter-spacing: -0.03em;
+    letter-spacing: -0.02em;
   }
 }
 
 @layer utilities {
   .text-gradient {
-    background: linear-gradient(135deg, oklch(0.95 0.02 95), oklch(0.78 0.14 195));
+    background: linear-gradient(135deg, oklch(0.45 0.1 250), oklch(0.58 0.14 240));
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -106,6 +106,229 @@
   }
   .animate-fade-up-delay {
     animation: fade-up 0.7s ease-out 0.12s both;
+  }
+
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      oklch(0.94 0.02 235) 0%,
+      oklch(0.98 0.01 235) 50%,
+      oklch(0.94 0.02 235) 100%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  }
+
+  .mock-banner-shine {
+    background: linear-gradient(
+      105deg,
+      transparent 40%,
+      oklch(1 0 0 / 0.5) 50%,
+      transparent 60%
+    );
+    animation: banner-shine 3s ease-in-out infinite;
+  }
+
+  .brain-hero {
+    isolation: isolate;
+  }
+
+  .brain-orb {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(48px);
+    pointer-events: none;
+  }
+
+  .brain-orb-a {
+    width: 55%;
+    height: 55%;
+    background: oklch(0.72 0.12 220 / 0.35);
+    animation: brain-float 8s ease-in-out infinite;
+  }
+
+  .brain-orb-b {
+    width: 45%;
+    height: 45%;
+    background: oklch(0.58 0.14 240 / 0.25);
+    animation: brain-float 10s ease-in-out infinite reverse;
+  }
+
+  .brain-scan-line {
+    position: absolute;
+    left: 10%;
+    right: 10%;
+    height: 2px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      oklch(0.58 0.14 240 / 0.6),
+      transparent
+    );
+    box-shadow: 0 0 12px oklch(0.58 0.14 240 / 0.4);
+    animation: brain-scan 4s ease-in-out infinite;
+    z-index: 15;
+    pointer-events: none;
+  }
+
+  .brain-outline {
+    animation: brain-dash 12s linear infinite;
+  }
+
+  .brain-node {
+    animation: brain-pulse 2.4s ease-in-out infinite;
+  }
+
+  .brain-node-pulse {
+    animation: brain-ring 2.4s ease-in-out infinite;
+  }
+
+  .brain-synapse {
+    animation: brain-flicker 3s ease-in-out infinite;
+  }
+
+  .brain-orbit {
+    position: absolute;
+    z-index: 25;
+    animation: brain-orbit 18s linear infinite;
+  }
+
+  .brain-orbit-1 {
+    top: 8%;
+    left: 50%;
+    margin-left: -2rem;
+    animation-duration: 14s;
+  }
+
+  .brain-orbit-2 {
+    bottom: 12%;
+    right: 6%;
+    animation-duration: 20s;
+    animation-direction: reverse;
+  }
+
+  .brain-orbit-3 {
+    bottom: 20%;
+    left: 4%;
+    animation-duration: 16s;
+  }
+
+  .brain-chip {
+    display: inline-block;
+    white-space: nowrap;
+    border-radius: 9999px;
+    border: 1px solid oklch(0.58 0.14 240 / 0.25);
+    background: oklch(1 0 0 / 0.85);
+    backdrop-filter: blur(8px);
+    padding: 0.2rem 0.55rem;
+    font-size: 10px;
+    font-weight: 500;
+    color: oklch(0.45 0.08 250);
+    box-shadow: 0 4px 12px oklch(0.58 0.14 240 / 0.12);
+  }
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes banner-shine {
+  0%,
+  100% {
+    transform: translateX(-120%);
+  }
+  50% {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes brain-float {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(6%, -4%) scale(1.05);
+  }
+}
+
+@keyframes brain-scan {
+  0% {
+    top: 15%;
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    top: 85%;
+    opacity: 0;
+  }
+}
+
+@keyframes brain-dash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+@keyframes brain-pulse {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes brain-ring {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.4);
+  }
+}
+
+@keyframes brain-flicker {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes brain-orbit {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  25% {
+    transform: translate(4px, -6px) rotate(2deg);
+  }
+  50% {
+    transform: translate(-2px, 4px) rotate(-1deg);
+  }
+  75% {
+    transform: translate(6px, 2px) rotate(1deg);
+  }
+  100% {
+    transform: translate(0, 0) rotate(0deg);
   }
 }
 

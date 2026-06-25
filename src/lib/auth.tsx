@@ -22,7 +22,6 @@ type AuthState = {
   isLoading: boolean;
   isAuthenticated: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, fullName: string) => Promise<void>;
   signOut: () => void;
   refreshSession: () => Promise<void>;
   authHeaders: () => { token: string; orgId: string } | null;
@@ -82,21 +81,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(ORG_KEY, s.organization.id);
   }, [orgId]);
 
-  const signUp = useCallback(async (email: string, password: string, fullName: string) => {
-    const { access_token } = await api.auth.signUp({
-      email,
-      password,
-      full_name: fullName,
-    });
-    setToken(access_token);
-    localStorage.setItem(TOKEN_KEY, access_token);
-    const tempAuth = { token: access_token, orgId: "" };
-    const s = await api.auth.session(tempAuth);
-    setSession(s);
-    setOrgId(s.organization.id);
-    localStorage.setItem(ORG_KEY, s.organization.id);
-  }, []);
-
   const signOut = useCallback(() => {
     setToken(null);
     setOrgId(null);
@@ -113,12 +97,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoading,
       isAuthenticated: Boolean(token && session),
       signIn,
-      signUp,
       signOut,
       refreshSession,
       authHeaders,
     }),
-    [token, orgId, session, isLoading, signIn, signUp, signOut, refreshSession, authHeaders],
+    [token, orgId, session, isLoading, signIn, signOut, refreshSession, authHeaders],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

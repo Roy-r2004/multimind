@@ -62,10 +62,10 @@ function SharedPage() {
               <Copy className="size-3.5" /> {copied ? "Copied!" : "Copy link"}
             </button>
             <Link
-              to="/signup"
+              to="/login"
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
             >
-              <ExternalLink className="size-3.5" /> Open in my account
+              <ExternalLink className="size-3.5" /> Log in
             </Link>
           </div>
         </div>

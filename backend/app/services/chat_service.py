@@ -20,6 +20,7 @@ from app.db.models import (
     TurnStatus,
 )
 from app.llm.catalog import get_model
+from app.services.brain_service import brain_service
 from app.llm.orchestrator import TurnContext, get_orchestrator
 from app.schemas.api import (
     ChatCreateRequest,
@@ -152,6 +153,9 @@ class ChatService:
 
         model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
         chat = await self.get_chat(db, auth, turn.chat_id)
+        user_brain_context = await brain_service.get_context_for_user(
+            db, auth.user.id, auth.org_id, auth.user.full_name
+        )
 
         ctx = TurnContext(
             turn_id=turn.id,
@@ -164,6 +168,7 @@ class ChatService:
             strategy=turn.strategy,
             model_set_name=model_set.name,
             custom_instructions=turn.custom_instructions,
+            user_brain_context=user_brain_context or None,
             decision_insurance_enabled=True,
             skip_answer_seed=True,
         )
@@ -191,6 +196,7 @@ class ChatService:
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
+                selectinload(Turn.lesson),
             )
         )
         turn = result.scalar_one_or_none()
@@ -209,6 +215,7 @@ class ChatService:
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
+                selectinload(Turn.lesson),
             )
             .order_by(Turn.created_at.asc())
         )
@@ -276,6 +283,7 @@ class ChatService:
             model_answers=answers,
             verdict=verdict,
             decision_insurance=insurance,
+            lesson_id=turn.lesson.id if turn.lesson else None,
             created_at=turn.created_at,
         )
 

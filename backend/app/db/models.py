@@ -61,6 +61,14 @@ class UsageKind(str, enum.Enum):
     ANSWER = "answer"
     VERDICT = "verdict"
     INSURANCE = "insurance"
+    LESSON = "lesson"
+    BRAIN = "brain"
+
+
+class LessonStatus(str, enum.Enum):
+    BUILDING = "building"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -74,6 +82,7 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     memberships: Mapped[list["OrgMembership"]] = relationship(back_populates="user")
     preferences: Mapped["UserPreferences | None"] = relationship(back_populates="user")
+    brain: Mapped["UserBrain | None"] = relationship(back_populates="user")
 
 
 class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -131,6 +140,25 @@ class UserPreferences(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     response_style: Mapped[str] = mapped_column(String(16), default="Balanced", nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="preferences")
+
+
+class UserBrain(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Persistent memory of how a user thinks — learned from disagreements and fed into chat."""
+
+    __tablename__ = "user_brains"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_user_brain_user"),)
+
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    thinking_style: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    likes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    dislikes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    memories: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    lesson_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    user: Mapped["User"] = relationship(back_populates="brain")
 
 
 class Project(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -209,6 +237,7 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     verdict: Mapped["Verdict | None"] = relationship(back_populates="turn")
     decision_insurance: Mapped["DecisionInsurance | None"] = relationship(back_populates="turn")
     cost_records: Mapped[list["CostRecord"]] = relationship(back_populates="turn")
+    lesson: Mapped["VerdictLesson | None"] = relationship(back_populates="turn")
 
 
 class ModelAnswer(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -242,6 +271,39 @@ class Verdict(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
     turn: Mapped["Turn"] = relationship(back_populates="verdict")
+
+
+class VerdictLesson(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Structured lesson built when a user disagrees with the AI verdict."""
+
+    __tablename__ = "verdict_lessons"
+    __table_args__ = (UniqueConstraint("turn_id", name="uq_verdict_lesson_turn"),)
+
+    turn_id: Mapped[str] = mapped_column(String(36), ForeignKey("turns.id"), nullable=False)
+    chat_id: Mapped[str] = UuidFK("chats")
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    user_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    disagreement_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    user_position: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_model_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    verdict_model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    verdict_text: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    comparison: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[LessonStatus] = mapped_column(
+        Enum(LessonStatus), default=LessonStatus.BUILDING, nullable=False
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tokens_input: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_output: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+    turn: Mapped["Turn"] = relationship(back_populates="lesson")
 
 
 class DecisionInsurance(Base, UUIDPrimaryKeyMixin, TimestampMixin):

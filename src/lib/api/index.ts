@@ -4,6 +4,9 @@ import { apiRequest } from "@/lib/api/client";
 import type {
   ApiChat,
   ApiCostSummary,
+  ApiBrain,
+  ApiLessonDetail,
+  ApiLessonListItem,
   ApiModel,
   ApiModelSearchResult,
   ApiModelSet,
@@ -23,9 +26,6 @@ type Auth = { token: string; orgId: string };
 
 export const api = {
   auth: {
-    signUp: (data: { email: string; password: string; full_name: string; org_name?: string }) =>
-      apiRequest<{ access_token: string }>("/auth/signup", { body: data }),
-
     signIn: (data: { email: string; password: string }) =>
       apiRequest<{ access_token: string }>("/auth/signin", { body: data }),
 
@@ -190,5 +190,30 @@ export const api = {
 
     pricing: (auth: Auth) =>
       apiRequest<ApiPricingCatalog>("/costs/pricing", { token: auth.token, orgId: auth.orgId }),
+  },
+
+  lessons: {
+    list: (auth: Auth) =>
+      apiRequest<ApiLessonListItem[]>("/lessons", { token: auth.token, orgId: auth.orgId }),
+
+    get: (auth: Auth, lessonId: string) =>
+      apiRequest<ApiLessonDetail>(`/lessons/${lessonId}`, { token: auth.token, orgId: auth.orgId }),
+
+    disagree: (
+      auth: Auth,
+      turnId: string,
+      data: { reason: string; user_position: string },
+    ) =>
+      apiRequest<ApiLessonDetail>(`/lessons/turns/${turnId}/disagree`, {
+        method: "POST",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  brain: {
+    get: (auth: Auth) =>
+      apiRequest<ApiBrain>("/brain", { token: auth.token, orgId: auth.orgId }),
   },
 };

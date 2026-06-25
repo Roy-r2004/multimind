@@ -40,7 +40,7 @@ export function ChatReferenceModal({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search chats…"
-          className="w-full rounded-xl border border-white/10 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
         />
         <div className="rounded-xl bg-accent/20 p-3 text-xs text-muted-foreground">
           Example: reference <strong className="text-foreground">&quot;Capital of Lebanon&quot;</strong>, then
@@ -59,7 +59,7 @@ export function ChatReferenceModal({
                   onPick({ chatId: c.id, title: c.title, mode });
                   onClose();
                 }}
-                className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-card/60 p-3 text-left hover:border-primary/40"
+                className="flex w-full items-center justify-between rounded-lg border border-border bg-card p-3 text-left hover:border-primary/40"
               >
                 <div>
                   <div className="text-sm font-medium">{c.title}</div>
@@ -80,7 +80,7 @@ export function ChatReferenceModal({
                 onClick={() => setMode(m)}
                 className={cn(
                   "rounded-xl border p-3 text-left text-sm",
-                  mode === m ? "border-primary bg-primary/10" : "border-white/10",
+                  mode === m ? "border-primary bg-primary/10" : "border-border",
                 )}
               >
                 <div className="font-medium">

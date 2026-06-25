@@ -227,7 +227,77 @@ class TurnResponse(BaseModel):
     model_answers: list[ModelAnswerResponse] = []
     verdict: VerdictResponse | None = None
     decision_insurance: DecisionInsuranceResponse | None = None
+    lesson_id: str | None = None
     created_at: datetime
+
+
+class VerdictDisagreeRequest(BaseModel):
+    reason: str = Field(min_length=10, max_length=8000)
+    user_position: str = Field(min_length=10, max_length=8000)
+
+
+class LessonAgreementItem(BaseModel):
+    topic: str
+    detail: str
+
+
+class LessonDisagreementItem(BaseModel):
+    topic: str
+    user_view: str
+    model_view: str
+    analysis: str
+
+
+class LessonEvidenceItem(BaseModel):
+    claim: str
+    user_evidence: str
+    model_evidence: str
+    assessment: str
+
+
+class LessonTakeaway(BaseModel):
+    headline: str = ""
+    key_insight: str = ""
+    what_to_remember: list[str] = []
+    when_user_might_be_right: str = ""
+    when_model_might_be_right: str = ""
+    recommended_next_step: str = ""
+
+
+class LessonComparisonResponse(BaseModel):
+    overview: str = ""
+    user_position_summary: str = ""
+    model_position_summary: str = ""
+    agreements: list[LessonAgreementItem] = []
+    disagreements: list[LessonDisagreementItem] = []
+    evidence: list[LessonEvidenceItem] = []
+    assumptions: dict[str, list[str]] = Field(default_factory=lambda: {"user": [], "model": []})
+    blind_spots: dict[str, list[str]] = Field(default_factory=lambda: {"user": [], "model": []})
+    lesson: LessonTakeaway = Field(default_factory=LessonTakeaway)
+
+
+class LessonListItemResponse(BaseModel):
+    id: str
+    turn_id: str
+    chat_id: str
+    title: str
+    summary: str
+    user_name: str
+    verdict_model_name: str
+    status: str
+    created_at: datetime
+
+
+class LessonDetailResponse(LessonListItemResponse):
+    user_message: str
+    disagreement_reason: str
+    user_position: str
+    verdict_model_id: str
+    verdict_text: str
+    verdict_reason: str
+    strategy: StrategyEnum
+    comparison: LessonComparisonResponse
+    error_message: str | None = None
 
 
 # --- Templates ---
@@ -298,3 +368,28 @@ class SharedChatResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+# --- Brain ---
+
+
+class BrainMemoryResponse(BaseModel):
+    id: str
+    source: str
+    source_id: str | None = None
+    title: str
+    insight: str
+    likes: list[str] = []
+    dislikes: list[str] = []
+    created_at: str | None = None
+
+
+class BrainResponse(BaseModel):
+    user_name: str
+    summary: str
+    thinking_style: str
+    likes: list[str] = []
+    dislikes: list[str] = []
+    memories: list[BrainMemoryResponse] = []
+    lesson_count: int = 0
+    updated_at: datetime | None = None

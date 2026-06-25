@@ -16,7 +16,7 @@ export const Route = createFileRoute("/settings")({
 function SettingsPage() {
   const { session, signOut } = useAuth();
   const { modelSets, activeModelSetId, setActiveModelSetId } = useChatStore();
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<"dark" | "light">("light");
 
   return (
     <AppShell>
@@ -31,7 +31,7 @@ function SettingsPage() {
           <GlassCard className="p-6">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Profile</h2>
             <div className="mt-4 flex items-center gap-4">
-              <div className="grid size-14 place-items-center rounded-full bg-primary/20 text-lg font-semibold text-primary">
+              <div className="grid size-14 place-items-center rounded-full bg-primary/15 text-lg font-semibold text-primary">
                 {session?.user.full_name?.slice(0, 1) ?? "?"}
               </div>
               <div>
@@ -56,7 +56,7 @@ function SettingsPage() {
                 <select
                   value={activeModelSetId}
                   onChange={(e) => setActiveModelSetId(e.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-background/60 px-3 py-2 text-sm"
+                  className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
                 >
                   {modelSets.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -67,7 +67,7 @@ function SettingsPage() {
               </div>
               <div>
                 <div className="mb-2 text-sm font-medium">Appearance</div>
-                <div className="inline-flex rounded-lg border border-white/10 p-0.5">
+                <div className="inline-flex rounded-lg border border-border p-0.5">
                   {(["dark", "light"] as const).map((t) => (
                     <button
                       key={t}
@@ -101,7 +101,7 @@ function SettingsPage() {
             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Verdict strategies</h2>
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
               {STRATEGIES.map((s) => (
-                <div key={s.name} className="rounded-xl border border-white/10 p-3">
+                <div key={s.name} className="rounded-xl border border-border p-3">
                   <div className="text-sm font-medium">{s.name}</div>
                   <p className="mt-1 text-xs text-muted-foreground">{s.desc}</p>
                 </div>

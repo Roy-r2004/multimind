@@ -171,7 +171,7 @@ export function ModelSetModal({
                     key={template.id}
                     type="button"
                     onClick={() => selectTemplate(template)}
-                    className="flex w-full flex-col items-start rounded-xl border border-white/10 bg-background px-4 py-3 text-left transition hover:border-primary/40 hover:bg-accent"
+                    className="flex w-full flex-col items-start rounded-xl border border-border bg-background px-4 py-3 text-left transition hover:border-primary/40 hover:bg-accent"
                   >
                     <span className="text-sm font-semibold">{template.title}</span>
                     <span className="mt-1 text-sm text-muted-foreground">{template.description}</span>

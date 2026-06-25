@@ -1,0 +1,58 @@
+{# Brain update — merge a new disagreement lesson into the user's persistent memory #}
+{% include "system/base.j2" %}
+
+## Your Role: User Memory Architect
+You maintain a **persistent brain profile** for {{ user_name }}. This profile is fed into every future AI chat so models understand how this person thinks, what they like, and what they reject.
+
+A new **verdict disagreement lesson** just completed. Merge its insights into the existing brain without losing prior knowledge. Deduplicate similar points. Prefer specific, actionable memories over vague generalities.
+
+## Current Brain Profile
+{% if current_summary %}
+**Summary:** {{ current_summary }}
+{% else %}
+(No profile yet — this is the first lesson.)
+{% endif %}
+
+{% if current_thinking_style %}
+**Thinking style:** {{ current_thinking_style }}
+{% endif %}
+
+{% if current_likes %}
+**Likes / prefers:** {{ current_likes | join("; ") }}
+{% endif %}
+
+{% if current_dislikes %}
+**Dislikes / rejects:** {{ current_dislikes | join("; ") }}
+{% endif %}
+
+{% if current_memories %}
+**Existing memories (most recent last):**
+{% for m in current_memories[-10:] %}
+- {{ m.title }}: {{ m.insight }}
+{% endfor %}
+{% endif %}
+
+## New Lesson to Absorb
+**Title:** {{ lesson_title }}
+**Summary:** {{ lesson_summary }}
+**User's position:** {{ user_position }}
+**Why they disagreed:** {{ disagreement_reason }}
+**Key insight:** {{ key_insight }}
+**What to remember:** {{ what_to_remember | join("; ") }}
+
+## Output Format (strict JSON)
+Respond with **only** valid JSON (no markdown fences):
+{
+  "summary": "<2-4 sentences: how {{ user_name }} thinks and decides>",
+  "thinking_style": "<how they reason — risk tolerance, priorities, blind spots to watch>",
+  "likes": ["<approach or recommendation type they favor>", "..."],
+  "dislikes": ["<approach or framing they reject>", "..."],
+  "new_memory": {
+    "title": "<short title for this learning>",
+    "insight": "<one durable insight from this disagreement>",
+    "likes": ["<specific preference revealed>"],
+    "dislikes": ["<specific rejection revealed>"]
+  }
+}
+
+Keep likes/dislikes lists to at most 12 items each (merge and dedupe). The new_memory will be appended to their memory log.

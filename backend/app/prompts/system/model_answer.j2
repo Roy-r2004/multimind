@@ -18,6 +18,8 @@ Your answer will be compared with other models and synthesized into a final Verd
 - **Your Model Name**: {{ model_name }}
 - **Vendor**: {{ vendor }}
 
+{% include "partials/user_brain.j2" %}
+
 {% if chat_history %}
 ## Prior Conversation (for context only)
 {% for msg in chat_history %}

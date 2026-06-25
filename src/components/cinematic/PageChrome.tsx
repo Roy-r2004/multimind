@@ -3,11 +3,10 @@ import { cn } from "@/lib/utils";
 
 export function CinematicBackdrop() {
   return (
-    <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-      <div className="absolute -left-[20%] top-[-10%] h-[55vh] w-[55vh] rounded-full bg-primary/20 blur-[120px]" />
-      <div className="absolute -right-[15%] top-[20%] h-[45vh] w-[45vh] rounded-full bg-violet-500/15 blur-[100px]" />
-      <div className="absolute bottom-[-10%] left-[30%] h-[40vh] w-[50vh] rounded-full bg-cyan-500/10 blur-[110px]" />
-      <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJhIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iLjc1IiBudW1PY3RhdmVzPSIzIiBzdGl0Y2hUaWxlcz0ic3RpdGNoIi8+PGZlQ29sb3JNYXRyaXggdHlwZT0ic2F0dXJhdGUiIHZhbHVlcz0iMCIvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIiBmaWx0ZXI9InVybCgjYSkiIG9wYWNpdHk9Ii4wNCIvPjwvc3ZnPg==')] opacity-40" />
+    <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-background">
+      <div className="absolute -left-[15%] top-[-8%] h-[50vh] w-[50vh] rounded-full bg-sky-200/50 blur-[100px]" />
+      <div className="absolute -right-[10%] top-[15%] h-[40vh] w-[40vh] rounded-full bg-blue-100/60 blur-[90px]" />
+      <div className="absolute bottom-[-5%] left-[25%] h-[35vh] w-[45vh] rounded-full bg-sky-100/70 blur-[100px]" />
     </div>
   );
 }
@@ -29,7 +28,7 @@ export function PageHeader({
     <div className={cn("flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between", className)}>
       <div>
         {eyebrow && (
-          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary/80">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary">
             {eyebrow}
           </p>
         )}
@@ -59,14 +58,11 @@ export function GlassCard({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-2xl border border-white/10 bg-card/60 backdrop-blur-xl",
-        glow && "shadow-[0_0_60px_-12px] shadow-primary/25",
+        "relative overflow-hidden rounded-2xl border border-border bg-card shadow-sm",
+        glow && "shadow-md shadow-primary/10 ring-1 ring-primary/10",
         className,
       )}
     >
-      {glow && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/60 to-transparent" />
-      )}
       {children}
     </div>
   );
@@ -86,10 +82,10 @@ export function ModelPill({
   subtitle?: string;
 }) {
   return (
-    <div className="group relative flex flex-col gap-3 rounded-2xl border border-white/10 bg-background/40 p-4 transition hover:border-primary/40 hover:bg-background/60">
+    <div className="group relative flex flex-col gap-3 rounded-2xl border border-border bg-card p-4 transition hover:border-primary/30 hover:shadow-sm">
       <div className="flex items-center gap-3">
         <span
-          className="size-3 shrink-0 rounded-full shadow-[0_0_12px_currentColor]"
+          className="size-3 shrink-0 rounded-full"
           style={{ color, background: color }}
         />
         <div className="min-w-0">

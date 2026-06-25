@@ -20,6 +20,8 @@ import {
   FileSpreadsheet,
   Upload,
   Image as ImageIcon,
+  ThumbsDown,
+  BookOpen,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
@@ -32,6 +34,7 @@ import {
 } from "@/components/chat/ChatReferenceModal";
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { TemplateMenu } from "@/components/chat/TemplateMenu";
+import { VerdictDisagreeModal } from "@/components/chat/VerdictDisagreeModal";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
@@ -264,11 +267,11 @@ export function ChatPage() {
     <AppShell>
       <div className="flex h-[calc(100vh-3.5rem)] flex-col md:h-screen">
         {/* Header */}
-        <div className="flex items-center gap-3 border-b border-white/10 bg-background/60 px-4 py-3 backdrop-blur-xl md:px-6">
+        <div className="flex items-center gap-3 border-b border-border bg-background px-4 py-3 md:px-6">
           {set ? (
             <button
               onClick={() => setShowSet(true)}
-              className="flex items-center gap-2 rounded-xl border border-white/10 bg-card/60 px-3 py-1.5 text-sm font-medium backdrop-blur hover:border-primary/40"
+              className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm font-medium hover:border-primary/40"
             >
               <Gavel className="size-3.5 text-primary" />
               {set.name}
@@ -301,7 +304,7 @@ export function ChatPage() {
               type="button"
               onClick={() => void handleShare()}
               disabled={!activeChatId}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs hover:bg-white/5 disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
             >
               <Share2 className="size-3.5" /> {shareUrl ? "Copied" : "Share"}
             </button>
@@ -320,7 +323,7 @@ export function ChatPage() {
                 </p>
                 <Link
                   to="/login"
-                  className="mt-6 inline-flex rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-[0_0_32px_-4px] shadow-primary/50"
+                  className="mt-6 inline-flex rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
                 >
                   Log in to start
                 </Link>
@@ -363,7 +366,17 @@ export function ChatPage() {
                       {turn.user_message}
                     </div>
                   </div>
-                  <AiTurn set={set} turn={turn} modelById={modelById} />
+                  <AiTurn
+                    set={set}
+                    turn={turn}
+                    modelById={modelById}
+                    onLessonCreated={(lessonId) => {
+                      setApiTurns((prev) =>
+                        prev.map((t) => (t.id === turn.id ? { ...t, lesson_id: lessonId } : t)),
+                      );
+                      void navigate({ to: "/lessons/$id", params: { id: lessonId } });
+                    }}
+                  />
                 </div>
               ))}
 
@@ -372,7 +385,7 @@ export function ChatPage() {
         </div>
 
         {/* Composer */}
-        <div className="border-t border-white/10 bg-background/80 px-4 py-4 backdrop-blur-xl md:px-6">
+        <div className="border-t border-border bg-background px-4 py-4 md:px-6">
           <div className="mx-auto max-w-4xl">
             {refChat && (
               <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
@@ -390,7 +403,7 @@ export function ChatPage() {
               </div>
             )}
             {templateInstructions && (
-              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-white/10 bg-card/60 px-2.5 py-1 text-xs">
+              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1 text-xs">
                 <span className="text-muted-foreground">Template active</span>
                 <button
                   type="button"
@@ -406,7 +419,7 @@ export function ChatPage() {
                 {files.map((f, i) => (
                   <div
                     key={`${f.name}-${i}`}
-                    className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/60 px-2.5 py-1.5 text-xs"
+                    className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs"
                   >
                     {f.state === "uploading" && <Loader2 className="size-3 animate-spin" />}
                     {f.state === "error" && <AlertCircle className="size-3 text-destructive" />}
@@ -422,7 +435,7 @@ export function ChatPage() {
                 ))}
               </div>
             )}
-            <div className="rounded-2xl border border-white/10 bg-card/60 shadow-sm">
+            <div className="rounded-2xl border border-border bg-card shadow-sm">
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -443,13 +456,13 @@ export function ChatPage() {
                     type="button"
                     onClick={() => setShowPlus((v) => !v)}
                     disabled={!isAuthenticated}
-                    className="rounded-lg p-2 text-muted-foreground hover:bg-white/5 disabled:opacity-40"
+                    className="rounded-lg p-2 text-muted-foreground hover:bg-accent disabled:opacity-40"
                     title="Attach"
                   >
                     <Plus className="size-4" />
                   </button>
                   {showPlus && (
-                    <div className="absolute bottom-11 left-0 z-30 w-52 rounded-xl border border-white/10 bg-popover p-1 shadow-xl">
+                    <div className="absolute bottom-11 left-0 z-30 w-52 rounded-xl border border-border bg-popover p-1 shadow-xl">
                       <ComposerMenuItem
                         icon={Upload}
                         label="Upload file"
@@ -506,7 +519,7 @@ export function ChatPage() {
                   type="button"
                   onClick={() => setShowPrompt(true)}
                   disabled={!isAuthenticated}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-white/5 disabled:opacity-40"
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-40"
                 >
                   <Wand2 className="size-3.5" /> Prompt Builder
                 </button>
@@ -514,7 +527,7 @@ export function ChatPage() {
                   type="button"
                   onClick={() => setShowRef(true)}
                   disabled={!isAuthenticated}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-white/5 disabled:opacity-40"
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-40"
                 >
                   <Link2 className="size-3.5" /> Reference
                 </button>
@@ -522,7 +535,7 @@ export function ChatPage() {
                   type="button"
                   onClick={() => void send()}
                   disabled={!input.trim() || loading || !isAuthenticated}
-                  className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-[0_0_24px_-4px] shadow-primary/50 disabled:opacity-40"
+                  className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
                 >
                   {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
                   Send
@@ -605,7 +618,7 @@ function ComposerMenuItem({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-white/5"
+      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent"
     >
       <Icon className="size-4 text-muted-foreground" /> {label}
     </button>
@@ -632,8 +645,8 @@ function LoadingTurn({
                 <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
               </div>
               <div className="mt-3 space-y-2">
-                <div className="h-2 animate-pulse rounded bg-white/10" />
-                <div className="h-2 w-10/12 animate-pulse rounded bg-white/10" />
+                <div className="h-2 animate-pulse rounded bg-muted" />
+                <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
               </div>
             </GlassCard>
           );
@@ -650,11 +663,15 @@ function AiTurn({
   set,
   turn,
   modelById,
+  onLessonCreated,
 }: {
   set: ModelSet;
   turn: ApiTurn;
   modelById: (id: string) => { name: string; color: string };
+  onLessonCreated: (lessonId: string) => void;
 }) {
+  const { authHeaders } = useAuth();
+  const [showDisagree, setShowDisagree] = useState(false);
   const answerUsage = new Map<string, UsageBreakdown>();
   turn.model_answers.forEach((a) => {
     if (a.status === "completed" && a.text) {
@@ -727,18 +744,48 @@ function AiTurn({
 
       {turn.verdict && (
         <GlassCard glow className="p-5">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
               <Gavel className="size-4" />
             </span>
             <span className="font-medium">Verdict</span>
             <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">{turn.verdict.strategy}</span>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {turn.lesson_id ? (
+                <Link
+                  to="/lessons/$id"
+                  params={{ id: turn.lesson_id }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                >
+                  <BookOpen className="size-3.5" /> View lesson
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowDisagree(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <ThumbsDown className="size-3.5" /> I disagree
+                </button>
+              )}
+            </div>
           </div>
           <p className="mt-3 text-sm leading-relaxed">{turn.verdict.text}</p>
           <p className="mt-2 text-xs text-muted-foreground">{turn.verdict.reason}</p>
           {verdictUsage && <CardUsage b={verdictUsage} />}
         </GlassCard>
       )}
+
+      <VerdictDisagreeModal
+        open={showDisagree}
+        onClose={() => setShowDisagree(false)}
+        onSubmit={async (data) => {
+          const auth = authHeaders();
+          if (!auth) return;
+          const lesson = await api.lessons.disagree(auth, turn.id, data);
+          onLessonCreated(lesson.id);
+        }}
+      />
 
       {turn.decision_insurance && (
         <GlassCard className="border-amber-500/20 p-5">
@@ -783,7 +830,7 @@ function SessionCostSummary({
 }) {
   const total = items.reduce((s, i) => s + i.cost, 0);
   return (
-    <div className="rounded-xl border border-white/10 bg-card/40 px-4 py-3 text-xs">
+    <div className="rounded-xl border border-border bg-card px-4 py-3 text-xs">
       <div className="flex flex-wrap gap-3">
         {items.map((b) => (
           <span key={`${b.modelId}-${b.kind}`} className="inline-flex items-center gap-1.5">
@@ -820,9 +867,9 @@ function ModelSetPickerModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-foreground/25 p-4" onClick={onClose}>
       <div
-        className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-white/10 bg-card/95 p-6 shadow-2xl backdrop-blur-xl"
+        className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -838,7 +885,7 @@ function ModelSetPickerModal({
               onClick={() => onPick(s.id)}
               className={cn(
                 "relative rounded-2xl border p-4 text-left transition",
-                s.id === activeId ? "border-primary bg-primary/10" : "border-white/10 hover:border-primary/30",
+                s.id === activeId ? "border-primary bg-primary/10" : "border-border hover:border-primary/30",
               )}
             >
               {s.id === activeId && (
@@ -848,7 +895,7 @@ function ModelSetPickerModal({
               <p className="mt-1 text-xs text-muted-foreground">{s.description}</p>
               <div className="mt-3 flex flex-wrap gap-1">
                 {s.models.map((id) => (
-                  <span key={id} className="inline-flex items-center gap-1 rounded-full border border-white/10 px-2 py-0.5 text-[10px]">
+                  <span key={id} className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px]">
                     <span className="size-1.5 rounded-full" style={{ background: modelById(id).color }} />
                     {modelById(id).name}
                   </span>
@@ -861,7 +908,7 @@ function ModelSetPickerModal({
                     e.stopPropagation();
                     setEditing(s);
                   }}
-                  className="rounded p-1 hover:bg-white/10"
+                  className="rounded p-1 hover:bg-accent"
                 >
                   <Pencil className="size-3.5" />
                 </button>
@@ -894,7 +941,7 @@ function ModelSetPickerModal({
       />
       <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete set?" size="sm">
         <div className="flex justify-end gap-2">
-          <button onClick={() => setDeleteId(null)} className="rounded-lg border border-white/10 px-4 py-2 text-sm">
+          <button onClick={() => setDeleteId(null)} className="rounded-lg border border-border px-4 py-2 text-sm">
             Cancel
           </button>
           <button

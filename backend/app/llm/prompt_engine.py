@@ -52,6 +52,7 @@ class PromptEngine:
         custom_instructions: str | None = None,
         template_instructions: str | None = None,
         chat_history: list[dict[str, str]] | None = None,
+        user_brain_context: str | None = None,
     ) -> str:
         return self.render(
             "system/model_answer.j2",
@@ -63,6 +64,7 @@ class PromptEngine:
             custom_instructions=custom_instructions,
             template_instructions=template_instructions,
             chat_history=chat_history or [],
+            user_brain_context=user_brain_context or "",
         )
 
     def verdict_prompt(
@@ -73,6 +75,7 @@ class PromptEngine:
         model_answers: list[dict[str, Any]],
         custom_instructions: str | None = None,
         template_instructions: str | None = None,
+        user_brain_context: str | None = None,
     ) -> str:
         template = STRATEGY_TEMPLATE_MAP.get(strategy, "system/verdict.j2")
         return self.render(
@@ -82,6 +85,7 @@ class PromptEngine:
             model_answers=model_answers,
             custom_instructions=custom_instructions,
             template_instructions=template_instructions,
+            user_brain_context=user_brain_context or "",
         )
 
     def decision_insurance_prompt(
@@ -100,6 +104,64 @@ class PromptEngine:
             model_answers=model_answers,
             verdict_text=verdict_text,
             verdict_reason=verdict_reason,
+        )
+
+    def verdict_lesson_prompt(
+        self,
+        *,
+        user_name: str,
+        user_message: str,
+        strategy: str,
+        model_answers: list[dict[str, Any]],
+        verdict_model_name: str,
+        verdict_text: str,
+        verdict_reason: str,
+        disagreement_reason: str,
+        user_position: str,
+    ) -> str:
+        return self.render(
+            "system/verdict_lesson.j2",
+            user_name=user_name,
+            user_message=user_message,
+            strategy=strategy,
+            model_answers=model_answers,
+            verdict_model_name=verdict_model_name,
+            verdict_text=verdict_text,
+            verdict_reason=verdict_reason,
+            disagreement_reason=disagreement_reason,
+            user_position=user_position,
+        )
+
+    def brain_update_prompt(
+        self,
+        *,
+        user_name: str,
+        current_summary: str,
+        current_thinking_style: str,
+        current_likes: list[str],
+        current_dislikes: list[str],
+        current_memories: list[dict[str, Any]],
+        lesson_title: str,
+        lesson_summary: str,
+        user_position: str,
+        disagreement_reason: str,
+        key_insight: str,
+        what_to_remember: list[str],
+    ) -> str:
+        return self.render(
+            "system/brain_update.j2",
+            user_name=user_name,
+            current_summary=current_summary,
+            current_thinking_style=current_thinking_style,
+            current_likes=current_likes,
+            current_dislikes=current_dislikes,
+            current_memories=current_memories,
+            lesson_title=lesson_title,
+            lesson_summary=lesson_summary,
+            user_position=user_position,
+            disagreement_reason=disagreement_reason,
+            key_insight=key_insight,
+            what_to_remember=what_to_remember,
         )
 
 

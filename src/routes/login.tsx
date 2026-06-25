@@ -41,25 +41,12 @@ function LoginPage() {
         <Field label="Email">
           <input name="email" type="email" required defaultValue="chafic@acme.co" className="input" />
         </Field>
-        <Field
-          label="Password"
-          right={
-            <a href="#" className="text-xs text-primary hover:underline">
-              Forgot?
-            </a>
-          }
-        >
+        <Field label="Password">
           <input name="password" type="password" required defaultValue="password123" className="input" />
         </Field>
         <button className="btn-primary w-full" disabled={loading}>
           {loading ? "Signing in…" : "Log in"}
         </button>
-        <p className="text-center text-sm text-muted-foreground">
-          No account?{" "}
-          <Link to="/signup" className="text-primary hover:underline">
-            Sign up
-          </Link>
-        </p>
       </form>
     </AuthShell>
   );
@@ -75,9 +62,9 @@ export function AuthShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="relative grid min-h-screen md:grid-cols-2">
-      <div className="grain pointer-events-none absolute inset-0 opacity-40" />
-      <div className="relative hidden flex-col justify-between border-r border-white/5 bg-[radial-gradient(ellipse_80%_60%_at_20%_0%,oklch(0.35_0.12_260)_0%,oklch(0.12_0.02_260)_70%)] p-10 md:flex">
+    <div className="relative grid min-h-screen bg-background md:grid-cols-2">
+      <div className="grain pointer-events-none absolute inset-0 opacity-20" />
+      <div className="relative hidden flex-col justify-between border-r border-border bg-gradient-to-br from-sky-50 via-white to-blue-50 p-10 md:flex">
         <Link to="/" className="flex items-center gap-2 font-display text-lg font-semibold">
           <BrandLogo className="size-8" />
           MultiAI
@@ -131,9 +118,9 @@ export function Field({
 export function FieldStyles() {
   return (
     <style>{`
-      .input { width: 100%; border: 1px solid color-mix(in oklab, white 12%, transparent); background: color-mix(in oklab, var(--color-card) 80%, transparent); border-radius: 0.75rem; padding: 0.55rem 0.75rem; font-size: 0.9rem; outline: none; }
-      .input:focus { box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-primary) 25%, transparent); border-color: var(--color-primary); }
-      .btn-primary { background: var(--color-primary); color: var(--color-primary-foreground); border-radius: 0.75rem; padding: 0.6rem 0.9rem; font-size: 0.9rem; font-weight: 500; cursor: pointer; box-shadow: 0 0 24px -4px color-mix(in oklab, var(--color-primary) 60%, transparent); }
+      .input { width: 100%; border: 1px solid var(--color-border); background: var(--color-card); border-radius: 0.75rem; padding: 0.55rem 0.75rem; font-size: 0.9rem; outline: none; }
+      .input:focus { box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-primary) 20%, transparent); border-color: var(--color-primary); }
+      .btn-primary { background: var(--color-primary); color: var(--color-primary-foreground); border-radius: 0.75rem; padding: 0.6rem 0.9rem; font-size: 0.9rem; font-weight: 500; cursor: pointer; box-shadow: 0 1px 2px color-mix(in oklab, var(--color-primary) 25%, transparent); }
       .btn-primary:hover { opacity: 0.92; }
       .btn-outline { border: 1px solid var(--color-border); background: var(--color-card); border-radius: 0.625rem; padding: 0.55rem 0.9rem; font-size: 0.9rem; font-weight: 500; cursor: pointer; }
       .btn-outline:hover { background: var(--color-accent); }
