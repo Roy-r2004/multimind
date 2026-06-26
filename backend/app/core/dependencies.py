@@ -69,6 +69,14 @@ async def get_auth_context(
     return AuthContext(user=user, org_id=membership.org_id, role=membership.role)
 
 
+async def require_org_admin(
+    auth: AuthContext = Depends(get_auth_context),
+) -> AuthContext:
+    if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+        raise ForbiddenError("Organization admin access required")
+    return auth
+
+
 async def get_optional_user(
     db: AsyncSession = Depends(get_db),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),

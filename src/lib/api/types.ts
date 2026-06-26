@@ -1,11 +1,6 @@
 /** API types — mirror backend Pydantic schemas */
 
-export type Strategy =
-  | "Reconcile"
-  | "Synthesize"
-  | "Rank"
-  | "Pick Best"
-  | "Debate";
+export type Strategy = "Reconcile" | "Synthesize" | "Rank" | "Pick Best" | "Debate";
 
 export type ApiModelPricing = {
   input_per_1k: number;
@@ -203,6 +198,49 @@ export type ApiCostSummary = {
   budget_usd: number;
   budget_used_pct: number;
   by_model: Array<{ model_id: string; cost_usd: number; tokens: number }>;
+};
+
+export type ApiAdminOverview = {
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
+  plan: string;
+  user_role: string;
+  total_members: number;
+  total_projects: number;
+  total_chats: number;
+  total_model_sets: number;
+  total_templates: number;
+  monthly_budget_usd: number;
+};
+
+export type ApiAdminMember = {
+  id: string;
+  membership_id: string;
+  user_id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+  joined_at: string;
+};
+
+export type ApiAdminCreateMemberInput = {
+  email: string;
+  full_name: string;
+  role: "admin" | "member" | "viewer";
+  temporary_password: string;
+};
+
+export type ApiAdminUpdateMemberInput = {
+  role?: "admin" | "member" | "viewer";
+  is_active?: boolean;
+};
+
+export type ApiAdminUsage = ApiCostSummary & {
+  total_turns: number;
+  total_cost_records: number;
 };
 
 export type ApiShareLink = {

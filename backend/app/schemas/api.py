@@ -334,6 +334,53 @@ class CostSummaryResponse(BaseModel):
     by_model: list[dict]
 
 
+class AdminOverviewResponse(BaseModel):
+    organization_id: str
+    organization_name: str
+    organization_slug: str
+    plan: str
+    user_role: str
+    total_members: int
+    total_projects: int
+    total_chats: int
+    total_model_sets: int
+    total_templates: int
+    monthly_budget_usd: float
+
+
+class AdminMemberResponse(BaseModel):
+    id: str
+    membership_id: str
+    user_id: str
+    email: str
+    full_name: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    joined_at: datetime
+
+
+class AdminCreateMemberRequest(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=1, max_length=255)
+    role: str
+    temporary_password: str = Field(min_length=1)
+
+
+class AdminUpdateMemberRequest(BaseModel):
+    role: str | None = None
+    is_active: bool | None = None
+
+
+class AdminMemberActionResponse(BaseModel):
+    message: str
+
+
+class AdminUsageResponse(CostSummaryResponse):
+    total_turns: int
+    total_cost_records: int
+
+
 class PricingCatalogItem(BaseModel):
     model_id: str
     openrouter_slug: str

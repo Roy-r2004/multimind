@@ -4,6 +4,11 @@ import { apiRequest } from "@/lib/api/client";
 import type {
   ApiChat,
   ApiCostSummary,
+  ApiAdminCreateMemberInput,
+  ApiAdminMember,
+  ApiAdminOverview,
+  ApiAdminUpdateMemberInput,
+  ApiAdminUsage,
   ApiBrain,
   ApiLessonDetail,
   ApiLessonListItem,
@@ -34,7 +39,8 @@ export const api = {
   },
 
   models: {
-    list: (auth: Auth) => apiRequest<ApiModel[]>("/models", { token: auth.token, orgId: auth.orgId }),
+    list: (auth: Auth) =>
+      apiRequest<ApiModel[]>("/models", { token: auth.token, orgId: auth.orgId }),
 
     search: (auth: Auth, q: string, limit = 20) =>
       apiRequest<ApiModelSearchResult[]>(
@@ -192,6 +198,40 @@ export const api = {
       apiRequest<ApiPricingCatalog>("/costs/pricing", { token: auth.token, orgId: auth.orgId }),
   },
 
+  admin: {
+    overview: (auth: Auth) =>
+      apiRequest<ApiAdminOverview>("/admin/overview", { token: auth.token, orgId: auth.orgId }),
+
+    members: (auth: Auth) =>
+      apiRequest<ApiAdminMember[]>("/admin/members", { token: auth.token, orgId: auth.orgId }),
+
+    createMember: (auth: Auth, data: ApiAdminCreateMemberInput) =>
+      apiRequest<ApiAdminMember>("/admin/members", {
+        method: "POST",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    updateMember: (auth: Auth, membershipId: string, data: ApiAdminUpdateMemberInput) =>
+      apiRequest<ApiAdminMember>(`/admin/members/${membershipId}`, {
+        method: "PATCH",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    removeMember: (auth: Auth, membershipId: string) =>
+      apiRequest<{ message: string }>(`/admin/members/${membershipId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    usage: (auth: Auth) =>
+      apiRequest<ApiAdminUsage>("/admin/usage", { token: auth.token, orgId: auth.orgId }),
+  },
+
   lessons: {
     list: (auth: Auth) =>
       apiRequest<ApiLessonListItem[]>("/lessons", { token: auth.token, orgId: auth.orgId }),
@@ -199,11 +239,7 @@ export const api = {
     get: (auth: Auth, lessonId: string) =>
       apiRequest<ApiLessonDetail>(`/lessons/${lessonId}`, { token: auth.token, orgId: auth.orgId }),
 
-    disagree: (
-      auth: Auth,
-      turnId: string,
-      data: { reason: string; user_position: string },
-    ) =>
+    disagree: (auth: Auth, turnId: string, data: { reason: string; user_position: string }) =>
       apiRequest<ApiLessonDetail>(`/lessons/turns/${turnId}/disagree`, {
         method: "POST",
         body: data,
@@ -213,7 +249,6 @@ export const api = {
   },
 
   brain: {
-    get: (auth: Auth) =>
-      apiRequest<ApiBrain>("/brain", { token: auth.token, orgId: auth.orgId }),
+    get: (auth: Auth) => apiRequest<ApiBrain>("/brain", { token: auth.token, orgId: auth.orgId }),
   },
 };
