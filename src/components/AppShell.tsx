@@ -17,7 +17,6 @@ import {
   LogOut,
   Brain,
   BookOpen,
-  Shield,
 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { CinematicBackdrop } from "@/components/cinematic/PageChrome";
@@ -35,8 +34,6 @@ const NAV = [
   { to: "/lessons", label: "Lessons", icon: BookOpen },
 ];
 
-const ADMIN_ROLES = new Set(["owner", "admin"]);
-
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const path = useRouterState({ select: (s) => s.location.pathname });
@@ -51,7 +48,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [showCreateProject, setShowCreateProject] = useState(false);
 
   const initials = session?.user.full_name?.slice(0, 1).toUpperCase() ?? "?";
-  const canViewAdmin = ADMIN_ROLES.has(session?.organization.role ?? "");
 
   function saveRename(chatId: string) {
     if (!renameTitle.trim()) {
@@ -124,18 +120,6 @@ export function AppShell({ children }: { children: ReactNode }) {
               <n.icon className="size-4" /> {n.label}
             </Link>
           ))}
-          {canViewAdmin && (
-            <Link
-              to="/admin"
-              onClick={() => setOpen(false)}
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/80 transition hover:bg-accent",
-                path.startsWith("/admin") && "bg-accent font-medium text-foreground",
-              )}
-            >
-              <Shield className="size-4" /> Admin
-            </Link>
-          )}
         </nav>
 
         <div className="mt-4 flex-1 overflow-hidden px-3">

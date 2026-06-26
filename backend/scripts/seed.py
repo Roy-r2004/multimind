@@ -86,6 +86,55 @@ SYSTEM_TEMPLATES = [
 ]
 
 
+DEMO_EMAIL = "chafic@acme.co"
+ADMIN_EMAIL = "admin@multi.ai"
+DEMO_PASSWORD = "password123"
+ADMIN_PASSWORD = "password123"
+DEMO_ORG_SLUG = "acme"
+
+
+async def ensure_user(
+    db,
+    *,
+    email: str,
+    full_name: str,
+    password: str,
+) -> User:
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    if user is None:
+        user = User(email=email, hashed_password=hash_password(password), full_name=full_name)
+        db.add(user)
+        await db.flush()
+    else:
+        user.full_name = full_name
+        user.hashed_password = hash_password(password)
+        user.is_active = True
+    return user
+
+
+async def ensure_membership(db, *, org: Organization, user: User, role: OrgRole) -> OrgMembership:
+    result = await db.execute(
+        select(OrgMembership).where(
+            OrgMembership.org_id == org.id,
+            OrgMembership.user_id == user.id,
+        )
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        membership = OrgMembership(org_id=org.id, user_id=user.id, role=role)
+        db.add(membership)
+    else:
+        membership.role = role
+    return membership
+
+
+async def ensure_preferences(db, *, user: User) -> None:
+    result = await db.execute(select(UserPreferences).where(UserPreferences.user_id == user.id))
+    if result.scalar_one_or_none() is None:
+        db.add(UserPreferences(user_id=user.id, default_model_set_id="balanced"))
+
+
 async def seed() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -107,33 +156,45 @@ async def seed() -> None:
                 continue
             db.add(Template(**data, is_system=True))
 
-        demo = await db.execute(select(User).where(User.email == "chafic@acme.co"))
-        if demo.scalar_one_or_none() is None:
-            # Migrate legacy demo user if present
+        org_result = await db.execute(select(Organization).where(Organization.slug == DEMO_ORG_SLUG))
+        org = org_result.scalar_one_or_none()
+        if org is None:
+            org = Organization(name="Acme Corp", slug=DEMO_ORG_SLUG)
+            db.add(org)
+            await db.flush()
+
+        demo_result = await db.execute(select(User).where(User.email == DEMO_EMAIL))
+        demo_user = demo_result.scalar_one_or_none()
+        if demo_user is None:
+            # Migrate legacy demo user if present.
             legacy = await db.execute(select(User).where(User.email == "sara@acme.co"))
-            legacy_user = legacy.scalar_one_or_none()
-            if legacy_user:
-                legacy_user.email = "chafic@acme.co"
-                legacy_user.full_name = "Chafic"
-                legacy_user.hashed_password = hash_password("password123")
-            else:
-                user = User(
-                    email="chafic@acme.co",
-                    hashed_password=hash_password("password123"),
-                    full_name="Chafic",
-                )
-                db.add(user)
-                await db.flush()
+            demo_user = legacy.scalar_one_or_none()
+            if demo_user:
+                demo_user.email = DEMO_EMAIL
 
-                org_result = await db.execute(select(Organization).where(Organization.slug == "acme"))
-                org = org_result.scalar_one_or_none()
-                if org is None:
-                    org = Organization(name="Acme Corp", slug="acme")
-                    db.add(org)
-                    await db.flush()
+        if demo_user is None:
+            demo_user = await ensure_user(
+                db,
+                email=DEMO_EMAIL,
+                full_name="Chafic",
+                password=DEMO_PASSWORD,
+            )
+        else:
+            demo_user.full_name = "Chafic"
+            demo_user.hashed_password = hash_password(DEMO_PASSWORD)
+            demo_user.is_active = True
 
-                db.add(OrgMembership(org_id=org.id, user_id=user.id, role=OrgRole.OWNER))
-                db.add(UserPreferences(user_id=user.id, default_model_set_id="balanced"))
+        admin_user = await ensure_user(
+            db,
+            email=ADMIN_EMAIL,
+            full_name="MultiAI Admin",
+            password=ADMIN_PASSWORD,
+        )
+
+        await ensure_membership(db, org=org, user=demo_user, role=OrgRole.MEMBER)
+        await ensure_membership(db, org=org, user=admin_user, role=OrgRole.OWNER)
+        await ensure_preferences(db, user=demo_user)
+        await ensure_preferences(db, user=admin_user)
 
         await db.commit()
         print("Seed complete.")

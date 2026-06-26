@@ -1,18 +1,19 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   BarChart3,
   Building2,
   FolderKanban,
   Loader2,
+  LogOut,
   Plus,
   ShieldAlert,
   Trash2,
   Users,
 } from "lucide-react";
-import { AppShell } from "@/components/AppShell";
+import { BrandLogo } from "@/components/BrandLogo";
 import { Modal } from "@/components/Modal";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
+import { CinematicBackdrop, GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { api } from "@/lib/api";
 import type {
   ApiAdminCreateMemberInput,
@@ -46,7 +47,8 @@ function clampPercent(value: number): number {
 }
 
 function AdminPage() {
-  const { authHeaders, session, isLoading: authLoading } = useAuth();
+  const { authHeaders, session, isLoading: authLoading, signOut } = useAuth();
+  const navigate = useNavigate();
   const [overview, setOverview] = useState<ApiAdminOverview | null>(null);
   const [usage, setUsage] = useState<ApiAdminUsage | null>(null);
   const [members, setMembers] = useState<ApiAdminMember[]>([]);
@@ -67,6 +69,12 @@ function AdminPage() {
 
   const role = session?.organization.role ?? "";
   const canViewAdmin = ADMIN_ROLES.has(role);
+
+  useEffect(() => {
+    if (!authLoading && !session) {
+      void navigate({ to: "/login", search: { redirect: "/admin" } });
+    }
+  }, [authLoading, navigate, session]);
 
   const loadAdminData = useCallback(async () => {
     if (authLoading) return;
@@ -171,31 +179,31 @@ function AdminPage() {
     }
   }
 
+  function signOutToLogin() {
+    signOut();
+    if (typeof window !== "undefined") {
+      window.location.replace("/login");
+      return;
+    }
+    void navigate({ to: "/login" });
+  }
+
   if (!authLoading && !session) {
     return (
-      <AppShell>
+      <AdminShell>
         <div className="mx-auto max-w-3xl px-6 py-20 text-center">
           <GlassCard className="p-10">
-            <ShieldAlert className="mx-auto size-8 text-muted-foreground" />
-            <h1 className="mt-4 text-xl font-semibold">Sign in required</h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Log in as an organization owner or admin.
-            </p>
-            <Link
-              to="/login"
-              className="mt-6 inline-flex rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-            >
-              Log in
-            </Link>
+            <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" />
+            <h1 className="mt-4 text-xl font-semibold">Opening admin login</h1>
           </GlassCard>
         </div>
-      </AppShell>
+      </AdminShell>
     );
   }
 
   if (!authLoading && !canViewAdmin) {
     return (
-      <AppShell>
+      <AdminShell onSignOut={signOutToLogin}>
         <div className="mx-auto max-w-3xl px-6 py-20 text-center">
           <GlassCard className="p-10">
             <ShieldAlert className="mx-auto size-8 text-destructive" />
@@ -203,14 +211,32 @@ function AdminPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               Admin dashboards are available only to organization owners and admins.
             </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-2">
+              <Link
+                to="/chat"
+                className="inline-flex rounded-xl border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+              >
+                Return to app
+              </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  signOut();
+                  void navigate({ to: "/login", search: { redirect: "/admin" } });
+                }}
+                className="inline-flex rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                Log in as admin
+              </button>
+            </div>
           </GlassCard>
         </div>
-      </AppShell>
+      </AdminShell>
     );
   }
 
   return (
-    <AppShell>
+    <AdminShell onSignOut={signOutToLogin}>
       <div className="mx-auto max-w-6xl px-6 py-10">
         <PageHeader
           eyebrow="Admin"
@@ -445,7 +471,47 @@ function AdminPage() {
           </button>
         </div>
       </Modal>
-    </AppShell>
+    </AdminShell>
+  );
+}
+
+function AdminShell({
+  children,
+  onSignOut,
+}: {
+  children: React.ReactNode;
+  onSignOut?: () => void;
+}) {
+  return (
+    <div className="relative min-h-screen text-foreground">
+      <CinematicBackdrop />
+      <header className="relative z-10 border-b border-border bg-sidebar/95 shadow-sm backdrop-blur">
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
+          <Link to="/admin" className="flex items-center gap-2 font-display font-semibold">
+            <BrandLogo className="size-7" />
+            MultiAI Admin
+          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/chat"
+              className="rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              Main app
+            </Link>
+            {onSignOut && (
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <LogOut className="size-4" /> Sign out
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+      <main className="relative z-10">{children}</main>
+    </div>
   );
 }
 

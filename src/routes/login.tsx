@@ -1,5 +1,5 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useAuth } from "@/lib/auth";
 
@@ -9,21 +9,58 @@ export const Route = createFileRoute("/login")({
 });
 
 function LoginPage() {
-  const { signIn } = useAuth();
+  const { signIn, signOut } = useAuth();
   const navigate = useNavigate();
+  const redirect = useRouterState({
+    select: (state) => {
+      const search = state.location.search as Record<string, unknown>;
+      const value = search.redirect;
+      return typeof value === "string" ? value : undefined;
+    },
+  });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const isAdminRedirect = redirect === "/admin";
+
+  useEffect(() => {
+    if (!isAdminRedirect) {
+      setError(null);
+    }
+  }, [isAdminRedirect]);
 
   return (
-    <AuthShell title="Welcome back" subtitle="Log in to continue your conversations.">
+    <AuthShell
+      title="Welcome back"
+      subtitle={
+        isAdminRedirect
+          ? "Log in with an organization owner or admin account."
+          : "Log in to continue your conversations."
+      }
+    >
       <form
+        onChange={() => setError(null)}
         onSubmit={async (e) => {
           e.preventDefault();
           setError(null);
           setLoading(true);
           const fd = new FormData(e.currentTarget);
           try {
-            await signIn(String(fd.get("email")), String(fd.get("password")));
+            const session = await signIn(String(fd.get("email")), String(fd.get("password")));
+            const isAdmin =
+              session.organization.role === "owner" || session.organization.role === "admin";
+            if (isAdminRedirect) {
+              if (isAdmin) {
+                void navigate({ to: "/admin" });
+                return;
+              }
+              signOut();
+              setError("Access denied. Admin access requires an owner or admin account.");
+              return;
+            }
+            if (isAdmin) {
+              void navigate({ to: "/admin" });
+              return;
+            }
             void navigate({ to: "/chat" });
           } catch (err) {
             setError(err instanceof Error ? err.message : "Login failed");
@@ -39,10 +76,22 @@ function LoginPage() {
           </div>
         )}
         <Field label="Email">
-          <input name="email" type="email" required defaultValue="chafic@acme.co" className="input" />
+          <input
+            name="email"
+            type="email"
+            required
+            defaultValue={isAdminRedirect ? "admin@multi.ai" : "chafic@acme.co"}
+            className="input"
+          />
         </Field>
         <Field label="Password">
-          <input name="password" type="password" required defaultValue="password123" className="input" />
+          <input
+            name="password"
+            type="password"
+            required
+            defaultValue="password123"
+            className="input"
+          />
         </Field>
         <button className="btn-primary w-full" disabled={loading}>
           {loading ? "Signing in…" : "Log in"}

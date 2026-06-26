@@ -21,7 +21,7 @@ type AuthState = {
   session: ApiSession | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<ApiSession>;
   signOut: () => void;
   refreshSession: () => Promise<void>;
   authHeaders: () => { token: string; orgId: string } | null;
@@ -70,16 +70,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refreshSession();
   }, [refreshSession]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const { access_token } = await api.auth.signIn({ email, password });
-    setToken(access_token);
-    localStorage.setItem(TOKEN_KEY, access_token);
-    const tempAuth = { token: access_token, orgId: orgId ?? "" };
-    const s = await api.auth.session(tempAuth);
-    setSession(s);
-    setOrgId(s.organization.id);
-    localStorage.setItem(ORG_KEY, s.organization.id);
-  }, [orgId]);
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const { access_token } = await api.auth.signIn({ email, password });
+      setToken(access_token);
+      localStorage.setItem(TOKEN_KEY, access_token);
+      const tempAuth = { token: access_token, orgId: orgId ?? "" };
+      const s = await api.auth.session(tempAuth);
+      setSession(s);
+      setOrgId(s.organization.id);
+      localStorage.setItem(ORG_KEY, s.organization.id);
+      return s;
+    },
+    [orgId],
+  );
 
   const signOut = useCallback(() => {
     setToken(null);
