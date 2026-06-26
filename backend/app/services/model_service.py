@@ -42,8 +42,13 @@ class ModelCatalogService:
         await get_pricing_service().ensure_loaded()
 
         items: list[ModelResponse] = []
+        seen_ids: set[str] = set()
+        builtin_slugs: set[str] = set()
+
         for entry in MODEL_CATALOG.values():
             live = enrich_entry(entry)
+            builtin_slugs.add(live.provider_model)
+            seen_ids.add(live.id)
             items.append(
                 _to_response(
                     live.id,
@@ -55,10 +60,34 @@ class ModelCatalogService:
                 )
             )
 
+        pricing = get_pricing_service()
+        for slug, meta in pricing.iter_catalog():
+            if slug in builtin_slugs:
+                continue
+            model_id = slug_to_model_id(slug)
+            if model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+            name = meta.get("name") or slug.split("/")[-1]
+            vendor = vendor_from_slug(slug)
+            blurb = (meta.get("description") or "")[:500]
+            entry = entry_from_slug(model_id, slug, name=name, vendor=vendor, blurb=blurb)
+            items.append(
+                _to_response(
+                    entry.id,
+                    name=entry.name,
+                    vendor=entry.vendor,
+                    color=entry.color,
+                    blurb=entry.blurb,
+                    is_custom=True,
+                )
+            )
+
         result = await db.execute(select(OrgModel).where(OrgModel.org_id == auth.org_id))
         for row in result.scalars().all():
-            if row.model_id in MODEL_CATALOG:
+            if row.model_id in seen_ids:
                 continue
+            seen_ids.add(row.model_id)
             entry = entry_from_slug(row.model_id, row.openrouter_slug, name=row.name, vendor=row.vendor, blurb=row.blurb)
             items.append(
                 _to_response(

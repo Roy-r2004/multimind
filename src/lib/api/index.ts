@@ -52,7 +52,7 @@ export const api = {
     list: (auth: Auth) =>
       apiRequest<ApiModel[]>("/models", { token: auth.token, orgId: auth.orgId }),
 
-    search: (auth: Auth, q: string, limit = 20) =>
+    search: (auth: Auth, q: string, limit = 30) =>
       apiRequest<ApiModelSearchResult[]>(
         `/models/search?q=${encodeURIComponent(q)}&limit=${limit}`,
         { token: auth.token, orgId: auth.orgId },

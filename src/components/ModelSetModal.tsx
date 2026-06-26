@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import type { ApiModelSearchResult, ApiTemplate } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
+import { MAX_COUNCIL_MODELS, slugToModelId } from "@/lib/modelIds";
 
 export function ModelSetModal({
   open,
@@ -34,11 +35,10 @@ export function ModelSetModal({
   const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [verdictQuery, setVerdictQuery] = useState("");
-  const { models, modelById, refresh } = useModels();
+  const { models, modelById } = useModels();
   const { authHeaders } = useAuth();
   const [orResults, setOrResults] = useState<ApiModelSearchResult[]>([]);
   const [orSearching, setOrSearching] = useState(false);
-  const [orAdding, setOrAdding] = useState<string | null>(null);
 
   useEffect(() => {
     const auth = authHeaders();
@@ -49,7 +49,7 @@ export function ModelSetModal({
     const handle = window.setTimeout(() => {
       setOrSearching(true);
       void api.models
-        .search(auth, modelQuery.trim(), 8)
+        .search(auth, modelQuery.trim(), 25)
         .then(setOrResults)
         .catch(() => setOrResults([]))
         .finally(() => setOrSearching(false));
@@ -89,7 +89,15 @@ export function ModelSetModal({
   }, [initial, open]);
 
   function toggle(id: string) {
-    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+    setPicked((p) => {
+      if (p.includes(id)) return p.filter((x) => x !== id);
+      if (p.length >= MAX_COUNCIL_MODELS) {
+        setError(`Select up to ${MAX_COUNCIL_MODELS} council models.`);
+        return p;
+      }
+      setError(null);
+      return [...p, id];
+    });
   }
 
   function selectTemplate(template: ApiTemplate) {
@@ -206,12 +214,14 @@ export function ModelSetModal({
         </div>
 
         <div>
-          <div className="mb-2 font-medium">Models</div>
+          <div className="mb-2 font-medium">
+            Council models <span className="text-muted-foreground font-normal">(up to {MAX_COUNCIL_MODELS})</span>
+          </div>
           <div className="flex gap-2">
             <input
               value={modelQuery}
               onChange={(e) => setModelQuery(e.target.value)}
-              placeholder="Search your models or OpenRouter..."
+              placeholder="Search all OpenRouter models…"
               className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm"
             />
             <button
@@ -230,7 +240,7 @@ export function ModelSetModal({
           </div>
           {modelQuery.trim() !== "" && (
             <div className="rounded-lg border border-border bg-popover p-1 mt-2 shadow-sm">
-              {modelResults.slice(0, 6).map((m) => (
+              {modelResults.slice(0, 12).map((m) => (
                 <button
                   key={m.id}
                   type="button"
@@ -252,30 +262,18 @@ export function ModelSetModal({
               )}
               {orResults.map((r) => {
                 const existing = models.find((m) => m.openrouter_slug === r.openrouter_slug);
+                const modelId = existing?.id ?? slugToModelId(r.openrouter_slug);
+                const selected = picked.includes(modelId);
                 return (
                   <button
                     key={r.openrouter_slug}
                     type="button"
-                    disabled={orAdding === r.openrouter_slug}
+                    disabled={!selected && picked.length >= MAX_COUNCIL_MODELS}
                     onClick={() => {
-                      void (async () => {
-                        const auth = authHeaders();
-                        if (!auth) return;
-                        setOrAdding(r.openrouter_slug);
-                        try {
-                          let id = existing?.id;
-                          if (!id) {
-                            const added = await api.models.add(auth, r.openrouter_slug);
-                            id = added.id;
-                            await refresh();
-                          }
-                          if (id) toggle(id);
-                          setModelQuery("");
-                          setOrResults([]);
-                        } finally {
-                          setOrAdding(null);
-                        }
-                      })();
+                      toggle(modelId);
+                      if (!verdict) setVerdict(modelId);
+                      setModelQuery("");
+                      setOrResults([]);
                     }}
                     className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-accent"
                   >
@@ -284,7 +282,7 @@ export function ModelSetModal({
                       <div className="truncate text-xs text-muted-foreground">{r.openrouter_slug}</div>
                     </div>
                     <span className="shrink-0 text-xs text-primary">
-                      {orAdding === r.openrouter_slug ? "Adding…" : existing ? "Select" : "Add & select"}
+                      {selected ? "Selected" : "Add"}
                     </span>
                   </button>
                 );

@@ -55,6 +55,15 @@ class OrchestratorResult:
     cost_records: list[CostRecord] = field(default_factory=list)
 
 
+def format_llm_error(exc: Exception) -> str:
+    """Surface the underlying OpenRouter message instead of opaque RetryError text."""
+    if isinstance(exc, RetryError) and exc.last_attempt.failed:
+        inner = exc.last_attempt.exception()
+        if inner is not None:
+            return str(inner)
+    return str(exc)
+
+
 class TurnOrchestrator:
     """Enterprise orchestration engine for multi-model turns."""
 
@@ -130,6 +139,7 @@ class TurnOrchestrator:
                     system=system,
                     user=ctx.user_message,
                     model=model.provider_model,
+                    max_tokens=4096,
                 )
                 row.text = response.text
                 row.confidence = response.confidence or 85
@@ -172,14 +182,15 @@ class TurnOrchestrator:
                     },
                 )
             except Exception as exc:
-                logger.warning("model_answer_failed", model_id=model_id, error=str(exc))
+                message = format_llm_error(exc)
+                logger.warning("model_answer_failed", model_id=model_id, error=message)
                 row.status = ModelAnswerStatus.FAILED
-                row.error_message = str(exc)
+                row.error_message = message
                 async with db_lock:
                     await db.flush()
                 await emit(
                     "model_answer_failed",
-                    {"model_id": model_id, "error": str(exc)},
+                    {"model_id": model_id, "error": message},
                 )
 
         await asyncio.gather(*(call_model(mid) for mid in ctx.model_ids))
@@ -228,6 +239,7 @@ class TurnOrchestrator:
                 system=verdict_system,
                 user="Produce the verdict JSON now.",
                 model=verdict_model.provider_model,
+                max_tokens=2048,
             )
             parsed = provider.parse_json_response(verdict_response.text)
 
@@ -276,9 +288,10 @@ class TurnOrchestrator:
                 },
             )
         except Exception as exc:
-            logger.error("verdict_failed", error=str(exc))
+            message = format_llm_error(exc)
+            logger.error("verdict_failed", error=message)
             turn.status = TurnStatus.FAILED
-            turn.error_message = f"Verdict generation failed: {exc}"
+            turn.error_message = f"Verdict generation failed: {message}"
             await db.flush()
             await emit("turn_failed", {"error": turn.error_message})
             return result
@@ -300,6 +313,7 @@ class TurnOrchestrator:
                     system=insurance_system,
                     user="Produce the decision insurance JSON now.",
                     model=verdict_model.provider_model,
+                    max_tokens=2048,
                 )
                 insurance_data = provider.parse_json_response(insurance_response.text)
 

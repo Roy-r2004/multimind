@@ -125,6 +125,13 @@ class OpenRouterPricingService:
                 else:
                     self._by_model_id[model_id] = self._fallback_pricing(model_id)
 
+            from app.llm.catalog import slug_to_model_id
+
+            for slug, or_pricing in slug_map.items():
+                model_id = slug_to_model_id(slug)
+                if model_id not in self._by_model_id:
+                    self._by_model_id[model_id] = or_pricing
+
             self._last_refresh = datetime.now(UTC)
             logger.info(
                 "openrouter_pricing_refreshed",
@@ -184,6 +191,12 @@ class OpenRouterPricingService:
 
     def get_slug_metadata(self, slug: str) -> dict[str, Any] | None:
         return self._meta_by_slug.get(slug)
+
+    def iter_catalog(self) -> list[tuple[str, dict[str, Any]]]:
+        """All OpenRouter models from the latest pricing refresh, sorted by name."""
+        rows = [(slug, meta) for slug, meta in self._meta_by_slug.items()]
+        rows.sort(key=lambda item: (item[1].get("name") or item[0]).lower())
+        return rows
 
     def search_models(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
         """Search live OpenRouter catalog by name, slug, or description."""

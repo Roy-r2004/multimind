@@ -127,8 +127,50 @@ class ChatService:
                 )
             )
         await db.flush()
-        await db.refresh(turn, ["model_answers"])
-        return self._turn_response(turn)
+        loaded = await db.execute(
+            select(Turn)
+            .where(Turn.id == turn.id)
+            .options(
+                selectinload(Turn.model_answers),
+                selectinload(Turn.verdict),
+                selectinload(Turn.decision_insurance),
+                selectinload(Turn.lesson),
+            )
+        )
+        turn = loaded.scalar_one()
+        return self._pending_turn_response(turn)
+
+    def _pending_turn_response(self, turn: Turn) -> TurnResponse:
+        answers = []
+        for a in turn.model_answers:
+            model = get_model(a.model_id)
+            answers.append(
+                ModelAnswerResponse(
+                    model_id=a.model_id,
+                    model_name=model.name,
+                    text=a.text,
+                    confidence=a.confidence,
+                    status=a.status.value,
+                    error_message=a.error_message,
+                    tokens_input=a.tokens_input,
+                    tokens_output=a.tokens_output,
+                    cost_usd=a.cost_usd,
+                )
+            )
+        return TurnResponse(
+            id=turn.id,
+            chat_id=turn.chat_id,
+            user_message=turn.user_message,
+            model_set_id=turn.model_set_id,
+            strategy=turn.strategy,
+            verdict_model=turn.verdict_model,
+            status=turn.status.value,
+            model_answers=answers,
+            verdict=None,
+            decision_insurance=None,
+            lesson_id=None,
+            created_at=turn.created_at,
+        )
 
     async def execute_turn_stream(
         self, db: AsyncSession, auth: AuthContext, turn_id: str

@@ -12,6 +12,12 @@ import {
 import { api } from "@/lib/api";
 import type { ApiModel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
+import {
+  colorForModelId,
+  displayNameFromSlug,
+  modelIdToSlug,
+  vendorFromSlug,
+} from "@/lib/modelIds";
 
 export const FLAGSHIP_MODEL_IDS = ["gpt-4.1", "claude", "gemini"] as const;
 
@@ -73,7 +79,23 @@ export function ModelsProvider({ children }: { children: ReactNode }) {
   }, [isAuthenticated, refresh]);
 
   const modelById = useCallback(
-    (id: string) => models.find((m) => m.id === id) ?? FALLBACK,
+    (id: string) => {
+      const found = models.find((m) => m.id === id);
+      if (found) return found;
+      const slug = modelIdToSlug(id);
+      if (slug) {
+        return {
+          id,
+          name: displayNameFromSlug(slug),
+          vendor: vendorFromSlug(slug),
+          color: colorForModelId(id),
+          blurb: "",
+          openrouter_slug: slug,
+          is_custom: true,
+        } satisfies ApiModel;
+      }
+      return FALLBACK;
+    },
     [models],
   );
 

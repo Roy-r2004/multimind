@@ -62,7 +62,7 @@ def _derive_action(method: str, path: str) -> str:
 
 def _derive_summary(method: str, path: str, status: int, actor_email: str) -> str:
     who = actor_email or "anonymous"
-    return f"{who} {method} {path} → {status}"
+    return f"{who} {method} {path} -> {status}"
 
 
 async def _resolve_actor_from_request(request: Request, db: AsyncSession) -> tuple[str | None, str, str, str | None]:

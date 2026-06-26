@@ -34,6 +34,7 @@ import {
 } from "@/components/chat/ChatReferenceModal";
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { TemplateMenu } from "@/components/chat/TemplateMenu";
+import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeModal } from "@/components/chat/VerdictDisagreeModal";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
@@ -170,12 +171,15 @@ async function buildComposerInstructions(
   return text || undefined;
 }
 
+const SYSTEM_MODEL_SETS = new Set(["balanced", "coding", "business", "research"]);
+
 export function ChatPage() {
   const {
     modelSets,
     activeModelSetId,
     setActiveModelSetId,
     createModelSet,
+    updateModelSet,
     isApiMode,
     activeChatId,
     createChat,
@@ -193,6 +197,7 @@ export function ChatPage() {
   const [templateInstructions, setTemplateInstructions] = useState<string | null>(null);
   const [showSet, setShowSet] = useState(false);
   const [showStrategy, setShowStrategy] = useState(false);
+  const [showCouncil, setShowCouncil] = useState(false);
   const [showCreateSet, setShowCreateSet] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
   const [showRef, setShowRef] = useState(false);
@@ -294,6 +299,13 @@ export function ChatPage() {
                 );
               })}
               <span className="ml-2 text-xs text-muted-foreground">{set.strategy}</span>
+              <button
+                type="button"
+                onClick={() => setShowCouncil(true)}
+                className="ml-1 text-xs font-medium text-primary hover:underline"
+              >
+                Edit council
+              </button>
               <button onClick={() => setShowStrategy(true)} className="text-muted-foreground hover:text-foreground">
                 <Info className="size-3.5" />
               </button>
@@ -344,6 +356,13 @@ export function ChatPage() {
                   {set.models.length} models answer in parallel — then Verdict AI synthesizes the final answer
                   using <strong className="text-foreground">{set.strategy}</strong>.
                 </p>
+                <button
+                  type="button"
+                  onClick={() => setShowCouncil(true)}
+                  className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10"
+                >
+                  Choose your 3 models
+                </button>
                 <div className="mx-auto grid max-w-3xl gap-3 sm:grid-cols-3">
                   {(models.length ? models : flagshipModels).slice(0, 6).map((m) => (
                     <ModelPill
@@ -566,6 +585,24 @@ export function ChatPage() {
           }}
         />
       )}
+
+      <CouncilPickerModal
+        open={showCouncil}
+        onClose={() => setShowCouncil(false)}
+        currentSet={set}
+        onSave={async (next) => {
+          if (set && modelSets.some((s) => s.id === set.id) && !SYSTEM_MODEL_SETS.has(set.id)) {
+            await updateModelSet({ ...next, id: set.id });
+            setActiveModelSetId(set.id);
+            return;
+          }
+          const created = await createModelSet({
+            ...next,
+            name: next.name === set?.name ? "My Council" : next.name,
+          });
+          setActiveModelSetId(created.id);
+        }}
+      />
 
       <ModelSetModal open={showCreateSet} onClose={() => setShowCreateSet(false)} onCreate={createModelSet} />
 

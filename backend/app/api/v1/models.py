@@ -20,7 +20,7 @@ async def get_models(
 @router.get("/search", response_model=list[ModelSearchResult])
 async def search_models(
     q: str = Query(min_length=1, max_length=120),
-    limit: int = Query(default=20, ge=1, le=50),
+    limit: int = Query(default=30, ge=1, le=100),
     _auth: AuthContext = Depends(get_auth_context),
 ):
     return await model_catalog_service.search(q, limit=limit)

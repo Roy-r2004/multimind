@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
 from app.core.exceptions import AppError
@@ -74,7 +74,14 @@ class OpenRouterProvider(LLMProvider):
         return headers
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=8))
-    async def complete(self, *, system: str, user: str, model: str) -> LLMResponse:
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str,
+        max_tokens: int = 4096,
+    ) -> LLMResponse:
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
@@ -89,6 +96,7 @@ class OpenRouterProvider(LLMProvider):
                         {"role": "user", "content": user},
                     ],
                     "temperature": 0.7,
+                    "max_tokens": max_tokens,
                     "usage": {"include": True},
                 },
             )

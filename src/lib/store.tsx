@@ -26,7 +26,7 @@ type ChatStore = {
   isLoading: boolean;
   setActiveModelSetId: (id: string) => void;
   setActiveChatId: (id: string | null) => void;
-  createModelSet: (set: ModelSet) => Promise<void>;
+  createModelSet: (set: ModelSet) => Promise<ModelSet>;
   updateModelSet: (set: ModelSet) => Promise<void>;
   deleteModelSet: (id: string) => Promise<void>;
   renameChat: (id: string, title: string) => Promise<void>;
@@ -126,11 +126,11 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createModelSet = useCallback(
-    async (set: ModelSet) => {
+    async (set: ModelSet): Promise<ModelSet> => {
       const auth = authHeaders();
       if (!auth) {
         setModelSets((prev) => [set, ...prev]);
-        return;
+        return set;
       }
       const created = await api.modelSets.create(auth, {
         name: set.name,
@@ -142,7 +142,9 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         template_name: set.templateName,
         custom_instructions: set.customInstructions,
       });
-      setModelSets((prev) => [mapModelSet(created), ...prev]);
+      const mapped = mapModelSet(created);
+      setModelSets((prev) => [mapped, ...prev]);
+      return mapped;
     },
     [authHeaders],
   );
