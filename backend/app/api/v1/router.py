@@ -2,11 +2,12 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import admin, auth, brain, chats, costs, health, lessons, model_sets, models, projects, share, templates
+from app.api.v1 import admin, admin_insights, auth, brain, chats, costs, health, lessons, model_sets, models, projects, share, templates
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
+api_router.include_router(admin_insights.router, prefix="/admin", tags=["admin"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(models.router, prefix="/models", tags=["models"])
 api_router.include_router(projects.router, prefix="/projects", tags=["projects"])

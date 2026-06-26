@@ -243,6 +243,129 @@ export type ApiAdminUsage = ApiCostSummary & {
   total_cost_records: number;
 };
 
+export type ApiAdminAuditLog = {
+  id: string;
+  org_id?: string | null;
+  actor_user_id?: string | null;
+  actor_email: string;
+  actor_name: string;
+  action: string;
+  category: string;
+  severity: string;
+  resource_type?: string | null;
+  resource_id?: string | null;
+  target_user_id?: string | null;
+  target_user_email?: string | null;
+  summary: string;
+  metadata?: Record<string, unknown> | null;
+  http_method?: string | null;
+  http_path?: string | null;
+  http_status?: number | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  created_at: string;
+};
+
+export type ApiAdminAuditLogList = {
+  items: ApiAdminAuditLog[];
+  total: number;
+  page: number;
+  limit: number;
+};
+
+export type ApiAdminAuditStats = {
+  total: number;
+  last_24h: number;
+  last_7d: number;
+  critical: number;
+  by_category: Array<{ category: string; count: number }>;
+  top_actions: Array<{ action: string; count: number }>;
+};
+
+export type ApiAdminUserSummary = {
+  user_id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  is_active: boolean;
+  joined_at: string;
+  chat_count: number;
+  turn_count: number;
+  has_brain: boolean;
+  brain_lesson_count: number;
+  last_active_at?: string | null;
+};
+
+export type ApiAdminUserDetail = ApiAdminUserSummary & {
+  created_at: string;
+  lesson_count: number;
+  brain: {
+    summary: string;
+    thinking_style: string;
+    likes: string[];
+    dislikes: string[];
+    memories: Array<Record<string, unknown>>;
+    lesson_count: number;
+    updated_at?: string | null;
+  };
+};
+
+export type ApiAdminChatSummary = {
+  id: string;
+  title: string;
+  project_id?: string | null;
+  created_by?: string | null;
+  creator_name?: string | null;
+  creator_email?: string | null;
+  turn_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiAdminChatDetail = ApiAdminChatSummary & {
+  created_by: string;
+  creator_name: string;
+  creator_email: string;
+  turns: ApiTurn[];
+};
+
+export type ApiAdminBrainSummary = {
+  user_id: string;
+  user_name: string;
+  email: string;
+  summary: string;
+  thinking_style: string;
+  likes: string[];
+  dislikes: string[];
+  memories_count: number;
+  lesson_count: number;
+  updated_at?: string | null;
+};
+
+export type ApiAdminBrainDetail = Omit<ApiAdminBrainSummary, "memories_count"> & {
+  memories: Array<Record<string, unknown>>;
+};
+
+export type ApiAdminLessonSummary = {
+  id: string;
+  title: string;
+  summary: string;
+  user_id: string;
+  user_name: string;
+  status: string;
+  chat_id: string;
+  turn_id: string;
+  created_at: string;
+};
+
+export type ApiAdminProjectSummary = {
+  id: string;
+  name: string;
+  description?: string | null;
+  chat_count: number;
+  created_at: string;
+};
+
 export type ApiShareLink = {
   token: string;
   url: string;

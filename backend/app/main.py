@@ -11,7 +11,8 @@ from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logging import get_logger, setup_logging
 from app.db.base import Base
-from app.db.session import engine
+from app.services.audit_service import audit_service
+from app.db.session import AsyncSessionLocal, engine
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,17 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def audit_trail_middleware(request: Request, call_next):
+        response = await call_next(request)
+        try:
+            async with AsyncSessionLocal() as db:
+                await audit_service.record_http(db, request, response.status_code)
+                await db.commit()
+        except Exception:
+            logger.exception("audit_middleware_failed")
+        return response
 
     @app.exception_handler(AppError)
     async def app_error_handler(_request: Request, exc: AppError):

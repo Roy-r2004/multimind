@@ -26,6 +26,7 @@ from app.schemas.api import (
     AdminUpdateMemberRequest,
     AdminUsageResponse,
 )
+from app.services.audit_service import audit_service
 from app.services.domain_service import cost_service
 
 router = APIRouter()
@@ -214,6 +215,19 @@ async def admin_create_member(
     db.add(membership)
     user.is_active = True
     await db.flush()
+
+    actor = await db.get(User, auth.user.id)
+    if actor:
+        await audit_service.record_admin_member(
+            db,
+            org_id=auth.org_id,
+            actor=actor,
+            action="admin.member.create",
+            target_user=user,
+            summary=f"{actor.email} added member {user.email} as {role.value}",
+            metadata={"role": role.value},
+        )
+
     return _member_response(user, membership)
 
 
@@ -242,6 +256,19 @@ async def admin_update_member(
     membership.role = next_role
     user.is_active = next_is_active
     await db.flush()
+
+    actor = await db.get(User, auth.user.id)
+    if actor:
+        await audit_service.record_admin_member(
+            db,
+            org_id=auth.org_id,
+            actor=actor,
+            action="admin.member.update",
+            target_user=user,
+            summary=f"{actor.email} updated member {user.email}",
+            metadata={"role": next_role.value, "is_active": next_is_active},
+        )
+
     return _member_response(user, membership)
 
 
@@ -256,6 +283,17 @@ async def admin_delete_member(
         raise AppError("Organization owners cannot be removed here")
     if membership.role == OrgRole.ADMIN:
         await _ensure_self_change_keeps_admin_access(db, auth, user, membership)
+
+    actor = await db.get(User, auth.user.id)
+    if actor:
+        await audit_service.record_admin_member(
+            db,
+            org_id=auth.org_id,
+            actor=actor,
+            action="admin.member.remove",
+            target_user=user,
+            summary=f"{actor.email} removed member {user.email}",
+        )
 
     await db.delete(membership)
     await db.flush()

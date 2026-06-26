@@ -17,11 +17,24 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as BrainRouteImport } from './routes/brain'
-import { Route as AdminRouteImport } from './routes/admin'
+import { Route as AdminRouteRouteImport } from './routes/admin/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as SharedTokenRouteImport } from './routes/shared.$token'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
 import { Route as LessonsIdRouteImport } from './routes/lessons.$id'
+import { Route as AdminUsersRouteImport } from './routes/admin/users'
+import { Route as AdminUsageRouteImport } from './routes/admin/usage'
+import { Route as AdminSecurityRouteImport } from './routes/admin/security'
+import { Route as AdminProjectsRouteImport } from './routes/admin/projects'
+import { Route as AdminOrganizationRouteImport } from './routes/admin/organization'
+import { Route as AdminMembersRouteImport } from './routes/admin/members'
+import { Route as AdminLessonsRouteImport } from './routes/admin/lessons'
+import { Route as AdminChatsRouteImport } from './routes/admin/chats'
+import { Route as AdminBrainsRouteImport } from './routes/admin/brains'
+import { Route as AdminAuditRouteImport } from './routes/admin/audit'
+import { Route as AdminUsersUserIdRouteImport } from './routes/admin/users.$userId'
+import { Route as AdminChatsChatIdRouteImport } from './routes/admin/chats.$chatId'
 
 const TemplatesRoute = TemplatesRouteImport.update({
   id: '/templates',
@@ -63,7 +76,7 @@ const BrainRoute = BrainRouteImport.update({
   path: '/brain',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AdminRoute = AdminRouteImport.update({
+const AdminRouteRoute = AdminRouteRouteImport.update({
   id: '/admin',
   path: '/admin',
   getParentRoute: () => rootRouteImport,
@@ -72,6 +85,11 @@ const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AdminIndexRoute = AdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AdminRouteRoute,
 } as any)
 const SharedTokenRoute = SharedTokenRouteImport.update({
   id: '/shared/$token',
@@ -88,10 +106,70 @@ const LessonsIdRoute = LessonsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => LessonsRoute,
 } as any)
+const AdminUsersRoute = AdminUsersRouteImport.update({
+  id: '/users',
+  path: '/users',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminUsageRoute = AdminUsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminSecurityRoute = AdminSecurityRouteImport.update({
+  id: '/security',
+  path: '/security',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminProjectsRoute = AdminProjectsRouteImport.update({
+  id: '/projects',
+  path: '/projects',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminOrganizationRoute = AdminOrganizationRouteImport.update({
+  id: '/organization',
+  path: '/organization',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminMembersRoute = AdminMembersRouteImport.update({
+  id: '/members',
+  path: '/members',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminLessonsRoute = AdminLessonsRouteImport.update({
+  id: '/lessons',
+  path: '/lessons',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminChatsRoute = AdminChatsRouteImport.update({
+  id: '/chats',
+  path: '/chats',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminBrainsRoute = AdminBrainsRouteImport.update({
+  id: '/brains',
+  path: '/brains',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminAuditRoute = AdminAuditRouteImport.update({
+  id: '/audit',
+  path: '/audit',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminUsersUserIdRoute = AdminUsersUserIdRouteImport.update({
+  id: '/$userId',
+  path: '/$userId',
+  getParentRoute: () => AdminUsersRoute,
+} as any)
+const AdminChatsChatIdRoute = AdminChatsChatIdRouteImport.update({
+  id: '/$chatId',
+  path: '/$chatId',
+  getParentRoute: () => AdminChatsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
+  '/admin': typeof AdminRouteRouteWithChildren
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRoute
   '/lessons': typeof LessonsRouteWithChildren
@@ -100,13 +178,25 @@ export interface FileRoutesByFullPath {
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
+  '/admin/audit': typeof AdminAuditRoute
+  '/admin/brains': typeof AdminBrainsRoute
+  '/admin/chats': typeof AdminChatsRouteWithChildren
+  '/admin/lessons': typeof AdminLessonsRoute
+  '/admin/members': typeof AdminMembersRoute
+  '/admin/organization': typeof AdminOrganizationRoute
+  '/admin/projects': typeof AdminProjectsRoute
+  '/admin/security': typeof AdminSecurityRoute
+  '/admin/usage': typeof AdminUsageRoute
+  '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/shared/$token': typeof SharedTokenRoute
+  '/admin/': typeof AdminIndexRoute
+  '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
+  '/admin/users/$userId': typeof AdminUsersUserIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRoute
   '/lessons': typeof LessonsRouteWithChildren
@@ -115,14 +205,27 @@ export interface FileRoutesByTo {
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
+  '/admin/audit': typeof AdminAuditRoute
+  '/admin/brains': typeof AdminBrainsRoute
+  '/admin/chats': typeof AdminChatsRouteWithChildren
+  '/admin/lessons': typeof AdminLessonsRoute
+  '/admin/members': typeof AdminMembersRoute
+  '/admin/organization': typeof AdminOrganizationRoute
+  '/admin/projects': typeof AdminProjectsRoute
+  '/admin/security': typeof AdminSecurityRoute
+  '/admin/usage': typeof AdminUsageRoute
+  '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/shared/$token': typeof SharedTokenRoute
+  '/admin': typeof AdminIndexRoute
+  '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
+  '/admin/users/$userId': typeof AdminUsersUserIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
+  '/admin': typeof AdminRouteRouteWithChildren
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRoute
   '/lessons': typeof LessonsRouteWithChildren
@@ -131,9 +234,22 @@ export interface FileRoutesById {
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
+  '/admin/audit': typeof AdminAuditRoute
+  '/admin/brains': typeof AdminBrainsRoute
+  '/admin/chats': typeof AdminChatsRouteWithChildren
+  '/admin/lessons': typeof AdminLessonsRoute
+  '/admin/members': typeof AdminMembersRoute
+  '/admin/organization': typeof AdminOrganizationRoute
+  '/admin/projects': typeof AdminProjectsRoute
+  '/admin/security': typeof AdminSecurityRoute
+  '/admin/usage': typeof AdminUsageRoute
+  '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/shared/$token': typeof SharedTokenRoute
+  '/admin/': typeof AdminIndexRoute
+  '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
+  '/admin/users/$userId': typeof AdminUsersUserIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -148,13 +264,25 @@ export interface FileRouteTypes {
     | '/projects'
     | '/settings'
     | '/templates'
+    | '/admin/audit'
+    | '/admin/brains'
+    | '/admin/chats'
+    | '/admin/lessons'
+    | '/admin/members'
+    | '/admin/organization'
+    | '/admin/projects'
+    | '/admin/security'
+    | '/admin/usage'
+    | '/admin/users'
     | '/lessons/$id'
     | '/projects/$id'
     | '/shared/$token'
+    | '/admin/'
+    | '/admin/chats/$chatId'
+    | '/admin/users/$userId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/admin'
     | '/brain'
     | '/chat'
     | '/lessons'
@@ -163,9 +291,22 @@ export interface FileRouteTypes {
     | '/projects'
     | '/settings'
     | '/templates'
+    | '/admin/audit'
+    | '/admin/brains'
+    | '/admin/chats'
+    | '/admin/lessons'
+    | '/admin/members'
+    | '/admin/organization'
+    | '/admin/projects'
+    | '/admin/security'
+    | '/admin/usage'
+    | '/admin/users'
     | '/lessons/$id'
     | '/projects/$id'
     | '/shared/$token'
+    | '/admin'
+    | '/admin/chats/$chatId'
+    | '/admin/users/$userId'
   id:
     | '__root__'
     | '/'
@@ -178,14 +319,27 @@ export interface FileRouteTypes {
     | '/projects'
     | '/settings'
     | '/templates'
+    | '/admin/audit'
+    | '/admin/brains'
+    | '/admin/chats'
+    | '/admin/lessons'
+    | '/admin/members'
+    | '/admin/organization'
+    | '/admin/projects'
+    | '/admin/security'
+    | '/admin/usage'
+    | '/admin/users'
     | '/lessons/$id'
     | '/projects/$id'
     | '/shared/$token'
+    | '/admin/'
+    | '/admin/chats/$chatId'
+    | '/admin/users/$userId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AdminRoute: typeof AdminRoute
+  AdminRouteRoute: typeof AdminRouteRouteWithChildren
   BrainRoute: typeof BrainRoute
   ChatRoute: typeof ChatRoute
   LessonsRoute: typeof LessonsRouteWithChildren
@@ -259,7 +413,7 @@ declare module '@tanstack/react-router' {
       id: '/admin'
       path: '/admin'
       fullPath: '/admin'
-      preLoaderRoute: typeof AdminRouteImport
+      preLoaderRoute: typeof AdminRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -268,6 +422,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/admin/': {
+      id: '/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AdminIndexRouteImport
+      parentRoute: typeof AdminRouteRoute
     }
     '/shared/$token': {
       id: '/shared/$token'
@@ -290,8 +451,148 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LessonsIdRouteImport
       parentRoute: typeof LessonsRoute
     }
+    '/admin/users': {
+      id: '/admin/users'
+      path: '/users'
+      fullPath: '/admin/users'
+      preLoaderRoute: typeof AdminUsersRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/usage': {
+      id: '/admin/usage'
+      path: '/usage'
+      fullPath: '/admin/usage'
+      preLoaderRoute: typeof AdminUsageRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/security': {
+      id: '/admin/security'
+      path: '/security'
+      fullPath: '/admin/security'
+      preLoaderRoute: typeof AdminSecurityRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/projects': {
+      id: '/admin/projects'
+      path: '/projects'
+      fullPath: '/admin/projects'
+      preLoaderRoute: typeof AdminProjectsRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/organization': {
+      id: '/admin/organization'
+      path: '/organization'
+      fullPath: '/admin/organization'
+      preLoaderRoute: typeof AdminOrganizationRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/members': {
+      id: '/admin/members'
+      path: '/members'
+      fullPath: '/admin/members'
+      preLoaderRoute: typeof AdminMembersRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/lessons': {
+      id: '/admin/lessons'
+      path: '/lessons'
+      fullPath: '/admin/lessons'
+      preLoaderRoute: typeof AdminLessonsRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/chats': {
+      id: '/admin/chats'
+      path: '/chats'
+      fullPath: '/admin/chats'
+      preLoaderRoute: typeof AdminChatsRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/brains': {
+      id: '/admin/brains'
+      path: '/brains'
+      fullPath: '/admin/brains'
+      preLoaderRoute: typeof AdminBrainsRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/audit': {
+      id: '/admin/audit'
+      path: '/audit'
+      fullPath: '/admin/audit'
+      preLoaderRoute: typeof AdminAuditRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/users/$userId': {
+      id: '/admin/users/$userId'
+      path: '/$userId'
+      fullPath: '/admin/users/$userId'
+      preLoaderRoute: typeof AdminUsersUserIdRouteImport
+      parentRoute: typeof AdminUsersRoute
+    }
+    '/admin/chats/$chatId': {
+      id: '/admin/chats/$chatId'
+      path: '/$chatId'
+      fullPath: '/admin/chats/$chatId'
+      preLoaderRoute: typeof AdminChatsChatIdRouteImport
+      parentRoute: typeof AdminChatsRoute
+    }
   }
 }
+
+interface AdminChatsRouteChildren {
+  AdminChatsChatIdRoute: typeof AdminChatsChatIdRoute
+}
+
+const AdminChatsRouteChildren: AdminChatsRouteChildren = {
+  AdminChatsChatIdRoute: AdminChatsChatIdRoute,
+}
+
+const AdminChatsRouteWithChildren = AdminChatsRoute._addFileChildren(
+  AdminChatsRouteChildren,
+)
+
+interface AdminUsersRouteChildren {
+  AdminUsersUserIdRoute: typeof AdminUsersUserIdRoute
+}
+
+const AdminUsersRouteChildren: AdminUsersRouteChildren = {
+  AdminUsersUserIdRoute: AdminUsersUserIdRoute,
+}
+
+const AdminUsersRouteWithChildren = AdminUsersRoute._addFileChildren(
+  AdminUsersRouteChildren,
+)
+
+interface AdminRouteRouteChildren {
+  AdminAuditRoute: typeof AdminAuditRoute
+  AdminBrainsRoute: typeof AdminBrainsRoute
+  AdminChatsRoute: typeof AdminChatsRouteWithChildren
+  AdminLessonsRoute: typeof AdminLessonsRoute
+  AdminMembersRoute: typeof AdminMembersRoute
+  AdminOrganizationRoute: typeof AdminOrganizationRoute
+  AdminProjectsRoute: typeof AdminProjectsRoute
+  AdminSecurityRoute: typeof AdminSecurityRoute
+  AdminUsageRoute: typeof AdminUsageRoute
+  AdminUsersRoute: typeof AdminUsersRouteWithChildren
+  AdminIndexRoute: typeof AdminIndexRoute
+}
+
+const AdminRouteRouteChildren: AdminRouteRouteChildren = {
+  AdminAuditRoute: AdminAuditRoute,
+  AdminBrainsRoute: AdminBrainsRoute,
+  AdminChatsRoute: AdminChatsRouteWithChildren,
+  AdminLessonsRoute: AdminLessonsRoute,
+  AdminMembersRoute: AdminMembersRoute,
+  AdminOrganizationRoute: AdminOrganizationRoute,
+  AdminProjectsRoute: AdminProjectsRoute,
+  AdminSecurityRoute: AdminSecurityRoute,
+  AdminUsageRoute: AdminUsageRoute,
+  AdminUsersRoute: AdminUsersRouteWithChildren,
+  AdminIndexRoute: AdminIndexRoute,
+}
+
+const AdminRouteRouteWithChildren = AdminRouteRoute._addFileChildren(
+  AdminRouteRouteChildren,
+)
 
 interface LessonsRouteChildren {
   LessonsIdRoute: typeof LessonsIdRoute
@@ -318,7 +619,7 @@ const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AdminRoute: AdminRoute,
+  AdminRouteRoute: AdminRouteRouteWithChildren,
   BrainRoute: BrainRoute,
   ChatRoute: ChatRoute,
   LessonsRoute: LessonsRouteWithChildren,

@@ -352,3 +352,41 @@ class ShareLink(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     chat: Mapped["Chat"] = relationship(back_populates="share_links")
+
+
+class AuditSeverity(str, enum.Enum):
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class AuditLog(Base):
+    """Immutable enterprise audit trail — every authenticated API action and admin event."""
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("organizations.id"), index=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    actor_email: Mapped[str] = mapped_column(String(320), default="", nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    action: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    category: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    severity: Mapped[AuditSeverity] = mapped_column(
+        Enum(AuditSeverity), default=AuditSeverity.INFO, nullable=False
+    )
+    resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    target_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    target_user_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON, nullable=True)
+    http_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    http_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True, nullable=False
+    )

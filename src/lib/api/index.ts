@@ -4,11 +4,21 @@ import { apiRequest } from "@/lib/api/client";
 import type {
   ApiChat,
   ApiCostSummary,
+  ApiAdminAuditLogList,
+  ApiAdminAuditStats,
+  ApiAdminBrainDetail,
+  ApiAdminBrainSummary,
+  ApiAdminChatDetail,
+  ApiAdminChatSummary,
   ApiAdminCreateMemberInput,
+  ApiAdminLessonSummary,
   ApiAdminMember,
   ApiAdminOverview,
+  ApiAdminProjectSummary,
   ApiAdminUpdateMemberInput,
   ApiAdminUsage,
+  ApiAdminUserDetail,
+  ApiAdminUserSummary,
   ApiBrain,
   ApiLessonDetail,
   ApiLessonListItem,
@@ -230,6 +240,109 @@ export const api = {
 
     usage: (auth: Auth) =>
       apiRequest<ApiAdminUsage>("/admin/usage", { token: auth.token, orgId: auth.orgId }),
+
+    auditLogs: (
+      auth: Auth,
+      params?: {
+        q?: string;
+        category?: string;
+        action?: string;
+        actor_user_id?: string;
+        target_user_id?: string;
+        severity?: string;
+        page?: number;
+        limit?: number;
+      },
+    ) => {
+      const search = new URLSearchParams();
+      if (params?.q) search.set("q", params.q);
+      if (params?.category) search.set("category", params.category);
+      if (params?.action) search.set("action", params.action);
+      if (params?.actor_user_id) search.set("actor_user_id", params.actor_user_id);
+      if (params?.target_user_id) search.set("target_user_id", params.target_user_id);
+      if (params?.severity) search.set("severity", params.severity);
+      if (params?.page) search.set("page", String(params.page));
+      if (params?.limit) search.set("limit", String(params.limit));
+      const qs = search.toString();
+      return apiRequest<ApiAdminAuditLogList>(`/admin/audit-logs${qs ? `?${qs}` : ""}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
+
+    auditStats: (auth: Auth) =>
+      apiRequest<ApiAdminAuditStats>("/admin/audit-logs/stats", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    users: (auth: Auth) =>
+      apiRequest<ApiAdminUserSummary[]>("/admin/users", { token: auth.token, orgId: auth.orgId }),
+
+    user: (auth: Auth, userId: string) =>
+      apiRequest<ApiAdminUserDetail>(`/admin/users/${userId}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    userChats: (auth: Auth, userId: string) =>
+      apiRequest<ApiAdminChatSummary[]>(`/admin/users/${userId}/chats`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    userActivity: (auth: Auth, userId: string, page = 1) =>
+      apiRequest<ApiAdminAuditLogList>(
+        `/admin/users/${userId}/activity?page=${page}&limit=50`,
+        { token: auth.token, orgId: auth.orgId },
+      ),
+
+    chats: (auth: Auth, params?: { user_id?: string; q?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.user_id) search.set("user_id", params.user_id);
+      if (params?.q) search.set("q", params.q);
+      const qs = search.toString();
+      return apiRequest<ApiAdminChatSummary[]>(`/admin/chats${qs ? `?${qs}` : ""}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
+
+    chat: (auth: Auth, chatId: string) =>
+      apiRequest<ApiAdminChatDetail>(`/admin/chats/${chatId}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    brains: (auth: Auth) =>
+      apiRequest<ApiAdminBrainSummary[]>("/admin/brains", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    brain: (auth: Auth, userId: string) =>
+      apiRequest<ApiAdminBrainDetail>(`/admin/brains/${userId}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    lessons: (auth: Auth) =>
+      apiRequest<ApiAdminLessonSummary[]>("/admin/lessons", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    projects: (auth: Auth) =>
+      apiRequest<ApiAdminProjectSummary[]>("/admin/projects", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    securityEvents: (auth: Auth, page = 1) =>
+      apiRequest<ApiAdminAuditLogList>(`/admin/security/events?page=${page}&limit=50`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
   },
 
   lessons: {

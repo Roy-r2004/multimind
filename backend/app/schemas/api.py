@@ -381,6 +381,165 @@ class AdminUsageResponse(CostSummaryResponse):
     total_cost_records: int
 
 
+class AdminAuditLogResponse(BaseModel):
+    id: str
+    org_id: str | None = None
+    actor_user_id: str | None = None
+    actor_email: str
+    actor_name: str
+    action: str
+    category: str
+    severity: str
+    resource_type: str | None = None
+    resource_id: str | None = None
+    target_user_id: str | None = None
+    target_user_email: str | None = None
+    summary: str
+    metadata: dict | None = None
+    http_method: str | None = None
+    http_path: str | None = None
+    http_status: int | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    created_at: datetime
+
+    model_config = {"populate_by_name": True}
+
+
+class AdminAuditLogListResponse(BaseModel):
+    items: list[AdminAuditLogResponse]
+    total: int
+    page: int
+    limit: int
+
+
+class AdminAuditCategoryStat(BaseModel):
+    category: str
+    count: int
+
+
+class AdminAuditActionStat(BaseModel):
+    action: str
+    count: int
+
+
+class AdminAuditStatsResponse(BaseModel):
+    total: int
+    last_24h: int
+    last_7d: int
+    critical: int
+    by_category: list[AdminAuditCategoryStat]
+    top_actions: list[AdminAuditActionStat]
+
+
+class AdminUserSummaryResponse(BaseModel):
+    user_id: str
+    email: str
+    full_name: str
+    role: str
+    is_active: bool
+    joined_at: datetime
+    chat_count: int
+    turn_count: int
+    has_brain: bool
+    brain_lesson_count: int
+    last_active_at: datetime | None = None
+
+
+class AdminUserBrainSnapshot(BaseModel):
+    summary: str = ""
+    thinking_style: str = ""
+    likes: list[str] = []
+    dislikes: list[str] = []
+    memories: list[dict] = []
+    lesson_count: int = 0
+    updated_at: datetime | None = None
+
+
+class AdminUserDetailResponse(BaseModel):
+    user_id: str
+    email: str
+    full_name: str
+    role: str
+    is_active: bool
+    joined_at: datetime
+    created_at: datetime
+    chat_count: int
+    turn_count: int
+    lesson_count: int
+    brain: AdminUserBrainSnapshot
+
+
+class AdminChatSummaryResponse(BaseModel):
+    id: str
+    title: str
+    project_id: str | None = None
+    created_by: str | None = None
+    creator_name: str | None = None
+    creator_email: str | None = None
+    turn_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminChatDetailResponse(BaseModel):
+    id: str
+    title: str
+    project_id: str | None = None
+    created_by: str
+    creator_name: str
+    creator_email: str
+    created_at: datetime
+    updated_at: datetime
+    turns: list[dict]
+
+
+class AdminBrainSummaryResponse(BaseModel):
+    user_id: str
+    user_name: str
+    email: str
+    summary: str
+    thinking_style: str
+    likes: list[str] = []
+    dislikes: list[str] = []
+    memories_count: int
+    lesson_count: int
+    updated_at: datetime | None = None
+
+
+class AdminBrainDetailResponse(BaseModel):
+    user_id: str
+    user_name: str
+    email: str
+    summary: str
+    thinking_style: str
+    likes: list[str] = []
+    dislikes: list[str] = []
+    memories: list[dict] = []
+    lesson_count: int
+    updated_at: datetime | None = None
+
+
+class AdminLessonSummaryResponse(BaseModel):
+    id: str
+    title: str
+    summary: str
+    user_id: str
+    user_name: str
+    status: str
+    chat_id: str
+    turn_id: str
+    created_at: datetime
+
+
+class AdminProjectSummaryResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    chat_count: int
+    created_at: datetime
+
+
 class PricingCatalogItem(BaseModel):
     model_id: str
     openrouter_slug: str
