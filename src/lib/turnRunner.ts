@@ -65,6 +65,14 @@ export function subscribeChatRunning(chatId: string, listener: (running: boolean
   return () => runningListeners.get(chatId)?.delete(listener);
 }
 
+function isFullTurnPayload(data: unknown): data is ApiTurn {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    Array.isArray((data as ApiTurn).model_answers)
+  );
+}
+
 export function runTurnInBackground(auth: Auth, chatId: string, pending: ApiTurn): Promise<void> {
   const existing = activeJobs.get(pending.id);
   if (existing) return existing.promise;
@@ -75,8 +83,15 @@ export function runTurnInBackground(auth: Auth, chatId: string, pending: ApiTurn
     const current = getChatTurnMap(chatId).get(pending.id) ?? pending;
     let next: ApiTurn;
     if (event === "turn_progress" || event === "turn_completed") {
-      next = mergeTurnFromApi(current, data as ApiTurn);
-      if (event === "turn_completed") next = { ...next, status: (data as ApiTurn).status ?? next.status };
+      if (isFullTurnPayload(data)) {
+        next = mergeTurnFromApi(current, data);
+        if (event === "turn_completed") next = { ...next, status: data.status ?? next.status };
+      } else if (event === "turn_completed") {
+        const status = String((data as { status?: string }).status ?? "completed");
+        next = { ...current, status };
+      } else {
+        return;
+      }
     } else {
       next = applyStreamEvent(current, event, data as Record<string, unknown>);
     }

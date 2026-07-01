@@ -713,7 +713,7 @@ function AiTurn({
   const { authHeaders } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
   const answerUsage = new Map<string, UsageBreakdown>();
-  turn.model_answers.forEach((a) => {
+  (turn.model_answers ?? []).forEach((a) => {
     if (a.status === "completed" && a.text) {
       answerUsage.set(
         a.model_id,
@@ -754,7 +754,7 @@ function AiTurn({
       <div className="grid gap-3 md:grid-cols-3">
         {set.models.map((id) => {
           const m = modelById(id);
-          const a = turn.model_answers.find((x) => x.model_id === id);
+          const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
           const status = a?.status ?? "pending";
           const failed = status === "failed";
           const inProgress = status === "pending" || status === "running";

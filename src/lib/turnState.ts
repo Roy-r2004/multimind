@@ -21,7 +21,7 @@ export function applyStreamEvent(turn: ApiTurn, event: string, data: Record<stri
     return {
       ...turn,
       status: "running",
-      model_answers: turn.model_answers.map((a) =>
+      model_answers: (turn.model_answers ?? []).map((a) =>
         a.model_id === data.model_id ? { ...a, status: "running" } : a,
       ),
     };
@@ -29,7 +29,7 @@ export function applyStreamEvent(turn: ApiTurn, event: string, data: Record<stri
   if (event === "model_answer_completed") {
     return {
       ...turn,
-      model_answers: turn.model_answers.map((a) =>
+      model_answers: (turn.model_answers ?? []).map((a) =>
         a.model_id === data.model_id
           ? {
               ...a,
@@ -47,7 +47,7 @@ export function applyStreamEvent(turn: ApiTurn, event: string, data: Record<stri
   if (event === "model_answer_failed") {
     return {
       ...turn,
-      model_answers: turn.model_answers.map((a) =>
+      model_answers: (turn.model_answers ?? []).map((a) =>
         a.model_id === data.model_id
           ? { ...a, status: "failed", error_message: String(data.error ?? "Failed") }
           : a,
@@ -87,14 +87,33 @@ export function applyStreamEvent(turn: ApiTurn, event: string, data: Record<stri
 }
 
 export function mergeTurnFromApi(local: ApiTurn, remote: ApiTurn): ApiTurn {
-  const mergedAnswers = local.model_answers.map((localA) => {
-    const remoteA = remote.model_answers.find((r) => r.model_id === localA.model_id);
+  const localAnswers = local.model_answers ?? [];
+  const remoteAnswers = remote.model_answers ?? [];
+
+  if (!remoteAnswers.length) {
+    return {
+      ...local,
+      ...remote,
+      model_answers: localAnswers,
+      verdict: remote.verdict ?? local.verdict,
+      decision_insurance: remote.decision_insurance ?? local.decision_insurance,
+    };
+  }
+
+  const mergedAnswers = localAnswers.map((localA) => {
+    const remoteA = remoteAnswers.find((r) => r.model_id === localA.model_id);
     if (!remoteA) return localA;
     if (localA.status === "completed" && localA.text) return localA;
     if (remoteA.status === "completed" && remoteA.text) return remoteA;
     if (localA.status === "running" && remoteA.status === "pending") return localA;
     return remoteA;
   });
+
+  const seen = new Set(mergedAnswers.map((a) => a.model_id));
+  for (const remoteA of remoteAnswers) {
+    if (!seen.has(remoteA.model_id)) mergedAnswers.push(remoteA);
+  }
+
   return {
     ...remote,
     model_answers: mergedAnswers,
