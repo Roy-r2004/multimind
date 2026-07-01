@@ -300,7 +300,13 @@ class VerdictLesson(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     comparison: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     status: Mapped[LessonStatus] = mapped_column(
-        Enum(LessonStatus), default=LessonStatus.BUILDING, nullable=False
+        Enum(
+            LessonStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=LessonStatus.BUILDING,
+        nullable=False,
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     tokens_input: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

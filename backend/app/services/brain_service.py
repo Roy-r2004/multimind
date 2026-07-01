@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +23,10 @@ DEFAULT_BRAIN_MODEL = "gpt-4.1"
 class BrainService:
     async def get_brain(self, db: AsyncSession, auth: AuthContext) -> BrainResponse:
         brain = await self._get_or_create(db, auth)
-        await self._reconcile(db, auth, brain)
+        try:
+            await self._reconcile(db, auth, brain)
+        except Exception as exc:
+            logger.warning("brain_reconcile_failed", user_id=auth.user.id, error=str(exc))
         return self._response(brain)
 
     async def forget_lesson(self, db: AsyncSession, auth: AuthContext, lesson_id: str) -> None:
@@ -60,7 +64,7 @@ class BrainService:
             .select_from(VerdictLesson)
             .where(
                 VerdictLesson.user_id == auth.user.id,
-                VerdictLesson.status == LessonStatus.COMPLETED,
+                VerdictLesson.status == LessonStatus.COMPLETED.value,
             )
         )
         return int(result.scalar() or 0)
@@ -210,20 +214,37 @@ class BrainService:
                 lines.append(f"- {m.get('title', 'Lesson')}: {m.get('insight', '')}")
         return "\n".join(lines)
 
+    def _coerce_str_list(self, value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
+
+    def _coerce_optional_str(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+
     def _response(self, brain: UserBrain) -> BrainResponse:
-        memories = [
-            BrainMemoryResponse(
-                id=m.get("id", ""),
-                source=m.get("source", "lesson"),
-                source_id=m.get("source_id"),
-                title=m.get("title", ""),
-                insight=m.get("insight", ""),
-                likes=m.get("likes") or [],
-                dislikes=m.get("dislikes") or [],
-                created_at=m.get("created_at"),
+        memories = []
+        for raw in brain.memories or []:
+            if not isinstance(raw, dict):
+                continue
+            memories.append(
+                BrainMemoryResponse(
+                    id=str(raw.get("id") or ""),
+                    source=str(raw.get("source") or "lesson"),
+                    source_id=self._coerce_optional_str(raw.get("source_id")),
+                    title=str(raw.get("title") or ""),
+                    insight=str(raw.get("insight") or ""),
+                    likes=self._coerce_str_list(raw.get("likes")),
+                    dislikes=self._coerce_str_list(raw.get("dislikes")),
+                    created_at=self._coerce_optional_str(raw.get("created_at")),
+                )
             )
-            for m in (brain.memories or [])
-        ]
         return BrainResponse(
             user_name=brain.user_name,
             summary=brain.summary,
