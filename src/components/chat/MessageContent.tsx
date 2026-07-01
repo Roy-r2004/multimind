@@ -112,8 +112,15 @@ function buildComponents(compact: boolean): Components {
 const compactComponents = buildComponents(true);
 const defaultComponents = buildComponents(false);
 
+function normalizeMessageText(text: string): string {
+  return text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\r\n/g, "\n");
+}
+
 export function MessageContent({ children, className, compact = false, muted = false }: MessageContentProps) {
-  const text = children?.trim();
+  const text = normalizeMessageText(children ?? "").trim();
   if (!text) return null;
 
   return (
