@@ -18,6 +18,13 @@ STRATEGY_TEMPLATE_MAP = {
     "Debate": "system/verdict.j2",
 }
 
+# Included by base.j2 — must always exist when using StrictUndefined.
+_BASE_CONTEXT_DEFAULTS = {
+    "custom_instructions": None,
+    "template_instructions": None,
+    "user_brain_context": "",
+}
+
 
 class PromptEngine:
     """Renders LLM prompts from version-controlled Jinja2 templates."""
@@ -36,8 +43,9 @@ class PromptEngine:
         logger.info("prompt_engine_initialized", prompts_dir=str(base))
 
     def render(self, template_name: str, **context: Any) -> str:
+        merged = {**_BASE_CONTEXT_DEFAULTS, **context}
         template = self._env.get_template(template_name)
-        rendered = template.render(**context)
+        rendered = template.render(**merged)
         logger.debug("prompt_rendered", template=template_name, chars=len(rendered))
         return rendered
 
@@ -96,6 +104,9 @@ class PromptEngine:
         model_answers: list[dict[str, Any]],
         verdict_text: str,
         verdict_reason: str,
+        custom_instructions: str | None = None,
+        template_instructions: str | None = None,
+        user_brain_context: str | None = None,
     ) -> str:
         return self.render(
             "system/decision_insurance.j2",
@@ -104,6 +115,9 @@ class PromptEngine:
             model_answers=model_answers,
             verdict_text=verdict_text,
             verdict_reason=verdict_reason,
+            custom_instructions=custom_instructions,
+            template_instructions=template_instructions,
+            user_brain_context=user_brain_context or "",
         )
 
     def verdict_lesson_prompt(

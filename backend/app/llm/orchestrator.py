@@ -306,6 +306,9 @@ class TurnOrchestrator:
                 model_answers=answer_context,
                 verdict_text=result.verdict.text,
                 verdict_reason=result.verdict.reason,
+                custom_instructions=ctx.custom_instructions,
+                template_instructions=ctx.template_instructions,
+                user_brain_context=ctx.user_brain_context,
             )
 
             try:
