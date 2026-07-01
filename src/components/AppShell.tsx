@@ -22,6 +22,12 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { CinematicBackdrop } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import type { Chat } from "@/lib/mock";
@@ -40,7 +46,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const { session, signOut } = useAuth();
   const { chats, projectById, renameChat, assignChatToProject, setActiveChatId } = useChatStore();
-  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Chat | null>(null);
@@ -162,47 +167,37 @@ export function AppShell({ children }: { children: ReactNode }) {
                     </Link>
                   )}
                   {editingChatId !== c.id && (
-                    <button
-                      onClick={() => setMenuOpenId(menuOpenId === c.id ? null : c.id)}
-                      className="absolute right-1 top-1.5 rounded p-1 opacity-0 group-hover:opacity-100"
-                    >
-                      <MoreHorizontal className="size-4 text-muted-foreground" />
-                    </button>
-                  )}
-                  {menuOpenId === c.id && (
-                    <>
-                      <div className="fixed inset-0 z-30" onClick={() => setMenuOpenId(null)} />
-                      <div className="absolute right-0 top-8 z-40 w-40 rounded-xl border border-border bg-popover p-1 shadow-xl">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
                         <button
-                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-accent"
-                          onClick={() => {
+                          type="button"
+                          aria-label={`Chat options for ${c.title}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="absolute right-1 top-1.5 z-10 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100"
+                        >
+                          <MoreHorizontal className="size-4 text-muted-foreground" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        <DropdownMenuItem
+                          onSelect={() => {
                             setEditingChatId(c.id);
                             setRenameTitle(c.title);
-                            setMenuOpenId(null);
                           }}
                         >
                           <Pencil className="size-3.5" /> Rename
-                        </button>
-                        <button
-                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-accent"
-                          onClick={() => {
-                            setAssignTarget(c);
-                            setMenuOpenId(null);
-                          }}
-                        >
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setAssignTarget(c)}>
                           <FolderPlus className="size-3.5" /> Project
-                        </button>
-                        <button
-                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10"
-                          onClick={() => {
-                            setDeleteTarget(c);
-                            setMenuOpenId(null);
-                          }}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onSelect={() => setDeleteTarget(c)}
                         >
                           <Trash2 className="size-3.5" /> Delete
-                        </button>
-                      </div>
-                    </>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   )}
                 </div>
               ))
@@ -274,6 +269,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
 function DeleteChatModal({ chat, onClose }: { chat: Chat | null; onClose: () => void }) {
   const { deleteChat } = useChatStore();
+  const navigate = useNavigate();
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -284,6 +280,7 @@ function DeleteChatModal({ chat, onClose }: { chat: Chat | null; onClose: () => 
     try {
       await deleteChat(chat.id);
       onClose();
+      void navigate({ to: "/chat" });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete chat");
     } finally {
