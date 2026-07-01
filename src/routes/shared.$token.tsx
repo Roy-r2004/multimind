@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Copy, ExternalLink, Gavel, Loader2, ShieldCheck } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
+import { MessageContent } from "@/components/chat/MessageContent";
 import { api } from "@/lib/api";
 import type { ApiSharedChat } from "@/lib/api/types";
 import { modelColor } from "@/lib/models";
@@ -83,7 +84,7 @@ function SharedPage() {
           <div key={turn.id} className="space-y-6">
             <div className="flex justify-end">
               <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-3 text-sm text-primary-foreground">
-                {turn.user_message}
+                <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
               </div>
             </div>
 
@@ -99,7 +100,9 @@ function SharedPage() {
                         </span>
                       )}
                     </div>
-                    <p className="mt-3 text-sm leading-relaxed">{a.text ?? "—"}</p>
+                    <div className="mt-3">
+                      <MessageContent compact>{a.text ?? "—"}</MessageContent>
+                    </div>
                   </div>
               ))}
             </div>
@@ -115,7 +118,9 @@ function SharedPage() {
                     {turn.verdict.strategy}
                   </span>
                 </div>
-                <p className="mt-3 text-sm leading-relaxed">{turn.verdict.text}</p>
+                <div className="mt-3">
+                  <MessageContent>{turn.verdict.text}</MessageContent>
+                </div>
               </div>
             )}
 
@@ -125,7 +130,9 @@ function SharedPage() {
                   <ShieldCheck className="size-4 text-amber-600" />
                   <div className="font-medium">Decision Insurance</div>
                 </div>
-                <p className="mt-3 text-sm">{turn.decision_insurance.mitigation_plan}</p>
+                <div className="mt-3">
+                  <MessageContent compact>{turn.decision_insurance.mitigation_plan}</MessageContent>
+                </div>
               </div>
             )}
           </div>

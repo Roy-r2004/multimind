@@ -36,6 +36,7 @@ import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { TemplateMenu } from "@/components/chat/TemplateMenu";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeModal } from "@/components/chat/VerdictDisagreeModal";
+import { MessageContent } from "@/components/chat/MessageContent";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
@@ -346,7 +347,7 @@ export function ChatPage() {
                 <div key={turn.id} className="space-y-6 animate-fade-up">
                   <div className="flex justify-end">
                     <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
-                      {turn.user_message}
+                      <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
                     </div>
                   </div>
                   <AiTurn
@@ -781,7 +782,9 @@ function AiTurn({
                 </div>
               ) : (
                 <>
-                  <p className="mt-3 text-sm leading-relaxed text-foreground/90">{a?.text}</p>
+                  <div className="mt-3">
+                    <MessageContent compact>{a?.text ?? ""}</MessageContent>
+                  </div>
                   {usage && <CardUsage b={usage} />}
                 </>
               )}
@@ -818,8 +821,14 @@ function AiTurn({
               )}
             </div>
           </div>
-          <p className="mt-3 text-sm leading-relaxed">{turn.verdict.text}</p>
-          <p className="mt-2 text-xs text-muted-foreground">{turn.verdict.reason}</p>
+          <div className="mt-4 space-y-3">
+            <MessageContent>{turn.verdict.text}</MessageContent>
+            {turn.verdict.reason && (
+              <MessageContent muted className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5">
+                {turn.verdict.reason}
+              </MessageContent>
+            )}
+          </div>
           {verdictUsage && <CardUsage b={verdictUsage} />}
         </GlassCard>
       )}
@@ -837,10 +846,58 @@ function AiTurn({
 
       {turn.decision_insurance && (
         <GlassCard className="border-amber-500/20 p-5">
-          <div className="flex items-center gap-2 text-amber-400">
-            <ShieldCheck className="size-4" /> Decision Insurance
+          <div className="flex flex-wrap items-center gap-2 text-amber-600 dark:text-amber-400">
+            <ShieldCheck className="size-4" />
+            <span className="font-medium">Decision Insurance</span>
+            {turn.decision_insurance.risk_level && (
+              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium">
+                {turn.decision_insurance.risk_level} risk
+              </span>
+            )}
           </div>
-          <p className="mt-2 text-sm text-muted-foreground">{turn.decision_insurance.mitigation_plan}</p>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            {turn.decision_insurance.best_case && (
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3.5">
+                <p className="text-xs font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                  Best case
+                </p>
+                <div className="mt-2">
+                  <MessageContent compact>{turn.decision_insurance.best_case}</MessageContent>
+                </div>
+              </div>
+            )}
+            {turn.decision_insurance.worst_case && (
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-3.5">
+                <p className="text-xs font-medium uppercase tracking-wide text-rose-700 dark:text-rose-400">
+                  Worst case
+                </p>
+                <div className="mt-2">
+                  <MessageContent compact>{turn.decision_insurance.worst_case}</MessageContent>
+                </div>
+              </div>
+            )}
+          </div>
+          {turn.decision_insurance.potential_loss && (
+            <div className="mt-4 rounded-xl border border-border/80 bg-muted/20 p-3.5">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Potential loss
+              </p>
+              <div className="mt-2">
+                <MessageContent compact>{turn.decision_insurance.potential_loss}</MessageContent>
+              </div>
+            </div>
+          )}
+          {turn.decision_insurance.mitigation_plan && (
+            <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5">
+              <p className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                Mitigation plan
+              </p>
+              <div className="mt-2">
+                <MessageContent compact>{turn.decision_insurance.mitigation_plan}</MessageContent>
+              </div>
+            </div>
+          )}
+          {insuranceUsage && <CardUsage b={insuranceUsage} />}
         </GlassCard>
       )}
 

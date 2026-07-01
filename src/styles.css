@@ -226,6 +226,19 @@
     color: oklch(0.45 0.08 250);
     box-shadow: 0 4px 12px oklch(0.58 0.14 240 / 0.12);
   }
+
+  .message-content > :first-child {
+    margin-top: 0;
+  }
+
+  .message-content > :last-child {
+    margin-bottom: 0;
+  }
+
+  .message-content pre code {
+    background: transparent;
+    padding: 0;
+  }
 }
 
 @keyframes skeleton-shimmer {
