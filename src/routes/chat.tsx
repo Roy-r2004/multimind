@@ -53,14 +53,6 @@ import {
 import type { ModelSet } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
-import {
-  breakdownFromApi,
-  formatCost,
-  formatTokens,
-  formatTokensExact,
-  makeUsage,
-  type UsageBreakdown,
-} from "@/lib/cost";
 
 export const Route = createFileRoute("/chat")({
   head: () => ({ meta: [{ title: "Chat — MultiAI" }] }),
@@ -713,42 +705,6 @@ function AiTurn({
 }) {
   const { authHeaders } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
-  const answerUsage = new Map<string, UsageBreakdown>();
-  (turn.model_answers ?? []).forEach((a) => {
-    if (a.status === "completed" && a.text) {
-      answerUsage.set(
-        a.model_id,
-        breakdownFromApi(a.model_id, "answer", makeUsage(a.tokens_input, a.tokens_output), a.cost_usd, a.model_name),
-      );
-    }
-  });
-  const verdictUsage = turn.verdict
-    ? breakdownFromApi(
-        turn.verdict.model_id,
-        "verdict",
-        makeUsage(turn.verdict.tokens_input, turn.verdict.tokens_output),
-        turn.verdict.cost_usd,
-        modelById(turn.verdict.model_id).name,
-      )
-    : null;
-  const insuranceUsage =
-    turn.decision_insurance && (turn.decision_insurance.cost_usd ?? 0) > 0
-      ? breakdownFromApi(
-          turn.verdict_model,
-          "insurance",
-          makeUsage(
-            turn.decision_insurance.tokens_input ?? 0,
-            turn.decision_insurance.tokens_output ?? 0,
-          ),
-          turn.decision_insurance.cost_usd ?? 0,
-          "Decision Insurance",
-        )
-      : null;
-  const summaryItems = [
-    ...answerUsage.values(),
-    ...(verdictUsage ? [verdictUsage] : []),
-    ...(insuranceUsage ? [insuranceUsage] : []),
-  ];
 
   return (
     <div className="space-y-4">
@@ -759,7 +715,6 @@ function AiTurn({
           const status = a?.status ?? "pending";
           const failed = status === "failed";
           const inProgress = status === "pending" || status === "running";
-          const usage = answerUsage.get(id);
           return (
             <GlassCard key={id} className="p-4">
               <div className="flex items-center gap-2 text-sm">
@@ -781,12 +736,9 @@ function AiTurn({
                   <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
                 </div>
               ) : (
-                <>
-                  <div className="mt-3">
-                    <MessageContent compact>{a?.text ?? ""}</MessageContent>
-                  </div>
-                  {usage && <CardUsage b={usage} />}
-                </>
+                <div className="mt-3">
+                  <MessageContent compact>{a?.text ?? ""}</MessageContent>
+                </div>
               )}
             </GlassCard>
           );
@@ -829,7 +781,6 @@ function AiTurn({
               </MessageContent>
             )}
           </div>
-          {verdictUsage && <CardUsage b={verdictUsage} />}
         </GlassCard>
       )}
 
@@ -897,54 +848,8 @@ function AiTurn({
               </div>
             </div>
           )}
-          {insuranceUsage && <CardUsage b={insuranceUsage} />}
         </GlassCard>
       )}
-
-      {summaryItems.length > 0 && <SessionCostSummary items={summaryItems} modelById={modelById} />}
-    </div>
-  );
-}
-
-function CardUsage({ b }: { b: UsageBreakdown }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="mt-2">
-      <button onClick={() => setOpen((v) => !v)} className="text-xs text-muted-foreground hover:text-foreground">
-        {formatTokens(b.usage.total)} tok · {formatCost(b.cost)}
-        <ChevronDown className={cn("ml-1 inline size-3 transition", open && "rotate-180")} />
-      </button>
-      {open && (
-        <dl className="mt-1 grid grid-cols-2 gap-1 text-[11px] text-muted-foreground">
-          <dt>In</dt>
-          <dd className="text-right">{formatTokensExact(b.usage.input)}</dd>
-          <dt>Out</dt>
-          <dd className="text-right">{formatTokensExact(b.usage.output)}</dd>
-        </dl>
-      )}
-    </div>
-  );
-}
-
-function SessionCostSummary({
-  items,
-  modelById,
-}: {
-  items: UsageBreakdown[];
-  modelById: (id: string) => { color: string };
-}) {
-  const total = items.reduce((s, i) => s + i.cost, 0);
-  return (
-    <div className="rounded-xl border border-border bg-card px-4 py-3 text-xs">
-      <div className="flex flex-wrap gap-3">
-        {items.map((b) => (
-          <span key={`${b.modelId}-${b.kind}`} className="inline-flex items-center gap-1.5">
-            <span className="size-1.5 rounded-full" style={{ background: modelById(b.modelId).color }} />
-            {b.modelName}: {formatCost(b.cost)}
-          </span>
-        ))}
-      </div>
-      <div className="mt-2 font-medium text-foreground">Turn total: {formatCost(total)}</div>
     </div>
   );
 }
