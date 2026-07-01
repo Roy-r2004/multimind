@@ -278,8 +278,8 @@ class LessonComparisonResponse(BaseModel):
 
 class LessonListItemResponse(BaseModel):
     id: str
-    turn_id: str
-    chat_id: str
+    turn_id: str | None = None
+    chat_id: str | None = None
     title: str
     summary: str
     user_name: str

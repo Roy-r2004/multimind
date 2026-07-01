@@ -3,12 +3,12 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
 from app.core.logging import get_logger
-from app.db.models import CostRecord, UsageKind, UserBrain, VerdictLesson
+from app.db.models import CostRecord, LessonStatus, UsageKind, UserBrain, VerdictLesson
 from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
@@ -22,7 +22,51 @@ DEFAULT_BRAIN_MODEL = "gpt-4.1"
 class BrainService:
     async def get_brain(self, db: AsyncSession, auth: AuthContext) -> BrainResponse:
         brain = await self._get_or_create(db, auth)
+        await self._reconcile(db, auth, brain)
         return self._response(brain)
+
+    async def forget_lesson(self, db: AsyncSession, auth: AuthContext, lesson_id: str) -> None:
+        brain = await self._get_or_create(db, auth)
+        memories = [
+            m
+            for m in (brain.memories or [])
+            if not (m.get("source") == "lesson" and m.get("source_id") == lesson_id)
+        ]
+        if len(memories) != len(brain.memories or []):
+            brain.memories = memories
+        await self._sync_lesson_count(db, auth, brain)
+        await db.flush()
+
+    async def _reconcile(self, db: AsyncSession, auth: AuthContext, brain: UserBrain) -> None:
+        result = await db.execute(
+            select(VerdictLesson.id).where(VerdictLesson.user_id == auth.user.id)
+        )
+        valid_ids = {row[0] for row in result.all()}
+        memories = [
+            m
+            for m in (brain.memories or [])
+            if m.get("source") != "lesson" or m.get("source_id") in valid_ids
+        ]
+        count = await self._completed_lesson_count(db, auth)
+        changed = memories != (brain.memories or []) or brain.lesson_count != count
+        brain.memories = memories
+        brain.lesson_count = count
+        if changed:
+            await db.flush()
+
+    async def _completed_lesson_count(self, db: AsyncSession, auth: AuthContext) -> int:
+        result = await db.execute(
+            select(func.count())
+            .select_from(VerdictLesson)
+            .where(
+                VerdictLesson.user_id == auth.user.id,
+                VerdictLesson.status == LessonStatus.COMPLETED,
+            )
+        )
+        return int(result.scalar() or 0)
+
+    async def _sync_lesson_count(self, db: AsyncSession, auth: AuthContext, brain: UserBrain) -> None:
+        brain.lesson_count = await self._completed_lesson_count(db, auth)
 
     async def get_context_for_user(
         self, db: AsyncSession, user_id: str, org_id: str, user_name: str

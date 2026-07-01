@@ -279,8 +279,12 @@ class VerdictLesson(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "verdict_lessons"
     __table_args__ = (UniqueConstraint("turn_id", name="uq_verdict_lesson_turn"),)
 
-    turn_id: Mapped[str] = mapped_column(String(36), ForeignKey("turns.id"), nullable=False)
-    chat_id: Mapped[str] = UuidFK("chats")
+    turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+    chat_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="SET NULL"), nullable=True
+    )
     org_id: Mapped[str] = UuidFK("organizations")
     user_id: Mapped[str] = UuidFK("users")
     user_name: Mapped[str] = mapped_column(String(255), nullable=False)

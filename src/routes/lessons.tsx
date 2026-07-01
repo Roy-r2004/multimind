@@ -15,7 +15,7 @@ export const Route = createFileRoute("/lessons")({
 });
 
 function LessonsPage() {
-  const { authHeaders } = useAuth();
+  const { authHeaders, isLoading: authLoading } = useAuth();
   const [lessons, setLessons] = useState<ApiLessonListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,8 +23,10 @@ function LessonsPage() {
   const [removing, setRemoving] = useState(false);
 
   const load = useCallback(async () => {
+    if (authLoading) return;
     const auth = authHeaders();
     if (!auth) {
+      setLessons([]);
       setLoading(false);
       return;
     }
@@ -37,7 +39,7 @@ function LessonsPage() {
     } finally {
       setLoading(false);
     }
-  }, [authHeaders]);
+  }, [authHeaders, authLoading]);
 
   useEffect(() => {
     void load();

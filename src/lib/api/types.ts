@@ -119,8 +119,8 @@ export type ApiTurn = {
 
 export type ApiLessonListItem = {
   id: string;
-  turn_id: string;
-  chat_id: string;
+  turn_id: string | null;
+  chat_id: string | null;
   title: string;
   summary: string;
   user_name: string;

@@ -24,7 +24,6 @@ from app.db.models import (
     Turn,
     TurnStatus,
     Verdict,
-    VerdictLesson,
 )
 from app.db.session import AsyncSessionLocal
 from app.llm.catalog import get_model
@@ -89,7 +88,6 @@ class ChatService:
         turn_ids = select(Turn.id).where(Turn.chat_id == chat_id)
 
         await db.execute(delete(CostRecord).where(CostRecord.chat_id == chat_id))
-        await db.execute(delete(VerdictLesson).where(VerdictLesson.chat_id == chat_id))
         await db.execute(delete(DecisionInsurance).where(DecisionInsurance.turn_id.in_(turn_ids)))
         await db.execute(delete(Verdict).where(Verdict.turn_id.in_(turn_ids)))
         await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id.in_(turn_ids)))

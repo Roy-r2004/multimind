@@ -36,7 +36,7 @@ class LessonService:
     ) -> list[LessonListItemResponse]:
         result = await db.execute(
             select(VerdictLesson)
-            .where(VerdictLesson.org_id == auth.org_id)
+            .where(VerdictLesson.user_id == auth.user.id)
             .order_by(VerdictLesson.created_at.desc())
         )
         return [self._list_item(lesson) for lesson in result.scalars().all()]
@@ -49,6 +49,7 @@ class LessonService:
 
     async def delete_lesson(self, db: AsyncSession, auth: AuthContext, lesson_id: str) -> None:
         lesson = await self._get_lesson(db, auth, lesson_id)
+        await brain_service.forget_lesson(db, auth, lesson.id)
         await db.delete(lesson)
 
     async def disagree_with_verdict(
@@ -182,7 +183,7 @@ class LessonService:
         result = await db.execute(
             select(VerdictLesson).where(
                 VerdictLesson.id == lesson_id,
-                VerdictLesson.org_id == auth.org_id,
+                VerdictLesson.user_id == auth.user.id,
             )
         )
         lesson = result.scalar_one_or_none()
