@@ -60,9 +60,20 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if not settings.is_production else None,
     )
 
+    cors_origins = list(dict.fromkeys(settings.cors_origins))
+    if settings.is_production:
+        cors_origins.extend(
+            [
+                "https://multiai-web.onrender.com",
+                settings.public_app_url.rstrip("/"),
+            ]
+        )
+        cors_origins = list(dict.fromkeys(origin for origin in cors_origins if origin))
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=cors_origins,
+        allow_origin_regex=r"https://.*\.onrender\.com" if settings.is_production else None,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -38,10 +38,7 @@ services:
           name: multiai-web
           envVarKey: RENDER_EXTERNAL_URL
       - key: CORS_ORIGINS
-        fromService:
-          type: web
-          name: multiai-web
-          envVarKey: RENDER_EXTERNAL_URL
+        value: https://multiai-web.onrender.com
 
   - type: web
     name: multiai-web
