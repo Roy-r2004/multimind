@@ -184,6 +184,7 @@ export function ChatPage() {
     activeChatId,
     createChat,
     chats,
+    deleteChat,
   } = useChatStore();
   const { authHeaders, isAuthenticated } = useAuth();
   const { models, modelById, flagshipModels } = useModels();
@@ -204,6 +205,9 @@ export function ChatPage() {
   const [showExcel, setShowExcel] = useState(false);
   const [showPlus, setShowPlus] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showDeleteChat, setShowDeleteChat] = useState(false);
+  const [deletingChat, setDeletingChat] = useState(false);
+  const activeChat = chats.find((c) => c.id === activeChatId);
 
   useEffect(() => {
     if (!isApiMode || !activeChatId) {
@@ -312,6 +316,15 @@ export function ChatPage() {
             </div>
           )}
           <div className="ml-auto flex items-center gap-2">
+            {activeChatId && (
+              <button
+                type="button"
+                onClick={() => setShowDeleteChat(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 className="size-3.5" /> Delete chat
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void handleShare()}
@@ -638,6 +651,41 @@ export function ChatPage() {
           setFiles((f) => [...f, { name: "comparison.xlsx", state: "uploaded" }])
         }
       />
+
+      <Modal open={showDeleteChat} onClose={() => setShowDeleteChat(false)} title="Delete chat?" size="sm">
+        <p className="text-sm text-muted-foreground">
+          {activeChat
+            ? `"${activeChat.title}" will be permanently removed.`
+            : "This chat will be permanently removed."}
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setShowDeleteChat(false)}
+            disabled={deletingChat}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={deletingChat || !activeChatId}
+            onClick={() => {
+              if (!activeChatId) return;
+              setDeletingChat(true);
+              void deleteChat(activeChatId)
+                .then(() => {
+                  setShowDeleteChat(false);
+                  void navigate({ to: "/chat" });
+                })
+                .finally(() => setDeletingChat(false));
+            }}
+            className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
+          >
+            {deletingChat ? "Deleting…" : "Delete"}
+          </button>
+        </div>
+      </Modal>
     </AppShell>
   );
 }

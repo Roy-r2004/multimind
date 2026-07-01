@@ -1,19 +1,23 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   BookMarked,
   Brain,
   CheckCircle2,
   Gavel,
+  Loader2,
   Scale,
+  Trash2,
   User,
-  XCircle,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { Modal } from "@/components/Modal";
 import { GlassCard } from "@/components/cinematic/PageChrome";
-import { MockBanner } from "@/components/cinematic/MockBanner";
 import { SkeletonReveal } from "@/components/cinematic/SkeletonReveal";
-import { getMockLesson } from "@/lib/mock-preview";
+import { api } from "@/lib/api";
+import type { ApiLessonDetail } from "@/lib/api/types";
+import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/lessons/$id")({
   head: () => ({ meta: [{ title: "Lesson — MultiAI" }] }),
@@ -28,13 +32,59 @@ const MODEL_COLORS: Record<string, string> = {
 
 function LessonDetailPage() {
   const { id } = Route.useParams();
-  const lesson = getMockLesson(id);
+  const navigate = useNavigate();
+  const { authHeaders } = useAuth();
+  const [lesson, setLesson] = useState<ApiLessonDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showDelete, setShowDelete] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
-  if (!lesson) {
+  useEffect(() => {
+    const auth = authHeaders();
+    if (!auth) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    void api.lessons
+      .get(auth, id)
+      .then(setLesson)
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load lesson"))
+      .finally(() => setLoading(false));
+  }, [authHeaders, id]);
+
+  async function removeLesson() {
+    const auth = authHeaders();
+    if (!auth || !lesson) return;
+    setRemoving(true);
+    try {
+      await api.lessons.delete(auth, lesson.id);
+      void navigate({ to: "/lessons" });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete lesson");
+      setShowDelete(false);
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <AppShell>
+        <div className="flex justify-center py-24">
+          <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        </div>
+      </AppShell>
+    );
+  }
+
+  if (error || !lesson) {
     return (
       <AppShell>
         <div className="mx-auto max-w-3xl px-6 py-16 text-center">
-          <p className="text-muted-foreground">Mock lesson not found.</p>
+          <p className="text-sm text-destructive">{error ?? "Lesson not found."}</p>
           <Link to="/lessons" className="mt-4 inline-block text-sm text-primary hover:underline">
             Back to lessons
           </Link>
@@ -53,19 +103,28 @@ function LessonDetailPage() {
         <div className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(ellipse_80%_60%_at_50%_-10%,oklch(0.58_0.14_240/0.14),transparent)]" />
 
         <div className="relative mx-auto max-w-6xl px-6 py-10">
-          <Link
-            to="/lessons"
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="size-4" /> All lessons
-          </Link>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Link
+              to="/lessons"
+              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeft className="size-4" /> All lessons
+            </Link>
+            <button
+              type="button"
+              onClick={() => setShowDelete(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10"
+            >
+              <Trash2 className="size-3.5" /> Delete lesson
+            </button>
+          </div>
 
-          <MockBanner className="mt-4">
-            {" "}
-            — detailed &quot;{firstName} vs {lesson.verdict_model_name}&quot; preview.
-          </MockBanner>
+          {lesson.status !== "completed" && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Lesson is still processing ({lesson.status}). Some sections may be incomplete.
+            </div>
+          )}
 
-          {/* Cinematic VS hero */}
           <div className="mt-8 animate-fade-up overflow-hidden rounded-3xl border border-border bg-card shadow-sm">
             <div className="grid md:grid-cols-[1fr_auto_1fr]">
               <div className="border-b border-border bg-gradient-to-br from-sky-50 to-white p-8 md:border-b-0 md:border-r">
@@ -74,7 +133,7 @@ function LessonDetailPage() {
                   <span className="text-xs font-semibold uppercase tracking-widest">{firstName}</span>
                 </div>
                 <h1 className="mt-3 font-display text-2xl font-bold tracking-tight">Your position</h1>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground line-clamp-4">
+                <p className="mt-2 line-clamp-4 text-sm leading-relaxed text-muted-foreground">
                   {c.user_position_summary || lesson.user_position}
                 </p>
               </div>
@@ -90,7 +149,7 @@ function LessonDetailPage() {
                   <span className="text-xs font-semibold uppercase tracking-widest">{lesson.verdict_model_name}</span>
                 </div>
                 <h1 className="mt-3 font-display text-2xl font-bold tracking-tight">AI verdict</h1>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground line-clamp-4">
+                <p className="mt-2 line-clamp-4 text-sm leading-relaxed text-muted-foreground">
                   {c.model_position_summary || lesson.verdict_text}
                 </p>
               </div>
@@ -210,6 +269,29 @@ function LessonDetailPage() {
           </div>
         </div>
       </div>
+
+      <Modal open={showDelete} onClose={() => setShowDelete(false)} title="Delete lesson?" size="sm">
+        <p className="text-sm text-muted-foreground">
+          &quot;{lesson.title}&quot; will be permanently removed.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setShowDelete(false)}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={removing}
+            onClick={() => void removeLesson()}
+            className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
+          >
+            {removing ? "Deleting…" : "Delete"}
+          </button>
+        </div>
+      </Modal>
     </AppShell>
   );
 }

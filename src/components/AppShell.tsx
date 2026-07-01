@@ -274,24 +274,45 @@ export function AppShell({ children }: { children: ReactNode }) {
 
 function DeleteChatModal({ chat, onClose }: { chat: Chat | null; onClose: () => void }) {
   const { deleteChat } = useChatStore();
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function confirmDelete() {
+    if (!chat) return;
+    setRemoving(true);
+    setError(null);
+    try {
+      await deleteChat(chat.id);
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete chat");
+    } finally {
+      setRemoving(false);
+    }
+  }
+
   return (
     <Modal open={!!chat} onClose={onClose} title="Delete chat?" size="sm">
-      <p className="text-sm text-muted-foreground">This cannot be undone.</p>
+      <p className="text-sm text-muted-foreground">
+        {chat ? `"${chat.title}" will be permanently removed.` : "This cannot be undone."}
+      </p>
+      {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
       <div className="mt-4 flex justify-end gap-2">
         <button
+          type="button"
           onClick={onClose}
-          className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
+          disabled={removing}
+          className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
         >
           Cancel
         </button>
         <button
-          onClick={() => {
-            if (chat) deleteChat(chat.id);
-            onClose();
-          }}
-          className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground"
+          type="button"
+          disabled={removing}
+          onClick={() => void confirmDelete()}
+          className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
         >
-          Delete
+          {removing ? "Deleting…" : "Delete"}
         </button>
       </div>
     </Modal>

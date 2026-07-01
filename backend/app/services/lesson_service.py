@@ -47,6 +47,10 @@ class LessonService:
         lesson = await self._get_lesson(db, auth, lesson_id)
         return self._detail(lesson)
 
+    async def delete_lesson(self, db: AsyncSession, auth: AuthContext, lesson_id: str) -> None:
+        lesson = await self._get_lesson(db, auth, lesson_id)
+        await db.delete(lesson)
+
     async def disagree_with_verdict(
         self,
         db: AsyncSession,

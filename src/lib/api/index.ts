@@ -359,6 +359,13 @@ export const api = {
         token: auth.token,
         orgId: auth.orgId,
       }),
+
+    delete: (auth: Auth, lessonId: string) =>
+      apiRequest<{ message: string }>(`/lessons/${lessonId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
   },
 
   brain: {

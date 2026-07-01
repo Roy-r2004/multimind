@@ -4,7 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,12 +12,17 @@ from app.core.dependencies import AuthContext
 from app.core.exceptions import ConflictError, NotFoundError
 from app.db.models import (
     Chat,
+    CostRecord,
+    DecisionInsurance,
     ModelAnswer,
     ModelAnswerStatus,
     ModelSet,
+    ShareLink,
     Strategy,
     Turn,
     TurnStatus,
+    Verdict,
+    VerdictLesson,
 )
 from app.llm.catalog import get_model
 from app.services.brain_service import brain_service
@@ -78,6 +83,15 @@ class ChatService:
 
     async def delete_chat(self, db: AsyncSession, auth: AuthContext, chat_id: str) -> None:
         chat = await self.get_chat(db, auth, chat_id)
+        turn_ids = select(Turn.id).where(Turn.chat_id == chat_id)
+
+        await db.execute(delete(CostRecord).where(CostRecord.chat_id == chat_id))
+        await db.execute(delete(VerdictLesson).where(VerdictLesson.chat_id == chat_id))
+        await db.execute(delete(DecisionInsurance).where(DecisionInsurance.turn_id.in_(turn_ids)))
+        await db.execute(delete(Verdict).where(Verdict.turn_id.in_(turn_ids)))
+        await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id.in_(turn_ids)))
+        await db.execute(delete(ShareLink).where(ShareLink.chat_id == chat_id))
+        await db.execute(delete(Turn).where(Turn.chat_id == chat_id))
         await db.delete(chat)
 
     async def _resolve_model_set(

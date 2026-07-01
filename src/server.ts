@@ -7,6 +7,32 @@ type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
 };
 
+const backendTarget = () =>
+  (process.env.BACKEND_PROXY_TARGET ?? "http://localhost:8000").replace(/\/$/, "");
+
+async function proxyApiRequest(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith("/api/v1")) {
+    return null;
+  }
+
+  const target = `${backendTarget()}${url.pathname}${url.search}`;
+  const headers = new Headers(request.headers);
+  headers.delete("host");
+
+  const init: RequestInit & { duplex?: "half" } = {
+    method: request.method,
+    headers,
+  };
+
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    init.body = request.body;
+    init.duplex = "half";
+  }
+
+  return fetch(target, init);
+}
+
 let serverEntryPromise: Promise<ServerEntry> | undefined;
 
 async function getServerEntry(): Promise<ServerEntry> {
@@ -40,6 +66,11 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const proxied = await proxyApiRequest(request);
+      if (proxied) {
+        return proxied;
+      }
+
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

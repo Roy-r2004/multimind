@@ -5,7 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.session import get_db
-from app.schemas.api import LessonDetailResponse, LessonListItemResponse, VerdictDisagreeRequest
+from app.schemas.api import (
+    LessonDetailResponse,
+    LessonListItemResponse,
+    MessageResponse,
+    VerdictDisagreeRequest,
+)
 from app.services.lesson_service import lesson_service
 
 router = APIRouter()
@@ -26,6 +31,16 @@ async def get_lesson(
     db: AsyncSession = Depends(get_db),
 ):
     return await lesson_service.get_lesson(db, auth, str(lesson_id))
+
+
+@router.delete("/{lesson_id}", response_model=MessageResponse)
+async def delete_lesson(
+    lesson_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    await lesson_service.delete_lesson(db, auth, str(lesson_id))
+    return MessageResponse(message="Lesson deleted")
 
 
 @router.post(
