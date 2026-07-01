@@ -30,7 +30,18 @@ async function proxyApiRequest(request: Request): Promise<Response | null> {
     init.duplex = "half";
   }
 
-  return fetch(target, init);
+  try {
+    return await fetch(target, init);
+  } catch (error) {
+    console.error("api_proxy_failed", { target, error });
+    return new Response(
+      JSON.stringify({
+        error: "BAD_GATEWAY",
+        message: "API backend unreachable. If this is a cold start, wait a minute and retry.",
+      }),
+      { status: 502, headers: { "content-type": "application/json" } },
+    );
+  }
 }
 
 let serverEntryPromise: Promise<ServerEntry> | undefined;

@@ -374,7 +374,9 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     category: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     severity: Mapped[AuditSeverity] = mapped_column(
-        Enum(AuditSeverity), default=AuditSeverity.INFO, nullable=False
+        Enum(AuditSeverity, values_callable=lambda x: [e.value for e in x]),
+        default=AuditSeverity.INFO,
+        nullable=False,
     )
     resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resource_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)

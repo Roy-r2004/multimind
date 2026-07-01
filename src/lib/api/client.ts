@@ -4,7 +4,13 @@ import type { ApiError, ApiClientError as ApiClientErrorType } from "@/lib/api/t
 
 export { ApiClientError } from "@/lib/api/types";
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "/api/v1";
+function resolveApiBase(): string {
+  if (typeof document !== "undefined") {
+    const fromMeta = document.querySelector('meta[name="api-base"]')?.getAttribute("content");
+    if (fromMeta) return fromMeta;
+  }
+  return import.meta.env.VITE_API_URL ?? "/api/v1";
+}
 
 type RequestOptions = {
   method?: string;
@@ -28,7 +34,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     headers["X-Org-Id"] = options.orgId;
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${resolveApiBase()}${path}`, {
     method: options.method ?? (options.body !== undefined ? "POST" : "GET"),
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
@@ -54,5 +60,5 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 }
 
 export function getApiBase(): string {
-  return API_BASE;
+  return resolveApiBase();
 }

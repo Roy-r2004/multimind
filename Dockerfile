@@ -22,15 +22,15 @@ RUN apk add --no-cache curl
 
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
-ENV PORT=3000
-ENV BACKEND_PROXY_TARGET=http://api:8000
 
 COPY --from=builder /app/.output ./.output
 COPY --from=builder /app/package.json ./package.json
+COPY scripts/start-web.sh ./scripts/start-web.sh
+RUN chmod +x ./scripts/start-web.sh && sed -i 's/\r$//' ./scripts/start-web.sh
 
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${PORT}/" > /dev/null || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT:-3000}/" > /dev/null || exit 1
 
-CMD ["node", ".output/server/index.mjs"]
+CMD ["./scripts/start-web.sh"]

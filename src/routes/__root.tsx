@@ -72,8 +72,8 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
 }
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
-  head: () => ({
-    meta: [
+  head: () => {
+    const meta = [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "MultiAI" },
@@ -90,8 +90,17 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:title", content: "MultiAI" },
-    ],
-    links: [
+    ];
+
+    const apiOrigin =
+      typeof process !== "undefined" ? process.env.API_PUBLIC_URL?.replace(/\/$/, "") : undefined;
+    if (apiOrigin) {
+      meta.push({ name: "api-base", content: `${apiOrigin}/api/v1` });
+    }
+
+    return {
+      meta,
+      links: [
       { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
       { rel: "apple-touch-icon", href: "/logo.svg" },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -102,7 +111,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { rel: "stylesheet", href: appCss },
     ],
-  }),
+    };
+  },
   shellComponent: RootShell,
   component: RootComponent,
   notFoundComponent: NotFoundComponent,
