@@ -10,7 +10,7 @@ async def main() -> None:
     async with httpx.AsyncClient(base_url="http://localhost:8001", timeout=120) as client:
         signin = await client.post(
             "/api/v1/auth/signin",
-            json={"email": "chafic@acme.co", "password": "password123"},
+            json={"email": "chafic@gmail.com", "password": "password123"},
         )
         signin.raise_for_status()
         token = signin.json()["access_token"]

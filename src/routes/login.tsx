@@ -80,7 +80,7 @@ function LoginPage() {
             name="email"
             type="email"
             required
-            defaultValue={isAdminRedirect ? "admin@multi.ai" : "chafic@acme.co"}
+            defaultValue={isAdminRedirect ? "admin@gmail.com" : "chafic@gmail.com"}
             className="input"
           />
         </Field>

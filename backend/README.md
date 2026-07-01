@@ -33,7 +33,7 @@ docker compose up --build
 ```
 
 - API: http://localhost:8000/docs
-- Demo user: `chafic@acme.co` / `password123`
+- Demo user: `chafic@gmail.com` / `password123` (admin: `admin@gmail.com` / `password123`)
 
 ### Local development
 

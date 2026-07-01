@@ -8,7 +8,7 @@ Multi-model AI council app — ask one question, get answers from multiple LLMs,
 docker compose up --build
 ```
 
-Open http://localhost:3080 — demo login `chafic@acme.co` / `password123`.
+Open http://localhost:3080 — demo login `chafic@gmail.com` / `password123` (admin: `admin@gmail.com` / `password123`).
 
 ## Deploy on Render
 

@@ -86,11 +86,13 @@ SYSTEM_TEMPLATES = [
 ]
 
 
-DEMO_EMAIL = "chafic@acme.co"
-ADMIN_EMAIL = "admin@multi.ai"
+DEMO_EMAIL = "chafic@gmail.com"
+ADMIN_EMAIL = "admin@gmail.com"
 DEMO_PASSWORD = "password123"
 ADMIN_PASSWORD = "password123"
 DEMO_ORG_SLUG = "acme"
+LEGACY_DEMO_EMAILS = ("chafic@acme.co", "sara@acme.co")
+LEGACY_ADMIN_EMAILS = ("admin@multi.ai",)
 
 
 async def ensure_user(
@@ -135,6 +137,15 @@ async def ensure_preferences(db, *, user: User) -> None:
         db.add(UserPreferences(user_id=user.id, default_model_set_id="balanced"))
 
 
+async def find_legacy_user(db, emails: tuple[str, ...]) -> User | None:
+    for email in emails:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if user is not None:
+            return user
+    return None
+
+
 async def seed() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -166,28 +177,28 @@ async def seed() -> None:
         demo_result = await db.execute(select(User).where(User.email == DEMO_EMAIL))
         demo_user = demo_result.scalar_one_or_none()
         if demo_user is None:
-            # Migrate legacy demo user if present.
-            legacy = await db.execute(select(User).where(User.email == "sara@acme.co"))
-            demo_user = legacy.scalar_one_or_none()
+            demo_user = await find_legacy_user(db, LEGACY_DEMO_EMAILS)
             if demo_user:
                 demo_user.email = DEMO_EMAIL
 
-        if demo_user is None:
-            demo_user = await ensure_user(
-                db,
-                email=DEMO_EMAIL,
-                full_name="Chafic",
-                password=DEMO_PASSWORD,
-            )
-        else:
-            demo_user.full_name = "Chafic"
-            demo_user.hashed_password = hash_password(DEMO_PASSWORD)
-            demo_user.is_active = True
+        demo_user = await ensure_user(
+            db,
+            email=DEMO_EMAIL,
+            full_name="Chafic",
+            password=DEMO_PASSWORD,
+        )
+
+        admin_result = await db.execute(select(User).where(User.email == ADMIN_EMAIL))
+        admin_user = admin_result.scalar_one_or_none()
+        if admin_user is None:
+            admin_user = await find_legacy_user(db, LEGACY_ADMIN_EMAILS)
+            if admin_user:
+                admin_user.email = ADMIN_EMAIL
 
         admin_user = await ensure_user(
             db,
             email=ADMIN_EMAIL,
-            full_name="MultiAI Admin",
+            full_name="Admin",
             password=ADMIN_PASSWORD,
         )
 
