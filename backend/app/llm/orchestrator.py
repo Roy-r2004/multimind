@@ -7,6 +7,7 @@ from typing import Any, Callable, Awaitable
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import RetryError
 
 from app.core.logging import get_logger
 from app.db.models import (
@@ -53,6 +54,21 @@ class OrchestratorResult:
     verdict: Verdict | None = None
     decision_insurance: DecisionInsurance | None = None
     cost_records: list[CostRecord] = field(default_factory=list)
+
+
+def _coerce_text(value: Any) -> str:
+    """Normalize LLM JSON fields that may arrive as lists instead of strings."""
+    if isinstance(value, list):
+        lines: list[str] = []
+        for item in value:
+            s = str(item).strip()
+            if not s:
+                continue
+            lines.append(s if s[0] in "-•*" else f"• {s}")
+        return "\n".join(lines)
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def format_llm_error(exc: Exception) -> str:
@@ -322,11 +338,11 @@ class TurnOrchestrator:
 
                 insurance_row = DecisionInsurance(
                     turn_id=ctx.turn_id,
-                    best_case=insurance_data["best_case"],
-                    worst_case=insurance_data["worst_case"],
-                    risk_level=insurance_data["risk_level"],
-                    potential_loss=insurance_data["potential_loss"],
-                    mitigation_plan=insurance_data["mitigation_plan"],
+                    best_case=_coerce_text(insurance_data.get("best_case")),
+                    worst_case=_coerce_text(insurance_data.get("worst_case")),
+                    risk_level=_coerce_text(insurance_data.get("risk_level")),
+                    potential_loss=_coerce_text(insurance_data.get("potential_loss")),
+                    mitigation_plan=_coerce_text(insurance_data.get("mitigation_plan")),
                     tokens_input=insurance_response.tokens_input,
                     tokens_output=insurance_response.tokens_output,
                     cost_usd=resolve_llm_cost(
@@ -352,6 +368,7 @@ class TurnOrchestrator:
                 )
                 db.add(cost)
                 result.cost_records.append(cost)
+                await db.flush()
 
                 await emit(
                     "decision_insurance_completed",

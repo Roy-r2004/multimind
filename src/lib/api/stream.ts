@@ -24,10 +24,11 @@ export async function pollTurnUntilComplete(
   auth: Auth,
   turnId: string,
   onEvent: TurnStreamHandler,
-  options?: { maxAttempts?: number; intervalMs?: number },
+  options?: { maxAttempts?: number; intervalMs?: number; emitProgress?: boolean },
 ): Promise<ApiTurn> {
   const maxAttempts = options?.maxAttempts ?? 120;
   const intervalMs = options?.intervalMs ?? 2000;
+  const emitProgress = options?.emitProgress ?? true;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const turn = await apiRequest<ApiTurn>(`/chats/turns/${turnId}`, {
@@ -35,7 +36,7 @@ export async function pollTurnUntilComplete(
       orgId: auth.orgId,
     });
 
-    onEvent("turn_progress", turn);
+    if (emitProgress) onEvent("turn_progress", turn);
 
     if (turn.status === "completed" || turn.status === "partial") {
       onEvent("turn_completed", turn);
@@ -123,7 +124,7 @@ export async function streamTurn(
   } catch (error) {
     if (!completed) {
       try {
-        await pollTurnUntilComplete(auth, turnId, onEvent);
+        await pollTurnUntilComplete(auth, turnId, onEvent, { emitProgress: false });
         return;
       } catch {
         // fall through to original error
@@ -134,9 +135,11 @@ export async function streamTurn(
 
   if (completed) return;
 
+  const pollOpts = { emitProgress: false };
+
   if (streamError) {
     try {
-      await pollTurnUntilComplete(auth, turnId, onEvent);
+      await pollTurnUntilComplete(auth, turnId, onEvent, pollOpts);
       return;
     } catch {
       throw streamError;
@@ -144,7 +147,7 @@ export async function streamTurn(
   }
 
   try {
-    await pollTurnUntilComplete(auth, turnId, onEvent);
+    await pollTurnUntilComplete(auth, turnId, onEvent, pollOpts);
   } catch (error) {
     throw error instanceof Error ? error : new Error(String(error));
   }

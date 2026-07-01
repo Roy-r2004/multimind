@@ -39,8 +39,16 @@ import { VerdictDisagreeModal } from "@/components/chat/VerdictDisagreeModal";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
-import { api, streamTurn } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { ApiTurn } from "@/lib/api/types";
+import {
+  mergeWithCachedTurns,
+  resumeRunningTurns,
+  runTurnInBackground,
+  seedChatTurns,
+  subscribeChatRunning,
+  subscribeChatTurns,
+} from "@/lib/turnRunner";
 import type { ModelSet } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
@@ -57,76 +65,6 @@ export const Route = createFileRoute("/chat")({
   head: () => ({ meta: [{ title: "Chat — MultiAI" }] }),
   component: ChatPage,
 });
-
-function applyStreamEvent(turn: ApiTurn, event: string, data: Record<string, unknown>): ApiTurn {
-  if (event === "model_answer_started") {
-    return {
-      ...turn,
-      status: "running",
-      model_answers: turn.model_answers.map((a) =>
-        a.model_id === data.model_id ? { ...a, status: "running" } : a,
-      ),
-    };
-  }
-  if (event === "model_answer_completed") {
-    return {
-      ...turn,
-      model_answers: turn.model_answers.map((a) =>
-        a.model_id === data.model_id
-          ? {
-              ...a,
-              text: String(data.text ?? ""),
-              confidence: Number(data.confidence ?? a.confidence),
-              status: "completed",
-              tokens_input: Number(data.tokens_input ?? 0),
-              tokens_output: Number(data.tokens_output ?? 0),
-              cost_usd: Number(data.cost_usd ?? 0),
-            }
-          : a,
-      ),
-    };
-  }
-  if (event === "model_answer_failed") {
-    return {
-      ...turn,
-      model_answers: turn.model_answers.map((a) =>
-        a.model_id === data.model_id
-          ? { ...a, status: "failed", error_message: String(data.error ?? "Failed") }
-          : a,
-      ),
-    };
-  }
-  if (event === "verdict_completed") {
-    return {
-      ...turn,
-      verdict: {
-        model_id: String(data.model_id ?? turn.verdict_model),
-        strategy: turn.strategy,
-        text: String(data.text ?? ""),
-        reason: String(data.reason ?? ""),
-        tokens_input: Number(data.tokens_input ?? 0),
-        tokens_output: Number(data.tokens_output ?? 0),
-        cost_usd: Number(data.cost_usd ?? 0),
-      },
-    };
-  }
-  if (event === "decision_insurance_completed") {
-    return {
-      ...turn,
-      decision_insurance: {
-        best_case: String(data.best_case ?? ""),
-        worst_case: String(data.worst_case ?? ""),
-        risk_level: String(data.risk_level ?? ""),
-        potential_loss: String(data.potential_loss ?? ""),
-        mitigation_plan: String(data.mitigation_plan ?? ""),
-        tokens_input: Number(data.tokens_input ?? 0),
-        tokens_output: Number(data.tokens_output ?? 0),
-        cost_usd: Number(data.cost_usd ?? 0),
-      },
-    };
-  }
-  return turn;
-}
 
 type ComposerFile = { name: string; state: "uploading" | "uploaded" | "error" };
 
@@ -205,6 +143,7 @@ export function ChatPage() {
   const [showExcel, setShowExcel] = useState(false);
   const [showPlus, setShowPlus] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
   const [showDeleteChat, setShowDeleteChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
   const activeChat = chats.find((c) => c.id === activeChatId);
@@ -212,11 +151,26 @@ export function ChatPage() {
   useEffect(() => {
     if (!isApiMode || !activeChatId) {
       setApiTurns([]);
+      setLoading(false);
       return;
     }
     const auth = authHeaders();
     if (!auth) return;
-    void api.chats.listTurns(auth, activeChatId).then(setApiTurns);
+
+    const unsubTurns = subscribeChatTurns(activeChatId, setApiTurns);
+    const unsubRunning = subscribeChatRunning(activeChatId, setLoading);
+
+    void api.chats.listTurns(auth, activeChatId).then((turns) => {
+      const merged = mergeWithCachedTurns(activeChatId, turns);
+      seedChatTurns(activeChatId, merged);
+      setApiTurns(merged);
+      void resumeRunningTurns(auth, activeChatId, turns);
+    });
+
+    return () => {
+      unsubTurns();
+      unsubRunning();
+    };
   }, [isApiMode, activeChatId, authHeaders]);
 
   async function send() {
@@ -228,7 +182,7 @@ export function ChatPage() {
       void navigate({ to: "/login" });
       return;
     }
-    setLoading(true);
+    setSending(true);
     try {
       let chatId = activeChatId;
       if (!chatId) chatId = await createChat();
@@ -244,30 +198,18 @@ export function ChatPage() {
         model_set_id: set.id,
         custom_instructions: customInstructions,
       });
-      setApiTurns((prev) => [...prev, pending]);
       setRefChat(null);
       setFiles([]);
       setTemplateInstructions(null);
-      await streamTurn(auth, pending.id, (event, data) => {
-        if (event === "turn_progress") {
-          setApiTurns((prev) =>
-            prev.map((t) => (t.id === pending.id ? (data as ApiTurn) : t)),
-          );
-          return;
-        }
-        if (event === "turn_completed") {
-          setApiTurns((prev) => prev.map((t) => (t.id === pending.id ? (data as ApiTurn) : t)));
-          return;
-        }
-        setApiTurns((prev) =>
-          prev.map((t) => (t.id !== pending.id ? t : applyStreamEvent(t, event, data as Record<string, unknown>))),
-        );
+      void runTurnInBackground(auth, chatId, pending).catch((error) => {
+        console.error(error);
+        alert(error instanceof Error ? error.message : "Failed to run turn");
       });
     } catch (error) {
       console.error(error);
       alert(error instanceof Error ? error.message : "Failed to run turn");
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   }
 
@@ -421,7 +363,11 @@ export function ChatPage() {
                 </div>
               ))}
 
-            {loading && set && <LoadingTurn set={set} modelById={modelById} />}
+            {loading &&
+              set &&
+              !apiTurns.some((t) => t.status === "pending" || t.status === "running") && (
+                <LoadingTurn set={set} modelById={modelById} />
+              )}
           </div>
         </div>
 
@@ -575,7 +521,7 @@ export function ChatPage() {
                 <button
                   type="button"
                   onClick={() => void send()}
-                  disabled={!input.trim() || loading || !isAuthenticated}
+                  disabled={!input.trim() || sending || loading || !isAuthenticated}
                   className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
                 >
                   {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
@@ -809,14 +755,17 @@ function AiTurn({
         {set.models.map((id) => {
           const m = modelById(id);
           const a = turn.model_answers.find((x) => x.model_id === id);
-          const failed = !a || a.status === "failed";
+          const status = a?.status ?? "pending";
+          const failed = status === "failed";
+          const inProgress = status === "pending" || status === "running";
           const usage = answerUsage.get(id);
           return (
             <GlassCard key={id} className="p-4">
               <div className="flex items-center gap-2 text-sm">
                 <span className="size-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ color: m.color, background: m.color }} />
                 <span className="font-medium">{m.name}</span>
-                {a?.confidence != null && (
+                {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
+                {!inProgress && a?.confidence != null && (
                   <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
                 )}
               </div>
@@ -825,6 +774,11 @@ function AiTurn({
                   <AlertCircle className="mr-1 inline size-3.5" />
                   {a?.error_message ?? "Failed"}
                 </p>
+              ) : inProgress ? (
+                <div className="mt-3 space-y-2">
+                  <div className="h-2 animate-pulse rounded bg-muted" />
+                  <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+                </div>
               ) : (
                 <>
                   <p className="mt-3 text-sm leading-relaxed text-foreground/90">{a?.text}</p>
