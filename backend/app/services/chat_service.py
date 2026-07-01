@@ -1,6 +1,8 @@
 """Chat and turn business logic."""
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -9,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import NotFoundError
 from app.db.models import (
     Chat,
     CostRecord,
@@ -24,6 +26,7 @@ from app.db.models import (
     Verdict,
     VerdictLesson,
 )
+from app.db.session import AsyncSessionLocal
 from app.llm.catalog import get_model
 from app.services.brain_service import brain_service
 from app.llm.orchestrator import TurnContext, get_orchestrator
@@ -186,10 +189,29 @@ class ChatService:
             created_at=turn.created_at,
         )
 
+    async def _poll_turn_until_done(
+        self, auth: AuthContext, turn_id: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Wait for an in-flight turn (e.g. after stream timeout or reconnect)."""
+        while True:
+            async with AsyncSessionLocal() as db:
+                turn = await self.get_turn(db, auth, turn_id)
+            status = turn.status
+            if status in ("completed", "partial"):
+                yield {"type": "turn_completed", "data": turn.model_dump(mode="json")}
+                return
+            if status == "failed":
+                err = next((a.error_message for a in turn.model_answers if a.error_message), None)
+                yield {"type": "turn_failed", "data": {"error": err or "Turn failed"}}
+                yield {"type": "turn_completed", "data": turn.model_dump(mode="json")}
+                return
+            yield {"type": "ping", "data": {}}
+            await asyncio.sleep(2)
+
     async def execute_turn_stream(
         self, db: AsyncSession, auth: AuthContext, turn_id: str
     ) -> AsyncIterator[dict[str, Any]]:
-        """Run orchestrator and yield SSE event payloads."""
+        """Run orchestrator and yield SSE event payloads in real time."""
         result = await db.execute(
             select(Turn)
             .join(Chat, Chat.id == Turn.chat_id)
@@ -205,7 +227,15 @@ class ChatService:
             return
 
         if turn.status == TurnStatus.RUNNING:
-            raise ConflictError("Turn is already running")
+            async for event in self._poll_turn_until_done(auth, turn_id):
+                yield event
+            return
+
+        if turn.status == TurnStatus.FAILED:
+            err = next((a.error_message for a in turn.model_answers if a.error_message), None) or turn.error_message
+            yield {"type": "turn_failed", "data": {"error": err or "Turn failed"}}
+            yield {"type": "turn_completed", "data": self._turn_response(turn).model_dump(mode="json")}
+            return
 
         model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
         chat = await self.get_chat(db, auth, turn.chat_id)
@@ -229,19 +259,37 @@ class ChatService:
             skip_answer_seed=True,
         )
 
-        events: list[dict[str, Any]] = []
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
         async def on_event(event: str, data: dict[str, Any]) -> None:
-            events.append({"type": event, "data": data})
+            await queue.put({"type": event, "data": data})
 
-        await get_orchestrator().run(db, ctx, on_event=on_event)
+        async def orchestrate() -> None:
+            try:
+                async with AsyncSessionLocal() as run_db:
+                    await get_orchestrator().run(run_db, ctx, on_event=on_event)
+                    await run_db.commit()
+                async with AsyncSessionLocal() as read_db:
+                    final = await self.get_turn(read_db, auth, turn_id)
+                    await queue.put({"type": "turn_completed", "data": final.model_dump(mode="json")})
+            except Exception as exc:
+                await queue.put({"type": "error", "data": {"message": str(exc)}})
+            finally:
+                await queue.put(None)
 
-        for item in events:
+        asyncio.create_task(orchestrate())
+
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=12.0)
+            except asyncio.TimeoutError:
+                yield {"type": "ping", "data": {"ts": time.time()}}
+                continue
+            if item is None:
+                break
             yield item
-
-        await db.expire_all()
-        final = await self.get_turn(db, auth, turn_id)
-        yield {"type": "turn_completed", "data": final.model_dump(mode="json")}
+            if item["type"] in ("turn_completed", "error"):
+                break
 
     async def get_turn(self, db: AsyncSession, auth: AuthContext, turn_id: str) -> TurnResponse:
         result = await db.execute(

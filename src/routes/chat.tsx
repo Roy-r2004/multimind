@@ -249,19 +249,11 @@ export function ChatPage() {
       setFiles([]);
       setTemplateInstructions(null);
       await streamTurn(auth, pending.id, (event, data) => {
-        if (event === "error") {
-          const message =
-            typeof data === "object" && data && "message" in data
-              ? String((data as { message: string }).message)
-              : "Turn failed";
-          throw new Error(message);
-        }
-        if (event === "turn_failed") {
-          const message =
-            typeof data === "object" && data && "error" in data
-              ? String((data as { error: string }).error)
-              : "Turn failed";
-          throw new Error(message);
+        if (event === "turn_progress") {
+          setApiTurns((prev) =>
+            prev.map((t) => (t.id === pending.id ? (data as ApiTurn) : t)),
+          );
+          return;
         }
         if (event === "turn_completed") {
           setApiTurns((prev) => prev.map((t) => (t.id === pending.id ? (data as ApiTurn) : t)));
