@@ -33,6 +33,7 @@ type ChatStore = {
   deleteChat: (id: string) => Promise<void>;
   assignChatToProject: (chatId: string, projectId: string) => Promise<void>;
   createProject: (input: CreateProjectInput) => Promise<Project>;
+  deleteProject: (projectId: string) => Promise<void>;
   createChat: () => Promise<string | null>;
   refreshAll: () => Promise<void>;
   projectChatCount: (projectId: string) => number;
@@ -253,6 +254,25 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     [authHeaders],
   );
 
+  const deleteProject = useCallback(
+    async (projectId: string) => {
+      const auth = authHeaders();
+      if (!auth) {
+        setChats((prev) =>
+          prev.map((c) => (c.projectId === projectId ? { ...c, projectId: null } : c)),
+        );
+        setProjects((prev) => prev.filter((p) => p.id !== projectId));
+        return;
+      }
+      await api.projects.delete(auth, projectId);
+      setChats((prev) =>
+        prev.map((c) => (c.projectId === projectId ? { ...c, projectId: null } : c)),
+      );
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+    },
+    [authHeaders],
+  );
+
   const createChat = useCallback(async (): Promise<string | null> => {
     const auth = authHeaders();
     if (!auth) return null;
@@ -267,7 +287,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     (projectId: string) => {
       const base = projects.find((p) => p.id === projectId)?.chats ?? 0;
       const assigned = chats.filter((c) => c.projectId === projectId).length;
-      return base + assigned;
+      return Math.max(base, assigned);
     },
     [projects, chats],
   );
@@ -296,6 +316,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       deleteChat,
       assignChatToProject,
       createProject,
+      deleteProject,
       createChat,
       refreshAll,
       projectChatCount,
@@ -317,6 +338,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       deleteChat,
       assignChatToProject,
       createProject,
+      deleteProject,
       createChat,
       refreshAll,
       projectChatCount,

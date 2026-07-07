@@ -135,6 +135,13 @@ export const api = {
 
     create: (auth: Auth, data: { name: string; description?: string }) =>
       apiRequest<ApiProject>("/projects", { body: data, token: auth.token, orgId: auth.orgId }),
+
+    delete: (auth: Auth, projectId: string) =>
+      apiRequest<{ message: string }>(`/projects/${projectId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
   },
 
   modelSets: {

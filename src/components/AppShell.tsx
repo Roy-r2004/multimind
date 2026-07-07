@@ -45,7 +45,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
   const { session, signOut } = useAuth();
-  const { chats, projectById, renameChat, assignChatToProject, setActiveChatId } = useChatStore();
+  const { chats, projectById, renameChat, assignChatToProject, setActiveChatId, refreshAll } =
+    useChatStore();
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Chat | null>(null);
@@ -255,9 +256,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       <CreateProjectModal
         open={showCreateProject}
         onClose={() => setShowCreateProject(false)}
-        onCreated={(project) => {
+        onCreated={async (project) => {
           if (assignTarget) {
-            assignChatToProject(assignTarget.id, project.id);
+            await assignChatToProject(assignTarget.id, project.id);
+            await refreshAll();
             setAssignTarget(null);
           }
           setShowCreateProject(false);

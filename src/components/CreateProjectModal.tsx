@@ -10,12 +10,13 @@ export function CreateProjectModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onCreated?: (project: Project) => void;
+  onCreated?: (project: Project) => void | Promise<void>;
 }) {
   const { createProject } = useChatStore();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   function reset() {
     setName("");
@@ -28,15 +29,23 @@ export function CreateProjectModal({
     onClose();
   }
 
-  function submit() {
+  async function submit() {
     if (!name.trim()) {
       setError("Please enter a project name.");
       return;
     }
-    const project = createProject({ name, description });
-    reset();
-    onCreated?.(project);
-    onClose();
+    setSaving(true);
+    setError(null);
+    try {
+      const project = await createProject({ name, description });
+      await onCreated?.(project);
+      reset();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create project");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -54,7 +63,7 @@ export function CreateProjectModal({
               setError(null);
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
+              if (e.key === "Enter") void submit();
             }}
             placeholder="e.g. AI startup planning"
             className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -76,15 +85,17 @@ export function CreateProjectModal({
         <div className="flex justify-end gap-2 pt-1">
           <button
             onClick={close}
+            disabled={saving}
             className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent"
           >
             Cancel
           </button>
           <button
-            onClick={submit}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            onClick={() => void submit()}
+            disabled={saving}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
-            Create Project
+            {saving ? "Creating..." : "Create Project"}
           </button>
         </div>
       </div>

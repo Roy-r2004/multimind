@@ -21,6 +21,7 @@ import { Route as AdminRouteRouteImport } from './routes/admin/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as SharedTokenRouteImport } from './routes/shared.$token'
+import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
 import { Route as LessonsIdRouteImport } from './routes/lessons.$id'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
@@ -95,6 +96,11 @@ const SharedTokenRoute = SharedTokenRouteImport.update({
   id: '/shared/$token',
   path: '/shared/$token',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ProjectsRoute,
 } as any)
 const ProjectsIdRoute = ProjectsIdRouteImport.update({
   id: '/$id',
@@ -191,6 +197,7 @@ export interface FileRoutesByFullPath {
   '/lessons/$id': typeof LessonsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/shared/$token': typeof SharedTokenRoute
+  '/projects/': typeof ProjectsIndexRoute
   '/admin/': typeof AdminIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
@@ -202,7 +209,7 @@ export interface FileRoutesByTo {
   '/lessons': typeof LessonsRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
-  '/projects': typeof ProjectsRouteWithChildren
+  '/projects': typeof ProjectsIndexRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -247,6 +254,7 @@ export interface FileRoutesById {
   '/lessons/$id': typeof LessonsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/shared/$token': typeof SharedTokenRoute
+  '/projects/': typeof ProjectsIndexRoute
   '/admin/': typeof AdminIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
@@ -277,6 +285,7 @@ export interface FileRouteTypes {
     | '/lessons/$id'
     | '/projects/$id'
     | '/shared/$token'
+    | '/projects/'
     | '/admin/'
     | '/admin/chats/$chatId'
     | '/admin/users/$userId'
@@ -332,6 +341,7 @@ export interface FileRouteTypes {
     | '/lessons/$id'
     | '/projects/$id'
     | '/shared/$token'
+    | '/projects/'
     | '/admin/'
     | '/admin/chats/$chatId'
     | '/admin/users/$userId'
@@ -442,6 +452,13 @@ declare module '@tanstack/react-router' {
       path: '/$id'
       fullPath: '/projects/$id'
       preLoaderRoute: typeof ProjectsIdRouteImport
+      parentRoute: typeof ProjectsRoute
+    }
+    '/projects/': {
+      id: '/projects/'
+      path: '/'
+      fullPath: '/projects/'
+      preLoaderRoute: typeof ProjectsIndexRouteImport
       parentRoute: typeof ProjectsRoute
     }
     '/lessons/$id': {
@@ -607,10 +624,12 @@ const LessonsRouteWithChildren =
 
 interface ProjectsRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
+  ProjectsIndexRoute: typeof ProjectsIndexRoute
 }
 
 const ProjectsRouteChildren: ProjectsRouteChildren = {
   ProjectsIdRoute: ProjectsIdRoute,
+  ProjectsIndexRoute: ProjectsIndexRoute,
 }
 
 const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
