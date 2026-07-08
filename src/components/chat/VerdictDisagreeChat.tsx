@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Send, Sparkles } from "lucide-react";
+import { Loader2, Send, Sparkles, User } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Modal } from "@/components/Modal";
 import { MessageContent } from "@/components/chat/MessageContent";
@@ -10,6 +10,22 @@ import { cn } from "@/lib/utils";
 
 const OPENING =
   "I read the verdict and your pushback matters. Walk me through what feels wrong — what did the council get wrong, and what would you do instead?";
+
+function isAssistantRole(role: string): boolean {
+  const r = role.trim().toLowerCase();
+  return r === "assistant" || r === "chafic" || r === "ai" || r === "facilitator";
+}
+
+function normalizeMessages(messages: ApiDiscussMessage[]): ApiDiscussMessage[] {
+  return messages.map((m) => ({
+    role: isAssistantRole(m.role) ? "assistant" : "user",
+    content: m.content,
+  }));
+}
+
+function hasUserMessage(messages: ApiDiscussMessage[]): boolean {
+  return messages.some((m) => !isAssistantRole(m.role));
+}
 
 export function VerdictDisagreeChat({
   open,
@@ -29,7 +45,7 @@ export function VerdictDisagreeChat({
   const { authHeaders } = useAuth();
   const navigate = useNavigate();
   const [messages, setMessages] = useState<ApiDiscussMessage[]>([
-    { role: "Chafic", content: OPENING },
+    { role: "assistant", content: OPENING },
   ]);
   const [input, setInput] = useState("");
   const [lessonId, setLessonId] = useState<string | null>(null);
@@ -60,14 +76,13 @@ export function VerdictDisagreeChat({
     const requestId = ++requestIdRef.current;
     setError(null);
     setInput("");
-    setMessages([{ role: "Chafic", content: OPENING }]);
+    setMessages([{ role: "assistant", content: OPENING }]);
     setLessonId(null);
     setCanFinalize(false);
     setReady(false);
 
     void (async () => {
       try {
-        // Confirm the turn still exists for this org before opening discuss.
         const liveTurn = await api.chats.getTurn(auth, turnId);
         if (requestId !== requestIdRef.current) return;
         if (!liveTurn.verdict) {
@@ -78,11 +93,12 @@ export function VerdictDisagreeChat({
 
         const res = await api.lessons.discussStart(auth, liveTurn.id);
         if (requestId !== requestIdRef.current) return;
-        const next =
-          res.messages.length > 0 ? res.messages : [{ role: "Chafic", content: OPENING }];
+        const next = normalizeMessages(
+          res.messages.length > 0 ? res.messages : [{ role: "assistant", content: OPENING }],
+        );
         setMessages(next);
         setLessonId(res.lesson_id);
-        setCanFinalize(res.can_finalize);
+        setCanFinalize(res.can_finalize || hasUserMessage(next));
         setReady(true);
         onDiscussStartRef.current(res.lesson_id);
       } catch (e) {
@@ -116,18 +132,19 @@ export function VerdictDisagreeChat({
     setInput("");
     setError(null);
     setLoading(true);
-    setMessages((prev) => [...prev, { role: userName, content: text }]);
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
 
     try {
       const res = await api.lessons.discuss(auth, turnId, text);
-      setMessages(res.messages);
+      const next = normalizeMessages(res.messages);
+      setMessages(next);
       setLessonId(res.lesson_id);
-      setCanFinalize(res.can_finalize);
+      setCanFinalize(res.can_finalize || hasUserMessage(next));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to send message");
       setMessages((prev) => {
         const copy = [...prev];
-        const idx = copy.findLastIndex((m) => m.role === userName && m.content === text);
+        const idx = copy.findLastIndex((m) => m.role === "user" && m.content === text);
         if (idx >= 0) copy.splice(idx, 1);
         return copy;
       });
@@ -139,6 +156,10 @@ export function VerdictDisagreeChat({
   async function finalize() {
     const auth = authHeaders();
     if (!auth) return;
+    if (!hasUserMessage(messages)) {
+      setError("Send at least one message explaining why you disagree first.");
+      return;
+    }
     setFinalizing(true);
     setError(null);
     try {
@@ -152,6 +173,8 @@ export function VerdictDisagreeChat({
       setFinalizing(false);
     }
   }
+
+  const finishEnabled = (canFinalize || hasUserMessage(messages)) && ready && !loading && !finalizing;
 
   return (
     <Modal open={open} onClose={onClose} title="Discuss with Chafic" size="xl">
@@ -169,26 +192,38 @@ export function VerdictDisagreeChat({
       <div className="mt-4 flex h-[min(52vh,420px)] flex-col rounded-xl border border-border bg-muted/20">
         <div className="flex-1 space-y-3 overflow-y-auto p-4">
           {messages.map((m, i) => {
-            const isChafic = m.role === "Chafic";
+            const isAssistant = isAssistantRole(m.role);
             return (
               <div
                 key={`${i}-${m.role}`}
-                className={cn("flex", isChafic ? "justify-start" : "justify-end")}
+                className={cn("flex", isAssistant ? "justify-start" : "justify-end")}
               >
                 <div
                   className={cn(
                     "max-w-[88%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
-                    isChafic
+                    isAssistant
                       ? "rounded-bl-sm border border-border bg-card text-foreground"
                       : "rounded-br-sm bg-primary/90 text-primary-foreground",
                   )}
                 >
-                  {isChafic && (
-                    <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-primary">
-                      <Sparkles className="size-3" /> Chafic
-                    </div>
-                  )}
-                  {isChafic ? (
+                  <div
+                    className={cn(
+                      "mb-1 flex items-center gap-1.5 text-xs font-semibold",
+                      isAssistant ? "text-primary" : "text-primary-foreground/85",
+                    )}
+                  >
+                    {isAssistant ? (
+                      <>
+                        <Sparkles className="size-3" /> Chafic
+                      </>
+                    ) : (
+                      <>
+                        <User className="size-3" /> You
+                        {userName ? ` · ${userName}` : ""}
+                      </>
+                    )}
+                  </div>
+                  {isAssistant ? (
                     <MessageContent compact>{m.content}</MessageContent>
                   ) : (
                     <p className="whitespace-pre-wrap">{m.content}</p>
@@ -250,7 +285,7 @@ export function VerdictDisagreeChat({
         <button
           type="button"
           onClick={() => void finalize()}
-          disabled={!canFinalize || finalizing || loading || !ready}
+          disabled={!finishEnabled}
           className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           {finalizing ? (
@@ -262,7 +297,12 @@ export function VerdictDisagreeChat({
           )}
         </button>
       </div>
-      {lessonId && canFinalize && (
+      {!finishEnabled && ready && !error && (
+        <p className="mt-2 text-center text-xs text-muted-foreground">
+          Send at least one reply explaining your disagreement, then finish.
+        </p>
+      )}
+      {finishEnabled && (
         <p className="mt-2 text-center text-xs text-muted-foreground">
           When you&apos;re ready, finish to lock in what you discussed and update your brain.
         </p>

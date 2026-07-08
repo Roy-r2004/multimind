@@ -33,11 +33,15 @@ Stay conversational, direct, and respectful. Keep replies concise (2-4 short par
 ### Conversation so far
 {% if messages %}
 {% for m in messages %}
-**{{ m.role }}**: {{ m.content }}
+{% if m.role == "assistant" or m.role == "Chafic" %}
+**Chafic (facilitator)**: {{ m.content }}
+{% else %}
+**{{ user_name }} (user)**: {{ m.content }}
+{% endif %}
 {% endfor %}
 {% else %}
 (This is the start of the discussion. Open by inviting them to explain their disagreement.)
 {% endif %}
 
 ## Instructions
-Respond as Chafic with your next message only — plain text, no JSON.
+Respond as Chafic with your next message only — plain text, no JSON. Do not speak as the user.

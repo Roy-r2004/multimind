@@ -12,7 +12,11 @@ A disagreement discussion between {{ user_name }} and Chafic (facilitator) just 
 
 ### Full discussion transcript
 {% for m in messages %}
-**{{ m.role }}**: {{ m.content }}
+{% if m.role == "assistant" or m.role == "Chafic" %}
+**Chafic (facilitator)**: {{ m.content }}
+{% else %}
+**{{ user_name }} (user)**: {{ m.content }}
+{% endif %}
 {% endfor %}
 
 ## Output (strict JSON only, no markdown fences)

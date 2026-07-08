@@ -36,6 +36,34 @@ CHAFIC_OPENING = (
     "what did the council get wrong, and what would you do instead?"
 )
 
+# Stable roles — never use the user's display name (demo user is also named Chafic).
+ROLE_ASSISTANT = "assistant"
+ROLE_USER = "user"
+
+
+def _normalize_discuss_messages(
+    messages: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Map legacy display-name roles onto assistant/user."""
+    normalized: list[dict[str, str]] = []
+    for m in messages or []:
+        role = str(m.get("role") or "").strip()
+        content = str(m.get("content") or "")
+        role_l = role.lower()
+        if role_l in {ROLE_ASSISTANT, "chafic", "ai", "facilitator"}:
+            role = ROLE_ASSISTANT
+        elif role_l == ROLE_USER:
+            role = ROLE_USER
+        else:
+            # Legacy: stored the user's full_name as role
+            role = ROLE_USER
+        normalized.append({"role": role, "content": content})
+    return normalized
+
+
+def _is_user_message(message: dict[str, str]) -> bool:
+    return str(message.get("role") or "").lower() == ROLE_USER
+
 
 class LessonService:
     async def list_lessons(
@@ -73,9 +101,10 @@ class LessonService:
                 raise ConflictError("Lesson is still being built")
             if lesson.status == LessonStatus.FAILED:
                 raise ConflictError("Lesson build failed — delete it and try again")
+            lesson.discussion_messages = _normalize_discuss_messages(lesson.discussion_messages)
             if not lesson.discussion_messages:
-                lesson.discussion_messages = [{"role": "Chafic", "content": CHAFIC_OPENING}]
-                await db.flush()
+                lesson.discussion_messages = [{"role": ROLE_ASSISTANT, "content": CHAFIC_OPENING}]
+            await db.flush()
             return self._discuss_response(lesson)
 
         lesson = VerdictLesson(
@@ -95,7 +124,7 @@ class LessonService:
             title="Discussing disagreement…",
             summary="",
             comparison={},
-            discussion_messages=[{"role": "Chafic", "content": CHAFIC_OPENING}],
+            discussion_messages=[{"role": ROLE_ASSISTANT, "content": CHAFIC_OPENING}],
             status=LessonStatus.DISCUSSING,
         )
         db.add(lesson)
@@ -118,8 +147,8 @@ class LessonService:
             raise ConflictError("Start a discussion before sending messages")
 
         lesson = turn.lesson
-        messages = list(lesson.discussion_messages or [])
-        messages.append({"role": auth.user.full_name, "content": message.strip()})
+        messages = _normalize_discuss_messages(lesson.discussion_messages)
+        messages.append({"role": ROLE_USER, "content": message.strip()})
 
         reply = await self._chafic_reply(
             turn=turn,
@@ -128,7 +157,7 @@ class LessonService:
             messages=messages,
             user_name=auth.user.full_name,
         )
-        messages.append({"role": "Chafic", "content": reply})
+        messages.append({"role": ROLE_ASSISTANT, "content": reply})
         lesson.discussion_messages = messages
         await db.flush()
         return self._discuss_response(lesson)
@@ -143,8 +172,9 @@ class LessonService:
             raise ConflictError("No active discussion to finalize")
 
         lesson = turn.lesson
-        messages = lesson.discussion_messages or []
-        user_turns = [m for m in messages if m.get("role") != "Chafic"]
+        messages = _normalize_discuss_messages(lesson.discussion_messages)
+        lesson.discussion_messages = messages
+        user_turns = [m for m in messages if _is_user_message(m)]
         if len(user_turns) < 1:
             raise ConflictError("Share your disagreement before building the lesson")
 
@@ -372,8 +402,8 @@ class LessonService:
         await db.flush()
 
     def _discuss_response(self, lesson: VerdictLesson) -> DiscussResponse:
-        messages = lesson.discussion_messages or []
-        user_turns = [m for m in messages if m.get("role") != "Chafic"]
+        messages = _normalize_discuss_messages(lesson.discussion_messages)
+        user_turns = [m for m in messages if _is_user_message(m)]
         return DiscussResponse(
             lesson_id=lesson.id,
             messages=[DiscussMessageItem(role=m["role"], content=m["content"]) for m in messages],
@@ -447,7 +477,7 @@ class LessonService:
             comparison=LessonComparisonResponse.model_validate(lesson.comparison),
             discussion_messages=[
                 DiscussMessageItem(role=m["role"], content=m["content"])
-                for m in (lesson.discussion_messages or [])
+                for m in _normalize_discuss_messages(lesson.discussion_messages)
             ],
             status=lesson.status.value,
             error_message=lesson.error_message,
