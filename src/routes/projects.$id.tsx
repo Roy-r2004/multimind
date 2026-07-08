@@ -27,7 +27,7 @@ function formatRelativeTime(iso: string): string {
 function ProjectDetail() {
   const { id } = Route.useParams();
   const navigate = useNavigate();
-  const { authHeaders, isAuthenticated } = useAuth();
+  const { authHeaders, isAuthenticated, isLoading: authLoading } = useAuth();
   const { setActiveChatId, refreshAll } = useChatStore();
   const [project, setProject] = useState<ApiProjectDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -39,34 +39,67 @@ function ProjectDetail() {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (authLoading) return;
+
     const auth = authHeaders();
     if (!auth || !isAuthenticated) {
       setLoading(false);
       setError("Sign in to view projects.");
       return;
     }
+
     let cancelled = false;
     setLoading(true);
     setError(null);
-    void api.projects
-      .get(auth, id)
-      .then((data) => {
+
+    async function loadProject() {
+      try {
+        const data = await api.projects.get(auth!, id);
         if (!cancelled) {
           setProject(data);
           setEditName(data.name);
           setEditDescription(data.description ?? "");
         }
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load project");
-      })
-      .finally(() => {
+      } catch {
+        // Fallback when GET /projects/:id is unavailable — compose from list endpoints.
+        try {
+          const [projectList, chatList] = await Promise.all([
+            api.projects.list(auth!),
+            api.chats.list(auth!),
+          ]);
+          const summary = projectList.find((p) => p.id === id);
+          if (!summary) {
+            if (!cancelled) setError("Project not found.");
+            return;
+          }
+          const chats = chatList
+            .filter((c) => c.project_id === id)
+            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+          const data: ApiProjectDetail = {
+            ...summary,
+            chat_count: chats.length,
+            chats,
+          };
+          if (!cancelled) {
+            setProject(data);
+            setEditName(data.name);
+            setEditDescription(data.description ?? "");
+          }
+        } catch (e) {
+          if (!cancelled) {
+            setError(e instanceof Error ? e.message : "Failed to load project");
+          }
+        }
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    }
+
+    void loadProject();
     return () => {
       cancelled = true;
     };
-  }, [id, authHeaders, isAuthenticated]);
+  }, [id, authHeaders, isAuthenticated, authLoading]);
 
   if (loading) {
     return (
