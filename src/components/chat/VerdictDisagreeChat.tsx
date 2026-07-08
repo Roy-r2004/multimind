@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const OPENING =
-  "I read the verdict and your pushback matters. Walk me through what feels wrong — what did the council get wrong, and what would you do instead?";
+  "I read the verdict and your pushback matters. Walk me through what feels wrong — what did the council get wrong, and what would you do instead?\n\nI'll tell you clearly when I agree or disagree with you as we go.";
 
 const OPENING_MARKER = "Walk me through what feels wrong";
 

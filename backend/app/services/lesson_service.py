@@ -33,7 +33,8 @@ logger = get_logger(__name__)
 
 CHAFIC_OPENING = (
     "I read the verdict and your pushback matters. Walk me through what feels wrong — "
-    "what did the council get wrong, and what would you do instead?"
+    "what did the council get wrong, and what would you do instead?\n\n"
+    "I'll tell you clearly when I agree or disagree with you as we go."
 )
 
 # Stable roles — never use the user's display name (demo user is also named Chafic).
@@ -355,7 +356,10 @@ class LessonService:
         try:
             response = await provider.complete(
                 system=system,
-                user="Respond as Chafic with your next message.",
+                user=(
+                    "Respond as Chafic. Debate their latest point. "
+                    "Explicitly say whether you agree, disagree, or partly agree with them, then explain why."
+                ),
                 model=verdict_model.provider_model,
                 max_tokens=800,
             )
