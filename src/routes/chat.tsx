@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Send,
   Gavel,
@@ -22,6 +22,7 @@ import {
   Image as ImageIcon,
   ThumbsDown,
   BookOpen,
+  Trophy,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
@@ -50,7 +51,7 @@ import {
   subscribeChatRunning,
   subscribeChatTurns,
 } from "@/lib/turnRunner";
-import type { ModelSet } from "@/lib/mock";
+import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 
@@ -692,6 +693,29 @@ function LoadingTurn({
   );
 }
 
+function inferTopModelId(
+  turn: ApiTurn,
+  councilModelIds: string[],
+  modelById: (id: string) => { name: string },
+): string | null {
+  const completed = (turn.model_answers ?? []).filter(
+    (a) => a.status === "completed" && a.confidence != null,
+  );
+  const strategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
+
+  if (strategy === "Pick Best" && turn.verdict) {
+    const excerpt = `${turn.verdict.text}\n${turn.verdict.reason}`.toLowerCase();
+    for (const id of councilModelIds) {
+      if (excerpt.includes(modelById(id).name.toLowerCase())) return id;
+    }
+  }
+
+  if (!completed.length) return null;
+  return completed.reduce((best, answer) =>
+    (answer.confidence ?? 0) > (best.confidence ?? 0) ? answer : best,
+  ).model_id;
+}
+
 function AiTurn({
   set,
   turn,
@@ -705,6 +729,25 @@ function AiTurn({
 }) {
   const { authHeaders } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
+  const verdictRef = useRef<HTMLDivElement>(null);
+  const scrolledToVerdictRef = useRef(false);
+
+  const topModelId = turn.verdict ? inferTopModelId(turn, set.models, modelById) : null;
+  const judgeModel = turn.verdict ? modelById(turn.verdict.model_id) : null;
+
+  useEffect(() => {
+    if (!turn.verdict || scrolledToVerdictRef.current) return;
+    scrolledToVerdictRef.current = true;
+    const timer = window.setTimeout(() => {
+      verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [turn.verdict]);
+
+  function openDisagree() {
+    verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setShowDisagree(true);
+  }
 
   return (
     <div className="space-y-4">
@@ -715,11 +758,24 @@ function AiTurn({
           const status = a?.status ?? "pending";
           const failed = status === "failed";
           const inProgress = status === "pending" || status === "running";
+          const isTopPick = topModelId === id;
           return (
-            <GlassCard key={id} className="p-4">
+            <GlassCard
+              key={id}
+              className={cn(
+                "p-4",
+                isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
+              )}
+            >
               <div className="flex items-center gap-2 text-sm">
                 <span className="size-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ color: m.color, background: m.color }} />
                 <span className="font-medium">{m.name}</span>
+                {isTopPick && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                    <Trophy className="size-3" />
+                    Top pick
+                  </span>
+                )}
                 {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
                 {!inProgress && a?.confidence != null && (
                   <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
@@ -746,13 +802,28 @@ function AiTurn({
       </div>
 
       {turn.verdict && (
+        <div ref={verdictRef} className="scroll-mt-24">
         <GlassCard glow className="p-5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
               <Gavel className="size-4" />
             </span>
             <span className="font-medium">Verdict</span>
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">{turn.verdict.strategy}</span>
+            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+              {turn.verdict.strategy}
+            </span>
+            {judgeModel && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
+                <span className="size-2 rounded-full" style={{ background: judgeModel.color }} />
+                Judge: {judgeModel.name}
+              </span>
+            )}
+            {topModelId && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                <Trophy className="size-3" />
+                Best: {modelById(topModelId).name}
+              </span>
+            )}
             <div className="ml-auto flex flex-wrap items-center gap-2">
               {turn.lesson_id ? (
                 <Link
@@ -765,8 +836,8 @@ function AiTurn({
               ) : (
                 <button
                   type="button"
-                  onClick={() => setShowDisagree(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                  onClick={openDisagree}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary shadow-sm hover:bg-primary/15"
                 >
                   <ThumbsDown className="size-3.5" /> I disagree
                 </button>
@@ -782,6 +853,7 @@ function AiTurn({
             )}
           </div>
         </GlassCard>
+        </div>
       )}
 
       <VerdictDisagreeModal
