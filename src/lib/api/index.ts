@@ -44,10 +44,17 @@ type Auth = { token: string; orgId: string };
 export const api = {
   auth: {
     signIn: (data: { email: string; password: string }) =>
-      apiRequest<{ access_token: string }>("/auth/signin", { body: data }),
+      apiRequest<{
+        access_token: string;
+        token_type?: string;
+        user?: ApiSession["user"];
+        organization?: ApiSession["organization"];
+      }>("/auth/signin", { body: data }),
 
     session: (auth: Auth) =>
       apiRequest<ApiSession>("/auth/session", { token: auth.token, orgId: auth.orgId }),
+
+    warm: () => apiRequest<{ status: string }>("/health"),
   },
 
   models: {

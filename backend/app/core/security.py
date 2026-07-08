@@ -10,7 +10,8 @@ from app.core.config import get_settings
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    # 10 rounds is plenty for app passwords and much faster on free-tier hosts.
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=10)).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:

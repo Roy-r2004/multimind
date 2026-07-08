@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { BrandLogo } from "@/components/BrandLogo";
+import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/login")({
@@ -27,6 +28,12 @@ function LoginPage() {
       setError(null);
     }
   }, [isAdminRedirect]);
+
+  // Ping the API as soon as login loads so a slept Render free instance wakes up
+  // before the user finishes typing / clicking submit.
+  useEffect(() => {
+    void api.auth.warm().catch(() => undefined);
+  }, []);
 
   return (
     <AuthShell
@@ -94,7 +101,7 @@ function LoginPage() {
           />
         </Field>
         <button className="btn-primary w-full" disabled={loading}>
-          {loading ? "Signing in…" : "Log in"}
+          {loading ? "Signing in… (API waking up if idle)" : "Log in"}
         </button>
       </form>
     </AuthShell>

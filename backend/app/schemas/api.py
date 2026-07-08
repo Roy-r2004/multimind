@@ -29,11 +29,6 @@ class SignInRequest(BaseModel):
     password: str
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,6 +46,13 @@ class OrgResponse(BaseModel):
     slug: str
     plan: str
     role: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse | None = None
+    organization: OrgResponse | None = None
 
 
 class SessionResponse(BaseModel):
