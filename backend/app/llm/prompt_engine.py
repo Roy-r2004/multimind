@@ -132,6 +132,7 @@ class PromptEngine:
         verdict_reason: str,
         disagreement_reason: str,
         user_position: str,
+        discussion_messages: list[dict[str, str]] | None = None,
     ) -> str:
         return self.render(
             "system/verdict_lesson.j2",
@@ -144,6 +145,51 @@ class PromptEngine:
             verdict_reason=verdict_reason,
             disagreement_reason=disagreement_reason,
             user_position=user_position,
+            discussion_messages=discussion_messages or [],
+        )
+
+    def disagree_discuss_prompt(
+        self,
+        *,
+        user_name: str,
+        user_message: str,
+        strategy: str,
+        model_answers: list[dict[str, Any]],
+        verdict_model_name: str,
+        verdict_text: str,
+        verdict_reason: str,
+        messages: list[dict[str, str]],
+    ) -> str:
+        return self.render(
+            "system/disagree_discuss.j2",
+            user_name=user_name,
+            user_message=user_message,
+            strategy=strategy,
+            model_answers=model_answers,
+            verdict_model_name=verdict_model_name,
+            verdict_text=verdict_text,
+            verdict_reason=verdict_reason,
+            messages=messages,
+        )
+
+    def disagree_finalize_prompt(
+        self,
+        *,
+        user_name: str,
+        user_message: str,
+        strategy: str,
+        verdict_model_name: str,
+        verdict_text: str,
+        messages: list[dict[str, str]],
+    ) -> str:
+        return self.render(
+            "system/disagree_finalize.j2",
+            user_name=user_name,
+            user_message=user_message,
+            strategy=strategy,
+            verdict_model_name=verdict_model_name,
+            verdict_text=verdict_text,
+            messages=messages,
         )
 
     def brain_update_prompt(

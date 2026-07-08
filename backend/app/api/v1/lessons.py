@@ -6,6 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.session import get_db
 from app.schemas.api import (
+    DiscussFinalizeResponse,
+    DiscussMessageRequest,
+    DiscussResponse,
     LessonDetailResponse,
     LessonListItemResponse,
     MessageResponse,
@@ -22,6 +25,57 @@ async def list_lessons(
     db: AsyncSession = Depends(get_db),
 ):
     return await lesson_service.list_lessons(db, auth)
+
+
+@router.post(
+    "/turns/{turn_id}/discuss/start",
+    response_model=DiscussResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_discussion(
+    turn_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await lesson_service.start_discussion(db, auth, str(turn_id))
+
+
+@router.post("/turns/{turn_id}/discuss", response_model=DiscussResponse)
+async def discuss_message(
+    turn_id: UUID,
+    data: DiscussMessageRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await lesson_service.discuss_message(db, auth, str(turn_id), data.message)
+
+
+@router.post(
+    "/turns/{turn_id}/discuss/finalize",
+    response_model=DiscussFinalizeResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def finalize_discussion(
+    turn_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    lesson = await lesson_service.finalize_discussion(db, auth, str(turn_id))
+    return DiscussFinalizeResponse(lesson=lesson)
+
+
+@router.post(
+    "/turns/{turn_id}/disagree",
+    response_model=LessonDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def disagree_with_verdict(
+    turn_id: UUID,
+    data: VerdictDisagreeRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await lesson_service.disagree_with_verdict(db, auth, str(turn_id), data)
 
 
 @router.get("/{lesson_id}", response_model=LessonDetailResponse)
@@ -41,17 +95,3 @@ async def delete_lesson(
 ):
     await lesson_service.delete_lesson(db, auth, str(lesson_id))
     return MessageResponse(message="Lesson deleted")
-
-
-@router.post(
-    "/turns/{turn_id}/disagree",
-    response_model=LessonDetailResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def disagree_with_verdict(
-    turn_id: UUID,
-    data: VerdictDisagreeRequest,
-    auth: AuthContext = Depends(get_auth_context),
-    db: AsyncSession = Depends(get_db),
-):
-    return await lesson_service.disagree_with_verdict(db, auth, str(turn_id), data)

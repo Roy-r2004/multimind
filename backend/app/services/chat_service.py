@@ -386,6 +386,7 @@ class ChatService:
             verdict=verdict,
             decision_insurance=insurance,
             lesson_id=turn.lesson.id if turn.lesson else None,
+            lesson_status=turn.lesson.status.value if turn.lesson else None,
             created_at=turn.created_at,
         )
 

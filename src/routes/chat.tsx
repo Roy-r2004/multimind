@@ -36,7 +36,7 @@ import {
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { TemplateMenu } from "@/components/chat/TemplateMenu";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
-import { VerdictDisagreeModal } from "@/components/chat/VerdictDisagreeModal";
+import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
@@ -347,11 +347,14 @@ export function ChatPage() {
                     set={set}
                     turn={turn}
                     modelById={modelById}
-                    onLessonCreated={(lessonId) => {
+                    onLessonUpdate={(lessonId, lessonStatus) => {
                       setApiTurns((prev) =>
-                        prev.map((t) => (t.id === turn.id ? { ...t, lesson_id: lessonId } : t)),
+                        prev.map((t) =>
+                          t.id === turn.id
+                            ? { ...t, lesson_id: lessonId, lesson_status: lessonStatus }
+                            : t,
+                        ),
                       );
-                      void navigate({ to: "/lessons/$id", params: { id: lessonId } });
                     }}
                   />
                 </div>
@@ -720,14 +723,14 @@ function AiTurn({
   set,
   turn,
   modelById,
-  onLessonCreated,
+  onLessonUpdate,
 }: {
   set: ModelSet;
   turn: ApiTurn;
   modelById: (id: string) => { name: string; color: string };
-  onLessonCreated: (lessonId: string) => void;
+  onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
 }) {
-  const { authHeaders } = useAuth();
+  const { session } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
   const scrolledToVerdictRef = useRef(false);
@@ -825,7 +828,7 @@ function AiTurn({
               </span>
             )}
             <div className="ml-auto flex flex-wrap items-center gap-2">
-              {turn.lesson_id ? (
+              {turn.lesson_id && turn.lesson_status === "completed" ? (
                 <Link
                   to="/lessons/$id"
                   params={{ id: turn.lesson_id }}
@@ -833,6 +836,14 @@ function AiTurn({
                 >
                   <BookOpen className="size-3.5" /> View lesson
                 </Link>
+              ) : turn.lesson_id && turn.lesson_status === "discussing" ? (
+                <button
+                  type="button"
+                  onClick={openDisagree}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
+                >
+                  <ThumbsDown className="size-3.5" /> Continue discussion
+                </button>
               ) : (
                 <button
                   type="button"
@@ -856,15 +867,13 @@ function AiTurn({
         </div>
       )}
 
-      <VerdictDisagreeModal
+      <VerdictDisagreeChat
         open={showDisagree}
         onClose={() => setShowDisagree(false)}
-        onSubmit={async (data) => {
-          const auth = authHeaders();
-          if (!auth) return;
-          const lesson = await api.lessons.disagree(auth, turn.id, data);
-          onLessonCreated(lesson.id);
-        }}
+        turnId={turn.id}
+        userName={session?.user.full_name ?? "You"}
+        onDiscussStart={(lessonId) => onLessonUpdate(lessonId, "discussing")}
+        onLessonBuilt={(lessonId) => onLessonUpdate(lessonId, "completed")}
       />
 
       {turn.decision_insurance && (

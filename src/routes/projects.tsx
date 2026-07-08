@@ -45,7 +45,14 @@ function ProjectsPage() {
                     <span className="grid size-10 place-items-center rounded-xl bg-primary/15 text-primary">
                       <FolderKanban className="size-5" />
                     </span>
-                    <div className="font-medium">{p.name}</div>
+                    <div>
+                      <div className="font-medium">{p.name}</div>
+                      {p.description && (
+                        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                          {p.description}
+                        </p>
+                      )}
+                    </div>
                   </div>
                   <div className="mt-4 flex justify-between text-xs text-muted-foreground">
                     <span>{projectChatCount(p.id)} chats</span>

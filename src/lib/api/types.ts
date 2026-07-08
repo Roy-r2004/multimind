@@ -62,6 +62,21 @@ export type ApiProject = {
   updated_at: string;
 };
 
+export type ApiProjectDetail = ApiProject & {
+  chats: ApiChat[];
+};
+
+export type ApiDiscussMessage = {
+  role: string;
+  content: string;
+};
+
+export type ApiDiscussResponse = {
+  lesson_id: string;
+  messages: ApiDiscussMessage[];
+  can_finalize: boolean;
+};
+
 export type ApiChat = {
   id: string;
   title: string;
@@ -114,6 +129,7 @@ export type ApiTurn = {
   verdict?: ApiVerdict | null;
   decision_insurance?: ApiDecisionInsurance | null;
   lesson_id?: string | null;
+  lesson_status?: string | null;
   created_at: string;
 };
 

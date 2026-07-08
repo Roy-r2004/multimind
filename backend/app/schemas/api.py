@@ -151,6 +151,15 @@ class ProjectCreateRequest(BaseModel):
     description: str | None = None
 
 
+class ProjectDetailResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    chat_count: int = 0
+    updated_at: datetime
+    chats: list[ChatResponse] = []
+
+
 # --- Chats ---
 
 
@@ -228,12 +237,28 @@ class TurnResponse(BaseModel):
     verdict: VerdictResponse | None = None
     decision_insurance: DecisionInsuranceResponse | None = None
     lesson_id: str | None = None
+    lesson_status: str | None = None
     created_at: datetime
 
 
 class VerdictDisagreeRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=8000)
     user_position: str = Field(min_length=10, max_length=8000)
+
+
+class DiscussMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+
+
+class DiscussMessageItem(BaseModel):
+    role: str
+    content: str
+
+
+class DiscussResponse(BaseModel):
+    lesson_id: str
+    messages: list[DiscussMessageItem]
+    can_finalize: bool = False
 
 
 class LessonAgreementItem(BaseModel):
@@ -297,7 +322,12 @@ class LessonDetailResponse(LessonListItemResponse):
     verdict_reason: str
     strategy: StrategyEnum
     comparison: LessonComparisonResponse
+    discussion_messages: list[DiscussMessageItem] = []
     error_message: str | None = None
+
+
+class DiscussFinalizeResponse(BaseModel):
+    lesson: LessonDetailResponse
 
 
 # --- Templates ---

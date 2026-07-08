@@ -20,6 +20,7 @@ import type {
   ApiAdminUserDetail,
   ApiAdminUserSummary,
   ApiBrain,
+  ApiDiscussResponse,
   ApiLessonDetail,
   ApiLessonListItem,
   ApiModel,
@@ -27,6 +28,7 @@ import type {
   ApiModelSet,
   ApiPricingCatalog,
   ApiProject,
+  ApiProjectDetail,
   ApiSession,
   ApiShareLink,
   ApiSharedChat,
@@ -132,6 +134,12 @@ export const api = {
   projects: {
     list: (auth: Auth) =>
       apiRequest<ApiProject[]>("/projects", { token: auth.token, orgId: auth.orgId }),
+
+    get: (auth: Auth, projectId: string) =>
+      apiRequest<ApiProjectDetail>(`/projects/${projectId}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
 
     create: (auth: Auth, data: { name: string; description?: string }) =>
       apiRequest<ApiProject>("/projects", { body: data, token: auth.token, orgId: auth.orgId }),
@@ -356,6 +364,28 @@ export const api = {
       apiRequest<ApiLessonDetail>(`/lessons/turns/${turnId}/disagree`, {
         method: "POST",
         body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    discussStart: (auth: Auth, turnId: string) =>
+      apiRequest<ApiDiscussResponse>(`/lessons/turns/${turnId}/discuss/start`, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    discuss: (auth: Auth, turnId: string, message: string) =>
+      apiRequest<ApiDiscussResponse>(`/lessons/turns/${turnId}/discuss`, {
+        method: "POST",
+        body: { message },
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    discussFinalize: (auth: Auth, turnId: string) =>
+      apiRequest<{ lesson: ApiLessonDetail }>(`/lessons/turns/${turnId}/discuss/finalize`, {
+        method: "POST",
         token: auth.token,
         orgId: auth.orgId,
       }),

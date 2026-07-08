@@ -31,6 +31,14 @@ Be specific to this exchange. Quote or paraphrase concrete claims. Avoid generic
 
 **User name**: {{ user_name }}
 
+{% if discussion_messages %}
+### Discussion Transcript (Chafic facilitated)
+{% for m in discussion_messages %}
+**{{ m.role }}**: {{ m.content }}
+{% endfor %}
+Use the full discussion to inform the comparison — capture how positions evolved and what was ultimately resolved.
+{% endif %}
+
 ## Output Format (strict JSON)
 Respond with **only** valid JSON (no markdown fences):
 {

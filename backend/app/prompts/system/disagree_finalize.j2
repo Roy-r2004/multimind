@@ -1,0 +1,24 @@
+{# Extract disagreement fields and lesson context from a discussion transcript #}
+{% include "system/base.j2" %}
+
+## Task
+A disagreement discussion between {{ user_name }} and Chafic (facilitator) just concluded. Extract structured fields for building a comparison lesson.
+
+### Original Question
+{{ user_message }}
+
+### AI Verdict ({{ strategy }}) — {{ verdict_model_name }}
+{{ verdict_text }}
+
+### Full discussion transcript
+{% for m in messages %}
+**{{ m.role }}**: {{ m.content }}
+{% endfor %}
+
+## Output (strict JSON only, no markdown fences)
+{
+  "disagreement_reason": "<why the user disagreed, synthesized from the discussion>",
+  "user_position": "<the user's refined position after discussion>",
+  "outcome": "<one of: user_convinced, verdict_stands, synthesis>",
+  "outcome_summary": "<1-2 sentences on what was resolved>"
+}

@@ -66,6 +66,7 @@ class UsageKind(str, enum.Enum):
 
 
 class LessonStatus(str, enum.Enum):
+    DISCUSSING = "discussing"
     BUILDING = "building"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -299,6 +300,7 @@ class VerdictLesson(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     comparison: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    discussion_messages: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list, nullable=False)
     status: Mapped[LessonStatus] = mapped_column(
         Enum(
             LessonStatus,
