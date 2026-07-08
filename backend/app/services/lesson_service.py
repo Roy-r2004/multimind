@@ -41,23 +41,56 @@ ROLE_ASSISTANT = "assistant"
 ROLE_USER = "user"
 
 
+_OPENING_MARKER = "Walk me through what feels wrong"
+_ASSISTANT_ALIASES = {ROLE_ASSISTANT, "ai", "facilitator"}
+# Never treat "chafic"/"chafiq" as assistant by name alone — the demo user
+# is also named Chafic, so legacy rows stored user turns under that label.
+
+
+def _looks_like_opening(content: str, index: int) -> bool:
+    text = content.strip()
+    if not text:
+        return False
+    if text == CHAFIC_OPENING.strip():
+        return True
+    return index == 0 and _OPENING_MARKER in text
+
+
 def _normalize_discuss_messages(
     messages: list[dict[str, str]] | None,
 ) -> list[dict[str, str]]:
-    """Map legacy display-name roles onto assistant/user."""
+    """Map stored roles onto assistant/user without confusing the demo username."""
+    raw = list(messages or [])
+    role_keys = {str(m.get("role") or "").strip().lower() for m in raw}
+    fully_ambiguous = bool(raw) and role_keys <= {"chafic", "chafiq"}
+
     normalized: list[dict[str, str]] = []
-    for m in messages or []:
-        role = str(m.get("role") or "").strip()
-        content = str(m.get("content") or "")
+    last_role: str | None = None
+
+    for index, message in enumerate(raw):
+        role = str(message.get("role") or "").strip()
+        content = str(message.get("content") or "")
         role_l = role.lower()
-        if role_l in {ROLE_ASSISTANT, "chafic", "ai", "facilitator"}:
-            role = ROLE_ASSISTANT
+
+        if role_l in _ASSISTANT_ALIASES:
+            out = ROLE_ASSISTANT
         elif role_l == ROLE_USER:
-            role = ROLE_USER
+            out = ROLE_USER
+        elif _looks_like_opening(content, index):
+            out = ROLE_ASSISTANT
+        elif fully_ambiguous:
+            # Old chats alternated under role="Chafic" for both sides.
+            out = ROLE_USER if last_role == ROLE_ASSISTANT else ROLE_ASSISTANT
+            if last_role is None:
+                out = ROLE_ASSISTANT if index == 0 else ROLE_USER
         else:
-            # Legacy: stored the user's full_name as role
-            role = ROLE_USER
-        normalized.append({"role": role, "content": content})
+            # Legacy display-name row (e.g. "Ada") = user; leftover "Chafic"
+            # facilitator label from older builds = assistant when not ambiguous.
+            out = ROLE_ASSISTANT if role_l in {"chafic", "chafiq"} else ROLE_USER
+
+        normalized.append({"role": out, "content": content})
+        last_role = out
+
     return normalized
 
 

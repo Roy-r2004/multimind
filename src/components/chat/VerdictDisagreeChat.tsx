@@ -11,20 +11,58 @@ import { cn } from "@/lib/utils";
 const OPENING =
   "I read the verdict and your pushback matters. Walk me through what feels wrong — what did the council get wrong, and what would you do instead?";
 
+const OPENING_MARKER = "Walk me through what feels wrong";
+
 function isAssistantRole(role: string): boolean {
   const r = role.trim().toLowerCase();
-  return r === "assistant" || r === "chafic" || r === "ai" || r === "facilitator";
+  // Do NOT treat "chafic"/"chafiq" as assistant — demo user has that name.
+  return r === "assistant" || r === "ai" || r === "facilitator";
+}
+
+function looksLikeOpening(content: string, index: number): boolean {
+  const text = content.trim();
+  if (!text) return false;
+  if (text === OPENING.trim()) return true;
+  return index === 0 && text.includes(OPENING_MARKER);
 }
 
 function normalizeMessages(messages: ApiDiscussMessage[]): ApiDiscussMessage[] {
-  return messages.map((m) => ({
-    role: isAssistantRole(m.role) ? "assistant" : "user",
-    content: m.content,
-  }));
+  const roleKeys = new Set(messages.map((m) => m.role.trim().toLowerCase()));
+  const fullyAmbiguous =
+    messages.length > 0 &&
+    [...roleKeys].every((r) => r === "chafic" || r === "chafiq");
+
+  let last: "assistant" | "user" | null = null;
+  return messages.map((m, index) => {
+    const r = m.role.trim().toLowerCase();
+    let role: "assistant" | "user";
+
+    if (isAssistantRole(m.role)) {
+      role = "assistant";
+    } else if (r === "user") {
+      role = "user";
+    } else if (looksLikeOpening(m.content, index)) {
+      role = "assistant";
+    } else if (fullyAmbiguous) {
+      if (last === null) role = index === 0 ? "assistant" : "user";
+      else role = last === "assistant" ? "user" : "assistant";
+    } else if (r === "chafic" || r === "chafiq") {
+      // Mixed transcripts: facilitator used to be labeled Chafic.
+      role = "assistant";
+    } else {
+      role = "user";
+    }
+
+    last = role;
+    return { role, content: m.content };
+  });
 }
 
 function hasUserMessage(messages: ApiDiscussMessage[]): boolean {
-  return messages.some((m) => !isAssistantRole(m.role));
+  return messages.some((m) => {
+    const r = m.role.trim().toLowerCase();
+    return r === "user";
+  });
 }
 
 export function VerdictDisagreeChat({
@@ -192,10 +230,10 @@ export function VerdictDisagreeChat({
       <div className="mt-4 flex h-[min(52vh,420px)] flex-col rounded-xl border border-border bg-muted/20">
         <div className="flex-1 space-y-3 overflow-y-auto p-4">
           {messages.map((m, i) => {
-            const isAssistant = isAssistantRole(m.role);
+            const isAssistant = m.role.trim().toLowerCase() === "assistant";
             return (
               <div
-                key={`${i}-${m.role}`}
+                key={`${i}-${m.role}-${m.content.slice(0, 24)}`}
                 className={cn("flex", isAssistant ? "justify-start" : "justify-end")}
               >
                 <div
