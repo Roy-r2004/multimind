@@ -62,7 +62,7 @@ class LessonService:
     async def start_discussion(
         self, db: AsyncSession, auth: AuthContext, turn_id: str
     ) -> DiscussResponse:
-        turn, chat, verdict_model, answer_context = await self._load_turn_context(
+        turn, _chat, verdict_model, _answer_context = await self._load_turn_context(
             db, auth, turn_id
         )
         if turn.lesson is not None:
@@ -73,6 +73,9 @@ class LessonService:
                 raise ConflictError("Lesson is still being built")
             if lesson.status == LessonStatus.FAILED:
                 raise ConflictError("Lesson build failed — delete it and try again")
+            if not lesson.discussion_messages:
+                lesson.discussion_messages = [{"role": "Chafic", "content": CHAFIC_OPENING}]
+                await db.flush()
             return self._discuss_response(lesson)
 
         lesson = VerdictLesson(
@@ -92,22 +95,13 @@ class LessonService:
             title="Discussing disagreement…",
             summary="",
             comparison={},
-            discussion_messages=[],
+            discussion_messages=[{"role": "Chafic", "content": CHAFIC_OPENING}],
             status=LessonStatus.DISCUSSING,
         )
         db.add(lesson)
         await db.flush()
-
-        opening = await self._chafic_reply(
-            turn=turn,
-            verdict_model=verdict_model,
-            answer_context=answer_context,
-            messages=[],
-            user_name=auth.user.full_name,
-            fallback=CHAFIC_OPENING,
-        )
-        lesson.discussion_messages = [{"role": "Chafic", "content": opening}]
-        await db.flush()
+        # Return immediately — opening greeting is static so the UI is never blocked
+        # waiting on the LLM cold start.
         return self._discuss_response(lesson)
 
     async def discuss_message(

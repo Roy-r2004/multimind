@@ -388,6 +388,7 @@ export const api = {
         method: "POST",
         token: auth.token,
         orgId: auth.orgId,
+        timeoutMs: 45_000,
       }),
 
     discuss: (auth: Auth, turnId: string, message: string) =>
@@ -396,6 +397,7 @@ export const api = {
         body: { message },
         token: auth.token,
         orgId: auth.orgId,
+        timeoutMs: 90_000,
       }),
 
     discussFinalize: (auth: Auth, turnId: string) =>
@@ -403,6 +405,7 @@ export const api = {
         method: "POST",
         token: auth.token,
         orgId: auth.orgId,
+        timeoutMs: 120_000,
       }),
 
     delete: (auth: Auth, lessonId: string) =>
