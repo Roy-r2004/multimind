@@ -13,13 +13,14 @@ import { Route as TemplatesRouteImport } from './routes/templates'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ModelSetsRouteImport } from './routes/model-sets'
 import { Route as LoginRouteImport } from './routes/login'
-import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as BrainRouteImport } from './routes/brain'
 import { Route as ProjectsRouteRouteImport } from './routes/projects.route'
+import { Route as LessonsRouteRouteImport } from './routes/lessons.route'
 import { Route as AdminRouteRouteImport } from './routes/admin/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
+import { Route as LessonsIndexRouteImport } from './routes/lessons.index'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as SharedTokenRouteImport } from './routes/shared.$token'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
@@ -57,11 +58,6 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const LessonsRoute = LessonsRouteImport.update({
-  id: '/lessons',
-  path: '/lessons',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ChatRoute = ChatRouteImport.update({
   id: '/chat',
   path: '/chat',
@@ -75,6 +71,11 @@ const BrainRoute = BrainRouteImport.update({
 const ProjectsRouteRoute = ProjectsRouteRouteImport.update({
   id: '/projects',
   path: '/projects',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LessonsRouteRoute = LessonsRouteRouteImport.update({
+  id: '/lessons',
+  path: '/lessons',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminRouteRoute = AdminRouteRouteImport.update({
@@ -91,6 +92,11 @@ const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ProjectsRouteRoute,
+} as any)
+const LessonsIndexRoute = LessonsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => LessonsRouteRoute,
 } as any)
 const AdminIndexRoute = AdminIndexRouteImport.update({
   id: '/',
@@ -110,7 +116,7 @@ const ProjectsIdRoute = ProjectsIdRouteImport.update({
 const LessonsIdRoute = LessonsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
-  getParentRoute: () => LessonsRoute,
+  getParentRoute: () => LessonsRouteRoute,
 } as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
   id: '/users',
@@ -176,10 +182,10 @@ const AdminChatsChatIdRoute = AdminChatsChatIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteRouteWithChildren
+  '/lessons': typeof LessonsRouteRouteWithChildren
   '/projects': typeof ProjectsRouteRouteWithChildren
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRoute
-  '/lessons': typeof LessonsRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/settings': typeof SettingsRoute
@@ -198,6 +204,7 @@ export interface FileRoutesByFullPath {
   '/projects/$id': typeof ProjectsIdRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin/': typeof AdminIndexRoute
+  '/lessons/': typeof LessonsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
@@ -206,7 +213,6 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRoute
-  '/lessons': typeof LessonsRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/settings': typeof SettingsRoute
@@ -225,6 +231,7 @@ export interface FileRoutesByTo {
   '/projects/$id': typeof ProjectsIdRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin': typeof AdminIndexRoute
+  '/lessons': typeof LessonsIndexRoute
   '/projects': typeof ProjectsIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
@@ -233,10 +240,10 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteRouteWithChildren
+  '/lessons': typeof LessonsRouteRouteWithChildren
   '/projects': typeof ProjectsRouteRouteWithChildren
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRoute
-  '/lessons': typeof LessonsRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/settings': typeof SettingsRoute
@@ -255,6 +262,7 @@ export interface FileRoutesById {
   '/projects/$id': typeof ProjectsIdRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin/': typeof AdminIndexRoute
+  '/lessons/': typeof LessonsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
@@ -264,10 +272,10 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/admin'
+    | '/lessons'
     | '/projects'
     | '/brain'
     | '/chat'
-    | '/lessons'
     | '/login'
     | '/model-sets'
     | '/settings'
@@ -286,6 +294,7 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/shared/$token'
     | '/admin/'
+    | '/lessons/'
     | '/projects/'
     | '/admin/chats/$chatId'
     | '/admin/users/$userId'
@@ -294,7 +303,6 @@ export interface FileRouteTypes {
     | '/'
     | '/brain'
     | '/chat'
-    | '/lessons'
     | '/login'
     | '/model-sets'
     | '/settings'
@@ -313,6 +321,7 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/shared/$token'
     | '/admin'
+    | '/lessons'
     | '/projects'
     | '/admin/chats/$chatId'
     | '/admin/users/$userId'
@@ -320,10 +329,10 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/admin'
+    | '/lessons'
     | '/projects'
     | '/brain'
     | '/chat'
-    | '/lessons'
     | '/login'
     | '/model-sets'
     | '/settings'
@@ -342,6 +351,7 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/shared/$token'
     | '/admin/'
+    | '/lessons/'
     | '/projects/'
     | '/admin/chats/$chatId'
     | '/admin/users/$userId'
@@ -350,10 +360,10 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRouteRoute: typeof AdminRouteRouteWithChildren
+  LessonsRouteRoute: typeof LessonsRouteRouteWithChildren
   ProjectsRouteRoute: typeof ProjectsRouteRouteWithChildren
   BrainRoute: typeof BrainRoute
   ChatRoute: typeof ChatRoute
-  LessonsRoute: typeof LessonsRouteWithChildren
   LoginRoute: typeof LoginRoute
   ModelSetsRoute: typeof ModelSetsRoute
   SettingsRoute: typeof SettingsRoute
@@ -391,13 +401,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/lessons': {
-      id: '/lessons'
-      path: '/lessons'
-      fullPath: '/lessons'
-      preLoaderRoute: typeof LessonsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/chat': {
       id: '/chat'
       path: '/chat'
@@ -417,6 +420,13 @@ declare module '@tanstack/react-router' {
       path: '/projects'
       fullPath: '/projects'
       preLoaderRoute: typeof ProjectsRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/lessons': {
+      id: '/lessons'
+      path: '/lessons'
+      fullPath: '/lessons'
+      preLoaderRoute: typeof LessonsRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin': {
@@ -439,6 +449,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/projects/'
       preLoaderRoute: typeof ProjectsIndexRouteImport
       parentRoute: typeof ProjectsRouteRoute
+    }
+    '/lessons/': {
+      id: '/lessons/'
+      path: '/'
+      fullPath: '/lessons/'
+      preLoaderRoute: typeof LessonsIndexRouteImport
+      parentRoute: typeof LessonsRouteRoute
     }
     '/admin/': {
       id: '/admin/'
@@ -466,7 +483,7 @@ declare module '@tanstack/react-router' {
       path: '/$id'
       fullPath: '/lessons/$id'
       preLoaderRoute: typeof LessonsIdRouteImport
-      parentRoute: typeof LessonsRoute
+      parentRoute: typeof LessonsRouteRoute
     }
     '/admin/users': {
       id: '/admin/users'
@@ -611,6 +628,20 @@ const AdminRouteRouteWithChildren = AdminRouteRoute._addFileChildren(
   AdminRouteRouteChildren,
 )
 
+interface LessonsRouteRouteChildren {
+  LessonsIdRoute: typeof LessonsIdRoute
+  LessonsIndexRoute: typeof LessonsIndexRoute
+}
+
+const LessonsRouteRouteChildren: LessonsRouteRouteChildren = {
+  LessonsIdRoute: LessonsIdRoute,
+  LessonsIndexRoute: LessonsIndexRoute,
+}
+
+const LessonsRouteRouteWithChildren = LessonsRouteRoute._addFileChildren(
+  LessonsRouteRouteChildren,
+)
+
 interface ProjectsRouteRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
   ProjectsIndexRoute: typeof ProjectsIndexRoute
@@ -625,24 +656,13 @@ const ProjectsRouteRouteWithChildren = ProjectsRouteRoute._addFileChildren(
   ProjectsRouteRouteChildren,
 )
 
-interface LessonsRouteChildren {
-  LessonsIdRoute: typeof LessonsIdRoute
-}
-
-const LessonsRouteChildren: LessonsRouteChildren = {
-  LessonsIdRoute: LessonsIdRoute,
-}
-
-const LessonsRouteWithChildren =
-  LessonsRoute._addFileChildren(LessonsRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRouteRoute: AdminRouteRouteWithChildren,
+  LessonsRouteRoute: LessonsRouteRouteWithChildren,
   ProjectsRouteRoute: ProjectsRouteRouteWithChildren,
   BrainRoute: BrainRoute,
   ChatRoute: ChatRoute,
-  LessonsRoute: LessonsRouteWithChildren,
   LoginRoute: LoginRoute,
   ModelSetsRoute: ModelSetsRoute,
   SettingsRoute: SettingsRoute,

@@ -133,6 +133,8 @@ export type ApiTurn = {
   created_at: string;
 };
 
+export type FacilitatorStance = "agreed" | "disagreed" | "partly_agreed";
+
 export type ApiLessonListItem = {
   id: string;
   turn_id: string | null;
@@ -142,6 +144,7 @@ export type ApiLessonListItem = {
   user_name: string;
   verdict_model_name: string;
   status: string;
+  facilitator_stance?: FacilitatorStance | null;
   created_at: string;
 };
 
@@ -172,6 +175,9 @@ export type ApiLessonComparison = {
     when_model_might_be_right: string;
     recommended_next_step: string;
   };
+  facilitator_stance?: FacilitatorStance | null;
+  outcome?: string | null;
+  outcome_summary?: string | null;
 };
 
 export type ApiLessonDetail = ApiLessonListItem & {
@@ -183,6 +189,8 @@ export type ApiLessonDetail = ApiLessonListItem & {
   verdict_reason: string;
   strategy: Strategy;
   comparison: ApiLessonComparison;
+  outcome?: string | null;
+  outcome_summary?: string | null;
   error_message?: string | null;
 };
 

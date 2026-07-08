@@ -306,6 +306,9 @@ class LessonComparisonResponse(BaseModel):
     assumptions: dict[str, list[str]] = Field(default_factory=lambda: {"user": [], "model": []})
     blind_spots: dict[str, list[str]] = Field(default_factory=lambda: {"user": [], "model": []})
     lesson: LessonTakeaway = Field(default_factory=LessonTakeaway)
+    facilitator_stance: str | None = None
+    outcome: str | None = None
+    outcome_summary: str | None = None
 
 
 class LessonListItemResponse(BaseModel):
@@ -317,6 +320,7 @@ class LessonListItemResponse(BaseModel):
     user_name: str
     verdict_model_name: str
     status: str
+    facilitator_stance: str | None = None
     created_at: datetime
 
 
@@ -330,6 +334,8 @@ class LessonDetailResponse(LessonListItemResponse):
     strategy: StrategyEnum
     comparison: LessonComparisonResponse
     discussion_messages: list[DiscussMessageItem] = []
+    outcome: str | None = None
+    outcome_summary: str | None = None
     error_message: str | None = None
 
 

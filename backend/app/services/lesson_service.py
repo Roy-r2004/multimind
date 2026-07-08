@@ -47,6 +47,45 @@ _ASSISTANT_ALIASES = {ROLE_ASSISTANT, "ai", "facilitator"}
 # Never treat "chafic"/"chafiq" as assistant by name alone — the demo user
 # is also named Chafic, so legacy rows stored user turns under that label.
 
+_STANCE_AGREED = "agreed"
+_STANCE_DISAGREED = "disagreed"
+_STANCE_PARTLY = "partly_agreed"
+_VALID_STANCES = {_STANCE_AGREED, _STANCE_DISAGREED, _STANCE_PARTLY}
+
+
+def _normalize_facilitator_stance(
+    raw_stance: object | None,
+    outcome: object | None = None,
+) -> str | None:
+    """Map extract fields to agreed / disagreed / partly_agreed vs the user."""
+    if isinstance(raw_stance, str):
+        s = raw_stance.strip().lower().replace(" ", "_").replace("-", "_")
+        if s in _VALID_STANCES:
+            return s
+        if s in {"agree", "agrees", "user_convinced", "convinced"}:
+            return _STANCE_AGREED
+        if s in {"disagree", "disagrees", "verdict_stands"}:
+            return _STANCE_DISAGREED
+        if s in {"partly", "partial", "partially_agreed", "synthesis"}:
+            return _STANCE_PARTLY
+
+    if isinstance(outcome, str):
+        o = outcome.strip().lower()
+        if o == "user_convinced":
+            return _STANCE_AGREED
+        if o in {"verdict_stands", "chafic_convinced"}:
+            # Facilitator held against the user (or stuck with the model verdict).
+            return _STANCE_DISAGREED
+        if o == "synthesis":
+            return _STANCE_PARTLY
+    return None
+
+
+def _comparison_meta(comparison: dict | None) -> dict:
+    if not isinstance(comparison, dict):
+        return {}
+    return comparison
+
 
 def _looks_like_opening(content: str, index: int) -> bool:
     text = content.strip()
@@ -221,22 +260,42 @@ class LessonService:
             verdict_text=turn.verdict.text,
             messages=messages,
         )
+        extract_meta: dict = {}
         try:
             extract_resp = await provider.complete(
                 system=extract_system,
-                user="Extract the disagreement fields as JSON.",
+                user=(
+                    "Extract the disagreement fields as JSON. "
+                    "user_position must be the USER's lesson/position even if the facilitator disagreed. "
+                    "facilitator_stance is whether the facilitator agreed with the USER."
+                ),
                 model=verdict_model.provider_model,
             )
             extracted = provider.parse_json_response(extract_resp.text)
             lesson.disagreement_reason = extracted.get(
                 "disagreement_reason", lesson.disagreement_reason
             )
-            lesson.user_position = extracted.get("user_position", lesson.user_position)
+            # Always keep the user's taught position — never swap in facilitator rebuttal.
+            user_pos = (extracted.get("user_position") or "").strip()
+            if user_pos:
+                lesson.user_position = user_pos
+            stance = _normalize_facilitator_stance(
+                extracted.get("facilitator_stance"),
+                extracted.get("outcome"),
+            )
+            extract_meta = {
+                "facilitator_stance": stance,
+                "outcome": extracted.get("outcome"),
+                "outcome_summary": extracted.get("outcome_summary"),
+            }
         except Exception as exc:
             logger.warning("discuss_extract_failed", turn_id=turn_id, error=str(exc))
 
         lesson.status = LessonStatus.BUILDING
         lesson.title = "Building lesson…"
+        # Stash stance meta so build can merge into comparison JSON.
+        prior = _comparison_meta(lesson.comparison)
+        lesson.comparison = {**prior, **{k: v for k, v in extract_meta.items() if v}}
         await db.flush()
         await self._build_lesson_from_context(
             db, auth, turn, chat, lesson, verdict_model, answer_context
@@ -396,11 +455,16 @@ class LessonService:
         try:
             response = await provider.complete(
                 system=system,
-                user="Produce the disagreement lesson JSON now.",
+                user=(
+                    "Produce the disagreement lesson JSON now. "
+                    "Center the durable lesson (headline, key_insight, what_to_remember) "
+                    "on the USER's position even if the facilitator disagreed."
+                ),
                 model=verdict_model.provider_model,
             )
             parsed = provider.parse_json_response(response.text)
-            comparison = self._normalize_comparison(parsed)
+            prior_meta = _comparison_meta(lesson.comparison)
+            comparison = self._normalize_comparison(parsed, prior_meta=prior_meta)
             lesson.title = parsed.get("title", "Verdict disagreement lesson")
             lesson.summary = parsed.get("summary", "")
             lesson.comparison = comparison
@@ -434,7 +498,13 @@ class LessonService:
             lesson.error_message = str(exc)
             lesson.title = "Lesson could not be built"
             lesson.summary = "The comparison could not be generated. Try again later."
-            lesson.comparison = {}
+            # Keep facilitator stance / outcome metadata even if build failed.
+            prior = _comparison_meta(lesson.comparison)
+            lesson.comparison = {
+                k: prior[k]
+                for k in ("facilitator_stance", "outcome", "outcome_summary")
+                if prior.get(k)
+            }
 
         await db.flush()
 
@@ -461,8 +531,17 @@ class LessonService:
             raise NotFoundError("Lesson", lesson_id)
         return lesson
 
-    def _normalize_comparison(self, parsed: dict) -> dict:
+    def _normalize_comparison(
+        self, parsed: dict, prior_meta: dict | None = None
+    ) -> dict:
         lesson_block = parsed.get("lesson") or {}
+        prior = prior_meta or {}
+        stance = _normalize_facilitator_stance(
+            parsed.get("facilitator_stance") or prior.get("facilitator_stance"),
+            parsed.get("outcome") or prior.get("outcome"),
+        )
+        outcome = parsed.get("outcome") or prior.get("outcome")
+        outcome_summary = parsed.get("outcome_summary") or prior.get("outcome_summary")
         return {
             "overview": parsed.get("overview", ""),
             "user_position_summary": parsed.get("user_position_summary", ""),
@@ -480,7 +559,17 @@ class LessonService:
                 "when_model_might_be_right": lesson_block.get("when_model_might_be_right", ""),
                 "recommended_next_step": lesson_block.get("recommended_next_step", ""),
             },
+            "facilitator_stance": stance,
+            "outcome": outcome,
+            "outcome_summary": outcome_summary,
         }
+
+    def _stance_from_lesson(self, lesson: VerdictLesson) -> str | None:
+        meta = _comparison_meta(lesson.comparison)
+        return _normalize_facilitator_stance(
+            meta.get("facilitator_stance"),
+            meta.get("outcome"),
+        )
 
     def _list_item(self, lesson: VerdictLesson) -> LessonListItemResponse:
         return LessonListItemResponse(
@@ -492,10 +581,16 @@ class LessonService:
             user_name=lesson.user_name,
             verdict_model_name=lesson.verdict_model_name,
             status=lesson.status.value,
+            facilitator_stance=self._stance_from_lesson(lesson),
             created_at=lesson.created_at,
         )
 
     def _detail(self, lesson: VerdictLesson) -> LessonDetailResponse:
+        meta = _comparison_meta(lesson.comparison)
+        stance = self._stance_from_lesson(lesson)
+        comparison_payload = dict(meta) if meta else {}
+        if stance and not comparison_payload.get("facilitator_stance"):
+            comparison_payload["facilitator_stance"] = stance
         return LessonDetailResponse(
             id=lesson.id,
             turn_id=lesson.turn_id,
@@ -511,12 +606,15 @@ class LessonService:
             strategy=lesson.strategy,
             title=lesson.title,
             summary=lesson.summary,
-            comparison=LessonComparisonResponse.model_validate(lesson.comparison),
+            comparison=LessonComparisonResponse.model_validate(comparison_payload or {}),
             discussion_messages=[
                 DiscussMessageItem(role=m["role"], content=m["content"])
                 for m in _normalize_discuss_messages(lesson.discussion_messages)
             ],
             status=lesson.status.value,
+            facilitator_stance=stance,
+            outcome=meta.get("outcome"),
+            outcome_summary=meta.get("outcome_summary"),
             error_message=lesson.error_message,
             created_at=lesson.created_at,
         )
