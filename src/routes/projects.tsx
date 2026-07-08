@@ -39,7 +39,7 @@ function ProjectsPage() {
             </GlassCard>
           ) : (
             projects.map((p) => (
-              <Link key={p.id} to="/projects/$id" params={{ id: p.id }}>
+              <Link key={p.id} to="/projects/$id" params={{ id: p.id }} className="block">
                 <GlassCard className="p-5 transition hover:border-primary/30">
                   <div className="flex items-center gap-3">
                     <span className="grid size-10 place-items-center rounded-xl bg-primary/15 text-primary">

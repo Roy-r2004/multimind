@@ -151,6 +151,11 @@ class ProjectCreateRequest(BaseModel):
     description: str | None = None
 
 
+class ProjectUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+
+
 class ProjectDetailResponse(BaseModel):
     id: str
     name: str

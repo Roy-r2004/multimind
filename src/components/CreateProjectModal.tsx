@@ -28,15 +28,19 @@ export function CreateProjectModal({
     onClose();
   }
 
-  function submit() {
+  async function submit() {
     if (!name.trim()) {
       setError("Please enter a project name.");
       return;
     }
-    const project = createProject({ name, description });
-    reset();
-    onCreated?.(project);
-    onClose();
+    try {
+      const project = await createProject({ name, description });
+      reset();
+      onCreated?.(project);
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create project");
+    }
   }
 
   return (

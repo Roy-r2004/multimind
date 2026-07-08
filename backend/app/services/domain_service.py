@@ -18,6 +18,7 @@ from app.schemas.api import (
     ProjectCreateRequest,
     ProjectDetailResponse,
     ProjectResponse,
+    ProjectUpdateRequest,
     TemplateCreateRequest,
     TemplateResponse,
 )
@@ -96,6 +97,21 @@ class ProjectService:
                 for c in chats
             ],
         )
+
+    async def update(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        project_id: UUID,
+        data: ProjectUpdateRequest,
+    ) -> ProjectDetailResponse:
+        project = await self.get(db, auth, project_id)
+        if data.name is not None:
+            project.name = data.name.strip()
+        if data.description is not None:
+            project.description = data.description.strip() or None
+        await db.flush()
+        return await self.get_detail(db, auth, project_id)
 
 
 class ModelSetService:

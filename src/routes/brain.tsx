@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Loader2, Zap, Activity, Sparkles } from "lucide-react";
+import { Loader2, Heart, ThumbsDown, Zap, Activity, Sparkles } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { BrainVisualization } from "@/components/cinematic/BrainVisualization";
 import { GlassCard } from "@/components/cinematic/PageChrome";
@@ -76,8 +76,10 @@ function BrainPage() {
                 Learned from every verdict you reject — fed back into the council so models match your taste.
               </p>
 
-              <div className="mt-6">
+              <div className="mt-6 grid grid-cols-3 gap-3">
                 <StatPill icon={<Activity className="size-3.5" />} label="Lessons" value={String(brain.lesson_count)} />
+                <StatPill icon={<Heart className="size-3.5" />} label="Prefers" value="—" />
+                <StatPill icon={<ThumbsDown className="size-3.5" />} label="Rejects" value="—" />
               </div>
 
               <Link
@@ -158,9 +160,42 @@ function BrainPage() {
               )}
             </div>
           )}
+
+          <div className="mt-8 grid gap-4 md:grid-cols-2">
+            <SkeletonReveal delayMs={550}>
+              <PreferencePanel
+                title="Neural prefers"
+                icon={<Heart className="size-4 text-emerald-600" />}
+              />
+            </SkeletonReveal>
+            <SkeletonReveal delayMs={700}>
+              <PreferencePanel
+                title="Neural rejects"
+                icon={<ThumbsDown className="size-4 text-rose-600" />}
+              />
+            </SkeletonReveal>
+          </div>
         </div>
       </div>
     </AppShell>
+  );
+}
+
+function PreferencePanel({
+  title,
+  icon,
+}: {
+  title: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <GlassCard className="p-5">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        {icon}
+        {title}
+      </div>
+      <p className="mt-4 text-sm text-muted-foreground">None yet.</p>
+    </GlassCard>
   );
 }
 

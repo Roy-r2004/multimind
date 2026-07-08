@@ -143,6 +143,14 @@ export const api = {
 
     create: (auth: Auth, data: { name: string; description?: string }) =>
       apiRequest<ApiProject>("/projects", { body: data, token: auth.token, orgId: auth.orgId }),
+
+    update: (auth: Auth, projectId: string, data: { name?: string; description?: string | null }) =>
+      apiRequest<ApiProjectDetail>(`/projects/${projectId}`, {
+        method: "PATCH",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
   },
 
   modelSets: {
