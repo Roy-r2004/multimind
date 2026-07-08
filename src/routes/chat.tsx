@@ -316,7 +316,6 @@ export function ChatPage() {
                       name={m.name}
                       vendor={m.vendor}
                       color={m.color}
-                      pricing={m.pricing ?? undefined}
                     />
                   ))}
                 </div>

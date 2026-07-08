@@ -7,11 +7,6 @@ import { useModels } from "@/lib/models";
 import { ModelPill } from "@/components/cinematic/PageChrome";
 import { cn } from "@/lib/utils";
 
-function fmtRate(n: number) {
-  if (n <= 0) return "—";
-  return `$${n.toFixed(4)}/1K`;
-}
-
 export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }) {
   const { authHeaders } = useAuth();
   const { models, refresh } = useModels();
@@ -112,9 +107,7 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
                 <div className="min-w-0">
                   <div className="font-medium text-sm">{r.name}</div>
                   <div className="truncate font-mono text-xs text-muted-foreground">{r.openrouter_slug}</div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    {r.vendor} · in {fmtRate(r.input_per_1k)} · out {fmtRate(r.output_per_1k)}
-                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">{r.vendor}</div>
                 </div>
                 <button
                   type="button"
@@ -151,7 +144,6 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
                 name={m.name}
                 vendor={m.vendor}
                 color={m.color}
-                pricing={m.pricing ?? undefined}
                 subtitle={m.openrouter_slug ?? undefined}
               />
               {m.is_custom && (
