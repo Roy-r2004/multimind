@@ -158,15 +158,6 @@ class ProjectUpdateRequest(BaseModel):
     description: str | None = None
 
 
-class ProjectDetailResponse(BaseModel):
-    id: str
-    name: str
-    description: str | None = None
-    chat_count: int = 0
-    updated_at: datetime
-    chats: list[ChatResponse] = []
-
-
 # --- Chats ---
 
 
@@ -177,6 +168,15 @@ class ChatResponse(BaseModel):
     title: str
     project_id: str | None = None
     updated_at: datetime
+
+
+class ProjectDetailResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    chat_count: int = 0
+    updated_at: datetime
+    chats: list[ChatResponse] = []
 
 
 class ChatCreateRequest(BaseModel):
