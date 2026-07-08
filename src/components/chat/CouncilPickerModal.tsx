@@ -104,7 +104,7 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
       const payload: ModelSet = {
         id: currentSet?.id ?? `custom-${Date.now()}`,
         name: currentSet?.name ?? "My Council",
-        description: "Custom 3-model council",
+        description: `Custom ${picked.length}-model council`,
         models: picked,
         verdictModel: verdictId,
         strategy: currentSet?.strategy ?? "Synthesize",
@@ -122,11 +122,11 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
   return (
     <Modal open={open} onClose={onClose} title="Choose your council" size="lg">
       <p className="mb-4 text-sm text-muted-foreground">
-        Pick up to <strong className="text-foreground">{MAX_COUNCIL_MODELS} models</strong> from the full
-        OpenRouter catalog. They answer in parallel; Verdict AI synthesizes the final answer.
+        Pick up to <strong className="text-foreground">{MAX_COUNCIL_MODELS} models</strong> from the
+        full OpenRouter catalog. They answer in parallel; Verdict AI synthesizes the final answer.
       </p>
 
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
         {Array.from({ length: MAX_COUNCIL_MODELS }).map((_, i) => {
           const id = picked[i];
           const m = id ? modelById(id) : null;
@@ -134,8 +134,10 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
             <div
               key={i}
               className={cn(
-                "flex min-h-[3rem] min-w-[8rem] flex-1 items-center gap-2 rounded-xl border px-3 py-2 text-sm",
-                m ? "border-primary/30 bg-primary/5" : "border-dashed border-border text-muted-foreground",
+                "flex min-h-[3rem] min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm",
+                m
+                  ? "border-primary/30 bg-primary/5"
+                  : "border-dashed border-border text-muted-foreground",
               )}
             >
               {m ? (
@@ -176,7 +178,7 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
         )}
         {(query.trim().length >= 2 ? orResults : filtered).map((item) => {
           const isSearch = "openrouter_slug" in item;
-          const slug = isSearch ? item.openrouter_slug : item.openrouter_slug ?? item.id;
+          const slug = isSearch ? item.openrouter_slug : (item.openrouter_slug ?? item.id);
           const id = isSearch
             ? (models.find((m) => m.openrouter_slug === item.openrouter_slug)?.id ??
               slugToModelId(item.openrouter_slug))
@@ -188,7 +190,9 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
               key={id}
               type="button"
               disabled={!selected && picked.length >= MAX_COUNCIL_MODELS}
-              onClick={() => (isSearch ? selectFromSearch(item as ApiModelSearchResult) : toggleCouncil(id))}
+              onClick={() =>
+                isSearch ? selectFromSearch(item as ApiModelSearchResult) : toggleCouncil(id)
+              }
               className={cn(
                 "flex w-full items-center justify-between gap-2 border-b border-border px-3 py-2.5 text-left text-sm last:border-0 hover:bg-accent",
                 selected && "bg-primary/5",
@@ -205,7 +209,9 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
           );
         })}
         {!searching && query.trim().length >= 2 && orResults.length === 0 && (
-          <div className="px-3 py-4 text-center text-sm text-muted-foreground">No models found.</div>
+          <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+            No models found.
+          </div>
         )}
       </div>
 
@@ -232,7 +238,11 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
       {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
 
       <div className="mt-5 flex justify-end gap-2">
-        <button type="button" onClick={onClose} className="rounded-xl border border-border px-4 py-2 text-sm">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-xl border border-border px-4 py-2 text-sm"
+        >
           Cancel
         </button>
         <button

@@ -1,6 +1,6 @@
 /** OpenRouter slug ↔ internal model id helpers */
 
-export const MAX_COUNCIL_MODELS = 3;
+export const MAX_COUNCIL_MODELS = 5;
 
 export function slugToModelId(openrouterSlug: string): string {
   return `or:${openrouterSlug.replace(/\//g, "--")}`;

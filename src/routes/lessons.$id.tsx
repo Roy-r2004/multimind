@@ -28,6 +28,8 @@ const MODEL_COLORS: Record<string, string> = {
   "gpt-4.1": "oklch(0.55 0.12 145)",
   claude: "oklch(0.55 0.14 35)",
   gemini: "oklch(0.55 0.14 250)",
+  grok: "oklch(0.42 0.04 260)",
+  deepseek: "oklch(0.55 0.14 280)",
 };
 
 function LessonDetailPage() {
@@ -130,9 +132,13 @@ function LessonDetailPage() {
               <div className="border-b border-border bg-gradient-to-br from-sky-50 to-white p-8 md:border-b-0 md:border-r">
                 <div className="flex items-center gap-2 text-primary">
                   <User className="size-5" />
-                  <span className="text-xs font-semibold uppercase tracking-widest">{firstName}</span>
+                  <span className="text-xs font-semibold uppercase tracking-widest">
+                    {firstName}
+                  </span>
                 </div>
-                <h1 className="mt-3 font-display text-2xl font-bold tracking-tight">Your position</h1>
+                <h1 className="mt-3 font-display text-2xl font-bold tracking-tight">
+                  Your position
+                </h1>
                 <p className="mt-2 line-clamp-4 text-sm leading-relaxed text-muted-foreground">
                   {c.user_position_summary || lesson.user_position}
                 </p>
@@ -140,13 +146,17 @@ function LessonDetailPage() {
 
               <div className="relative flex items-center justify-center bg-muted/30 px-6 py-4 md:py-0">
                 <div className="absolute inset-0 bg-[repeating-linear-gradient(-45deg,transparent,transparent_8px,oklch(0.58_0.14_240/0.03)_8px,oklch(0.58_0.14_240/0.03)_16px)]" />
-                <span className="relative font-display text-3xl font-black tracking-tighter text-gradient">VS</span>
+                <span className="relative font-display text-3xl font-black tracking-tighter text-gradient">
+                  VS
+                </span>
               </div>
 
               <div className="border-t border-border p-8 md:border-t-0 md:border-l">
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <Gavel className="size-5" style={{ color: modelColor }} />
-                  <span className="text-xs font-semibold uppercase tracking-widest">{lesson.verdict_model_name}</span>
+                  <span className="text-xs font-semibold uppercase tracking-widest">
+                    {lesson.verdict_model_name}
+                  </span>
                 </div>
                 <h1 className="mt-3 font-display text-2xl font-bold tracking-tight">AI verdict</h1>
                 <p className="mt-2 line-clamp-4 text-sm leading-relaxed text-muted-foreground">
@@ -161,7 +171,9 @@ function LessonDetailPage() {
 
           <SkeletonReveal delayMs={300} className="mt-6">
             <GlassCard className="p-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Original question</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Original question
+              </p>
               <p className="mt-2 text-sm leading-relaxed">{lesson.user_message}</p>
             </GlassCard>
           </SkeletonReveal>
@@ -169,7 +181,9 @@ function LessonDetailPage() {
           {c.overview && (
             <SkeletonReveal delayMs={400} className="mt-4">
               <GlassCard className="p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Overview</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Overview
+                </p>
                 <p className="mt-2 text-sm leading-relaxed">{c.overview}</p>
               </GlassCard>
             </SkeletonReveal>
@@ -177,7 +191,9 @@ function LessonDetailPage() {
 
           <SkeletonReveal delayMs={500} className="mt-8">
             <Section title="Why you disagreed">
-              <p className="text-sm leading-relaxed text-muted-foreground">{lesson.disagreement_reason}</p>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                {lesson.disagreement_reason}
+              </p>
             </Section>
           </SkeletonReveal>
 
@@ -189,7 +205,10 @@ function LessonDetailPage() {
             >
               <div className="space-y-3">
                 {c.agreements.map((item, i) => (
-                  <div key={i} className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+                  <div
+                    key={i}
+                    className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4"
+                  >
                     <div className="font-medium text-emerald-900">{item.topic}</div>
                     <p className="mt-1 text-sm text-emerald-800/90">{item.detail}</p>
                   </div>
@@ -199,7 +218,11 @@ function LessonDetailPage() {
           )}
 
           {c.disagreements.length > 0 && (
-            <Section title="Points of disagreement" icon={<Scale className="size-4 text-primary" />} className="mt-8">
+            <Section
+              title="Points of disagreement"
+              icon={<Scale className="size-4 text-primary" />}
+              className="mt-8"
+            >
               <div className="space-y-4">
                 {c.disagreements.map((item, i) => (
                   <div key={i} className="overflow-hidden rounded-xl border border-border">
@@ -234,11 +257,15 @@ function LessonDetailPage() {
             <GlassCard glow className="mt-8 p-6">
               <div className="flex items-center gap-2 text-primary">
                 <BookMarked className="size-5" />
-                <span className="text-sm font-semibold uppercase tracking-wide">Lesson absorbed into brain</span>
+                <span className="text-sm font-semibold uppercase tracking-wide">
+                  Lesson absorbed into brain
+                </span>
               </div>
               <h3 className="mt-3 text-xl font-semibold">{c.lesson.headline}</h3>
               {c.lesson.key_insight && (
-                <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{c.lesson.key_insight}</p>
+                <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                  {c.lesson.key_insight}
+                </p>
               )}
               {c.lesson.what_to_remember.length > 0 && (
                 <ul className="mt-4 space-y-2">
@@ -260,17 +287,28 @@ function LessonDetailPage() {
           )}
 
           <div className="mt-8 flex flex-wrap gap-3">
-            <Link to="/brain" className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
+            <Link
+              to="/brain"
+              className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+            >
               View {firstName}&apos;s brain
             </Link>
-            <Link to="/lessons" className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent">
+            <Link
+              to="/lessons"
+              className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent"
+            >
               All lessons
             </Link>
           </div>
         </div>
       </div>
 
-      <Modal open={showDelete} onClose={() => setShowDelete(false)} title="Delete lesson?" size="sm">
+      <Modal
+        open={showDelete}
+        onClose={() => setShowDelete(false)}
+        title="Delete lesson?"
+        size="sm"
+      >
         <p className="text-sm text-muted-foreground">
           &quot;{lesson.title}&quot; will be permanently removed.
         </p>

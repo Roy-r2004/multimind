@@ -59,28 +59,28 @@ Set `VITE_API_URL=/api/v1` (default) — Vite proxies to port 8000.
 
 Copy `.env.example` to `.env`:
 
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | PostgreSQL async URL |
-| `SECRET_KEY` | JWT signing key |
-| `OPENROUTER_API_KEY` | **Required** — routes all models via OpenRouter |
-| `OPENROUTER_SITE_URL` | Optional HTTP-Referer for OpenRouter rankings |
+| Variable                               | Description                                           |
+| -------------------------------------- | ----------------------------------------------------- |
+| `DATABASE_URL`                         | PostgreSQL async URL                                  |
+| `SECRET_KEY`                           | JWT signing key                                       |
+| `OPENROUTER_API_KEY`                   | **Required** — routes all models via OpenRouter       |
+| `OPENROUTER_SITE_URL`                  | Optional HTTP-Referer for OpenRouter rankings         |
 | `OPENROUTER_PRICING_CACHE_TTL_SECONDS` | How often to refresh model list prices (default 3600) |
-| `PUBLIC_APP_URL` | Base URL for share links |
+| `PUBLIC_APP_URL`                       | Base URL for share links                              |
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/auth/signup` | Register + create org |
-| POST | `/api/v1/auth/signin` | Login → JWT |
-| GET | `/api/v1/auth/session` | Current user + org |
-| GET/POST | `/api/v1/chats` | Chat CRUD |
-| POST | `/api/v1/chats/{id}/turns` | **Run multi-model turn** |
-| GET/POST | `/api/v1/model-sets` | Model set management |
-| GET/POST | `/api/v1/projects` | Projects |
-| GET | `/api/v1/costs/summary` | Usage analytics |
-| GET | `/api/v1/costs/pricing` | Live OpenRouter rates for catalog models |
+| Method   | Path                       | Description                              |
+| -------- | -------------------------- | ---------------------------------------- |
+| POST     | `/api/v1/auth/signup`      | Register + create org                    |
+| POST     | `/api/v1/auth/signin`      | Login → JWT                              |
+| GET      | `/api/v1/auth/session`     | Current user + org                       |
+| GET/POST | `/api/v1/chats`            | Chat CRUD                                |
+| POST     | `/api/v1/chats/{id}/turns` | **Run multi-model turn**                 |
+| GET/POST | `/api/v1/model-sets`       | Model set management                     |
+| GET/POST | `/api/v1/projects`         | Projects                                 |
+| GET      | `/api/v1/costs/summary`    | Usage analytics                          |
+| GET      | `/api/v1/costs/pricing`    | Live OpenRouter rates for catalog models |
 
 ## Prompt System (Jinja2)
 
@@ -114,7 +114,7 @@ When logged in, the React app switches from mock data to the Python API:
 - `src/routes/shared.$token.tsx` — public share links via `GET /share/{token}`
 - `src/routes/costs.tsx` — live data from `GET /costs/summary`
 
-**Real LLM only** — set `OPENROUTER_API_KEY` from [openrouter.ai/keys](https://openrouter.ai/keys). All panel models use distinct OpenRouter slugs (GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro, DeepSeek V3, Mistral Large, Llama 3.3, Qwen 2.5).
+**Real LLM only** — set `OPENROUTER_API_KEY` from [openrouter.ai/keys](https://openrouter.ai/keys). All panel models use distinct OpenRouter slugs (GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro, Grok, DeepSeek V3, Mistral Large, Llama 3.3, Qwen 2.5).
 
 ### Alembic (PostgreSQL production)
 

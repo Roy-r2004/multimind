@@ -114,7 +114,7 @@ class ModelSetResponse(BaseModel):
 class ModelSetCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str = ""
-    models: list[str] = Field(min_length=1)
+    models: list[str] = Field(min_length=1, max_length=5)
     verdict_model: str
     strategy: StrategyEnum = StrategyEnum.SYNTHESIZE
     best_for: str = ""
@@ -125,7 +125,7 @@ class ModelSetCreateRequest(BaseModel):
 class ModelSetUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
-    models: list[str] | None = None
+    models: list[str] | None = Field(default=None, min_length=1, max_length=5)
     verdict_model: str | None = None
     strategy: StrategyEnum | None = None
     best_for: str | None = None

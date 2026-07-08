@@ -88,22 +88,23 @@ function SharedPage() {
               </div>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               {turn.model_answers.map((a) => (
-                  <div key={a.model_id} className="rounded-2xl border border-border bg-card p-4">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="size-2 rounded-full" style={{ background: modelColor(a.model_id) }} />
-                      <span className="font-medium">{a.model_name}</span>
-                      {a.confidence != null && (
-                        <span className="ml-auto text-xs text-muted-foreground">
-                          {a.confidence}%
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-3">
-                      <MessageContent compact>{a.text ?? "—"}</MessageContent>
-                    </div>
+                <div key={a.model_id} className="rounded-2xl border border-border bg-card p-4">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span
+                      className="size-2 rounded-full"
+                      style={{ background: modelColor(a.model_id) }}
+                    />
+                    <span className="font-medium">{a.model_name}</span>
+                    {a.confidence != null && (
+                      <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
+                    )}
                   </div>
+                  <div className="mt-3">
+                    <MessageContent compact>{a.text ?? "—"}</MessageContent>
+                  </div>
+                </div>
               ))}
             </div>
 

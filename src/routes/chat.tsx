@@ -28,10 +28,7 @@ import { Modal } from "@/components/Modal";
 import { GlassCard, ModelPill, CinematicBackdrop } from "@/components/cinematic/PageChrome";
 import ModelSetModal from "@/components/ModelSetModal";
 import { PromptBuilderModal } from "@/components/chat/PromptBuilderModal";
-import {
-  ChatReferenceModal,
-  type ChatReferencePick,
-} from "@/components/chat/ChatReferenceModal";
+import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/ChatReferenceModal";
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { TemplateMenu } from "@/components/chat/TemplateMenu";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
@@ -77,9 +74,8 @@ async function buildComposerInstructions(
         const turns = await api.chats.listTurns(auth, ref.chatId);
         const excerpt = turns
           .slice(-4)
-          .map(
-            (t) =>
-              `User: ${t.user_message}\n${t.verdict?.text ? `Verdict: ${t.verdict.text}` : ""}`.trim(),
+          .map((t) =>
+            `User: ${t.user_message}\n${t.verdict?.text ? `Verdict: ${t.verdict.text}` : ""}`.trim(),
           )
           .join("\n\n");
         parts.push(
@@ -254,7 +250,10 @@ export function ChatPage() {
               >
                 Edit council
               </button>
-              <button onClick={() => setShowStrategy(true)} className="text-muted-foreground hover:text-foreground">
+              <button
+                onClick={() => setShowStrategy(true)}
+                className="text-muted-foreground hover:text-foreground"
+              >
                 <Info className="size-3.5" />
               </button>
             </div>
@@ -286,9 +285,12 @@ export function ChatPage() {
             {!isAuthenticated && (
               <GlassCard glow className="p-10 text-center animate-fade-up">
                 <Sparkles className="mx-auto size-8 text-primary" />
-                <h2 className="mt-4 text-2xl font-semibold text-gradient">One question. Many minds.</h2>
+                <h2 className="mt-4 text-2xl font-semibold text-gradient">
+                  One question. Many minds.
+                </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro — real models via OpenRouter, one verdict.
+                  GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro — real models via OpenRouter, one
+                  verdict.
                 </p>
                 <Link
                   to="/login"
@@ -310,18 +312,18 @@ export function ChatPage() {
                   <span className="text-gradient">Decide with clarity.</span>
                 </h2>
                 <p className="mx-auto max-w-lg text-sm text-muted-foreground">
-                  {set.models.length} models answer in parallel — then Verdict AI synthesizes the final answer
-                  using <strong className="text-foreground">{set.strategy}</strong>.
+                  {set.models.length} models answer in parallel — then Verdict AI synthesizes the
+                  final answer using <strong className="text-foreground">{set.strategy}</strong>.
                 </p>
                 <button
                   type="button"
                   onClick={() => setShowCouncil(true)}
                   className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10"
                 >
-                  Choose your 3 models
+                  Choose your 5 models
                 </button>
-                <div className="mx-auto grid max-w-3xl gap-3 sm:grid-cols-3">
-                  {(models.length ? models : flagshipModels).slice(0, 6).map((m) => (
+                <div className="mx-auto grid max-w-5xl gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                  {(models.length ? models : flagshipModels).slice(0, 5).map((m) => (
                     <ModelPill
                       key={m.id}
                       name={m.name}
@@ -427,7 +429,9 @@ export function ChatPage() {
                 }}
                 rows={2}
                 disabled={!isAuthenticated || !set}
-                placeholder={isAuthenticated ? "Ask your model council anything…" : "Log in to chat"}
+                placeholder={
+                  isAuthenticated ? "Ask your model council anything…" : "Log in to chat"
+                }
                 className="block w-full resize-none rounded-2xl bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
               />
               <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
@@ -517,13 +521,18 @@ export function ChatPage() {
                   disabled={!input.trim() || sending || loading || !isAuthenticated}
                   className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
                 >
-                  {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                  {loading ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Send className="size-3.5" />
+                  )}
                   Send
                 </button>
               </div>
             </div>
             <p className="mt-2 text-center text-[11px] text-muted-foreground">
-              MultiAI may produce inaccurate information. Decision Insurance runs automatically on every turn.
+              MultiAI may produce inaccurate information. Decision Insurance runs automatically on
+              every turn.
             </p>
           </div>
         </div>
@@ -565,9 +574,18 @@ export function ChatPage() {
         }}
       />
 
-      <ModelSetModal open={showCreateSet} onClose={() => setShowCreateSet(false)} onCreate={createModelSet} />
+      <ModelSetModal
+        open={showCreateSet}
+        onClose={() => setShowCreateSet(false)}
+        onCreate={createModelSet}
+      />
 
-      <Modal open={showStrategy} onClose={() => setShowStrategy(false)} title="Verdict strategy" size="md">
+      <Modal
+        open={showStrategy}
+        onClose={() => setShowStrategy(false)}
+        title="Verdict strategy"
+        size="md"
+      >
         {set && (
           <div className="space-y-3">
             {STRATEGIES.filter((s) => s.name === set.strategy).map((s) => (
@@ -595,12 +613,15 @@ export function ChatPage() {
       <ExcelPreviewModal
         open={showExcel}
         onClose={() => setShowExcel(false)}
-        onAddToChat={() =>
-          setFiles((f) => [...f, { name: "comparison.xlsx", state: "uploaded" }])
-        }
+        onAddToChat={() => setFiles((f) => [...f, { name: "comparison.xlsx", state: "uploaded" }])}
       />
 
-      <Modal open={showDeleteChat} onClose={() => setShowDeleteChat(false)} title="Delete chat?" size="sm">
+      <Modal
+        open={showDeleteChat}
+        onClose={() => setShowDeleteChat(false)}
+        title="Delete chat?"
+        size="sm"
+      >
         <p className="text-sm text-muted-foreground">
           {activeChat
             ? `"${activeChat.title}" will be permanently removed.`
@@ -667,7 +688,7 @@ function LoadingTurn({
 }) {
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {set.models.map((id) => {
           const m = modelById(id);
           return (
@@ -708,7 +729,7 @@ function AiTurn({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {set.models.map((id) => {
           const m = modelById(id);
           const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
@@ -718,7 +739,10 @@ function AiTurn({
           return (
             <GlassCard key={id} className="p-4">
               <div className="flex items-center gap-2 text-sm">
-                <span className="size-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ color: m.color, background: m.color }} />
+                <span
+                  className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
+                  style={{ color: m.color, background: m.color }}
+                />
                 <span className="font-medium">{m.name}</span>
                 {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
                 {!inProgress && a?.confidence != null && (
@@ -752,7 +776,9 @@ function AiTurn({
               <Gavel className="size-4" />
             </span>
             <span className="font-medium">Verdict</span>
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">{turn.verdict.strategy}</span>
+            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+              {turn.verdict.strategy}
+            </span>
             <div className="ml-auto flex flex-wrap items-center gap-2">
               {turn.lesson_id ? (
                 <Link
@@ -776,7 +802,10 @@ function AiTurn({
           <div className="mt-4 space-y-3">
             <MessageContent>{turn.verdict.text}</MessageContent>
             {turn.verdict.reason && (
-              <MessageContent muted className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5">
+              <MessageContent
+                muted
+                className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
+              >
                 {turn.verdict.reason}
               </MessageContent>
             )}
@@ -877,14 +906,20 @@ function ModelSetPickerModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-foreground/25 p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-foreground/25 p-4"
+      onClick={onClose}
+    >
       <div
         className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">Model sets</h3>
-          <button onClick={onCreate} className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground">
+          <button
+            onClick={onCreate}
+            className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground"
+          >
             <Plus className="size-4" /> New
           </button>
         </div>
@@ -895,7 +930,9 @@ function ModelSetPickerModal({
               onClick={() => onPick(s.id)}
               className={cn(
                 "relative rounded-2xl border p-4 text-left transition",
-                s.id === activeId ? "border-primary bg-primary/10" : "border-border hover:border-primary/30",
+                s.id === activeId
+                  ? "border-primary bg-primary/10"
+                  : "border-border hover:border-primary/30",
               )}
             >
               {s.id === activeId && (
@@ -905,8 +942,14 @@ function ModelSetPickerModal({
               <p className="mt-1 text-xs text-muted-foreground">{s.description}</p>
               <div className="mt-3 flex flex-wrap gap-1">
                 {s.models.map((id) => (
-                  <span key={id} className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px]">
-                    <span className="size-1.5 rounded-full" style={{ background: modelById(id).color }} />
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px]"
+                  >
+                    <span
+                      className="size-1.5 rounded-full"
+                      style={{ background: modelById(id).color }}
+                    />
                     {modelById(id).name}
                   </span>
                 ))}
@@ -936,7 +979,10 @@ function ModelSetPickerModal({
             </button>
           ))}
         </div>
-        <button onClick={onClose} className="mt-4 text-sm text-muted-foreground hover:text-foreground">
+        <button
+          onClick={onClose}
+          className="mt-4 text-sm text-muted-foreground hover:text-foreground"
+        >
           Close
         </button>
       </div>
@@ -951,7 +997,10 @@ function ModelSetPickerModal({
       />
       <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete set?" size="sm">
         <div className="flex justify-end gap-2">
-          <button onClick={() => setDeleteId(null)} className="rounded-lg border border-border px-4 py-2 text-sm">
+          <button
+            onClick={() => setDeleteId(null)}
+            className="rounded-lg border border-border px-4 py-2 text-sm"
+          >
             Cancel
           </button>
           <button

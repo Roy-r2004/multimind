@@ -121,7 +121,7 @@ export function AuthShell({
         <blockquote className="max-w-md text-2xl font-display leading-tight text-foreground/90">
           Ask once. Compare frontier models. One verdict.
           <footer className="mt-3 text-sm font-sans text-muted-foreground">
-            GPT-4.1 · Claude Sonnet 4 · Gemini 2.5 Pro · DeepSeek V3
+            GPT-4.1 · Claude Sonnet 4 · Gemini 2.5 Pro · Grok · DeepSeek V3
           </footer>
         </blockquote>
         <div className="text-xs text-muted-foreground">© 2026 MultiAI</div>
