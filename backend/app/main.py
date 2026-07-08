@@ -30,20 +30,25 @@ async def lifespan(app: FastAPI):
     from app.llm.pricing import get_pricing_service
     from app.llm.providers import get_provider_registry
 
+    # Never block process boot on LLM/network — health must answer during cold starts.
     try:
         get_provider_registry().validate_configured()
     except AppError as exc:
-        if settings.is_production:
-            raise
         logger.warning("llm_keys_missing", message=exc.message)
-    else:
+
+    if settings.environment == "development":
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _warm_pricing() -> None:
         try:
             await get_pricing_service().refresh()
         except Exception as exc:
             logger.warning("openrouter_pricing_startup_failed", error=str(exc))
-    if settings.environment == "development":
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+
+    import asyncio
+
+    asyncio.create_task(_warm_pricing())
     yield
     logger.info("application_shutdown")
     await engine.dispose()

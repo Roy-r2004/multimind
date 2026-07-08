@@ -101,7 +101,7 @@ function LoginPage() {
           />
         </Field>
         <button className="btn-primary w-full" disabled={loading}>
-          {loading ? "Signing in… (API waking up if idle)" : "Log in"}
+          {loading ? "Signing in…" : "Log in"}
         </button>
       </form>
     </AuthShell>

@@ -34,21 +34,23 @@ async def wait() -> None:
                 await conn.execute(text("SELECT 1"))
             await engine.dispose()
             return
-        except Exception:
+        except Exception as exc:
             await engine.dispose()
+            print(f"db not ready ({attempt + 1}/30): {exc}")
             time.sleep(2)
-    print("Database not ready after 60s", file=sys.stderr)
-    sys.exit(1)
+    print("Database not ready after 60s — starting API anyway", file=sys.stderr)
 
 
 asyncio.run(wait())
 PY
 
 echo "Running migrations..."
-alembic upgrade head
+if ! alembic upgrade head; then
+  echo "Migration failed — starting API anyway so health checks can recover" >&2
+fi
 
-echo "Seeding reference data..."
-python -m scripts.seed
+echo "Seeding reference data (best-effort)..."
+python -m scripts.seed || echo "Seed failed — continuing" >&2
 
 echo "Starting API on port ${port}..."
-exec uvicorn app.main:app --host 0.0.0.0 --port "$port"
+exec uvicorn app.main:app --host 0.0.0.0 --port "$port" --timeout-keep-alive 5
