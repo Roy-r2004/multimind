@@ -282,8 +282,8 @@ export function ChatPage() {
         </div>
 
         {/* Thread */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6">
-          <div className="mx-auto max-w-4xl space-y-10">
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 xl:px-8">
+          <div className="mx-auto max-w-6xl space-y-10">
             {!isAuthenticated && (
               <GlassCard glow className="p-10 text-center animate-fade-up">
                 <Sparkles className="mx-auto size-8 text-primary" />
@@ -369,8 +369,8 @@ export function ChatPage() {
         </div>
 
         {/* Composer */}
-        <div className="border-t border-border bg-background px-4 py-4 md:px-6">
-          <div className="mx-auto max-w-4xl">
+        <div className="border-t border-border bg-background px-4 py-4 md:px-6 xl:px-8">
+          <div className="mx-auto max-w-6xl">
             {refChat && (
               <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
                 <Link2 className="size-3 text-primary" />
