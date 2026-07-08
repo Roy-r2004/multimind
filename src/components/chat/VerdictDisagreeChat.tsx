@@ -215,9 +215,9 @@ export function VerdictDisagreeChat({
   const finishEnabled = (canFinalize || hasUserMessage(messages)) && ready && !loading && !finalizing;
 
   return (
-    <Modal open={open} onClose={onClose} title="Discuss with Chafic" size="xl">
+    <Modal open={open} onClose={onClose} title="Discuss with AI" size="xl">
       <p className="text-sm text-muted-foreground">
-        Argue your case. Chafic won&apos;t rubber-stamp you — he&apos;ll push back fairly until you
+        Argue your case. The AI won&apos;t rubber-stamp you — it&apos;ll push back fairly until you
         both land on clarity, then we&apos;ll build your lesson.
       </p>
 
@@ -252,7 +252,7 @@ export function VerdictDisagreeChat({
                   >
                     {isAssistant ? (
                       <>
-                        <Sparkles className="size-3" /> Chafic
+                        <Sparkles className="size-3" /> AI
                       </>
                     ) : (
                       <>
@@ -277,7 +277,7 @@ export function VerdictDisagreeChat({
           )}
           {loading && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="size-3.5 animate-spin" /> Chafic is thinking…
+              <Loader2 className="size-3.5 animate-spin" /> AI is thinking…
             </div>
           )}
           <div ref={bottomRef} />
