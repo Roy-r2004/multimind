@@ -226,10 +226,14 @@ class LessonService:
     async def _load_turn_context(
         self, db: AsyncSession, auth: AuthContext, turn_id: str
     ) -> tuple[Turn, Chat | None, object, list[dict]]:
+        turn_key = str(turn_id).strip()
+        org_key = str(auth.org_id)
+
+        # Load by id first so we can distinguish "missing" vs "wrong org"
+        # (a strict join previously collapsed both into the same 404).
         result = await db.execute(
             select(Turn)
-            .join(Chat, Chat.id == Turn.chat_id)
-            .where(Turn.id == turn_id, Chat.org_id == auth.org_id)
+            .where(Turn.id == turn_key)
             .options(
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict),
@@ -238,13 +242,16 @@ class LessonService:
         )
         turn = result.scalar_one_or_none()
         if turn is None:
-            raise NotFoundError("Turn", turn_id)
+            raise NotFoundError("Turn", turn_key)
+
+        chat = await db.get(Chat, turn.chat_id)
+        if chat is None or str(chat.org_id) != org_key:
+            raise NotFoundError("Turn", turn_key)
+
         if turn.status not in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
             raise ConflictError("Turn must be completed before disagreeing with the verdict")
         if turn.verdict is None:
             raise ConflictError("This turn has no verdict to disagree with")
-
-        chat = await db.get(Chat, turn.chat_id)
         verdict_model = get_model(turn.verdict.model_id)
         answer_context = []
         for answer in turn.model_answers:

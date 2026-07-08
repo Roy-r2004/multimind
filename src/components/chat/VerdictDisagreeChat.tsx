@@ -65,9 +65,18 @@ export function VerdictDisagreeChat({
     setCanFinalize(false);
     setReady(false);
 
-    void api.lessons
-      .discussStart(auth, turnId)
-      .then((res) => {
+    void (async () => {
+      try {
+        // Confirm the turn still exists for this org before opening discuss.
+        const liveTurn = await api.chats.getTurn(auth, turnId);
+        if (requestId !== requestIdRef.current) return;
+        if (!liveTurn.verdict) {
+          setReady(false);
+          setError("This turn has no verdict yet. Wait for the council to finish, then try again.");
+          return;
+        }
+
+        const res = await api.lessons.discussStart(auth, liveTurn.id);
         if (requestId !== requestIdRef.current) return;
         const next =
           res.messages.length > 0 ? res.messages : [{ role: "Chafic", content: OPENING }];
@@ -76,12 +85,19 @@ export function VerdictDisagreeChat({
         setCanFinalize(res.can_finalize);
         setReady(true);
         onDiscussStartRef.current(res.lesson_id);
-      })
-      .catch((e) => {
+      } catch (e) {
         if (requestId !== requestIdRef.current) return;
         setReady(false);
-        setError(e instanceof Error ? e.message : "Could not start discussion");
-      });
+        const message = e instanceof Error ? e.message : "Could not start discussion";
+        if (/turn not found/i.test(message)) {
+          setError(
+            "This chat turn is no longer available (it may have been deleted during an API restart). Send a new question, wait for the verdict, then disagree again.",
+          );
+        } else {
+          setError(message);
+        }
+      }
+    })();
   }, [open, turnId, authHeaders]);
 
   useEffect(() => {
