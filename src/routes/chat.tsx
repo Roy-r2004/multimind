@@ -34,7 +34,6 @@ import {
   type ChatReferencePick,
 } from "@/components/chat/ChatReferenceModal";
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
-import { TemplateMenu } from "@/components/chat/TemplateMenu";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
 import { MessageContent } from "@/components/chat/MessageContent";
@@ -66,12 +65,8 @@ async function buildComposerInstructions(
   auth: { token: string; orgId: string },
   ref: ChatReferencePick | null,
   files: ComposerFile[],
-  templateInstructions: string | null,
 ): Promise<string | undefined> {
   const parts: string[] = [];
-  if (templateInstructions?.trim()) {
-    parts.push(`Template instructions:\n${templateInstructions.trim()}`);
-  }
   if (ref) {
     if (ref.mode === "full") {
       try {
@@ -127,7 +122,6 @@ export function ChatPage() {
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<ComposerFile[]>([]);
   const [refChat, setRefChat] = useState<ChatReferencePick | null>(null);
-  const [templateInstructions, setTemplateInstructions] = useState<string | null>(null);
   const [showSet, setShowSet] = useState(false);
   const [showStrategy, setShowStrategy] = useState(false);
   const [showCouncil, setShowCouncil] = useState(false);
@@ -181,12 +175,7 @@ export function ChatPage() {
       let chatId = activeChatId;
       if (!chatId) chatId = await createChat();
       if (!chatId) return;
-      const customInstructions = await buildComposerInstructions(
-        auth,
-        refChat,
-        files,
-        templateInstructions,
-      );
+      const customInstructions = await buildComposerInstructions(auth, refChat, files);
       const pending = await api.chats.createTurn(auth, chatId, {
         user_message: question,
         model_set_id: set.id,
@@ -194,7 +183,6 @@ export function ChatPage() {
       });
       setRefChat(null);
       setFiles([]);
-      setTemplateInstructions(null);
       void runTurnInBackground(auth, chatId, pending).catch((error) => {
         console.error(error);
         alert(error instanceof Error ? error.message : "Failed to run turn");
@@ -386,18 +374,6 @@ export function ChatPage() {
                 </button>
               </div>
             )}
-            {templateInstructions && (
-              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1 text-xs">
-                <span className="text-muted-foreground">Template active</span>
-                <button
-                  type="button"
-                  onClick={() => setTemplateInstructions(null)}
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            )}
             {files.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {files.map((f, i) => (
@@ -493,12 +469,6 @@ export function ChatPage() {
                     </div>
                   )}
                 </div>
-                <TemplateMenu
-                  onPick={(t) => {
-                    setTemplateInstructions(t.instructions);
-                    setInput((v) => (v.trim() ? v : `[${t.title}] `));
-                  }}
-                />
                 <button
                   type="button"
                   onClick={() => setShowPrompt(true)}
@@ -754,7 +724,7 @@ function AiTurn({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-3 md:gap-4">
         {set.models.map((id) => {
           const m = modelById(id);
           const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
