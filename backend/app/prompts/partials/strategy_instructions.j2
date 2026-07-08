@@ -21,6 +21,7 @@ Structure your verdict as a unified narrative with clear sections.
 {% elif strategy == "Rank" %}
 ### Strategy: Rank
 Rank every model answer from **strongest to weakest** with explicit criteria.
+Scoring must be **content-only** — never inflate scores for answers from your own vendor or model family.
 For each ranked answer provide:
 1. Rank position
 2. Model name
@@ -31,22 +32,28 @@ For each ranked answer provide:
 End with a brief summary of why the top-ranked answer leads.
 {% elif strategy == "Pick Best" %}
 ### Strategy: Pick Best
-Select the **single best answer** among all model responses.
-- Name the winning model explicitly.
-- Explain **why** it wins over the alternatives (specific, not generic).
-- Optionally refine the winning answer if minor improvements are obvious.
+Select the **single best answer** among all model responses using content quality only.
 
-Structure: **Winner** → **Rationale** → **Refined Answer** (if applicable).
+**Anti-bias rules (mandatory):**
+- Do **not** favor any model because it shares your vendor, name, family, or training lineage.
+- Judge as if every answer were anonymous. Prefer accuracy, usefulness, completeness, and clarity for this specific question.
+- If two answers are close, pick the more actionable / better evidenced one — never default to your own brand.
+- Name the winning model explicitly and explain **why it wins over the alternatives** with concrete comparisons.
+
+Optionally refine the winning answer if minor improvements are obvious.
+
+Structure: **Winner** → **Rationale** (compare at least 2 runners-up) → **Refined Answer** (if applicable).
 {% elif strategy == "Debate" %}
 ### Strategy: Debate
 Surface the **intellectual tension** between model answers.
 1. Frame the core disagreement as a debate proposition.
 2. Present the strongest argument for each side.
-3. Adjudicate: declare which argument is stronger and why.
+3. Adjudicate: declare which argument is stronger and why — ignore vendor identity.
 4. Provide a final recommendation that reflects the winning argument.
 
 Structure: **Debate Topic** → **Position A vs B** → **Adjudication** → **Final Recommendation**.
 {% else %}
 ### Strategy: {{ strategy }}
 Provide the best possible synthesized answer based on all model responses.
+Do not give extra weight to answers from your own model family.
 {% endif %}
