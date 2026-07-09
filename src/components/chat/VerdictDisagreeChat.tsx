@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Send, Sparkles, User } from "lucide-react";
+import { ChevronDown, Loader2, Send, Sparkles, User } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Modal } from "@/components/Modal";
 import { MessageContent } from "@/components/chat/MessageContent";
@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const OPENING =
-  "I read the verdict and your challenge matters. Walk me through what feels wrong — what did the council get wrong, and what would you do instead?\n\nI'll tell you clearly when I agree or push back as we go.";
+  "I read the verdict and your challenge matters. Walk me through what feels wrong — what did the council get wrong, and what would you do instead?\n\nI'll send your challenge back through the AI council and synthesize where it lands.";
 
 const OPENING_MARKER = "Walk me through what feels wrong";
 
@@ -53,7 +53,7 @@ function normalizeMessages(messages: ApiDiscussMessage[]): ApiDiscussMessage[] {
     }
 
     last = role;
-    return { role, content: m.content };
+    return { ...m, role, content: m.content };
   });
 }
 
@@ -91,6 +91,7 @@ export function VerdictDisagreeChat({
   const [ready, setReady] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showCouncilReasoning, setShowCouncilReasoning] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const onDiscussStartRef = useRef(onDiscussStart);
@@ -170,6 +171,7 @@ export function VerdictDisagreeChat({
     setError(null);
     setLoading(true);
     setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setShowCouncilReasoning(false);
 
     try {
       const res = await api.lessons.discuss(auth, turnId, text);
@@ -214,11 +216,21 @@ export function VerdictDisagreeChat({
   const finishEnabled =
     (canFinalize || hasUserMessage(messages)) && ready && !loading && !finalizing;
 
+  function councilAnswersBefore(index: number): ApiDiscussMessage[] {
+    const answers: ApiDiscussMessage[] = [];
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message.kind !== "challenge_model_answer") break;
+      answers.unshift(message);
+    }
+    return answers;
+  }
+
   return (
     <Modal open={open} onClose={onClose} title="Discuss with AI" size="xl">
       <p className="text-sm text-muted-foreground">
-        Argue your case. The AI won&apos;t rubber-stamp you — it&apos;ll push back fairly until you
-        both land on clarity, then we&apos;ll build your lesson.
+        Argue your case. The council will review your challenge, respond from each model, and
+        synthesize where the verdict should land.
       </p>
 
       {error && (
@@ -231,17 +243,33 @@ export function VerdictDisagreeChat({
         <div className="flex-1 space-y-3 overflow-y-auto p-4">
           {messages.map((m, i) => {
             const isAssistant = m.role.trim().toLowerCase() === "assistant";
+            const isCouncilAnswer = m.kind === "challenge_model_answer";
+            const isCouncilSynthesis = m.kind === "challenge_synthesis";
+            if (isCouncilAnswer) return null;
+
+            const councilAnswers = isCouncilSynthesis ? councilAnswersBefore(i) : [];
+            const label = isCouncilSynthesis
+              ? "Council synthesis"
+              : isCouncilAnswer
+                ? (m.model_name ?? "Council model")
+                : "AI";
             return (
               <div
                 key={`${i}-${m.role}-${m.content.slice(0, 24)}`}
-                className={cn("flex", isAssistant ? "justify-start" : "justify-end")}
+                className={cn(
+                  "flex",
+                  isAssistant ? "justify-start" : "justify-end",
+                  (isCouncilAnswer || isCouncilSynthesis) && "justify-stretch",
+                )}
               >
                 <div
                   className={cn(
                     "max-w-[88%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
+                    (isCouncilAnswer || isCouncilSynthesis) && "max-w-full flex-1 rounded-xl",
                     isAssistant
                       ? "rounded-bl-sm border border-border bg-card text-foreground"
                       : "rounded-br-sm bg-primary/90 text-primary-foreground",
+                    isCouncilSynthesis && "border-primary/30 bg-primary/5",
                   )}
                 >
                   <div
@@ -252,7 +280,12 @@ export function VerdictDisagreeChat({
                   >
                     {isAssistant ? (
                       <>
-                        <Sparkles className="size-3" /> AI
+                        <Sparkles className="size-3" /> {label}
+                        {m.confidence ? (
+                          <span className="font-normal text-muted-foreground">
+                            {m.confidence}% confidence
+                          </span>
+                        ) : null}
                       </>
                     ) : (
                       <>
@@ -262,7 +295,49 @@ export function VerdictDisagreeChat({
                     )}
                   </div>
                   {isAssistant ? (
-                    <MessageContent compact>{m.content}</MessageContent>
+                    <>
+                      <MessageContent compact>{m.content}</MessageContent>
+                      {councilAnswers.length > 0 && (
+                        <div className="mt-3 border-t border-border/60 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowCouncilReasoning((value) => !value)}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+                          >
+                            <ChevronDown
+                              className={cn(
+                                "size-3 transition-transform",
+                                !showCouncilReasoning && "-rotate-90",
+                              )}
+                            />
+                            {showCouncilReasoning
+                              ? "Hide council reasoning"
+                              : `View council reasoning (${councilAnswers.length})`}
+                          </button>
+                          {showCouncilReasoning && (
+                            <div className="mt-2 space-y-2">
+                              {councilAnswers.map((answer, answerIndex) => (
+                                <div
+                                  key={`${answer.turn_id ?? i}-${answer.model_id ?? answerIndex}`}
+                                  className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground"
+                                >
+                                  <div className="mb-1 flex flex-wrap items-center gap-1.5 font-semibold text-foreground">
+                                    <Sparkles className="size-3 text-primary" />
+                                    {answer.model_name ?? "Council model"}
+                                    {answer.confidence ? (
+                                      <span className="font-normal text-muted-foreground">
+                                        {answer.confidence}% confidence
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <MessageContent compact>{answer.content}</MessageContent>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <p className="whitespace-pre-wrap">{m.content}</p>
                   )}
@@ -277,7 +352,7 @@ export function VerdictDisagreeChat({
           )}
           {loading && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="size-3.5 animate-spin" /> AI is thinking…
+              <Loader2 className="size-3.5 animate-spin" /> AI council is reviewing your challenge…
             </div>
           )}
           <div ref={bottomRef} />

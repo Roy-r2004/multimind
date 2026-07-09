@@ -260,6 +260,11 @@ class DiscussMessageRequest(BaseModel):
 class DiscussMessageItem(BaseModel):
     role: str
     content: str
+    kind: str | None = None
+    model_id: str | None = None
+    model_name: str | None = None
+    confidence: int | None = None
+    turn_id: str | None = None
 
 
 class DiscussResponse(BaseModel):

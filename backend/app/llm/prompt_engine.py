@@ -137,7 +137,7 @@ class PromptEngine:
         verdict_reason: str,
         disagreement_reason: str,
         user_position: str,
-        discussion_messages: list[dict[str, str]] | None = None,
+        discussion_messages: list[dict[str, Any]] | None = None,
     ) -> str:
         return self.render(
             "system/verdict_lesson.j2",
@@ -163,7 +163,7 @@ class PromptEngine:
         verdict_model_name: str,
         verdict_text: str,
         verdict_reason: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
     ) -> str:
         return self.render(
             "system/disagree_discuss.j2",
@@ -185,7 +185,7 @@ class PromptEngine:
         strategy: str,
         verdict_model_name: str,
         verdict_text: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
     ) -> str:
         return self.render(
             "system/disagree_finalize.j2",

@@ -43,6 +43,7 @@ from app.schemas.api import (
 )
 
 logger = get_logger(__name__)
+CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
 
 
 class ChatService:
@@ -319,7 +320,10 @@ class ChatService:
         await self.get_chat(db, auth, chat_id)
         result = await db.execute(
             select(Turn)
-            .where(Turn.chat_id == chat_id)
+            .where(
+                Turn.chat_id == chat_id,
+                (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
+            )
             .options(
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict),
@@ -340,6 +344,7 @@ class ChatService:
         filters = [
             Turn.chat_id == chat_id,
             Turn.id != current_turn_id,
+            (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
         ]
         if current_turn_created_at is not None:
             filters.append(Turn.created_at < current_turn_created_at)

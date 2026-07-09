@@ -1,5 +1,7 @@
 """Verdict disagreement lessons — build structured user vs model comparisons."""
 
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -11,13 +13,17 @@ from app.db.models import (
     Chat,
     CostRecord,
     LessonStatus,
+    ModelAnswer,
+    ModelSet,
     Turn,
     TurnStatus,
     UsageKind,
+    Verdict,
     VerdictLesson,
 )
 from app.services.brain_service import brain_service
 from app.llm.catalog import get_model, resolve_llm_cost
+from app.llm.orchestrator import TurnContext, get_orchestrator
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
 from app.schemas.api import (
@@ -30,6 +36,8 @@ from app.schemas.api import (
 )
 
 logger = get_logger(__name__)
+
+CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
 
 CHAFIC_OPENING = (
     "I read the verdict and your pushback matters. Walk me through what feels wrong — "
@@ -97,8 +105,8 @@ def _looks_like_opening(content: str, index: int) -> bool:
 
 
 def _normalize_discuss_messages(
-    messages: list[dict[str, str]] | None,
-) -> list[dict[str, str]]:
+    messages: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
     """Map stored roles onto assistant/user without confusing the demo username."""
     raw = list(messages or [])
     role_keys = {str(m.get("role") or "").strip().lower() for m in raw}
@@ -128,13 +136,13 @@ def _normalize_discuss_messages(
             # facilitator label from older builds = assistant when not ambiguous.
             out = ROLE_ASSISTANT if role_l in {"chafic", "chafiq"} else ROLE_USER
 
-        normalized.append({"role": out, "content": content})
+        normalized.append({**message, "role": out, "content": content})
         last_role = out
 
     return normalized
 
 
-def _is_user_message(message: dict[str, str]) -> bool:
+def _is_user_message(message: dict[str, Any]) -> bool:
     return str(message.get("role") or "").lower() == ROLE_USER
 
 
@@ -194,7 +202,7 @@ class LessonService:
             verdict_text=turn.verdict.text,
             verdict_reason=turn.verdict.reason,
             strategy=turn.strategy,
-            title="Discussing disagreement…",
+            title="Discussing challenge…",
             summary="",
             comparison={},
             discussion_messages=[{"role": ROLE_ASSISTANT, "content": CHAFIC_OPENING}],
@@ -223,14 +231,16 @@ class LessonService:
         messages = _normalize_discuss_messages(lesson.discussion_messages)
         messages.append({"role": ROLE_USER, "content": message.strip()})
 
-        reply = await self._chafic_reply(
+        council_messages = await self._council_challenge_reply(
+            db=db,
+            auth=auth,
             turn=turn,
-            verdict_model=verdict_model,
+            chat=_chat,
             answer_context=answer_context,
             messages=messages,
-            user_name=auth.user.full_name,
+            challenge=message.strip(),
         )
-        messages.append({"role": ROLE_ASSISTANT, "content": reply})
+        messages.extend(council_messages)
         lesson.discussion_messages = messages
         await db.flush()
         return self._discuss_response(lesson)
@@ -249,7 +259,7 @@ class LessonService:
         lesson.discussion_messages = messages
         user_turns = [m for m in messages if _is_user_message(m)]
         if len(user_turns) < 1:
-            raise ConflictError("Share your disagreement before building the lesson")
+            raise ConflictError("Share your challenge before building the lesson")
 
         provider = get_provider_registry().get_provider(verdict_model.provider)
         extract_system = get_prompt_engine().disagree_finalize_prompt(
@@ -391,13 +401,160 @@ class LessonService:
             )
         return turn, chat, verdict_model, answer_context
 
+    async def _resolve_model_set(
+        self, db: AsyncSession, auth: AuthContext, model_set_id: str
+    ) -> ModelSet:
+        result = await db.execute(
+            select(ModelSet).where(
+                ModelSet.slug == model_set_id,
+                (ModelSet.org_id == auth.org_id) | (ModelSet.org_id.is_(None)),
+            )
+        )
+        model_set = result.scalar_one_or_none()
+        if model_set is None:
+            raise NotFoundError("ModelSet", model_set_id)
+        return model_set
+
+    async def _council_challenge_reply(
+        self,
+        *,
+        db: AsyncSession,
+        auth: AuthContext,
+        turn: Turn,
+        chat: Chat | None,
+        answer_context: list[dict],
+        messages: list[dict[str, Any]],
+        challenge: str,
+    ) -> list[dict[str, Any]]:
+        model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
+        previous_context = self._challenge_previous_context(
+            turn=turn,
+            answer_context=answer_context,
+            messages=messages,
+        )
+        challenge_turn = Turn(
+            chat_id=turn.chat_id,
+            user_message=challenge,
+            model_set_id=turn.model_set_id,
+            strategy=turn.strategy,
+            verdict_model=turn.verdict_model,
+            custom_instructions=turn.custom_instructions,
+            decision_insurance_enabled=False,
+        )
+        db.add(challenge_turn)
+        await db.flush()
+
+        ctx = TurnContext(
+            turn_id=challenge_turn.id,
+            chat_id=turn.chat_id,
+            org_id=auth.org_id,
+            project_id=chat.project_id if chat else None,
+            user_message=challenge,
+            model_ids=list(model_set.models),
+            verdict_model_id=turn.verdict_model,
+            strategy=turn.strategy,
+            model_set_name=f"{model_set.name} challenge council",
+            custom_instructions=turn.custom_instructions,
+            previous_verdict_context=previous_context,
+        )
+        result = await get_orchestrator().run(db, ctx)
+
+        out: list[dict[str, Any]] = []
+        answer_rows = await db.execute(
+            select(ModelAnswer).where(ModelAnswer.turn_id == challenge_turn.id)
+        )
+        answer_by_model = {answer.model_id: answer for answer in answer_rows.scalars().all()}
+        for model_id in model_set.models:
+            answer = answer_by_model.get(model_id)
+            if answer is None:
+                continue
+            model = get_model(model_id)
+            out.append(
+                {
+                    "role": ROLE_ASSISTANT,
+                    "kind": "challenge_model_answer",
+                    "model_id": model_id,
+                    "model_name": model.name,
+                    "confidence": answer.confidence,
+                    "turn_id": challenge_turn.id,
+                    "content": answer.text
+                    or answer.error_message
+                    or "This model did not return a challenge response.",
+                }
+            )
+
+        verdict = result.verdict
+        if verdict is None:
+            verdict = await db.scalar(select(Verdict).where(Verdict.turn_id == challenge_turn.id))
+        if verdict is not None:
+            verdict_model = get_model(verdict.model_id)
+            out.append(
+                {
+                    "role": ROLE_ASSISTANT,
+                    "kind": "challenge_synthesis",
+                    "model_id": verdict.model_id,
+                    "model_name": verdict_model.name,
+                    "turn_id": challenge_turn.id,
+                    "content": verdict.text,
+                }
+            )
+        elif not out:
+            out.append(
+                {
+                    "role": ROLE_ASSISTANT,
+                    "kind": "challenge_synthesis",
+                    "turn_id": challenge_turn.id,
+                    "content": challenge_turn.error_message
+                    or "The council could not respond to this challenge.",
+                }
+            )
+        challenge_turn.error_message = CHALLENGE_TURN_MARKER
+        return out
+
+    def _challenge_previous_context(
+        self,
+        *,
+        turn: Turn,
+        answer_context: list[dict],
+        messages: list[dict[str, Any]],
+    ) -> str:
+        transcript = []
+        for message in messages[-12:]:
+            role = "User" if _is_user_message(message) else "Council"
+            if message.get("model_name"):
+                role = f"{role} ({message['model_name']})"
+            transcript.append(f"{role}: {message.get('content', '')}")
+
+        answer_lines = []
+        for answer in answer_context:
+            if answer.get("failed"):
+                continue
+            text = str(answer.get("text") or "")
+            answer_lines.append(
+                f"### {answer.get('model_name')}\n{text[:1200]}"
+            )
+
+        return (
+            "The user is challenging a previous council verdict. Treat the current user "
+            "message as the challenge to answer. Use the original question, original "
+            "council answers, verdict, and challenge transcript only as context. Do not "
+            "blindly repeat the old verdict; respond to the challenge directly.\n\n"
+            f"## Original User Question\n{turn.user_message}\n\n"
+            f"## Original Verdict\n{turn.verdict.text}\n\n"
+            f"## Original Verdict Reasoning\n{turn.verdict.reason}\n\n"
+            "## Original Council Answers\n"
+            f"{chr(10).join(answer_lines)[:6000]}\n\n"
+            "## Challenge Transcript So Far\n"
+            f"{chr(10).join(transcript)[-5000:]}"
+        )
+
     async def _chafic_reply(
         self,
         *,
         turn: Turn,
         verdict_model: object,
         answer_context: list[dict],
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         user_name: str,
         fallback: str | None = None,
     ) -> str:
@@ -513,7 +670,7 @@ class LessonService:
         user_turns = [m for m in messages if _is_user_message(m)]
         return DiscussResponse(
             lesson_id=lesson.id,
-            messages=[DiscussMessageItem(role=m["role"], content=m["content"]) for m in messages],
+            messages=[DiscussMessageItem(**m) for m in messages],
             can_finalize=len(user_turns) >= 1,
         )
 

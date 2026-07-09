@@ -32,17 +32,23 @@ Be specific to this exchange. Quote or paraphrase concrete claims. Avoid generic
 **User name**: {{ user_name }}
 
 {% if discussion_messages %}
-### Discussion Transcript (facilitator AI debated with the user)
+### Challenge Discussion Transcript
 {% for m in discussion_messages %}
+{% if m.kind == "challenge_model_answer" %}
+**Council model — {{ m.model_name }}**: {{ m.content }}
+{% elif m.kind == "challenge_synthesis" %}
+**Council synthesis**: {{ m.content }}
+{% else %}
 **{{ m.role }}**: {{ m.content }}
+{% endif %}
 {% endfor %}
-Use the transcript to refine understanding of the USER's position and where the facilitator agreed or disagreed — but the durable lesson must still center the USER's taught preference.
+Use the transcript to refine understanding of the USER's position and where the challenge council agreed or pushed back — but the durable lesson must still center the USER's taught preference.
 {% endif %}
 
 ## Critical lesson rule
-- The stored lesson (**headline**, **key_insight**, **what_to_remember**, **summary**, **user_position_summary**) MUST teach and preserve **{{ user_name }}'s position**, even if the facilitator AI disagreed during discussion.
+- The stored lesson (**headline**, **key_insight**, **what_to_remember**, **summary**, **user_position_summary**) MUST teach and preserve **{{ user_name }}'s position**, even if the challenge council pushed back during discussion.
 - Do NOT rewrite the takeaway to match the facilitator or the verdict when they conflict with the user.
-- Still accurately report the model/facilitator view in comparison fields — fairness in analysis, loyalty to the user's lesson in the takeaway.
+- Still accurately report the model/council view in comparison fields — fairness in analysis, loyalty to the user's lesson in the takeaway.
 
 ## Output Format (strict JSON)
 Respond with **only** valid JSON (no markdown fences):

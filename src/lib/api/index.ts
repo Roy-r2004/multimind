@@ -404,7 +404,7 @@ export const api = {
         body: { message },
         token: auth.token,
         orgId: auth.orgId,
-        timeoutMs: 90_000,
+        timeoutMs: 180_000,
       }),
 
     discussFinalize: (auth: Auth, turnId: string) =>
