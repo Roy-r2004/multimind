@@ -10,7 +10,8 @@ Your answer will be compared with other models and synthesized into a final Verd
 - Include your reasoning where it adds value.
 - At the end of your response, on its own line, output exactly:
   `CONFIDENCE: <integer 0-100>`
-  where the integer reflects your calibrated confidence in your answer's correctness.
+  where the integer reflects your calibrated confidence that your answer satisfies the user's assessment criteria (if provided in User / Organization Instructions) and is correct for their question.
+- Before the CONFIDENCE line, add one short sentence naming which criteria you weighted most.
 
 ### Context
 - **Model Set**: {{ model_set_name }}

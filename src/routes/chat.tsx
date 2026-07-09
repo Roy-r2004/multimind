@@ -22,6 +22,7 @@ import {
   Swords,
   BookOpen,
   Trophy,
+  Scale,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
@@ -32,6 +33,8 @@ import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/Ch
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
+import { AssessmentCriteriaModal } from "@/components/chat/AssessmentCriteriaModal";
+import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
@@ -50,6 +53,12 @@ import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
+import {
+  DEFAULT_COMPANY_ASSESSMENT_CRITERIA,
+  extractAssessmentCriteria,
+  mergeAssessmentIntoInstructions,
+  parseCriteriaLines,
+} from "@/lib/assessmentCriteria";
 
 export const Route = createFileRoute("/chat")({
   head: () => ({ meta: [{ title: "Chat — MultiAI" }] }),
@@ -130,7 +139,37 @@ export function ChatPage() {
   const [sending, setSending] = useState(false);
   const [showDeleteChat, setShowDeleteChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
+  const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
+  const [showCriteria, setShowCriteria] = useState(false);
+  const [savingCriteria, setSavingCriteria] = useState(false);
   const activeChat = chats.find((c) => c.id === activeChatId);
+
+  useEffect(() => {
+    if (!set) return;
+    const fromSet = extractAssessmentCriteria(set.customInstructions);
+    const fromStorage =
+      typeof window !== "undefined"
+        ? localStorage.getItem(`multiai_assessment_criteria:${set.id}`)
+        : null;
+    setAssessmentCriteria(fromSet || fromStorage || DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
+  }, [set?.id, set?.customInstructions]);
+
+  async function saveAssessmentCriteria(criteria: string) {
+    if (!set) return;
+    setSavingCriteria(true);
+    try {
+      if (SYSTEM_MODEL_SETS.has(set.id)) {
+        localStorage.setItem(`multiai_assessment_criteria:${set.id}`, criteria);
+      } else {
+        const merged = mergeAssessmentIntoInstructions(set.customInstructions, criteria);
+        await updateModelSet({ ...set, customInstructions: merged });
+      }
+      setAssessmentCriteria(criteria);
+      setShowCriteria(false);
+    } finally {
+      setSavingCriteria(false);
+    }
+  }
 
   useEffect(() => {
     if (!isApiMode || !activeChatId) {
@@ -171,7 +210,11 @@ export function ChatPage() {
       let chatId = activeChatId;
       if (!chatId) chatId = await createChat();
       if (!chatId) return;
-      const customInstructions = await buildComposerInstructions(auth, refChat, files);
+      const baseInstructions = await buildComposerInstructions(auth, refChat, files);
+      const customInstructions = mergeAssessmentIntoInstructions(
+        baseInstructions,
+        assessmentCriteria,
+      );
       const pending = await api.chats.createTurn(auth, chatId, {
         user_message: question,
         model_set_id: set.id,
@@ -234,8 +277,16 @@ export function ChatPage() {
               <span className="ml-2 text-xs text-muted-foreground">{set.strategy}</span>
               <button
                 type="button"
+                onClick={() => setShowCriteria(true)}
+                className="ml-1 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+              >
+                <Scale className="size-3" />
+                Criteria
+              </button>
+              <button
+                type="button"
                 onClick={() => setShowCouncil(true)}
-                className="ml-1 text-xs font-medium text-primary hover:underline"
+                className="text-xs font-medium text-primary hover:underline"
               >
                 Edit council
               </button>
@@ -331,6 +382,8 @@ export function ChatPage() {
                     set={set}
                     turn={turn}
                     modelById={modelById}
+                    assessmentCriteria={assessmentCriteria}
+                    onEditCriteria={() => setShowCriteria(true)}
                     onLessonUpdate={(lessonId, lessonStatus) => {
                       setApiTurns((prev) =>
                         prev.map((t) =>
@@ -583,6 +636,14 @@ export function ChatPage() {
         onAddToChat={() => setFiles((f) => [...f, { name: "comparison.xlsx", state: "uploaded" }])}
       />
 
+      <AssessmentCriteriaModal
+        open={showCriteria}
+        onClose={() => setShowCriteria(false)}
+        initialCriteria={assessmentCriteria}
+        onSave={saveAssessmentCriteria}
+        saving={savingCriteria}
+      />
+
       <Modal
         open={showDeleteChat}
         onClose={() => setShowDeleteChat(false)}
@@ -707,11 +768,15 @@ function AiTurn({
   set,
   turn,
   modelById,
+  assessmentCriteria,
+  onEditCriteria,
   onLessonUpdate,
 }: {
   set: ModelSet;
   turn: ApiTurn;
   modelById: (id: string) => { name: string; color: string };
+  assessmentCriteria: string;
+  onEditCriteria: () => void;
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
 }) {
   const { session } = useAuth();
@@ -723,6 +788,8 @@ function AiTurn({
   const topModelId = turn.verdict ? inferTopModelId(turn, set.models, modelById) : null;
   const judgeModel = turn.verdict ? modelById(turn.verdict.model_id) : null;
   const canCollapseAnswers = Boolean(turn.verdict);
+  const criteriaLines = parseCriteriaLines(assessmentCriteria);
+  const turnStrategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
 
   useEffect(() => {
     if (!turn.verdict || scrolledToVerdictRef.current) return;
@@ -762,7 +829,33 @@ function AiTurn({
       )}
 
       {!answersCollapsed && (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="space-y-3">
+          {criteriaLines.length > 0 && (
+            <div className="rounded-xl border border-border bg-muted/30 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
+                <Scale className="size-3.5 text-primary" />
+                Scoring against your criteria
+                <button
+                  type="button"
+                  onClick={onEditCriteria}
+                  className="ml-auto text-primary hover:underline"
+                >
+                  Edit
+                </button>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {criteriaLines.map((line) => (
+                  <span
+                    key={line}
+                    className="rounded-full border border-border bg-background px-2 py-0.5 text-[11px] text-foreground"
+                  >
+                    {line}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           {set.models.map((id) => {
             const m = modelById(id);
             const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
@@ -792,7 +885,13 @@ function AiTurn({
                   )}
                   {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
                   {!inProgress && a?.confidence != null && (
-                    <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
+                    <ModelConfidenceBadge
+                      confidence={a.confidence}
+                      isTopPick={isTopPick}
+                      strategy={turnStrategy}
+                      criteria={assessmentCriteria}
+                      modelName={m.name}
+                    />
                   )}
                 </div>
                 {failed ? (
@@ -813,6 +912,7 @@ function AiTurn({
               </GlassCard>
             );
           })}
+          </div>
         </div>
       )}
 
