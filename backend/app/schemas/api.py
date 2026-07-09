@@ -116,7 +116,7 @@ class ModelSetResponse(BaseModel):
 class ModelSetCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str = ""
-    models: list[str] = Field(min_length=1)
+    models: list[str] = Field(min_length=1, max_length=5)
     verdict_model: str
     strategy: StrategyEnum = StrategyEnum.SYNTHESIZE
     best_for: str = ""
@@ -127,7 +127,7 @@ class ModelSetCreateRequest(BaseModel):
 class ModelSetUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
-    models: list[str] | None = None
+    models: list[str] | None = Field(default=None, min_length=1, max_length=5)
     verdict_model: str | None = None
     strategy: StrategyEnum | None = None
     best_for: str | None = None
@@ -228,7 +228,7 @@ class DecisionInsuranceResponse(BaseModel):
 class TurnCreateRequest(BaseModel):
     user_message: str = Field(min_length=1)
     model_set_id: str
-    decision_insurance_enabled: bool = True
+    decision_insurance_enabled: bool = False
     custom_instructions: str | None = None
 
 
@@ -260,6 +260,11 @@ class DiscussMessageRequest(BaseModel):
 class DiscussMessageItem(BaseModel):
     role: str
     content: str
+    kind: str | None = None
+    model_id: str | None = None
+    model_name: str | None = None
+    confidence: int | None = None
+    turn_id: str | None = None
 
 
 class DiscussResponse(BaseModel):

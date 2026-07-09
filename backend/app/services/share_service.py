@@ -12,7 +12,7 @@ from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError
 from app.db.models import Chat, ModelSet, ShareLink, Turn, User
 from app.schemas.api import ShareLinkResponse, SharedChatResponse
-from app.services.chat_service import chat_service
+from app.services.chat_service import CHALLENGE_TURN_MARKER, chat_service
 
 
 class ShareService:
@@ -67,7 +67,10 @@ class ShareService:
 
         turns_result = await db.execute(
             select(Turn)
-            .where(Turn.chat_id == chat.id)
+            .where(
+                Turn.chat_id == chat.id,
+                (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
+            )
             .options(
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict),

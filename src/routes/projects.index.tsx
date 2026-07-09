@@ -1,13 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Plus, FolderKanban } from "lucide-react";
+import { FolderKanban, Plus } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
+import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { useChatStore } from "@/lib/store";
 
 export const Route = createFileRoute("/projects/")({
-  head: () => ({ meta: [{ title: "Projects — MultiAI" }] }),
+  head: () => ({ meta: [{ title: "Projects - MultiAI" }] }),
   component: ProjectsPage,
 });
 
@@ -57,7 +57,7 @@ function ProjectsPage() {
                           {p.description}
                         </p>
                       ) : (
-                        <p className="mt-0.5 text-xs text-muted-foreground">Open project →</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">Open project</p>
                       )}
                     </div>
                   </div>

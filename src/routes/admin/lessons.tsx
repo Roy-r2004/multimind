@@ -28,7 +28,7 @@ function AdminLessonsPage() {
   return (
     <AdminPageFrame
       title="Verdict Lessons"
-      description="Structured lessons built when users disagreed with AI verdicts."
+      description="Structured lessons built when users challenged AI verdicts."
     >
       <DataTable
         columns={[

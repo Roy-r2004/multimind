@@ -1,15 +1,16 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { FolderKanban, MessageSquare, Pencil, Plus, Save, X } from "lucide-react";
+import { FolderKanban, MessageSquare, Pencil, Plus, Save, Trash2, X } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
+import { Modal } from "@/components/Modal";
 import { api } from "@/lib/api";
 import type { ApiProjectDetail } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 import { useChatStore } from "@/lib/store";
 
 export const Route = createFileRoute("/projects/$id")({
-  head: () => ({ meta: [{ title: "Project — MultiAI" }] }),
+  head: () => ({ meta: [{ title: "Project - MultiAI" }] }),
   component: ProjectDetail,
 });
 
@@ -28,7 +29,7 @@ function ProjectDetail() {
   const { id } = Route.useParams();
   const navigate = useNavigate();
   const { authHeaders, isAuthenticated, isLoading: authLoading } = useAuth();
-  const { setActiveChatId, refreshAll } = useChatStore();
+  const { setActiveChatId, refreshAll, deleteProject } = useChatStore();
   const [project, setProject] = useState<ApiProjectDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +38,9 @@ function ProjectDetail() {
   const [editDescription, setEditDescription] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -61,7 +65,6 @@ function ProjectDetail() {
           setEditDescription(data.description ?? "");
         }
       } catch {
-        // Fallback when GET /projects/:id is unavailable — compose from list endpoints.
         try {
           const [projectList, chatList] = await Promise.all([
             api.projects.list(auth!),
@@ -101,27 +104,6 @@ function ProjectDetail() {
     };
   }, [id, authHeaders, isAuthenticated, authLoading]);
 
-  if (loading) {
-    return (
-      <AppShell>
-        <div className="px-6 py-20 text-center text-sm text-muted-foreground">Loading project…</div>
-      </AppShell>
-    );
-  }
-
-  if (error || !project) {
-    return (
-      <AppShell>
-        <div className="mx-auto max-w-lg px-6 py-20 text-center">
-          <p className="text-sm text-muted-foreground">{error ?? "Project not found."}</p>
-          <Link to="/projects" className="mt-4 inline-block text-sm font-medium text-primary hover:underline">
-            ← Back to projects
-          </Link>
-        </div>
-      </AppShell>
-    );
-  }
-
   async function openChat(chatId: string) {
     setActiveChatId(chatId);
     await navigate({ to: "/chat" });
@@ -129,30 +111,32 @@ function ProjectDetail() {
 
   async function startChatInProject() {
     const auth = authHeaders();
-    if (!auth) return;
-    const chat = await api.chats.create(auth, { title: "New chat", project_id: project!.id });
+    if (!auth || !project) return;
+    const chat = await api.chats.create(auth, { title: "New chat", project_id: project.id });
     setActiveChatId(chat.id);
     await refreshAll();
     await navigate({ to: "/chat" });
   }
 
   function startEditing() {
-    setEditName(project!.name);
-    setEditDescription(project!.description ?? "");
+    if (!project) return;
+    setEditName(project.name);
+    setEditDescription(project.description ?? "");
     setSaveError(null);
     setEditing(true);
   }
 
   function cancelEditing() {
-    setEditName(project!.name);
-    setEditDescription(project!.description ?? "");
+    if (!project) return;
+    setEditName(project.name);
+    setEditDescription(project.description ?? "");
     setSaveError(null);
     setEditing(false);
   }
 
   async function saveProject() {
     const auth = authHeaders();
-    if (!auth) return;
+    if (!auth || !project) return;
     const name = editName.trim();
     if (!name) {
       setSaveError("Project name is required.");
@@ -161,7 +145,7 @@ function ProjectDetail() {
     setSaving(true);
     setSaveError(null);
     try {
-      const updated = await api.projects.update(auth, project!.id, {
+      const updated = await api.projects.update(auth, project.id, {
         name,
         description: editDescription.trim() || null,
       });
@@ -175,11 +159,53 @@ function ProjectDetail() {
     }
   }
 
+  async function confirmDeleteProject() {
+    if (!project) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteProject(project.id);
+      await refreshAll();
+      setConfirmDelete(false);
+      await navigate({ to: "/projects" });
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : "Failed to delete project");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <AppShell>
+        <div className="px-6 py-20 text-center text-sm text-muted-foreground">
+          Loading project...
+        </div>
+      </AppShell>
+    );
+  }
+
+  if (error || !project) {
+    return (
+      <AppShell>
+        <div className="mx-auto max-w-lg px-6 py-20 text-center">
+          <p className="text-sm text-muted-foreground">{error ?? "Project not found."}</p>
+          <Link
+            to="/projects"
+            className="mt-4 inline-block text-sm font-medium text-primary hover:underline"
+          >
+            Back to projects
+          </Link>
+        </div>
+      </AppShell>
+    );
+  }
+
   return (
     <AppShell>
       <div className="mx-auto max-w-4xl px-6 py-10">
         <Link to="/projects" className="text-sm text-muted-foreground hover:text-foreground">
-          ← Projects
+          Projects
         </Link>
 
         {editing ? (
@@ -210,7 +236,7 @@ function ProjectDetail() {
                 disabled={saving}
                 className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
               >
-                <Save className="size-4" /> {saving ? "Saving…" : "Save"}
+                <Save className="size-4" /> {saving ? "Saving..." : "Save"}
               </button>
               <button
                 type="button"
@@ -227,17 +253,25 @@ function ProjectDetail() {
             className="mt-4"
             title={project.name}
             description={
-              project.description?.trim() ||
-              "No description yet — click Edit to add one."
+              project.description?.trim() || "No description yet. Click Edit to add one."
             }
             action={
-              <button
-                type="button"
-                onClick={startEditing}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-sm font-medium hover:bg-accent"
-              >
-                <Pencil className="size-4" /> Edit
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={startEditing}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-sm font-medium hover:bg-accent"
+                >
+                  <Pencil className="size-4" /> Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-destructive/30 px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="size-4" /> Delete
+                </button>
+              </div>
             }
           />
         )}
@@ -288,6 +322,36 @@ function ProjectDetail() {
           )}
         </div>
       </div>
+
+      <Modal
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        title="Delete project?"
+        size="sm"
+      >
+        <p className="text-sm text-muted-foreground">
+          Chats in this project will stay in your chat history.
+        </p>
+        {deleteError && <p className="mt-2 text-sm text-destructive">{deleteError}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(false)}
+            disabled={deleting}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={() => void confirmDeleteProject()}
+            className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
+          >
+            {deleting ? "Deleting..." : "Delete"}
+          </button>
+        </div>
+      </Modal>
     </AppShell>
   );
 }

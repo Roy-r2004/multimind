@@ -17,6 +17,13 @@ You are a **neutral judge**, not an advocate for yourself.
 
 {% include "partials/user_brain.j2" %}
 
+{% if previous_verdict_context %}
+## Previous Verdict Context
+The user is continuing this same chat. Use this prior final verdict as shared conversation context when it is relevant to the current question. The current user question and current model responses remain the primary evidence; do not blindly repeat the previous verdict.
+
+{{ previous_verdict_context }}
+{% endif %}
+
 ## Model Responses to Analyze
 {% include "partials/model_responses.j2" %}
 

@@ -1,10 +1,8 @@
-"""Multi-model turn orchestrator — parallel answers, verdict, decision insurance."""
+"""Multi-model turn orchestrator — parallel answers and verdict."""
 
 import asyncio
-import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
-from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import RetryError
@@ -12,7 +10,6 @@ from tenacity import RetryError
 from app.core.logging import get_logger
 from app.db.models import (
     CostRecord,
-    DecisionInsurance,
     ModelAnswer,
     ModelAnswerStatus,
     Strategy,
@@ -44,7 +41,7 @@ class TurnContext:
     custom_instructions: str | None = None
     template_instructions: str | None = None
     user_brain_context: str | None = None
-    decision_insurance_enabled: bool = False
+    previous_verdict_context: str | None = None
     skip_answer_seed: bool = False
 
 
@@ -52,23 +49,7 @@ class TurnContext:
 class OrchestratorResult:
     model_answers: list[ModelAnswer] = field(default_factory=list)
     verdict: Verdict | None = None
-    decision_insurance: DecisionInsurance | None = None
     cost_records: list[CostRecord] = field(default_factory=list)
-
-
-def _coerce_text(value: Any) -> str:
-    """Normalize LLM JSON fields that may arrive as lists instead of strings."""
-    if isinstance(value, list):
-        lines: list[str] = []
-        for item in value:
-            s = str(item).strip()
-            if not s:
-                continue
-            lines.append(s if s[0] in "-•*" else f"• {s}")
-        return "\n".join(lines)
-    if value is None:
-        return ""
-    return str(value).strip()
 
 
 def format_llm_error(exc: Exception) -> str:
@@ -147,6 +128,7 @@ class TurnOrchestrator:
                 custom_instructions=ctx.custom_instructions,
                 template_instructions=ctx.template_instructions,
                 user_brain_context=ctx.user_brain_context,
+                previous_verdict_context=ctx.previous_verdict_context,
             )
 
             try:
@@ -245,6 +227,7 @@ class TurnOrchestrator:
             custom_instructions=ctx.custom_instructions,
             template_instructions=ctx.template_instructions,
             user_brain_context=ctx.user_brain_context,
+            previous_verdict_context=ctx.previous_verdict_context,
         )
 
         verdict_model = get_model(ctx.verdict_model_id)
@@ -311,80 +294,6 @@ class TurnOrchestrator:
             await db.flush()
             await emit("turn_failed", {"error": turn.error_message})
             return result
-
-        # Phase 3: Decision Insurance (always after a successful verdict)
-        if result.verdict:
-            await emit("decision_insurance_started", {})
-
-            insurance_system = self._prompts.decision_insurance_prompt(
-                user_message=ctx.user_message,
-                strategy=ctx.strategy.value,
-                model_answers=answer_context,
-                verdict_text=result.verdict.text,
-                verdict_reason=result.verdict.reason,
-                custom_instructions=ctx.custom_instructions,
-                template_instructions=ctx.template_instructions,
-                user_brain_context=ctx.user_brain_context,
-            )
-
-            try:
-                insurance_response = await provider.complete(
-                    system=insurance_system,
-                    user="Produce the decision insurance JSON now.",
-                    model=verdict_model.provider_model,
-                    max_tokens=2048,
-                )
-                insurance_data = provider.parse_json_response(insurance_response.text)
-
-                insurance_row = DecisionInsurance(
-                    turn_id=ctx.turn_id,
-                    best_case=_coerce_text(insurance_data.get("best_case")),
-                    worst_case=_coerce_text(insurance_data.get("worst_case")),
-                    risk_level=_coerce_text(insurance_data.get("risk_level")),
-                    potential_loss=_coerce_text(insurance_data.get("potential_loss")),
-                    mitigation_plan=_coerce_text(insurance_data.get("mitigation_plan")),
-                    tokens_input=insurance_response.tokens_input,
-                    tokens_output=insurance_response.tokens_output,
-                    cost_usd=resolve_llm_cost(
-                        ctx.verdict_model_id,
-                        insurance_response.tokens_input,
-                        insurance_response.tokens_output,
-                        insurance_response.cost_usd,
-                    ),
-                )
-                db.add(insurance_row)
-                result.decision_insurance = insurance_row
-
-                cost = CostRecord(
-                    org_id=ctx.org_id,
-                    chat_id=ctx.chat_id,
-                    project_id=ctx.project_id,
-                    turn_id=ctx.turn_id,
-                    model_id=ctx.verdict_model_id,
-                    kind=UsageKind.INSURANCE,
-                    tokens_input=insurance_response.tokens_input,
-                    tokens_output=insurance_response.tokens_output,
-                    cost_usd=insurance_row.cost_usd,
-                )
-                db.add(cost)
-                result.cost_records.append(cost)
-                await db.flush()
-
-                await emit(
-                    "decision_insurance_completed",
-                    {
-                        "best_case": insurance_row.best_case,
-                        "worst_case": insurance_row.worst_case,
-                        "risk_level": insurance_row.risk_level,
-                        "potential_loss": insurance_row.potential_loss,
-                        "mitigation_plan": insurance_row.mitigation_plan,
-                        "tokens_input": insurance_row.tokens_input,
-                        "tokens_output": insurance_row.tokens_output,
-                        "cost_usd": insurance_row.cost_usd,
-                    },
-                )
-            except Exception as exc:
-                logger.warning("decision_insurance_failed", error=str(exc))
 
         failed_count = sum(1 for a in answer_context if a["failed"])
         turn.status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED

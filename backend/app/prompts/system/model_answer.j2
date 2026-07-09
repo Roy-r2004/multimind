@@ -20,6 +20,13 @@ Your answer will be compared with other models and synthesized into a final Verd
 
 {% include "partials/user_brain.j2" %}
 
+{% if previous_verdict_context %}
+## Previous Verdict Context
+The user is continuing this same chat. Use this prior final verdict as shared conversation context when it is relevant, but answer the current user question directly. Do not simply repeat the previous verdict.
+
+{{ previous_verdict_context }}
+{% endif %}
+
 {% if chat_history %}
 ## Prior Conversation (for context only)
 {% for msg in chat_history %}

@@ -151,6 +151,13 @@ export const api = {
     create: (auth: Auth, data: { name: string; description?: string }) =>
       apiRequest<ApiProject>("/projects", { body: data, token: auth.token, orgId: auth.orgId }),
 
+    delete: (auth: Auth, projectId: string) =>
+      apiRequest<{ message: string }>(`/projects/${projectId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
     update: (auth: Auth, projectId: string, data: { name?: string; description?: string | null }) =>
       apiRequest<ApiProjectDetail>(`/projects/${projectId}`, {
         method: "PATCH",
@@ -315,10 +322,10 @@ export const api = {
       }),
 
     userActivity: (auth: Auth, userId: string, page = 1) =>
-      apiRequest<ApiAdminAuditLogList>(
-        `/admin/users/${userId}/activity?page=${page}&limit=50`,
-        { token: auth.token, orgId: auth.orgId },
-      ),
+      apiRequest<ApiAdminAuditLogList>(`/admin/users/${userId}/activity?page=${page}&limit=50`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
 
     chats: (auth: Auth, params?: { user_id?: string; q?: string }) => {
       const search = new URLSearchParams();
@@ -397,7 +404,7 @@ export const api = {
         body: { message },
         token: auth.token,
         orgId: auth.orgId,
-        timeoutMs: 90_000,
+        timeoutMs: 180_000,
       }),
 
     discussFinalize: (auth: Auth, turnId: string) =>

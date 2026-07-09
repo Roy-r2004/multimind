@@ -9,7 +9,6 @@ import {
   AlertCircle,
   Info,
   Share2,
-  ShieldCheck,
   Sparkles,
   Plus,
   Pencil,
@@ -20,7 +19,7 @@ import {
   FileSpreadsheet,
   Upload,
   Image as ImageIcon,
-  ThumbsDown,
+  Swords,
   BookOpen,
   Trophy,
 } from "lucide-react";
@@ -29,10 +28,7 @@ import { Modal } from "@/components/Modal";
 import { GlassCard, ModelPill, CinematicBackdrop } from "@/components/cinematic/PageChrome";
 import ModelSetModal from "@/components/ModelSetModal";
 import { PromptBuilderModal } from "@/components/chat/PromptBuilderModal";
-import {
-  ChatReferenceModal,
-  type ChatReferencePick,
-} from "@/components/chat/ChatReferenceModal";
+import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/ChatReferenceModal";
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
@@ -73,9 +69,8 @@ async function buildComposerInstructions(
         const turns = await api.chats.listTurns(auth, ref.chatId);
         const excerpt = turns
           .slice(-4)
-          .map(
-            (t) =>
-              `User: ${t.user_message}\n${t.verdict?.text ? `Verdict: ${t.verdict.text}` : ""}`.trim(),
+          .map((t) =>
+            `User: ${t.user_message}\n${t.verdict?.text ? `Verdict: ${t.verdict.text}` : ""}`.trim(),
           )
           .join("\n\n");
         parts.push(
@@ -243,7 +238,10 @@ export function ChatPage() {
               >
                 Edit council
               </button>
-              <button onClick={() => setShowStrategy(true)} className="text-muted-foreground hover:text-foreground">
+              <button
+                onClick={() => setShowStrategy(true)}
+                className="text-muted-foreground hover:text-foreground"
+              >
                 <Info className="size-3.5" />
               </button>
             </div>
@@ -275,9 +273,12 @@ export function ChatPage() {
             {!isAuthenticated && (
               <GlassCard glow className="p-10 text-center animate-fade-up">
                 <Sparkles className="mx-auto size-8 text-primary" />
-                <h2 className="mt-4 text-2xl font-semibold text-gradient">One question. Many minds.</h2>
+                <h2 className="mt-4 text-2xl font-semibold text-gradient">
+                  One question. Many minds.
+                </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro — real models via OpenRouter, one verdict.
+                  GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro — real models via OpenRouter, one
+                  verdict.
                 </p>
                 <Link
                   to="/login"
@@ -299,24 +300,19 @@ export function ChatPage() {
                   <span className="text-gradient">Decide with clarity.</span>
                 </h2>
                 <p className="mx-auto max-w-lg text-sm text-muted-foreground">
-                  {set.models.length} models answer in parallel — then Verdict AI synthesizes the final answer
-                  using <strong className="text-foreground">{set.strategy}</strong>.
+                  {set.models.length} models answer in parallel — then Verdict AI synthesizes the
+                  final answer using <strong className="text-foreground">{set.strategy}</strong>.
                 </p>
                 <button
                   type="button"
                   onClick={() => setShowCouncil(true)}
                   className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10"
                 >
-                  Choose your 3 models
+                  Choose your 5 models
                 </button>
-                <div className="mx-auto grid max-w-3xl gap-3 sm:grid-cols-3">
-                  {(models.length ? models : flagshipModels).slice(0, 6).map((m) => (
-                    <ModelPill
-                      key={m.id}
-                      name={m.name}
-                      vendor={m.vendor}
-                      color={m.color}
-                    />
+                <div className="mx-auto grid max-w-5xl gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                  {(models.length ? models : flagshipModels).slice(0, 5).map((m) => (
+                    <ModelPill key={m.id} name={m.name} vendor={m.vendor} color={m.color} />
                   ))}
                 </div>
               </div>
@@ -406,7 +402,9 @@ export function ChatPage() {
                 }}
                 rows={2}
                 disabled={!isAuthenticated || !set}
-                placeholder={isAuthenticated ? "Ask your model council anything…" : "Log in to chat"}
+                placeholder={
+                  isAuthenticated ? "Ask your model council anything…" : "Log in to chat"
+                }
                 className="block w-full resize-none rounded-2xl bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
               />
               <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
@@ -490,13 +488,17 @@ export function ChatPage() {
                   disabled={!input.trim() || sending || loading || !isAuthenticated}
                   className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
                 >
-                  {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                  {loading ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Send className="size-3.5" />
+                  )}
                   Send
                 </button>
               </div>
             </div>
             <p className="mt-2 text-center text-[11px] text-muted-foreground">
-              MultiAI may produce inaccurate information. Decision Insurance runs automatically on every turn.
+              MultiAI may produce inaccurate information. Review important outputs before acting.
             </p>
           </div>
         </div>
@@ -538,9 +540,18 @@ export function ChatPage() {
         }}
       />
 
-      <ModelSetModal open={showCreateSet} onClose={() => setShowCreateSet(false)} onCreate={createModelSet} />
+      <ModelSetModal
+        open={showCreateSet}
+        onClose={() => setShowCreateSet(false)}
+        onCreate={createModelSet}
+      />
 
-      <Modal open={showStrategy} onClose={() => setShowStrategy(false)} title="Verdict strategy" size="md">
+      <Modal
+        open={showStrategy}
+        onClose={() => setShowStrategy(false)}
+        title="Verdict strategy"
+        size="md"
+      >
         {set && (
           <div className="space-y-3">
             {STRATEGIES.filter((s) => s.name === set.strategy).map((s) => (
@@ -568,12 +579,15 @@ export function ChatPage() {
       <ExcelPreviewModal
         open={showExcel}
         onClose={() => setShowExcel(false)}
-        onAddToChat={() =>
-          setFiles((f) => [...f, { name: "comparison.xlsx", state: "uploaded" }])
-        }
+        onAddToChat={() => setFiles((f) => [...f, { name: "comparison.xlsx", state: "uploaded" }])}
       />
 
-      <Modal open={showDeleteChat} onClose={() => setShowDeleteChat(false)} title="Delete chat?" size="sm">
+      <Modal
+        open={showDeleteChat}
+        onClose={() => setShowDeleteChat(false)}
+        title="Delete chat?"
+        size="sm"
+      >
         <p className="text-sm text-muted-foreground">
           {activeChat
             ? `"${activeChat.title}" will be permanently removed.`
@@ -640,7 +654,7 @@ function LoadingTurn({
 }) {
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {set.models.map((id) => {
           const m = modelById(id);
           return (
@@ -701,11 +715,13 @@ function AiTurn({
 }) {
   const { session } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
+  const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
   const scrolledToVerdictRef = useRef(false);
 
   const topModelId = turn.verdict ? inferTopModelId(turn, set.models, modelById) : null;
   const judgeModel = turn.verdict ? modelById(turn.verdict.model_id) : null;
+  const canCollapseAnswers = Boolean(turn.verdict);
 
   useEffect(() => {
     if (!turn.verdict || scrolledToVerdictRef.current) return;
@@ -723,116 +739,145 @@ function AiTurn({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3 md:gap-4">
-        {set.models.map((id) => {
-          const m = modelById(id);
-          const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
-          const status = a?.status ?? "pending";
-          const failed = status === "failed";
-          const inProgress = status === "pending" || status === "running";
-          const isTopPick = topModelId === id;
-          return (
-            <GlassCard
-              key={id}
-              className={cn(
-                "p-4",
-                isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
-              )}
-            >
-              <div className="flex items-center gap-2 text-sm">
-                <span className="size-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ color: m.color, background: m.color }} />
-                <span className="font-medium">{m.name}</span>
-                {isTopPick && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
-                    <Trophy className="size-3" />
-                    Top pick
-                  </span>
+      {canCollapseAnswers && (
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => setAnswersCollapsed((value) => !value)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            aria-expanded={!answersCollapsed}
+          >
+            <ChevronDown
+              className={cn("size-3.5 transition-transform", answersCollapsed && "-rotate-90")}
+            />
+            {answersCollapsed ? "Show AI council answers" : "Hide AI council answers"}
+          </button>
+          {answersCollapsed && (
+            <span className="text-xs text-muted-foreground">
+              {set.models.length} answers hidden
+            </span>
+          )}
+        </div>
+      )}
+
+      {!answersCollapsed && (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {set.models.map((id) => {
+            const m = modelById(id);
+            const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
+            const status = a?.status ?? "pending";
+            const failed = status === "failed";
+            const inProgress = status === "pending" || status === "running";
+            const isTopPick = topModelId === id;
+            return (
+              <GlassCard
+                key={id}
+                className={cn(
+                  "p-4",
+                  isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
                 )}
-                {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
-                {!inProgress && a?.confidence != null && (
-                  <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <span
+                    className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
+                    style={{ color: m.color, background: m.color }}
+                  />
+                  <span className="font-medium">{m.name}</span>
+                  {isTopPick && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                      <Trophy className="size-3" />
+                      Top pick
+                    </span>
+                  )}
+                  {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
+                  {!inProgress && a?.confidence != null && (
+                    <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
+                  )}
+                </div>
+                {failed ? (
+                  <p className="mt-3 text-xs text-destructive">
+                    <AlertCircle className="mr-1 inline size-3.5" />
+                    {a?.error_message ?? "Failed"}
+                  </p>
+                ) : inProgress ? (
+                  <div className="mt-3 space-y-2">
+                    <div className="h-2 animate-pulse rounded bg-muted" />
+                    <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+                  </div>
+                ) : (
+                  <div className="mt-3">
+                    <MessageContent compact>{a?.text ?? ""}</MessageContent>
+                  </div>
                 )}
-              </div>
-              {failed ? (
-                <p className="mt-3 text-xs text-destructive">
-                  <AlertCircle className="mr-1 inline size-3.5" />
-                  {a?.error_message ?? "Failed"}
-                </p>
-              ) : inProgress ? (
-                <div className="mt-3 space-y-2">
-                  <div className="h-2 animate-pulse rounded bg-muted" />
-                  <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
-                </div>
-              ) : (
-                <div className="mt-3">
-                  <MessageContent compact>{a?.text ?? ""}</MessageContent>
-                </div>
-              )}
-            </GlassCard>
-          );
-        })}
-      </div>
+              </GlassCard>
+            );
+          })}
+        </div>
+      )}
 
       {turn.verdict && (
         <div ref={verdictRef} className="scroll-mt-24">
-        <GlassCard glow className="p-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-              <Gavel className="size-4" />
-            </span>
-            <span className="font-medium">Verdict</span>
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
-              {turn.verdict.strategy}
-            </span>
-            {judgeModel && (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
-                <span className="size-2 rounded-full" style={{ background: judgeModel.color }} />
-                Judge: {judgeModel.name}
+          <GlassCard glow className="p-5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+                <Gavel className="size-4" />
               </span>
-            )}
-            {topModelId && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
-                <Trophy className="size-3" />
-                Best: {modelById(topModelId).name}
+              <span className="font-medium">Verdict</span>
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+                {turn.verdict.strategy}
               </span>
-            )}
-            <div className="ml-auto flex flex-wrap items-center gap-2">
-              {turn.lesson_id && turn.lesson_status === "completed" ? (
-                <Link
-                  to="/lessons/$id"
-                  params={{ id: turn.lesson_id }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+              {judgeModel && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
+                  <span className="size-2 rounded-full" style={{ background: judgeModel.color }} />
+                  Judge: {judgeModel.name}
+                </span>
+              )}
+              {topModelId && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                  <Trophy className="size-3" />
+                  Best: {modelById(topModelId).name}
+                </span>
+              )}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {turn.lesson_id && turn.lesson_status === "completed" ? (
+                  <Link
+                    to="/lessons/$id"
+                    params={{ id: turn.lesson_id }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                  >
+                    <BookOpen className="size-3.5" /> View lesson
+                  </Link>
+                ) : turn.lesson_id && turn.lesson_status === "discussing" ? (
+                  <button
+                    type="button"
+                    onClick={openDisagree}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
+                  >
+                    <Swords className="size-3.5" /> challenge
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={openDisagree}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary shadow-sm hover:bg-primary/15"
+                  >
+                    <Swords className="size-3.5" /> Challenge
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              <MessageContent>{turn.verdict.text}</MessageContent>
+              {turn.verdict.reason && (
+                <MessageContent
+                  muted
+                  className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
                 >
-                  <BookOpen className="size-3.5" /> View lesson
-                </Link>
-              ) : turn.lesson_id && turn.lesson_status === "discussing" ? (
-                <button
-                  type="button"
-                  onClick={openDisagree}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
-                >
-                  <ThumbsDown className="size-3.5" /> Continue discussion
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={openDisagree}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary shadow-sm hover:bg-primary/15"
-                >
-                  <ThumbsDown className="size-3.5" /> I disagree
-                </button>
+                  {turn.verdict.reason}
+                </MessageContent>
               )}
             </div>
-          </div>
-          <div className="mt-4 space-y-3">
-            <MessageContent>{turn.verdict.text}</MessageContent>
-            {turn.verdict.reason && (
-              <MessageContent muted className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5">
-                {turn.verdict.reason}
-              </MessageContent>
-            )}
-          </div>
-        </GlassCard>
+          </GlassCard>
         </div>
       )}
 
@@ -844,62 +889,6 @@ function AiTurn({
         onDiscussStart={(lessonId) => onLessonUpdate(lessonId, "discussing")}
         onLessonBuilt={(lessonId) => onLessonUpdate(lessonId, "completed")}
       />
-
-      {turn.decision_insurance && (
-        <GlassCard className="border-amber-500/20 p-5">
-          <div className="flex flex-wrap items-center gap-2 text-amber-600 dark:text-amber-400">
-            <ShieldCheck className="size-4" />
-            <span className="font-medium">Decision Insurance</span>
-            {turn.decision_insurance.risk_level && (
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium">
-                {turn.decision_insurance.risk_level} risk
-              </span>
-            )}
-          </div>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            {turn.decision_insurance.best_case && (
-              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3.5">
-                <p className="text-xs font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
-                  Best case
-                </p>
-                <div className="mt-2">
-                  <MessageContent compact>{turn.decision_insurance.best_case}</MessageContent>
-                </div>
-              </div>
-            )}
-            {turn.decision_insurance.worst_case && (
-              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-3.5">
-                <p className="text-xs font-medium uppercase tracking-wide text-rose-700 dark:text-rose-400">
-                  Worst case
-                </p>
-                <div className="mt-2">
-                  <MessageContent compact>{turn.decision_insurance.worst_case}</MessageContent>
-                </div>
-              </div>
-            )}
-          </div>
-          {turn.decision_insurance.potential_loss && (
-            <div className="mt-4 rounded-xl border border-border/80 bg-muted/20 p-3.5">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Potential loss
-              </p>
-              <div className="mt-2">
-                <MessageContent compact>{turn.decision_insurance.potential_loss}</MessageContent>
-              </div>
-            </div>
-          )}
-          {turn.decision_insurance.mitigation_plan && (
-            <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5">
-              <p className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
-                Mitigation plan
-              </p>
-              <div className="mt-2">
-                <MessageContent compact>{turn.decision_insurance.mitigation_plan}</MessageContent>
-              </div>
-            </div>
-          )}
-        </GlassCard>
-      )}
     </div>
   );
 }
@@ -927,14 +916,20 @@ function ModelSetPickerModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-foreground/25 p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-foreground/25 p-4"
+      onClick={onClose}
+    >
       <div
         className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">Model sets</h3>
-          <button onClick={onCreate} className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground">
+          <button
+            onClick={onCreate}
+            className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground"
+          >
             <Plus className="size-4" /> New
           </button>
         </div>
@@ -945,7 +940,9 @@ function ModelSetPickerModal({
               onClick={() => onPick(s.id)}
               className={cn(
                 "relative rounded-2xl border p-4 text-left transition",
-                s.id === activeId ? "border-primary bg-primary/10" : "border-border hover:border-primary/30",
+                s.id === activeId
+                  ? "border-primary bg-primary/10"
+                  : "border-border hover:border-primary/30",
               )}
             >
               {s.id === activeId && (
@@ -955,8 +952,14 @@ function ModelSetPickerModal({
               <p className="mt-1 text-xs text-muted-foreground">{s.description}</p>
               <div className="mt-3 flex flex-wrap gap-1">
                 {s.models.map((id) => (
-                  <span key={id} className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px]">
-                    <span className="size-1.5 rounded-full" style={{ background: modelById(id).color }} />
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px]"
+                  >
+                    <span
+                      className="size-1.5 rounded-full"
+                      style={{ background: modelById(id).color }}
+                    />
                     {modelById(id).name}
                   </span>
                 ))}
@@ -986,7 +989,10 @@ function ModelSetPickerModal({
             </button>
           ))}
         </div>
-        <button onClick={onClose} className="mt-4 text-sm text-muted-foreground hover:text-foreground">
+        <button
+          onClick={onClose}
+          className="mt-4 text-sm text-muted-foreground hover:text-foreground"
+        >
           Close
         </button>
       </div>
@@ -1001,7 +1007,10 @@ function ModelSetPickerModal({
       />
       <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete set?" size="sm">
         <div className="flex justify-end gap-2">
-          <button onClick={() => setDeleteId(null)} className="rounded-lg border border-border px-4 py-2 text-sm">
+          <button
+            onClick={() => setDeleteId(null)}
+            className="rounded-lg border border-border px-4 py-2 text-sm"
+          >
             Cancel
           </button>
           <button

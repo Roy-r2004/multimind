@@ -1,9 +1,10 @@
 """Project, model set, template, and cost services."""
 
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import UUID
+from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
@@ -62,13 +63,13 @@ class ProjectService:
             updated_at=project.updated_at,
         )
 
-    async def get(self, db: AsyncSession, auth: AuthContext, project_id: UUID) -> Project:
+    async def get(self, db: AsyncSession, auth: AuthContext, project_id: str) -> Project:
         result = await db.execute(
             select(Project).where(Project.id == project_id, Project.org_id == auth.org_id)
         )
         project = result.scalar_one_or_none()
         if project is None:
-            raise NotFoundError("Project", str(project_id))
+            raise NotFoundError("Project", project_id)
         return project
 
     async def get_detail(
@@ -112,6 +113,15 @@ class ProjectService:
             project.description = data.description.strip() or None
         await db.flush()
         return await self.get_detail(db, auth, project_id)
+
+    async def delete(self, db: AsyncSession, auth: AuthContext, project_id: str) -> None:
+        project = await self.get(db, auth, project_id)
+        await db.execute(
+            update(Chat)
+            .where(Chat.project_id == project.id, Chat.org_id == auth.org_id)
+            .values(project_id=None)
+        )
+        await db.delete(project)
 
 
 class ModelSetService:

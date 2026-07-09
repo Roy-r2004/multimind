@@ -7,6 +7,10 @@ import { useModels } from "@/lib/models";
 import { ModelPill } from "@/components/cinematic/PageChrome";
 import { cn } from "@/lib/utils";
 
+function fmtRate(value: number): string {
+  return `$${value.toFixed(value >= 0.01 ? 3 : 5)}/1K`;
+}
+
 export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }) {
   const { authHeaders } = useAuth();
   const { models, refresh } = useModels();
@@ -17,9 +21,7 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
   const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const addedSlugs = new Set(
-    models.map((m) => m.openrouter_slug ?? m.id).filter(Boolean),
-  );
+  const addedSlugs = new Set(models.map((m) => m.openrouter_slug ?? m.id).filter(Boolean));
 
   useEffect(() => {
     const auth = authHeaders();
@@ -81,7 +83,7 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search OpenRouter — e.g. claude sonnet 4, gemini 2.5, gpt-4.1"
+          placeholder="Search OpenRouter — e.g. grok, claude sonnet 4, gemini 2.5, gpt-4.1"
           className="w-full rounded-xl border border-border bg-background py-2.5 pl-10 pr-4 text-sm outline-none focus:border-primary/50"
         />
         {searching && (
@@ -106,8 +108,12 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
               >
                 <div className="min-w-0">
                   <div className="font-medium text-sm">{r.name}</div>
-                  <div className="truncate font-mono text-xs text-muted-foreground">{r.openrouter_slug}</div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">{r.vendor}</div>
+                  <div className="truncate font-mono text-xs text-muted-foreground">
+                    {r.openrouter_slug}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    {r.vendor} · in {fmtRate(r.input_per_1k)} · out {fmtRate(r.output_per_1k)}
+                  </div>
                 </div>
                 <button
                   type="button"
@@ -137,7 +143,9 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Your models ({models.length})
         </div>
-        <div className={cn("grid gap-3", compact ? "grid-cols-1" : "sm:grid-cols-2 lg:grid-cols-3")}>
+        <div
+          className={cn("grid gap-3", compact ? "grid-cols-1" : "sm:grid-cols-2 lg:grid-cols-3")}
+        >
           {models.map((m) => (
             <div key={m.id} className="relative group">
               <ModelPill

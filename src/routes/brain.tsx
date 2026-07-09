@@ -55,8 +55,7 @@ function BrainPage() {
   }
 
   const firstName = brain.user_name.split(" ")[0];
-  const isEmpty =
-    !brain.summary && !brain.thinking_style && brain.memories.length === 0;
+  const isEmpty = !brain.summary && !brain.thinking_style && brain.memories.length === 0;
 
   return (
     <AppShell>
@@ -66,18 +65,25 @@ function BrainPage() {
         <div className="relative mx-auto max-w-6xl px-6 py-10">
           <div className="mt-2 grid items-center gap-10 lg:grid-cols-[1fr_1.1fr]">
             <div className="animate-fade-up order-2 lg:order-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-primary">Third brain</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-primary">
+                Third brain
+              </p>
               <h1 className="mt-2 font-display text-4xl font-bold tracking-tight md:text-5xl">
                 {firstName}&apos;s
                 <br />
                 <span className="text-gradient">living memory</span>
               </h1>
               <p className="mt-4 max-w-lg text-sm leading-relaxed text-muted-foreground">
-                Learned from every verdict you reject — fed back into the council so models match your taste.
+                Learned from every verdict you reject — fed back into the council so models match
+                your taste.
               </p>
 
               <div className="mt-6 grid grid-cols-3 gap-3">
-                <StatPill icon={<Activity className="size-3.5" />} label="Lessons" value={String(brain.lesson_count)} />
+                <StatPill
+                  icon={<Activity className="size-3.5" />}
+                  label="Lessons"
+                  value={String(brain.lesson_count)}
+                />
                 <StatPill icon={<Heart className="size-3.5" />} label="Prefers" value="—" />
                 <StatPill icon={<ThumbsDown className="size-3.5" />} label="Rejects" value="—" />
               </div>
@@ -86,7 +92,7 @@ function BrainPage() {
                 to="/lessons"
                 className="mt-6 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90"
               >
-                <Sparkles className="size-4" /> View disagreement lessons
+                <Sparkles className="size-4" /> View challenge lessons
               </Link>
             </div>
 
@@ -98,9 +104,12 @@ function BrainPage() {
           {isEmpty ? (
             <GlassCard className="mt-14 p-8 text-center">
               <p className="text-sm text-muted-foreground">
-                No brain profile yet. Disagree with a verdict in chat to start building your memory.
+                No brain profile yet. Challenge a verdict in chat to start building your memory.
               </p>
-              <Link to="/chat" className="mt-4 inline-block text-sm font-medium text-primary hover:underline">
+              <Link
+                to="/chat"
+                className="mt-4 inline-block text-sm font-medium text-primary hover:underline"
+              >
                 Go to chat →
               </Link>
             </GlassCard>
@@ -108,7 +117,9 @@ function BrainPage() {
             <div className="mt-14 space-y-8">
               <SkeletonReveal delayMs={400}>
                 <GlassCard glow className="p-6">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">Cognitive profile</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                    Cognitive profile
+                  </p>
                   <p className="mt-3 text-sm leading-relaxed">{brain.summary || "—"}</p>
                   {brain.thinking_style && (
                     <p className="mt-4 rounded-xl border border-sky-200/80 bg-sky-50/60 p-4 text-sm leading-relaxed">
@@ -181,13 +192,7 @@ function BrainPage() {
   );
 }
 
-function PreferencePanel({
-  title,
-  icon,
-}: {
-  title: string;
-  icon: React.ReactNode;
-}) {
+function PreferencePanel({ title, icon }: { title: string; icon: React.ReactNode }) {
   return (
     <GlassCard className="p-5">
       <div className="flex items-center gap-2 text-sm font-medium">
@@ -199,18 +204,12 @@ function PreferencePanel({
   );
 }
 
-function StatPill({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-}) {
+function StatPill({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
     <div className="rounded-xl border border-border bg-card/80 p-3 text-center shadow-sm backdrop-blur-sm">
-      <div className="mx-auto flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">{icon}</div>
+      <div className="mx-auto flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        {icon}
+      </div>
       <div className="mt-2 font-display text-xl font-bold">{value}</div>
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
     </div>

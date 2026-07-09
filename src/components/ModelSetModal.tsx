@@ -61,7 +61,10 @@ export function ModelSetModal({
     if (!showTemplateModal) return;
     const auth = authHeaders();
     if (!auth) return;
-    void api.templates.list(auth).then(setTemplateOptions).catch(() => setTemplateOptions([]));
+    void api.templates
+      .list(auth)
+      .then(setTemplateOptions)
+      .catch(() => setTemplateOptions([]));
   }, [showTemplateModal, authHeaders]);
 
   useEffect(() => {
@@ -172,7 +175,9 @@ export function ModelSetModal({
           >
             <div className="max-h-64 space-y-2 overflow-y-auto">
               {templateOptions.length === 0 ? (
-                <p className="py-4 text-center text-sm text-muted-foreground">No templates available.</p>
+                <p className="py-4 text-center text-sm text-muted-foreground">
+                  No templates available.
+                </p>
               ) : (
                 templateOptions.map((template) => (
                   <button
@@ -182,7 +187,9 @@ export function ModelSetModal({
                     className="flex w-full flex-col items-start rounded-xl border border-border bg-background px-4 py-3 text-left transition hover:border-primary/40 hover:bg-accent"
                   >
                     <span className="text-sm font-semibold">{template.title}</span>
-                    <span className="mt-1 text-sm text-muted-foreground">{template.description}</span>
+                    <span className="mt-1 text-sm text-muted-foreground">
+                      {template.description}
+                    </span>
                   </button>
                 ))
               )}
@@ -215,7 +222,8 @@ export function ModelSetModal({
 
         <div>
           <div className="mb-2 font-medium">
-            Council models <span className="text-muted-foreground font-normal">(up to {MAX_COUNCIL_MODELS})</span>
+            Council models{" "}
+            <span className="text-muted-foreground font-normal">(up to {MAX_COUNCIL_MODELS})</span>
           </div>
           <div className="flex gap-2">
             <input
@@ -279,7 +287,9 @@ export function ModelSetModal({
                   >
                     <div className="min-w-0">
                       <div className="font-medium">{r.name}</div>
-                      <div className="truncate text-xs text-muted-foreground">{r.openrouter_slug}</div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {r.openrouter_slug}
+                      </div>
                     </div>
                     <span className="shrink-0 text-xs text-primary">
                       {selected ? "Selected" : "Add"}
@@ -302,7 +312,8 @@ export function ModelSetModal({
                     key={id}
                     className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs"
                   >
-                    <span className="size-2 rounded-full" style={{ background: m.color }} /> {m.name}
+                    <span className="size-2 rounded-full" style={{ background: m.color }} />{" "}
+                    {m.name}
                     <button
                       type="button"
                       onClick={() => setPicked((p) => p.filter((x) => x !== id))}
@@ -352,7 +363,10 @@ export function ModelSetModal({
           )}
           {verdict && (
             <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1.5 text-sm">
-              <span className="size-2 rounded-full" style={{ background: modelById(verdict).color }} />
+              <span
+                className="size-2 rounded-full"
+                style={{ background: modelById(verdict).color }}
+              />
               <span className="font-medium">{modelById(verdict).name}</span>
             </div>
           )}
@@ -423,7 +437,10 @@ export function ModelSetModal({
         {error && <div className="text-sm text-destructive">{error}</div>}
 
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent">
+          <button
+            onClick={onClose}
+            className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent"
+          >
             Cancel
           </button>
           <button

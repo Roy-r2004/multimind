@@ -16,7 +16,7 @@ export const Route = createFileRoute("/lessons/")({
 
 function stanceLabel(stance: FacilitatorStance | null | undefined): string | null {
   if (stance === "agreed") return "AI agreed";
-  if (stance === "disagreed") return "AI disagreed";
+  if (stance === "disagreed") return "AI pushed back";
   if (stance === "partly_agreed") return "AI partly agreed";
   return null;
 }
@@ -83,7 +83,7 @@ function LessonsPage() {
           className="relative animate-fade-up"
           eyebrow="Learning"
           title="Verdict lessons"
-          description="Every disagreement becomes a detailed comparison — you vs the model — and feeds your brain."
+          description="Every challenge becomes a detailed comparison — you vs the model — and feeds your brain."
         />
 
         {loading ? (
@@ -96,9 +96,12 @@ function LessonsPage() {
           <GlassCard className="mt-8 p-10 text-center">
             <p className="text-sm text-muted-foreground">No lessons yet.</p>
             <p className="mt-2 text-sm text-muted-foreground">
-              Disagree with a verdict in chat to create your first lesson.
+              Challenge a verdict in chat to create your first lesson.
             </p>
-            <Link to="/chat" className="mt-4 inline-block text-sm font-medium text-primary hover:underline">
+            <Link
+              to="/chat"
+              className="mt-4 inline-block text-sm font-medium text-primary hover:underline"
+            >
               Go to chat →
             </Link>
           </GlassCard>
@@ -113,7 +116,7 @@ function LessonsPage() {
                       <Link to="/lessons/$id" params={{ id: lesson.id }} className="block p-5">
                         <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
                           <Scale className="size-3.5" />
-                          Disagreement lesson
+                          Challenge lesson
                           {label && (
                             <span
                               className={`rounded-full px-2 py-0.5 normal-case tracking-normal ${stanceClass(lesson.facilitator_stance)}`}
@@ -127,10 +130,15 @@ function LessonsPage() {
                             </span>
                           )}
                         </div>
-                        <h3 className="mt-2 text-lg font-semibold group-hover:text-primary">{lesson.title}</h3>
-                        <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{lesson.summary}</p>
+                        <h3 className="mt-2 text-lg font-semibold group-hover:text-primary">
+                          {lesson.title}
+                        </h3>
+                        <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                          {lesson.summary}
+                        </p>
                         <p className="mt-3 text-xs text-muted-foreground">
-                          {new Date(lesson.created_at).toLocaleDateString()} · Open for full detail →
+                          {new Date(lesson.created_at).toLocaleDateString()} · Open for full detail
+                          →
                         </p>
                       </Link>
 
@@ -168,12 +176,20 @@ function LessonsPage() {
           </div>
         )}
 
-        <Link to="/brain" className="relative mt-8 inline-block text-sm text-primary hover:underline">
+        <Link
+          to="/brain"
+          className="relative mt-8 inline-block text-sm text-primary hover:underline"
+        >
           See how lessons feed your brain →
         </Link>
       </div>
 
-      <Modal open={!!removeTarget} onClose={() => setRemoveTarget(null)} title="Delete lesson?" size="sm">
+      <Modal
+        open={!!removeTarget}
+        onClose={() => setRemoveTarget(null)}
+        title="Delete lesson?"
+        size="sm"
+      >
         <p className="text-sm text-muted-foreground">
           {removeTarget
             ? `"${removeTarget.title}" will be permanently removed.`

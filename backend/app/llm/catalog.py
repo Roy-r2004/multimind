@@ -46,6 +46,15 @@ MODEL_CATALOG: dict[str, ModelCatalogEntry] = {
         provider="openrouter",
         provider_model="google/gemini-2.5-pro",
     ),
+    "grok": ModelCatalogEntry(
+        id="grok",
+        name="Grok",
+        vendor="xAI",
+        color="oklch(0.42 0.04 260)",
+        blurb="xAI frontier model",
+        provider="openrouter",
+        provider_model="x-ai/grok-4",
+    ),
     "mistral": ModelCatalogEntry(
         id="mistral",
         name="Mistral Large",

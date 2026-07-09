@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -12,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError
+from app.core.logging import get_logger
 from app.db.models import (
     Chat,
     CostRecord,
@@ -39,6 +41,9 @@ from app.schemas.api import (
     TurnResponse,
     VerdictResponse,
 )
+
+logger = get_logger(__name__)
+CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
 
 
 class ChatService:
@@ -124,7 +129,7 @@ class ChatService:
             verdict_model=model_set.verdict_model,
             status=TurnStatus.PENDING,
             custom_instructions=data.custom_instructions or model_set.custom_instructions,
-            decision_insurance_enabled=True,
+            decision_insurance_enabled=False,
         )
         db.add(turn)
 
@@ -240,6 +245,9 @@ class ChatService:
         user_brain_context = await brain_service.get_context_for_user(
             db, auth.user.id, auth.org_id, auth.user.full_name
         )
+        previous_verdict_context = await self._latest_previous_verdict_context(
+            db, chat.id, turn.id, turn.created_at
+        )
 
         ctx = TurnContext(
             turn_id=turn.id,
@@ -253,7 +261,7 @@ class ChatService:
             model_set_name=model_set.name,
             custom_instructions=turn.custom_instructions,
             user_brain_context=user_brain_context or None,
-            decision_insurance_enabled=True,
+            previous_verdict_context=previous_verdict_context,
             skip_answer_seed=True,
         )
 
@@ -312,7 +320,10 @@ class ChatService:
         await self.get_chat(db, auth, chat_id)
         result = await db.execute(
             select(Turn)
-            .where(Turn.chat_id == chat_id)
+            .where(
+                Turn.chat_id == chat_id,
+                (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
+            )
             .options(
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict),
@@ -322,6 +333,60 @@ class ChatService:
             .order_by(Turn.created_at.asc())
         )
         return [self._turn_response(t) for t in result.scalars().all()]
+
+    async def _latest_previous_verdict_context(
+        self,
+        db: AsyncSession,
+        chat_id: str,
+        current_turn_id: str,
+        current_turn_created_at: datetime | None,
+    ) -> str | None:
+        filters = [
+            Turn.chat_id == chat_id,
+            Turn.id != current_turn_id,
+            (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
+        ]
+        if current_turn_created_at is not None:
+            filters.append(Turn.created_at < current_turn_created_at)
+
+        result = await db.execute(
+            select(Turn, Verdict)
+            .join(Verdict, Verdict.turn_id == Turn.id)
+            .where(*filters)
+            .order_by(Turn.created_at.desc())
+            .limit(1)
+        )
+        row = result.first()
+        if row is None:
+            logger.debug(
+                "previous_verdict_context_lookup",
+                previous_verdict_lookup_chat_id=chat_id,
+                previous_verdict_lookup_current_turn_id=current_turn_id,
+                previous_verdict_context_found=False,
+                previous_verdict_context_chars=0,
+                previous_verdict_turn_id=None,
+            )
+            return None
+
+        previous_turn, verdict = row
+        parts = [
+            f"Previous user question:\n{previous_turn.user_message.strip()}",
+            f"Previous final verdict:\n{verdict.text.strip()}",
+        ]
+        if verdict.reason:
+            parts.append(f"Previous verdict rationale:\n{verdict.reason.strip()}")
+
+        context = "\n\n".join(part for part in parts if part.strip())
+        context = context[:6000] if context else None
+        logger.debug(
+            "previous_verdict_context_lookup",
+            previous_verdict_lookup_chat_id=chat_id,
+            previous_verdict_lookup_current_turn_id=current_turn_id,
+            previous_verdict_context_found=context is not None,
+            previous_verdict_context_chars=len(context or ""),
+            previous_verdict_turn_id=previous_turn.id,
+        )
+        return context
 
     def _chat_response(self, chat: Chat) -> ChatResponse:
         return ChatResponse(

@@ -23,8 +23,8 @@ SYSTEM_MODEL_SETS = [
     {
         "slug": "balanced",
         "name": "Balanced Set",
-        "description": "Great default for everyday questions.",
-        "models": ["gpt-4.1", "claude", "gemini"],
+        "description": "Great default five-model council for everyday questions.",
+        "models": ["gpt-4.1", "claude", "gemini", "grok", "deepseek"],
         "verdict_model": "gpt-4.1",
         "strategy": Strategy.SYNTHESIZE,
         "best_for": "General questions, everyday use",
@@ -33,7 +33,7 @@ SYSTEM_MODEL_SETS = [
         "slug": "coding",
         "name": "Coding Set",
         "description": "Tuned for code review and debugging.",
-        "models": ["gpt-4.1", "deepseek", "claude"],
+        "models": ["gpt-4.1", "claude", "gemini", "grok", "deepseek"],
         "verdict_model": "claude",
         "strategy": Strategy.PICK_BEST,
         "best_for": "Coding, debugging, architecture",
@@ -42,7 +42,7 @@ SYSTEM_MODEL_SETS = [
         "slug": "business",
         "name": "Business Set",
         "description": "Strategic, concise, action-oriented.",
-        "models": ["gpt-4.1", "gemini", "mistral"],
+        "models": ["gpt-4.1", "claude", "gemini", "grok", "deepseek"],
         "verdict_model": "gpt-4.1",
         "strategy": Strategy.RECONCILE,
         "best_for": "Strategy, startups, business decisions",
@@ -51,7 +51,7 @@ SYSTEM_MODEL_SETS = [
         "slug": "research",
         "name": "Research Set",
         "description": "Deep, cited, careful reasoning.",
-        "models": ["claude", "qwen", "gpt-4.1"],
+        "models": ["gpt-4.1", "claude", "gemini", "grok", "deepseek"],
         "verdict_model": "claude",
         "strategy": Strategy.DEBATE,
         "best_for": "Research, analysis, fact-checking",
@@ -153,7 +153,15 @@ async def seed() -> None:
     async with AsyncSessionLocal() as db:
         for data in SYSTEM_MODEL_SETS:
             exists = await db.execute(select(ModelSet).where(ModelSet.slug == data["slug"]))
-            if exists.scalar_one_or_none():
+            model_set = exists.scalar_one_or_none()
+            if model_set:
+                model_set.name = data["name"]
+                model_set.description = data["description"]
+                model_set.models = data["models"]
+                model_set.verdict_model = data["verdict_model"]
+                model_set.strategy = data["strategy"]
+                model_set.best_for = data["best_for"]
+                model_set.is_system = True
                 continue
             db.add(ModelSet(**data, is_system=True))
 

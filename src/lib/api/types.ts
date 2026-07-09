@@ -69,6 +69,11 @@ export type ApiProjectDetail = ApiProject & {
 export type ApiDiscussMessage = {
   role: string;
   content: string;
+  kind?: string | null;
+  model_id?: string | null;
+  model_name?: string | null;
+  confidence?: number | null;
+  turn_id?: string | null;
 };
 
 export type ApiDiscussResponse = {
