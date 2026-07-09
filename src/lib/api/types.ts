@@ -208,6 +208,14 @@ export type ApiTemplate = {
   is_system?: boolean;
 };
 
+export type ApiPromptBuilderImproveResponse = {
+  improved_prompt: string;
+};
+
+export type ApiPromptBuilderImproveRequest = {
+  raw_prompt: string;
+};
+
 export type ApiSession = {
   user: { id: string; email: string; full_name: string; avatar_url?: string | null };
   organization: {

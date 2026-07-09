@@ -232,6 +232,14 @@ class TurnCreateRequest(BaseModel):
     custom_instructions: str | None = None
 
 
+class PromptBuilderImproveRequest(BaseModel):
+    raw_prompt: str | None = Field(default=None, max_length=4000)
+
+
+class PromptBuilderImproveResponse(BaseModel):
+    improved_prompt: str
+
+
 class TurnResponse(BaseModel):
     id: str
     chat_id: str
