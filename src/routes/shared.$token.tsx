@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Copy, ExternalLink, Gavel, Loader2, ShieldCheck } from "lucide-react";
+import { Copy, ExternalLink, Gavel, Loader2 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { api } from "@/lib/api";
@@ -121,18 +121,6 @@ function SharedPage() {
                 </div>
                 <div className="mt-3">
                   <MessageContent>{turn.verdict.text}</MessageContent>
-                </div>
-              </div>
-            )}
-
-            {turn.decision_insurance && (
-              <div className="rounded-2xl border border-amber-500/20 bg-amber-50/70 p-5 dark:bg-amber-950/10">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="size-4 text-amber-600" />
-                  <div className="font-medium">Decision Insurance</div>
-                </div>
-                <div className="mt-3">
-                  <MessageContent compact>{turn.decision_insurance.mitigation_plan}</MessageContent>
                 </div>
               </div>
             )}

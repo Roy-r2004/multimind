@@ -14,12 +14,12 @@ backend/
 │   ├── api/v1/              # REST endpoints
 │   ├── services/            # Business logic layer
 │   ├── llm/                 # Orchestrator + providers
-│   │   ├── orchestrator.py  # Parallel model calls → verdict → insurance
+│   │   ├── orchestrator.py  # Parallel model calls → verdict
 │   │   ├── prompt_engine.py # Jinja2 template renderer
 │   │   ├── providers.py     # OpenRouter gateway adapter
 │   │   └── catalog.py       # Model registry + pricing
 │   └── prompts/             # Jinja2 templates (version-controlled)
-│       ├── system/          # base, model_answer, verdict, decision_insurance
+│       ├── system/          # base, model_answer, verdict, legacy decision_insurance
 │       └── partials/        # strategy_instructions, model_responses
 └── scripts/seed.py          # System model sets + demo user
 ```
@@ -90,7 +90,7 @@ All LLM prompts are rendered from templates in `app/prompts/`:
 - `system/model_answer.j2` — independent model responder
 - `system/verdict.j2` — strategy-aware synthesis (uses partials)
 - `partials/strategy_instructions.j2` — Reconcile / Synthesize / Rank / Pick Best / Debate
-- `system/decision_insurance.j2` — structured risk analysis
+- `system/decision_insurance.j2` — legacy structured risk analysis template, currently unused
 
 Edit templates and restart — no code changes required for prompt tuning.
 
@@ -100,8 +100,7 @@ Edit templates and restart — no code changes required for prompt tuning.
 2. Orchestrator runs N models **in parallel** via asyncio
 3. Each answer persisted + cost recorded
 4. Verdict model synthesizes using Jinja strategy prompt
-5. Optional Decision Insurance pass
-6. Full turn returned to client
+5. Full turn returned to client
 
 ## Frontend Integration
 

@@ -212,7 +212,7 @@ class DecisionInsuranceResponse(BaseModel):
 class TurnCreateRequest(BaseModel):
     user_message: str = Field(min_length=1)
     model_set_id: str
-    decision_insurance_enabled: bool = True
+    decision_insurance_enabled: bool = False
     custom_instructions: str | None = None
 
 

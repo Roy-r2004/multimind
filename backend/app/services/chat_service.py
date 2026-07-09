@@ -124,7 +124,7 @@ class ChatService:
             verdict_model=model_set.verdict_model,
             status=TurnStatus.PENDING,
             custom_instructions=data.custom_instructions or model_set.custom_instructions,
-            decision_insurance_enabled=True,
+            decision_insurance_enabled=False,
         )
         db.add(turn)
 
@@ -253,7 +253,6 @@ class ChatService:
             model_set_name=model_set.name,
             custom_instructions=turn.custom_instructions,
             user_brain_context=user_brain_context or None,
-            decision_insurance_enabled=True,
             skip_answer_seed=True,
         )
 

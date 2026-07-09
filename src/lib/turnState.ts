@@ -2,21 +2,11 @@
 
 import type { ApiTurn } from "@/lib/api/types";
 
-function coerceText(value: unknown): string {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        const s = String(item).trim();
-        if (!s) return "";
-        return s.startsWith("•") || s.startsWith("-") || s.startsWith("*") ? s : `• ${s}`;
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
-  return String(value ?? "");
-}
-
-export function applyStreamEvent(turn: ApiTurn, event: string, data: Record<string, unknown>): ApiTurn {
+export function applyStreamEvent(
+  turn: ApiTurn,
+  event: string,
+  data: Record<string, unknown>,
+): ApiTurn {
   if (event === "model_answer_started") {
     return {
       ...turn,
@@ -68,21 +58,6 @@ export function applyStreamEvent(turn: ApiTurn, event: string, data: Record<stri
       },
     };
   }
-  if (event === "decision_insurance_completed") {
-    return {
-      ...turn,
-      decision_insurance: {
-        best_case: coerceText(data.best_case),
-        worst_case: coerceText(data.worst_case),
-        risk_level: coerceText(data.risk_level),
-        potential_loss: coerceText(data.potential_loss),
-        mitigation_plan: coerceText(data.mitigation_plan),
-        tokens_input: Number(data.tokens_input ?? 0),
-        tokens_output: Number(data.tokens_output ?? 0),
-        cost_usd: Number(data.cost_usd ?? 0),
-      },
-    };
-  }
   return turn;
 }
 
@@ -96,7 +71,6 @@ export function mergeTurnFromApi(local: ApiTurn, remote: ApiTurn): ApiTurn {
       ...remote,
       model_answers: localAnswers,
       verdict: remote.verdict ?? local.verdict,
-      decision_insurance: remote.decision_insurance ?? local.decision_insurance,
     };
   }
 
@@ -118,7 +92,6 @@ export function mergeTurnFromApi(local: ApiTurn, remote: ApiTurn): ApiTurn {
     ...remote,
     model_answers: mergedAnswers,
     verdict: remote.verdict ?? local.verdict,
-    decision_insurance: remote.decision_insurance ?? local.decision_insurance,
   };
 }
 

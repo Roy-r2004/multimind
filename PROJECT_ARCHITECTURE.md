@@ -160,13 +160,13 @@ Verdict flow:
 - The verdict prompt is rendered by `PromptEngine.verdict_prompt` using `backend/app/prompts/system/verdict.j2` and partials.
 - The verdict is stored in the `verdicts` table and returned in `TurnResponse.verdict`.
 
-Decision insurance flow:
+Decision insurance legacy data:
 
-- `TurnCreateRequest` has `decision_insurance_enabled: bool = True`.
-- `Turn.decision_insurance_enabled` exists in the database.
-- However, `ChatService.start_turn` currently sets `decision_insurance_enabled=True` unconditionally, and `execute_turn_stream` passes `decision_insurance_enabled=True`.
-- `TurnOrchestrator.run` currently runs decision insurance after every successful verdict when `result.verdict` exists. It does not check `ctx.decision_insurance_enabled`.
-- The UI renders decision insurance in both `src/routes/chat.tsx` and `src/routes/shared.$token.tsx`.
+- Decision Insurance is currently disabled as an active product flow.
+- `TurnCreateRequest.decision_insurance_enabled`, `Turn.decision_insurance_enabled`, `DecisionInsurance`, and `UsageKind.INSURANCE` remain for backward compatibility with existing stored data.
+- `ChatService.start_turn` writes new turns with `decision_insurance_enabled=False`.
+- `TurnOrchestrator.run` now stops after model answers and the final verdict; it does not call the decision insurance prompt or create insurance rows/cost records.
+- Normal and shared chat UIs no longer render a Decision Insurance section.
 
 Disagreement/lesson flow:
 
@@ -227,7 +227,7 @@ Dynamic models:
 Response processing:
 
 - Model answer prompts may include a `CONFIDENCE: N` marker. `LLMProvider.parse_confidence` strips it and stores confidence.
-- Verdict, decision insurance, lesson, and brain update calls expect JSON and parse it with `parse_json_response`.
+- Verdict, lesson, and brain update calls expect JSON and parse it with `parse_json_response`.
 - Costs are resolved from OpenRouter reported cost when present or catalog pricing estimates otherwise.
 
 Verdict logic:
@@ -260,7 +260,7 @@ Chat store:
 
 Turn state:
 
-- The backend persists turns, model answers, verdicts, insurance, lessons, and costs.
+- The backend persists turns, model answers, verdicts, lessons, and costs. Legacy insurance rows may still exist and serialize safely.
 - The frontend also keeps an in-memory running-turn cache in `src/lib/turnRunner.ts`.
 - `resumeRunningTurns` restarts streaming/polling for pending or running turns when the route reloads.
 
@@ -324,15 +324,14 @@ Send each new user question together with the previous verdict:
 - `backend/app/prompts/system/model_answer.j2` and `backend/app/prompts/system/verdict.j2`: likely need explicit prior-verdict wording.
 - `backend/app/llm/orchestrator.py`: `TurnContext` may need prior verdict/context fields.
 
-Remove decision insurance:
+Decision insurance has already been disabled:
 
-- `backend/app/llm/orchestrator.py`: remove or disable Phase 3.
-- `backend/app/llm/prompt_engine.py`: remove `decision_insurance_prompt` only if no longer used.
-- `backend/app/prompts/system/decision_insurance.j2`: can become unused.
-- `backend/app/db/models.py`: `DecisionInsurance`, `Turn.decision_insurance_enabled`, and `UsageKind.INSURANCE` are schema-level items. Removing them fully needs migrations; hiding/disabling is lower risk.
-- `backend/app/schemas/api.py` and `src/lib/api/types.ts`: remove response/request fields only if making an API-breaking cleanup.
-- `src/routes/chat.tsx` and `src/routes/shared.$token.tsx`: remove UI render/copy.
-- `backend/app/services/chat_service.py`: currently forces insurance enabled.
+- `backend/app/llm/orchestrator.py`: active Phase 3 was removed.
+- `backend/app/llm/prompt_engine.py` and `backend/app/prompts/system/decision_insurance.j2`: prompt code/template remain unused legacy assets.
+- `backend/app/db/models.py`: `DecisionInsurance`, `Turn.decision_insurance_enabled`, and `UsageKind.INSURANCE` remain schema-level legacy items. Removing them fully needs migrations.
+- `backend/app/schemas/api.py` and `src/lib/api/types.ts`: response/request fields remain optional/backward-compatible.
+- `src/routes/chat.tsx` and `src/routes/shared.$token.tsx`: no longer render insurance sections.
+- `backend/app/services/chat_service.py`: no longer forces insurance enabled.
 
 Rename "Disagree" to "Challenge":
 
@@ -378,7 +377,7 @@ Persona builder improves/sharpens Chafic day by day from daily usage, challenges
 
 - `src/routeTree.gen.ts` is generated and should not be manually edited.
 - The worktree is currently broadly modified before this document was added, so existing changes should be treated carefully.
-- Decision insurance has duplicated control surfaces but is effectively forced on. Removing it safely requires choosing between a UI-only disable, orchestration disable, API cleanup, or schema migration.
+- Decision insurance is disabled in orchestration and UI, but legacy ORM/schema/API references remain. A future full cleanup would require migration planning and API compatibility decisions.
 - The frontend council limit and backend model-set schema should stay aligned.
 - The app supports dynamic OpenRouter models in addition to built-ins.
 - Challenge flow is currently a lesson-generation path, not a normal multi-model turn. Making it use the full council will require a product decision: should Challenge create a new chat turn, a linked challenge turn, or a lesson draft after a challenge turn completes?

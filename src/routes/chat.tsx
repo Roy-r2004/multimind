@@ -9,7 +9,6 @@ import {
   AlertCircle,
   Info,
   Share2,
-  ShieldCheck,
   Sparkles,
   Plus,
   Pencil,
@@ -531,8 +530,7 @@ export function ChatPage() {
               </div>
             </div>
             <p className="mt-2 text-center text-[11px] text-muted-foreground">
-              MultiAI may produce inaccurate information. Decision Insurance runs automatically on
-              every turn.
+              MultiAI may produce inaccurate information. Review important outputs before acting.
             </p>
           </div>
         </div>
@@ -823,62 +821,6 @@ function AiTurn({
           onLessonCreated(lesson.id);
         }}
       />
-
-      {turn.decision_insurance && (
-        <GlassCard className="border-amber-500/20 p-5">
-          <div className="flex flex-wrap items-center gap-2 text-amber-600 dark:text-amber-400">
-            <ShieldCheck className="size-4" />
-            <span className="font-medium">Decision Insurance</span>
-            {turn.decision_insurance.risk_level && (
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium">
-                {turn.decision_insurance.risk_level} risk
-              </span>
-            )}
-          </div>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            {turn.decision_insurance.best_case && (
-              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3.5">
-                <p className="text-xs font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
-                  Best case
-                </p>
-                <div className="mt-2">
-                  <MessageContent compact>{turn.decision_insurance.best_case}</MessageContent>
-                </div>
-              </div>
-            )}
-            {turn.decision_insurance.worst_case && (
-              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-3.5">
-                <p className="text-xs font-medium uppercase tracking-wide text-rose-700 dark:text-rose-400">
-                  Worst case
-                </p>
-                <div className="mt-2">
-                  <MessageContent compact>{turn.decision_insurance.worst_case}</MessageContent>
-                </div>
-              </div>
-            )}
-          </div>
-          {turn.decision_insurance.potential_loss && (
-            <div className="mt-4 rounded-xl border border-border/80 bg-muted/20 p-3.5">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Potential loss
-              </p>
-              <div className="mt-2">
-                <MessageContent compact>{turn.decision_insurance.potential_loss}</MessageContent>
-              </div>
-            </div>
-          )}
-          {turn.decision_insurance.mitigation_plan && (
-            <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5">
-              <p className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
-                Mitigation plan
-              </p>
-              <div className="mt-2">
-                <MessageContent compact>{turn.decision_insurance.mitigation_plan}</MessageContent>
-              </div>
-            </div>
-          )}
-        </GlassCard>
-      )}
     </div>
   );
 }
