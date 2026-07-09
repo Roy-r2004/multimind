@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -32,15 +33,39 @@ const AuthContext = createContext<AuthState | null>(null);
 const readStorage = (key: string) =>
   typeof window !== "undefined" ? localStorage.getItem(key) : null;
 
+/** Read org_id embedded in JWT when localStorage org is missing or stale. */
+function orgIdFromToken(token: string): string | null {
+  try {
+    const segment = token.split(".")[1];
+    if (!segment) return null;
+    const padded = segment.replace(/-/g, "+").replace(/_/g, "/");
+    const json = JSON.parse(atob(padded)) as { org_id?: unknown };
+    return typeof json.org_id === "string" ? json.org_id : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveOrgId(storedOrg: string | null, token: string | null): string | null {
+  if (storedOrg) return storedOrg;
+  if (token) return orgIdFromToken(token);
+  return null;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => readStorage(TOKEN_KEY));
-  const [orgId, setOrgId] = useState<string | null>(() => readStorage(ORG_KEY));
+  const [orgId, setOrgId] = useState<string | null>(() =>
+    resolveOrgId(readStorage(ORG_KEY), readStorage(TOKEN_KEY)),
+  );
   const [session, setSession] = useState<ApiSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const refreshGenRef = useRef(0);
 
   const authHeaders = useCallback((): { token: string; orgId: string } | null => {
-    if (!token || !orgId) return null;
-    return { token, orgId };
+    if (!token) return null;
+    const resolvedOrg = orgId ?? orgIdFromToken(token);
+    if (!resolvedOrg) return null;
+    return { token, orgId: resolvedOrg };
   }, [token, orgId]);
 
   const refreshSession = useCallback(async () => {
@@ -50,19 +75,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(false);
       return;
     }
+
+    const gen = ++refreshGenRef.current;
+
     try {
       const s = await api.auth.session(auth);
+      if (gen !== refreshGenRef.current) return;
       setSession(s);
       setOrgId(s.organization.id);
       localStorage.setItem(ORG_KEY, s.organization.id);
     } catch {
+      if (gen !== refreshGenRef.current) return;
       setToken(null);
       setOrgId(null);
       setSession(null);
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(ORG_KEY);
     } finally {
-      setIsLoading(false);
+      if (gen === refreshGenRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [authHeaders]);
 
@@ -71,15 +103,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refreshSession]);
 
   const signIn = useCallback(async (email: string, password: string) => {
+    refreshGenRef.current += 1;
     const result = await api.auth.signIn({ email, password });
+    const tokenOrg = orgIdFromToken(result.access_token);
+
     let sessionData: ApiSession;
     if (result.user && result.organization) {
       sessionData = { user: result.user, organization: result.organization };
     } else {
-      // Old API shape — keep one extra round-trip until backend redeploys.
-      const tempOrgId = orgId ?? "";
-      sessionData = await api.auth.session({ token: result.access_token, orgId: tempOrgId });
+      const sessionOrg = tokenOrg ?? orgId ?? "";
+      sessionData = await api.auth.session({
+        token: result.access_token,
+        orgId: sessionOrg,
+      });
     }
+
     setToken(result.access_token);
     setOrgId(sessionData.organization.id);
     setSession(sessionData);
@@ -90,6 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [orgId]);
 
   const signOut = useCallback(() => {
+    refreshGenRef.current += 1;
     setToken(null);
     setOrgId(null);
     setSession(null);
