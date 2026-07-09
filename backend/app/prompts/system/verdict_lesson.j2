@@ -34,12 +34,16 @@ Be specific to this exchange. Quote or paraphrase concrete claims. Avoid generic
 {% if discussion_messages %}
 ### Challenge Discussion Transcript
 {% for m in discussion_messages %}
-{% if m.kind == "challenge_model_answer" %}
-**Council model — {{ m.model_name }}**: {{ m.content }}
-{% elif m.kind == "challenge_synthesis" %}
-**Council synthesis**: {{ m.content }}
+{% set kind = m.kind | default("") %}
+{% set role = m.role | default("unknown") %}
+{% set content = m.content | default("") %}
+{% set model_name = m.model_name | default("Council model") %}
+{% if kind == "challenge_model_answer" %}
+**Council model — {{ model_name }}**: {{ content }}
+{% elif kind == "challenge_synthesis" %}
+**Council synthesis**: {{ content }}
 {% else %}
-**{{ m.role }}**: {{ m.content }}
+**{{ role }}**: {{ content }}
 {% endif %}
 {% endfor %}
 Use the transcript to refine understanding of the USER's position and where the challenge council agreed or pushed back — but the durable lesson must still center the USER's taught preference.

@@ -12,14 +12,18 @@ A verdict challenge between {{ user_name }} and the AI council just concluded. E
 
 ### Full discussion transcript
 {% for m in messages %}
-{% if m.kind == "challenge_model_answer" %}
-**Council model — {{ m.model_name }}**: {{ m.content }}
-{% elif m.kind == "challenge_synthesis" %}
-**Council synthesis**: {{ m.content }}
-{% elif m.role == "assistant" or m.role == "Chafic" %}
-**Chafic (facilitator)**: {{ m.content }}
+{% set kind = m.kind | default("") %}
+{% set role = m.role | default("") %}
+{% set content = m.content | default("") %}
+{% set model_name = m.model_name | default("Council model") %}
+{% if kind == "challenge_model_answer" %}
+**Council model — {{ model_name }}**: {{ content }}
+{% elif kind == "challenge_synthesis" %}
+**Council synthesis**: {{ content }}
+{% elif role == "assistant" or role == "Chafic" %}
+**Chafic (facilitator)**: {{ content }}
 {% else %}
-**{{ user_name }} (user)**: {{ m.content }}
+**{{ user_name }} (user)**: {{ content }}
 {% endif %}
 {% endfor %}
 
