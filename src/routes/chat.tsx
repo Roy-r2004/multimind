@@ -715,11 +715,13 @@ function AiTurn({
 }) {
   const { session } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
+  const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
   const scrolledToVerdictRef = useRef(false);
 
   const topModelId = turn.verdict ? inferTopModelId(turn, set.models, modelById) : null;
   const judgeModel = turn.verdict ? modelById(turn.verdict.model_id) : null;
+  const canCollapseAnswers = Boolean(turn.verdict);
 
   useEffect(() => {
     if (!turn.verdict || scrolledToVerdictRef.current) return;
@@ -737,58 +739,81 @@ function AiTurn({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        {set.models.map((id) => {
-          const m = modelById(id);
-          const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
-          const status = a?.status ?? "pending";
-          const failed = status === "failed";
-          const inProgress = status === "pending" || status === "running";
-          const isTopPick = topModelId === id;
-          return (
-            <GlassCard
-              key={id}
-              className={cn(
-                "p-4",
-                isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
-              )}
-            >
-              <div className="flex items-center gap-2 text-sm">
-                <span
-                  className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
-                  style={{ color: m.color, background: m.color }}
-                />
-                <span className="font-medium">{m.name}</span>
-                {isTopPick && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
-                    <Trophy className="size-3" />
-                    Top pick
-                  </span>
+      {canCollapseAnswers && (
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => setAnswersCollapsed((value) => !value)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            aria-expanded={!answersCollapsed}
+          >
+            <ChevronDown
+              className={cn("size-3.5 transition-transform", answersCollapsed && "-rotate-90")}
+            />
+            {answersCollapsed ? "Show AI council answers" : "Hide AI council answers"}
+          </button>
+          {answersCollapsed && (
+            <span className="text-xs text-muted-foreground">
+              {set.models.length} answers hidden
+            </span>
+          )}
+        </div>
+      )}
+
+      {!answersCollapsed && (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {set.models.map((id) => {
+            const m = modelById(id);
+            const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
+            const status = a?.status ?? "pending";
+            const failed = status === "failed";
+            const inProgress = status === "pending" || status === "running";
+            const isTopPick = topModelId === id;
+            return (
+              <GlassCard
+                key={id}
+                className={cn(
+                  "p-4",
+                  isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
                 )}
-                {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
-                {!inProgress && a?.confidence != null && (
-                  <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <span
+                    className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
+                    style={{ color: m.color, background: m.color }}
+                  />
+                  <span className="font-medium">{m.name}</span>
+                  {isTopPick && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                      <Trophy className="size-3" />
+                      Top pick
+                    </span>
+                  )}
+                  {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
+                  {!inProgress && a?.confidence != null && (
+                    <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
+                  )}
+                </div>
+                {failed ? (
+                  <p className="mt-3 text-xs text-destructive">
+                    <AlertCircle className="mr-1 inline size-3.5" />
+                    {a?.error_message ?? "Failed"}
+                  </p>
+                ) : inProgress ? (
+                  <div className="mt-3 space-y-2">
+                    <div className="h-2 animate-pulse rounded bg-muted" />
+                    <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+                  </div>
+                ) : (
+                  <div className="mt-3">
+                    <MessageContent compact>{a?.text ?? ""}</MessageContent>
+                  </div>
                 )}
-              </div>
-              {failed ? (
-                <p className="mt-3 text-xs text-destructive">
-                  <AlertCircle className="mr-1 inline size-3.5" />
-                  {a?.error_message ?? "Failed"}
-                </p>
-              ) : inProgress ? (
-                <div className="mt-3 space-y-2">
-                  <div className="h-2 animate-pulse rounded bg-muted" />
-                  <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
-                </div>
-              ) : (
-                <div className="mt-3">
-                  <MessageContent compact>{a?.text ?? ""}</MessageContent>
-                </div>
-              )}
-            </GlassCard>
-          );
-        })}
-      </div>
+              </GlassCard>
+            );
+          })}
+        </div>
+      )}
 
       {turn.verdict && (
         <div ref={verdictRef} className="scroll-mt-24">
