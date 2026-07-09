@@ -1,6 +1,7 @@
 """Project, model set, template, and cost services."""
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
@@ -11,11 +12,14 @@ from app.core.exceptions import ForbiddenError, NotFoundError
 from app.db.models import Chat, CostRecord, ModelSet, Project, Strategy, Template
 from app.schemas.api import (
     CostSummaryResponse,
+    ChatResponse,
     ModelSetCreateRequest,
     ModelSetResponse,
     ModelSetUpdateRequest,
     ProjectCreateRequest,
+    ProjectDetailResponse,
     ProjectResponse,
+    ProjectUpdateRequest,
     TemplateCreateRequest,
     TemplateResponse,
 )
@@ -67,6 +71,48 @@ class ProjectService:
         if project is None:
             raise NotFoundError("Project", project_id)
         return project
+
+    async def get_detail(
+        self, db: AsyncSession, auth: AuthContext, project_id: UUID
+    ) -> ProjectDetailResponse:
+        project = await self.get(db, auth, project_id)
+        result = await db.execute(
+            select(Chat)
+            .where(Chat.project_id == project.id, Chat.org_id == auth.org_id)
+            .order_by(Chat.updated_at.desc())
+        )
+        chats = result.scalars().all()
+        return ProjectDetailResponse(
+            id=project.id,
+            name=project.name,
+            description=project.description,
+            chat_count=len(chats),
+            updated_at=project.updated_at,
+            chats=[
+                ChatResponse(
+                    id=c.id,
+                    title=c.title,
+                    project_id=c.project_id,
+                    updated_at=c.updated_at,
+                )
+                for c in chats
+            ],
+        )
+
+    async def update(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        project_id: UUID,
+        data: ProjectUpdateRequest,
+    ) -> ProjectDetailResponse:
+        project = await self.get(db, auth, project_id)
+        if data.name is not None:
+            project.name = data.name.strip()
+        if data.description is not None:
+            project.description = data.description.strip() or None
+        await db.flush()
+        return await self.get_detail(db, auth, project_id)
 
     async def delete(self, db: AsyncSession, auth: AuthContext, project_id: str) -> None:
         project = await self.get(db, auth, project_id)

@@ -109,8 +109,8 @@ async def ensure_user(
         db.add(user)
         await db.flush()
     else:
+        # Don't re-hash on every boot — bcrypt is intentionally slow and delays cold starts.
         user.full_name = full_name
-        user.hashed_password = hash_password(password)
         user.is_active = True
     return user
 

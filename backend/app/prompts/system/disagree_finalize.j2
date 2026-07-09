@@ -1,0 +1,33 @@
+{# Extract disagreement fields and lesson context from a discussion transcript #}
+{% include "system/base.j2" %}
+
+## Task
+A disagreement discussion between {{ user_name }} and Chafic (facilitator) just concluded. Extract structured fields for building a comparison lesson.
+
+### Original Question
+{{ user_message }}
+
+### AI Verdict ({{ strategy }}) — {{ verdict_model_name }}
+{{ verdict_text }}
+
+### Full discussion transcript
+{% for m in messages %}
+{% if m.role == "assistant" or m.role == "Chafic" %}
+**Chafic (facilitator)**: {{ m.content }}
+{% else %}
+**{{ user_name }} (user)**: {{ m.content }}
+{% endif %}
+{% endfor %}
+
+## Critical rules
+1. **user_position** MUST capture the USER's taught lesson / preferred stance — even if the facilitator disagreed with them. Never replace the user's position with the facilitator's counterargument.
+2. **facilitator_stance** is whether the discussion AI (Chafic/facilitator) ultimately agreed with the USER (not with the original verdict model).
+
+## Output (strict JSON only, no markdown fences)
+{
+  "disagreement_reason": "<why the user disagreed, synthesized from the discussion>",
+  "user_position": "<the USER's refined position / the lesson they want remembered — always the user's view>",
+  "facilitator_stance": "<one of: agreed, disagreed, partly_agreed>",
+  "outcome": "<one of: user_convinced, chafic_convinced, verdict_stands, synthesis>",
+  "outcome_summary": "<1-2 sentences on what was resolved, including whether the facilitator ultimately agreed or disagreed with the user>"
+}

@@ -7,9 +7,8 @@ import { useModels } from "@/lib/models";
 import { ModelPill } from "@/components/cinematic/PageChrome";
 import { cn } from "@/lib/utils";
 
-function fmtRate(n: number) {
-  if (n <= 0) return "—";
-  return `$${n.toFixed(4)}/1K`;
+function fmtRate(value: number): string {
+  return `$${value.toFixed(value >= 0.01 ? 3 : 5)}/1K`;
 }
 
 export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }) {
@@ -153,7 +152,6 @@ export function OpenRouterModelSearch({ compact = false }: { compact?: boolean }
                 name={m.name}
                 vendor={m.vendor}
                 color={m.color}
-                pricing={m.pricing ?? undefined}
                 subtitle={m.openrouter_slug ?? undefined}
               />
               {m.is_custom && (

@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Heart, Loader2, ThumbsDown, Zap, Activity, Sparkles } from "lucide-react";
+import { Loader2, Heart, ThumbsDown, Zap, Activity, Sparkles } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { BrainVisualization } from "@/components/cinematic/BrainVisualization";
 import { GlassCard } from "@/components/cinematic/PageChrome";
@@ -56,11 +56,7 @@ function BrainPage() {
 
   const firstName = brain.user_name.split(" ")[0];
   const isEmpty =
-    !brain.summary &&
-    !brain.thinking_style &&
-    brain.likes.length === 0 &&
-    brain.dislikes.length === 0 &&
-    brain.memories.length === 0;
+    !brain.summary && !brain.thinking_style && brain.memories.length === 0;
 
   return (
     <AppShell>
@@ -82,12 +78,8 @@ function BrainPage() {
 
               <div className="mt-6 grid grid-cols-3 gap-3">
                 <StatPill icon={<Activity className="size-3.5" />} label="Lessons" value={String(brain.lesson_count)} />
-                <StatPill icon={<Heart className="size-3.5" />} label="Prefers" value={String(brain.likes.length)} />
-                <StatPill
-                  icon={<ThumbsDown className="size-3.5" />}
-                  label="Rejects"
-                  value={String(brain.dislikes.length)}
-                />
+                <StatPill icon={<Heart className="size-3.5" />} label="Prefers" value="—" />
+                <StatPill icon={<ThumbsDown className="size-3.5" />} label="Rejects" value="—" />
               </div>
 
               <Link
@@ -127,25 +119,6 @@ function BrainPage() {
                 </GlassCard>
               </SkeletonReveal>
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <SkeletonReveal delayMs={550}>
-                  <PreferencePanel
-                    title="Neural prefers"
-                    icon={<Heart className="size-4 text-emerald-600" />}
-                    items={brain.likes}
-                    tone="like"
-                  />
-                </SkeletonReveal>
-                <SkeletonReveal delayMs={700}>
-                  <PreferencePanel
-                    title="Neural rejects"
-                    icon={<ThumbsDown className="size-4 text-rose-600" />}
-                    items={brain.dislikes}
-                    tone="dislike"
-                  />
-                </SkeletonReveal>
-              </div>
-
               {brain.memories.length > 0 && (
                 <section>
                   <div className="mb-4 flex items-center gap-2">
@@ -169,24 +142,6 @@ function BrainPage() {
                                 </time>
                               )}
                             </div>
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                              {m.likes.map((t) => (
-                                <span
-                                  key={t}
-                                  className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-800"
-                                >
-                                  + {t}
-                                </span>
-                              ))}
-                              {m.dislikes.map((t) => (
-                                <span
-                                  key={t}
-                                  className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-800"
-                                >
-                                  − {t}
-                                </span>
-                              ))}
-                            </div>
                             {m.source_id && (
                               <Link
                                 to="/lessons/$id"
@@ -205,9 +160,42 @@ function BrainPage() {
               )}
             </div>
           )}
+
+          <div className="mt-8 grid gap-4 md:grid-cols-2">
+            <SkeletonReveal delayMs={550}>
+              <PreferencePanel
+                title="Neural prefers"
+                icon={<Heart className="size-4 text-emerald-600" />}
+              />
+            </SkeletonReveal>
+            <SkeletonReveal delayMs={700}>
+              <PreferencePanel
+                title="Neural rejects"
+                icon={<ThumbsDown className="size-4 text-rose-600" />}
+              />
+            </SkeletonReveal>
+          </div>
         </div>
       </div>
     </AppShell>
+  );
+}
+
+function PreferencePanel({
+  title,
+  icon,
+}: {
+  title: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <GlassCard className="p-5">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        {icon}
+        {title}
+      </div>
+      <p className="mt-4 text-sm text-muted-foreground">None yet.</p>
+    </GlassCard>
   );
 }
 
@@ -226,48 +214,5 @@ function StatPill({
       <div className="mt-2 font-display text-xl font-bold">{value}</div>
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
     </div>
-  );
-}
-
-function PreferencePanel({
-  title,
-  icon,
-  items,
-  tone,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  items: string[];
-  tone: "like" | "dislike";
-}) {
-  return (
-    <GlassCard className="p-5">
-      <div className="flex items-center gap-2 text-sm font-medium">
-        {icon}
-        {title}
-      </div>
-      {items.length === 0 ? (
-        <p className="mt-4 text-sm text-muted-foreground">None yet.</p>
-      ) : (
-        <ul className="mt-4 space-y-2">
-          {items.map((item, i) => (
-            <li
-              key={item}
-              className="flex items-start gap-2 text-sm animate-fade-up"
-              style={{ animationDelay: `${i * 80}ms` }}
-            >
-              <span
-                className={
-                  tone === "like"
-                    ? "mt-1.5 size-1.5 shrink-0 rounded-full bg-emerald-500"
-                    : "mt-1.5 size-1.5 shrink-0 rounded-full bg-rose-500"
-                }
-              />
-              <span className="text-muted-foreground">{item}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </GlassCard>
   );
 }

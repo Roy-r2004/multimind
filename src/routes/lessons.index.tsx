@@ -6,13 +6,27 @@ import { Modal } from "@/components/Modal";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { SkeletonReveal } from "@/components/cinematic/SkeletonReveal";
 import { api } from "@/lib/api";
-import type { ApiLessonListItem } from "@/lib/api/types";
+import type { ApiLessonListItem, FacilitatorStance } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 
-export const Route = createFileRoute("/lessons")({
+export const Route = createFileRoute("/lessons/")({
   head: () => ({ meta: [{ title: "Lessons — MultiAI" }] }),
   component: LessonsPage,
 });
+
+function stanceLabel(stance: FacilitatorStance | null | undefined): string | null {
+  if (stance === "agreed") return "AI agreed";
+  if (stance === "disagreed") return "AI disagreed";
+  if (stance === "partly_agreed") return "AI partly agreed";
+  return null;
+}
+
+function stanceClass(stance: FacilitatorStance | null | undefined): string {
+  if (stance === "agreed") return "bg-emerald-100 text-emerald-800";
+  if (stance === "disagreed") return "bg-rose-100 text-rose-800";
+  if (stance === "partly_agreed") return "bg-amber-100 text-amber-900";
+  return "bg-muted text-muted-foreground";
+}
 
 function LessonsPage() {
   const { authHeaders, isLoading: authLoading } = useAuth();
@@ -90,44 +104,67 @@ function LessonsPage() {
           </GlassCard>
         ) : (
           <div className="relative mt-8 space-y-4">
-            {lessons.map((lesson, i) => (
-              <SkeletonReveal key={lesson.id} delayMs={200 + i * 150}>
-                <GlassCard className="group overflow-hidden p-0 transition hover:border-primary/40 hover:shadow-md">
-                  <div className="grid md:grid-cols-[1fr_auto]">
-                    <Link to="/lessons/$id" params={{ id: lesson.id }} className="block p-5">
-                      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
-                        <Scale className="size-3.5" />
-                        Disagreement lesson
-                        {lesson.status !== "completed" && (
-                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 capitalize">
-                            {lesson.status}
+            {lessons.map((lesson, i) => {
+              const label = stanceLabel(lesson.facilitator_stance);
+              return (
+                <SkeletonReveal key={lesson.id} delayMs={200 + i * 150}>
+                  <GlassCard className="group overflow-hidden p-0 transition hover:border-primary/40 hover:shadow-md">
+                    <div className="grid md:grid-cols-[1fr_auto]">
+                      <Link to="/lessons/$id" params={{ id: lesson.id }} className="block p-5">
+                        <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
+                          <Scale className="size-3.5" />
+                          Disagreement lesson
+                          {label && (
+                            <span
+                              className={`rounded-full px-2 py-0.5 normal-case tracking-normal ${stanceClass(lesson.facilitator_stance)}`}
+                            >
+                              {label}
+                            </span>
+                          )}
+                          {lesson.status !== "completed" && (
+                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 capitalize">
+                              {lesson.status}
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="mt-2 text-lg font-semibold group-hover:text-primary">{lesson.title}</h3>
+                        <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{lesson.summary}</p>
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          {new Date(lesson.created_at).toLocaleDateString()} · Open for full detail →
+                        </p>
+                      </Link>
+
+                      <div className="flex min-w-[200px] flex-col items-center justify-center gap-3 border-t border-border bg-gradient-to-br from-sky-50/80 to-white p-5 md:border-t-0 md:border-l">
+                        <Link to="/lessons/$id" params={{ id: lesson.id }} className="block">
+                          <VsBadge
+                            user={lesson.user_name.split(" ")[0]}
+                            model={lesson.verdict_model_name}
+                          />
+                        </Link>
+                        {label && (
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-xs font-medium ${stanceClass(lesson.facilitator_stance)}`}
+                          >
+                            {label}
                           </span>
                         )}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setRemoveTarget(lesson);
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                        >
+                          <Trash2 className="size-3.5" /> Delete
+                        </button>
                       </div>
-                      <h3 className="mt-2 text-lg font-semibold group-hover:text-primary">{lesson.title}</h3>
-                      <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{lesson.summary}</p>
-                      <p className="mt-3 text-xs text-muted-foreground">
-                        {new Date(lesson.created_at).toLocaleDateString()}
-                      </p>
-                    </Link>
-
-                    <div className="flex min-w-[200px] flex-col items-center justify-center gap-3 border-t border-border bg-gradient-to-br from-sky-50/80 to-white p-5 md:border-t-0 md:border-l">
-                      <VsBadge
-                        user={lesson.user_name.split(" ")[0]}
-                        model={lesson.verdict_model_name}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setRemoveTarget(lesson)}
-                        className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-                      >
-                        <Trash2 className="size-3.5" /> Delete
-                      </button>
                     </div>
-                  </div>
-                </GlassCard>
-              </SkeletonReveal>
-            ))}
+                  </GlassCard>
+                </SkeletonReveal>
+              );
+            })}
           </div>
         )}
 

@@ -16,8 +16,22 @@ import { Modal } from "@/components/Modal";
 import { GlassCard } from "@/components/cinematic/PageChrome";
 import { SkeletonReveal } from "@/components/cinematic/SkeletonReveal";
 import { api } from "@/lib/api";
-import type { ApiLessonDetail } from "@/lib/api/types";
+import type { ApiLessonDetail, FacilitatorStance } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
+
+function stanceLabel(stance: FacilitatorStance | null | undefined): string | null {
+  if (stance === "agreed") return "AI agreed with you";
+  if (stance === "disagreed") return "AI disagreed with you";
+  if (stance === "partly_agreed") return "AI partly agreed";
+  return null;
+}
+
+function stanceClass(stance: FacilitatorStance | null | undefined): string {
+  if (stance === "agreed") return "bg-emerald-100 text-emerald-800 border-emerald-200";
+  if (stance === "disagreed") return "bg-rose-100 text-rose-800 border-rose-200";
+  if (stance === "partly_agreed") return "bg-amber-100 text-amber-900 border-amber-200";
+  return "bg-muted text-muted-foreground border-border";
+}
 
 export const Route = createFileRoute("/lessons/$id")({
   head: () => ({ meta: [{ title: "Lesson — MultiAI" }] }),
@@ -98,6 +112,8 @@ function LessonDetailPage() {
   const c = lesson.comparison;
   const modelColor = MODEL_COLORS[lesson.verdict_model_id] ?? "oklch(0.55 0.1 250)";
   const firstName = lesson.user_name.split(" ")[0] || lesson.user_name;
+  const stance = lesson.facilitator_stance ?? c.facilitator_stance ?? null;
+  const stanceText = stanceLabel(stance);
 
   return (
     <AppShell>
@@ -120,6 +136,19 @@ function LessonDetailPage() {
               <Trash2 className="size-3.5" /> Delete lesson
             </button>
           </div>
+
+          {stanceText && (
+            <div
+              className={`mt-4 inline-flex rounded-full border px-3 py-1 text-sm font-medium ${stanceClass(stance)}`}
+            >
+              {stanceText}
+            </div>
+          )}
+          {(lesson.outcome_summary || c.outcome_summary) && (
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              {lesson.outcome_summary || c.outcome_summary}
+            </p>
+          )}
 
           {lesson.status !== "completed" && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

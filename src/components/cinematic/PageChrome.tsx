@@ -72,13 +72,11 @@ export function ModelPill({
   name,
   vendor,
   color,
-  pricing,
   subtitle,
 }: {
   name: string;
   vendor: string;
   color: string;
-  pricing?: { input_per_1k: number; output_per_1k: number } | null;
   subtitle?: string;
 }) {
   return (
@@ -96,12 +94,6 @@ export function ModelPill({
           )}
         </div>
       </div>
-      {pricing && (
-        <div className="flex justify-between text-[11px] text-muted-foreground">
-          <span>In ${pricing.input_per_1k.toFixed(4)}/1K</span>
-          <span>Out ${pricing.output_per_1k.toFixed(4)}/1K</span>
-        </div>
-      )}
     </div>
   );
 }

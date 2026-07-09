@@ -62,6 +62,21 @@ export type ApiProject = {
   updated_at: string;
 };
 
+export type ApiProjectDetail = ApiProject & {
+  chats: ApiChat[];
+};
+
+export type ApiDiscussMessage = {
+  role: string;
+  content: string;
+};
+
+export type ApiDiscussResponse = {
+  lesson_id: string;
+  messages: ApiDiscussMessage[];
+  can_finalize: boolean;
+};
+
 export type ApiChat = {
   id: string;
   title: string;
@@ -114,8 +129,11 @@ export type ApiTurn = {
   verdict?: ApiVerdict | null;
   decision_insurance?: ApiDecisionInsurance | null;
   lesson_id?: string | null;
+  lesson_status?: string | null;
   created_at: string;
 };
+
+export type FacilitatorStance = "agreed" | "disagreed" | "partly_agreed";
 
 export type ApiLessonListItem = {
   id: string;
@@ -126,6 +144,7 @@ export type ApiLessonListItem = {
   user_name: string;
   verdict_model_name: string;
   status: string;
+  facilitator_stance?: FacilitatorStance | null;
   created_at: string;
 };
 
@@ -156,6 +175,9 @@ export type ApiLessonComparison = {
     when_model_might_be_right: string;
     recommended_next_step: string;
   };
+  facilitator_stance?: FacilitatorStance | null;
+  outcome?: string | null;
+  outcome_summary?: string | null;
 };
 
 export type ApiLessonDetail = ApiLessonListItem & {
@@ -167,6 +189,8 @@ export type ApiLessonDetail = ApiLessonListItem & {
   verdict_reason: string;
   strategy: Strategy;
   comparison: ApiLessonComparison;
+  outcome?: string | null;
+  outcome_summary?: string | null;
   error_message?: string | null;
 };
 

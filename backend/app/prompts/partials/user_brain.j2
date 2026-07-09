@@ -1,7 +1,11 @@
 {# User brain context — injected into model and verdict prompts #}
 {% if user_brain_context %}
-## User Memory (personalize for this user)
-The following is a learned profile of how this user thinks, what they prefer, and what they reject. Use it to tailor tone, framing, and recommendations — without being obsequious or ignoring valid counterarguments.
+## User Memory & Lessons (personalize for this user)
+Use the profile and recent disagreement lessons below to tailor tone, framing, and recommendations.
+
+**If the user refers to "the lesson", "rerun the question", "based on the lesson", or a prior disagreement** — look at the Recent disagreement lessons section. Reuse the **Original question** from the most relevant lesson (usually the latest) and answer it using what they taught you. Do **not** claim you lack the lesson/question unless that section is empty.
+
+Do not be obsequious and do not ignore valid counterarguments.
 
 {{ user_brain_context }}
 {% endif %}

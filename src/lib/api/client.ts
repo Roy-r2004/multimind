@@ -1,8 +1,10 @@
 /** HTTP client for MultiAI Python backend */
 
-import type { ApiError, ApiClientError as ApiClientErrorType } from "@/lib/api/types";
+import type { ApiError } from "@/lib/api/types";
 
 export { ApiClientError } from "@/lib/api/types";
+
+const DEFAULT_TIMEOUT_MS = 25_000;
 
 function resolveApiBase(): string {
   if (typeof document !== "undefined") {
@@ -17,6 +19,7 @@ type RequestOptions = {
   body?: unknown;
   token?: string | null;
   orgId?: string | null;
+  timeoutMs?: number;
 };
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -34,12 +37,37 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     headers["X-Org-Id"] = options.orgId;
   }
 
-  const res = await fetch(`${resolveApiBase()}${path}`, {
-    method: options.method ?? (options.body !== undefined ? "POST" : "GET"),
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-    credentials: "include",
-  });
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${resolveApiBase()}${path}`, {
+      method: options.method ?? (options.body !== undefined ? "POST" : "GET"),
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      credentials: "include",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const { ApiClientError } = await import("@/lib/api/types");
+    const aborted =
+      (typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "AbortError") ||
+      (err instanceof Error && err.name === "AbortError");
+    if (aborted) {
+      throw new ApiClientError(
+        "API is taking too long to respond. It may be waking up or redeploying — wait ~30s and try again.",
+        408,
+      );
+    }
+    throw new ApiClientError(
+      "Cannot reach the API. Check that multiai-api is running on Render.",
+      0,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     let body: ApiError | undefined;

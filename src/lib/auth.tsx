@@ -70,20 +70,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refreshSession();
   }, [refreshSession]);
 
-  const signIn = useCallback(
-    async (email: string, password: string) => {
-      const { access_token } = await api.auth.signIn({ email, password });
-      setToken(access_token);
-      localStorage.setItem(TOKEN_KEY, access_token);
-      const tempAuth = { token: access_token, orgId: orgId ?? "" };
-      const s = await api.auth.session(tempAuth);
-      setSession(s);
-      setOrgId(s.organization.id);
-      localStorage.setItem(ORG_KEY, s.organization.id);
-      return s;
-    },
-    [orgId],
-  );
+  const signIn = useCallback(async (email: string, password: string) => {
+    const result = await api.auth.signIn({ email, password });
+    let sessionData: ApiSession;
+    if (result.user && result.organization) {
+      sessionData = { user: result.user, organization: result.organization };
+    } else {
+      // Old API shape — keep one extra round-trip until backend redeploys.
+      const tempOrgId = orgId ?? "";
+      sessionData = await api.auth.session({ token: result.access_token, orgId: tempOrgId });
+    }
+    setToken(result.access_token);
+    setOrgId(sessionData.organization.id);
+    setSession(sessionData);
+    setIsLoading(false);
+    localStorage.setItem(TOKEN_KEY, result.access_token);
+    localStorage.setItem(ORG_KEY, sessionData.organization.id);
+    return sessionData;
+  }, [orgId]);
 
   const signOut = useCallback(() => {
     setToken(null);

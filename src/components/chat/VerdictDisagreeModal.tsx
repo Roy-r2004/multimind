@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Modal } from "@/components/Modal";
 
@@ -15,6 +15,14 @@ export function VerdictDisagreeModal({
   const [position, setPosition] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    const timer = window.setTimeout(() => reasonRef.current?.focus(), 50);
+    return () => window.clearTimeout(timer);
+  }, [open]);
 
   async function handleSubmit() {
     if (reason.trim().length < 10 || position.trim().length < 10) {
@@ -49,10 +57,10 @@ export function VerdictDisagreeModal({
         <label className="block text-sm">
           <div className="mb-1 font-medium">Why do you disagree?</div>
           <textarea
+            ref={reasonRef}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             rows={4}
-            placeholder="The verdict overweighted short-term risk and ignored our distribution advantage…"
             className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
           />
         </label>
@@ -62,13 +70,13 @@ export function VerdictDisagreeModal({
             value={position}
             onChange={(e) => setPosition(e.target.value)}
             rows={4}
-            placeholder="We should launch at a lower price point to capture market share first…"
             className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
           />
         </label>
       </div>
       <div className="mt-5 flex justify-end gap-2">
         <button
+          type="button"
           onClick={onClose}
           disabled={saving}
           className="rounded-xl border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
@@ -76,6 +84,7 @@ export function VerdictDisagreeModal({
           Cancel
         </button>
         <button
+          type="button"
           onClick={() => void handleSubmit()}
           disabled={saving}
           className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"

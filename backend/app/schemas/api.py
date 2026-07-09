@@ -29,11 +29,6 @@ class SignInRequest(BaseModel):
     password: str
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,6 +46,13 @@ class OrgResponse(BaseModel):
     slug: str
     plan: str
     role: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse | None = None
+    organization: OrgResponse | None = None
 
 
 class SessionResponse(BaseModel):
@@ -151,6 +153,11 @@ class ProjectCreateRequest(BaseModel):
     description: str | None = None
 
 
+class ProjectUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+
+
 # --- Chats ---
 
 
@@ -161,6 +168,15 @@ class ChatResponse(BaseModel):
     title: str
     project_id: str | None = None
     updated_at: datetime
+
+
+class ProjectDetailResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    chat_count: int = 0
+    updated_at: datetime
+    chats: list[ChatResponse] = []
 
 
 class ChatCreateRequest(BaseModel):
@@ -228,12 +244,28 @@ class TurnResponse(BaseModel):
     verdict: VerdictResponse | None = None
     decision_insurance: DecisionInsuranceResponse | None = None
     lesson_id: str | None = None
+    lesson_status: str | None = None
     created_at: datetime
 
 
 class VerdictDisagreeRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=8000)
     user_position: str = Field(min_length=10, max_length=8000)
+
+
+class DiscussMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+
+
+class DiscussMessageItem(BaseModel):
+    role: str
+    content: str
+
+
+class DiscussResponse(BaseModel):
+    lesson_id: str
+    messages: list[DiscussMessageItem]
+    can_finalize: bool = False
 
 
 class LessonAgreementItem(BaseModel):
@@ -274,6 +306,9 @@ class LessonComparisonResponse(BaseModel):
     assumptions: dict[str, list[str]] = Field(default_factory=lambda: {"user": [], "model": []})
     blind_spots: dict[str, list[str]] = Field(default_factory=lambda: {"user": [], "model": []})
     lesson: LessonTakeaway = Field(default_factory=LessonTakeaway)
+    facilitator_stance: str | None = None
+    outcome: str | None = None
+    outcome_summary: str | None = None
 
 
 class LessonListItemResponse(BaseModel):
@@ -285,6 +320,7 @@ class LessonListItemResponse(BaseModel):
     user_name: str
     verdict_model_name: str
     status: str
+    facilitator_stance: str | None = None
     created_at: datetime
 
 
@@ -297,7 +333,14 @@ class LessonDetailResponse(LessonListItemResponse):
     verdict_reason: str
     strategy: StrategyEnum
     comparison: LessonComparisonResponse
+    discussion_messages: list[DiscussMessageItem] = []
+    outcome: str | None = None
+    outcome_summary: str | None = None
     error_message: str | None = None
+
+
+class DiscussFinalizeResponse(BaseModel):
+    lesson: LessonDetailResponse
 
 
 # --- Templates ---

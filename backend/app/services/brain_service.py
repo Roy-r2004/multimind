@@ -77,9 +77,54 @@ class BrainService:
     ) -> str:
         result = await db.execute(select(UserBrain).where(UserBrain.user_id == user_id))
         brain = result.scalar_one_or_none()
-        if brain is None:
+        profile = self._format_context(brain) if brain is not None else ""
+
+        lessons = await self._recent_lesson_briefs(db, user_id, limit=4)
+        lesson_block = self._format_lesson_briefs(lessons)
+
+        parts = [p for p in (profile, lesson_block) if p]
+        return "\n\n".join(parts)
+
+    async def _recent_lesson_briefs(
+        self, db: AsyncSession, user_id: str, *, limit: int = 4
+    ) -> list[VerdictLesson]:
+        result = await db.execute(
+            select(VerdictLesson)
+            .where(
+                VerdictLesson.user_id == user_id,
+                VerdictLesson.status == LessonStatus.COMPLETED,
+            )
+            .order_by(VerdictLesson.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    def _format_lesson_briefs(self, lessons: list[VerdictLesson]) -> str:
+        if not lessons:
             return ""
-        return self._format_context(brain)
+        lines = [
+            "**Recent disagreement lessons (use when the user refers to a lesson / rerun / prior question):**",
+            "",
+        ]
+        for i, lesson in enumerate(lessons, start=1):
+            comparison = lesson.comparison or {}
+            takeaway = comparison.get("lesson") or {}
+            lines.append(f"### Lesson {i}: {lesson.title}")
+            lines.append(f"- Original question: {lesson.user_message}")
+            if lesson.summary:
+                lines.append(f"- Lesson summary: {lesson.summary}")
+            if lesson.user_position:
+                lines.append(f"- User's position: {lesson.user_position}")
+            if lesson.disagreement_reason:
+                lines.append(f"- Why they disagreed: {lesson.disagreement_reason}")
+            key_insight = takeaway.get("key_insight") or ""
+            if key_insight:
+                lines.append(f"- Key insight: {key_insight}")
+            remember = takeaway.get("what_to_remember") or []
+            if remember:
+                lines.append("- Remember: " + "; ".join(str(x) for x in remember[:4]))
+            lines.append("")
+        return "\n".join(lines).strip()
 
     async def learn_from_lesson(
         self,

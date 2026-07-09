@@ -21,6 +21,8 @@ from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
 from app.schemas.api import (
+    DiscussMessageItem,
+    DiscussResponse,
     LessonComparisonResponse,
     LessonDetailResponse,
     LessonListItemResponse,
@@ -28,6 +30,112 @@ from app.schemas.api import (
 )
 
 logger = get_logger(__name__)
+
+CHAFIC_OPENING = (
+    "I read the verdict and your pushback matters. Walk me through what feels wrong — "
+    "what did the council get wrong, and what would you do instead?\n\n"
+    "I'll tell you clearly when I agree or disagree with you as we go."
+)
+
+# Stable roles — never use the user's display name (demo user is also named Chafic).
+ROLE_ASSISTANT = "assistant"
+ROLE_USER = "user"
+
+
+_OPENING_MARKER = "Walk me through what feels wrong"
+_ASSISTANT_ALIASES = {ROLE_ASSISTANT, "ai", "facilitator"}
+# Never treat "chafic"/"chafiq" as assistant by name alone — the demo user
+# is also named Chafic, so legacy rows stored user turns under that label.
+
+_STANCE_AGREED = "agreed"
+_STANCE_DISAGREED = "disagreed"
+_STANCE_PARTLY = "partly_agreed"
+_VALID_STANCES = {_STANCE_AGREED, _STANCE_DISAGREED, _STANCE_PARTLY}
+
+
+def _normalize_facilitator_stance(
+    raw_stance: object | None,
+    outcome: object | None = None,
+) -> str | None:
+    """Map extract fields to agreed / disagreed / partly_agreed vs the user."""
+    if isinstance(raw_stance, str):
+        s = raw_stance.strip().lower().replace(" ", "_").replace("-", "_")
+        if s in _VALID_STANCES:
+            return s
+        if s in {"agree", "agrees", "user_convinced", "convinced"}:
+            return _STANCE_AGREED
+        if s in {"disagree", "disagrees", "verdict_stands"}:
+            return _STANCE_DISAGREED
+        if s in {"partly", "partial", "partially_agreed", "synthesis"}:
+            return _STANCE_PARTLY
+
+    if isinstance(outcome, str):
+        o = outcome.strip().lower()
+        if o == "user_convinced":
+            return _STANCE_AGREED
+        if o in {"verdict_stands", "chafic_convinced"}:
+            # Facilitator held against the user (or stuck with the model verdict).
+            return _STANCE_DISAGREED
+        if o == "synthesis":
+            return _STANCE_PARTLY
+    return None
+
+
+def _comparison_meta(comparison: dict | None) -> dict:
+    if not isinstance(comparison, dict):
+        return {}
+    return comparison
+
+
+def _looks_like_opening(content: str, index: int) -> bool:
+    text = content.strip()
+    if not text:
+        return False
+    if text == CHAFIC_OPENING.strip():
+        return True
+    return index == 0 and _OPENING_MARKER in text
+
+
+def _normalize_discuss_messages(
+    messages: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Map stored roles onto assistant/user without confusing the demo username."""
+    raw = list(messages or [])
+    role_keys = {str(m.get("role") or "").strip().lower() for m in raw}
+    fully_ambiguous = bool(raw) and role_keys <= {"chafic", "chafiq"}
+
+    normalized: list[dict[str, str]] = []
+    last_role: str | None = None
+
+    for index, message in enumerate(raw):
+        role = str(message.get("role") or "").strip()
+        content = str(message.get("content") or "")
+        role_l = role.lower()
+
+        if role_l in _ASSISTANT_ALIASES:
+            out = ROLE_ASSISTANT
+        elif role_l == ROLE_USER:
+            out = ROLE_USER
+        elif _looks_like_opening(content, index):
+            out = ROLE_ASSISTANT
+        elif fully_ambiguous:
+            # Old chats alternated under role="Chafic" for both sides.
+            out = ROLE_USER if last_role == ROLE_ASSISTANT else ROLE_ASSISTANT
+            if last_role is None:
+                out = ROLE_ASSISTANT if index == 0 else ROLE_USER
+        else:
+            # Legacy display-name row (e.g. "Ada") = user; leftover "Chafic"
+            # facilitator label from older builds = assistant when not ambiguous.
+            out = ROLE_ASSISTANT if role_l in {"chafic", "chafiq"} else ROLE_USER
+
+        normalized.append({"role": out, "content": content})
+        last_role = out
+
+    return normalized
+
+
+def _is_user_message(message: dict[str, str]) -> bool:
+    return str(message.get("role") or "").lower() == ROLE_USER
 
 
 class LessonService:
@@ -52,6 +160,149 @@ class LessonService:
         await brain_service.forget_lesson(db, auth, lesson.id)
         await db.delete(lesson)
 
+    async def start_discussion(
+        self, db: AsyncSession, auth: AuthContext, turn_id: str
+    ) -> DiscussResponse:
+        turn, _chat, verdict_model, _answer_context = await self._load_turn_context(
+            db, auth, turn_id
+        )
+        if turn.lesson is not None:
+            lesson = turn.lesson
+            if lesson.status == LessonStatus.COMPLETED:
+                raise ConflictError("A lesson already exists for this verdict")
+            if lesson.status == LessonStatus.BUILDING:
+                raise ConflictError("Lesson is still being built")
+            if lesson.status == LessonStatus.FAILED:
+                raise ConflictError("Lesson build failed — delete it and try again")
+            lesson.discussion_messages = _normalize_discuss_messages(lesson.discussion_messages)
+            if not lesson.discussion_messages:
+                lesson.discussion_messages = [{"role": ROLE_ASSISTANT, "content": CHAFIC_OPENING}]
+            await db.flush()
+            return self._discuss_response(lesson)
+
+        lesson = VerdictLesson(
+            turn_id=turn.id,
+            chat_id=turn.chat_id,
+            org_id=auth.org_id,
+            user_id=auth.user.id,
+            user_name=auth.user.full_name,
+            user_message=turn.user_message,
+            disagreement_reason="Discussion in progress",
+            user_position="Discussion in progress",
+            verdict_model_id=turn.verdict.model_id,
+            verdict_model_name=verdict_model.name,
+            verdict_text=turn.verdict.text,
+            verdict_reason=turn.verdict.reason,
+            strategy=turn.strategy,
+            title="Discussing disagreement…",
+            summary="",
+            comparison={},
+            discussion_messages=[{"role": ROLE_ASSISTANT, "content": CHAFIC_OPENING}],
+            status=LessonStatus.DISCUSSING,
+        )
+        db.add(lesson)
+        await db.flush()
+        # Return immediately — opening greeting is static so the UI is never blocked
+        # waiting on the LLM cold start.
+        return self._discuss_response(lesson)
+
+    async def discuss_message(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        turn_id: str,
+        message: str,
+    ) -> DiscussResponse:
+        turn, _chat, verdict_model, answer_context = await self._load_turn_context(
+            db, auth, turn_id
+        )
+        if turn.lesson is None or turn.lesson.status != LessonStatus.DISCUSSING:
+            raise ConflictError("Start a discussion before sending messages")
+
+        lesson = turn.lesson
+        messages = _normalize_discuss_messages(lesson.discussion_messages)
+        messages.append({"role": ROLE_USER, "content": message.strip()})
+
+        reply = await self._chafic_reply(
+            turn=turn,
+            verdict_model=verdict_model,
+            answer_context=answer_context,
+            messages=messages,
+            user_name=auth.user.full_name,
+        )
+        messages.append({"role": ROLE_ASSISTANT, "content": reply})
+        lesson.discussion_messages = messages
+        await db.flush()
+        return self._discuss_response(lesson)
+
+    async def finalize_discussion(
+        self, db: AsyncSession, auth: AuthContext, turn_id: str
+    ) -> LessonDetailResponse:
+        turn, chat, verdict_model, answer_context = await self._load_turn_context(
+            db, auth, turn_id
+        )
+        if turn.lesson is None or turn.lesson.status != LessonStatus.DISCUSSING:
+            raise ConflictError("No active discussion to finalize")
+
+        lesson = turn.lesson
+        messages = _normalize_discuss_messages(lesson.discussion_messages)
+        lesson.discussion_messages = messages
+        user_turns = [m for m in messages if _is_user_message(m)]
+        if len(user_turns) < 1:
+            raise ConflictError("Share your disagreement before building the lesson")
+
+        provider = get_provider_registry().get_provider(verdict_model.provider)
+        extract_system = get_prompt_engine().disagree_finalize_prompt(
+            user_name=auth.user.full_name,
+            user_message=turn.user_message,
+            strategy=turn.strategy.value,
+            verdict_model_name=verdict_model.name,
+            verdict_text=turn.verdict.text,
+            messages=messages,
+        )
+        extract_meta: dict = {}
+        try:
+            extract_resp = await provider.complete(
+                system=extract_system,
+                user=(
+                    "Extract the disagreement fields as JSON. "
+                    "user_position must be the USER's lesson/position even if the facilitator disagreed. "
+                    "facilitator_stance is whether the facilitator agreed with the USER."
+                ),
+                model=verdict_model.provider_model,
+            )
+            extracted = provider.parse_json_response(extract_resp.text)
+            lesson.disagreement_reason = extracted.get(
+                "disagreement_reason", lesson.disagreement_reason
+            )
+            # Always keep the user's taught position — never swap in facilitator rebuttal.
+            user_pos = (extracted.get("user_position") or "").strip()
+            if user_pos:
+                lesson.user_position = user_pos
+            stance = _normalize_facilitator_stance(
+                extracted.get("facilitator_stance"),
+                extracted.get("outcome"),
+            )
+            extract_meta = {
+                "facilitator_stance": stance,
+                "outcome": extracted.get("outcome"),
+                "outcome_summary": extracted.get("outcome_summary"),
+            }
+        except Exception as exc:
+            logger.warning("discuss_extract_failed", turn_id=turn_id, error=str(exc))
+
+        lesson.status = LessonStatus.BUILDING
+        lesson.title = "Building lesson…"
+        # Stash stance meta so build can merge into comparison JSON.
+        prior = _comparison_meta(lesson.comparison)
+        lesson.comparison = {**prior, **{k: v for k, v in extract_meta.items() if v}}
+        await db.flush()
+        await self._build_lesson_from_context(
+            db, auth, turn, chat, lesson, verdict_model, answer_context
+        )
+        await db.refresh(lesson)
+        return self._detail(lesson)
+
     async def disagree_with_verdict(
         self,
         db: AsyncSession,
@@ -59,28 +310,14 @@ class LessonService:
         turn_id: str,
         data: VerdictDisagreeRequest,
     ) -> LessonDetailResponse:
-        result = await db.execute(
-            select(Turn)
-            .join(Chat, Chat.id == Turn.chat_id)
-            .where(Turn.id == turn_id, Chat.org_id == auth.org_id)
-            .options(
-                selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
-                selectinload(Turn.lesson),
-            )
+        turn, chat, verdict_model, answer_context = await self._load_turn_context(
+            db, auth, turn_id
         )
-        turn = result.scalar_one_or_none()
-        if turn is None:
-            raise NotFoundError("Turn", turn_id)
-        if turn.status not in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
-            raise ConflictError("Turn must be completed before disagreeing with the verdict")
-        if turn.verdict is None:
-            raise ConflictError("This turn has no verdict to disagree with")
         if turn.lesson is not None:
+            if turn.lesson.status == LessonStatus.DISCUSSING:
+                raise ConflictError("Use the discussion flow to disagree with this verdict")
             return self._detail(turn.lesson)
 
-        chat = await db.get(Chat, turn.chat_id)
-        verdict_model = get_model(turn.verdict.model_id)
         lesson = VerdictLesson(
             turn_id=turn.id,
             chat_id=turn.chat_id,
@@ -98,11 +335,47 @@ class LessonService:
             title="Building lesson…",
             summary="",
             comparison={},
+            discussion_messages=[],
             status=LessonStatus.BUILDING,
         )
         db.add(lesson)
         await db.flush()
+        await self._build_lesson_from_context(
+            db, auth, turn, chat, lesson, verdict_model, answer_context
+        )
+        await db.refresh(lesson)
+        return self._detail(lesson)
 
+    async def _load_turn_context(
+        self, db: AsyncSession, auth: AuthContext, turn_id: str
+    ) -> tuple[Turn, Chat | None, object, list[dict]]:
+        turn_key = str(turn_id).strip()
+        org_key = str(auth.org_id)
+
+        # Load by id first so we can distinguish "missing" vs "wrong org"
+        # (a strict join previously collapsed both into the same 404).
+        result = await db.execute(
+            select(Turn)
+            .where(Turn.id == turn_key)
+            .options(
+                selectinload(Turn.model_answers),
+                selectinload(Turn.verdict),
+                selectinload(Turn.lesson),
+            )
+        )
+        turn = result.scalar_one_or_none()
+        if turn is None:
+            raise NotFoundError("Turn", turn_key)
+
+        chat = await db.get(Chat, turn.chat_id)
+        if chat is None or str(chat.org_id) != org_key:
+            raise NotFoundError("Turn", turn_key)
+
+        if turn.status not in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
+            raise ConflictError("Turn must be completed before disagreeing with the verdict")
+        if turn.verdict is None:
+            raise ConflictError("This turn has no verdict to disagree with")
+        verdict_model = get_model(turn.verdict.model_id)
         answer_context = []
         for answer in turn.model_answers:
             model = get_model(answer.model_id)
@@ -116,7 +389,55 @@ class LessonService:
                     "error_message": answer.error_message,
                 }
             )
+        return turn, chat, verdict_model, answer_context
 
+    async def _chafic_reply(
+        self,
+        *,
+        turn: Turn,
+        verdict_model: object,
+        answer_context: list[dict],
+        messages: list[dict[str, str]],
+        user_name: str,
+        fallback: str | None = None,
+    ) -> str:
+        system = get_prompt_engine().disagree_discuss_prompt(
+            user_name=user_name,
+            user_message=turn.user_message,
+            strategy=turn.strategy.value,
+            model_answers=answer_context,
+            verdict_model_name=verdict_model.name,
+            verdict_text=turn.verdict.text,
+            verdict_reason=turn.verdict.reason,
+            messages=messages,
+        )
+        provider = get_provider_registry().get_provider(verdict_model.provider)
+        try:
+            response = await provider.complete(
+                system=system,
+                user=(
+                    "Respond as Chafic. Debate their latest point. "
+                    "Explicitly say whether you agree, disagree, or partly agree with them, then explain why."
+                ),
+                model=verdict_model.provider_model,
+                max_tokens=800,
+            )
+            text = (response.text or "").strip()
+            return text or fallback or CHAFIC_OPENING
+        except Exception as exc:
+            logger.error("discuss_reply_failed", turn_id=turn.id, error=str(exc))
+            return fallback or CHAFIC_OPENING
+
+    async def _build_lesson_from_context(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        turn: Turn,
+        chat: Chat | None,
+        lesson: VerdictLesson,
+        verdict_model: object,
+        answer_context: list[dict],
+    ) -> None:
         system = get_prompt_engine().verdict_lesson_prompt(
             user_name=auth.user.full_name,
             user_message=turn.user_message,
@@ -127,24 +448,30 @@ class LessonService:
             verdict_reason=turn.verdict.reason,
             disagreement_reason=lesson.disagreement_reason,
             user_position=lesson.user_position,
+            discussion_messages=lesson.discussion_messages or [],
         )
 
         provider = get_provider_registry().get_provider(verdict_model.provider)
         try:
             response = await provider.complete(
                 system=system,
-                user="Produce the disagreement lesson JSON now.",
+                user=(
+                    "Produce the disagreement lesson JSON now. "
+                    "Center the durable lesson (headline, key_insight, what_to_remember) "
+                    "on the USER's position even if the facilitator disagreed."
+                ),
                 model=verdict_model.provider_model,
             )
             parsed = provider.parse_json_response(response.text)
-            comparison = self._normalize_comparison(parsed)
+            prior_meta = _comparison_meta(lesson.comparison)
+            comparison = self._normalize_comparison(parsed, prior_meta=prior_meta)
             lesson.title = parsed.get("title", "Verdict disagreement lesson")
             lesson.summary = parsed.get("summary", "")
             lesson.comparison = comparison
             lesson.status = LessonStatus.COMPLETED
-            lesson.tokens_input = response.tokens_input
-            lesson.tokens_output = response.tokens_output
-            lesson.cost_usd = resolve_llm_cost(
+            lesson.tokens_input += response.tokens_input
+            lesson.tokens_output += response.tokens_output
+            lesson.cost_usd += resolve_llm_cost(
                 turn.verdict.model_id,
                 response.tokens_input,
                 response.tokens_output,
@@ -166,16 +493,29 @@ class LessonService:
             )
             await brain_service.learn_from_lesson(db, auth, lesson)
         except Exception as exc:
-            logger.error("lesson_build_failed", turn_id=turn_id, error=str(exc))
+            logger.error("lesson_build_failed", turn_id=turn.id, error=str(exc))
             lesson.status = LessonStatus.FAILED
             lesson.error_message = str(exc)
             lesson.title = "Lesson could not be built"
             lesson.summary = "The comparison could not be generated. Try again later."
-            lesson.comparison = {}
+            # Keep facilitator stance / outcome metadata even if build failed.
+            prior = _comparison_meta(lesson.comparison)
+            lesson.comparison = {
+                k: prior[k]
+                for k in ("facilitator_stance", "outcome", "outcome_summary")
+                if prior.get(k)
+            }
 
         await db.flush()
-        await db.refresh(lesson)
-        return self._detail(lesson)
+
+    def _discuss_response(self, lesson: VerdictLesson) -> DiscussResponse:
+        messages = _normalize_discuss_messages(lesson.discussion_messages)
+        user_turns = [m for m in messages if _is_user_message(m)]
+        return DiscussResponse(
+            lesson_id=lesson.id,
+            messages=[DiscussMessageItem(role=m["role"], content=m["content"]) for m in messages],
+            can_finalize=len(user_turns) >= 1,
+        )
 
     async def _get_lesson(
         self, db: AsyncSession, auth: AuthContext, lesson_id: str
@@ -191,8 +531,17 @@ class LessonService:
             raise NotFoundError("Lesson", lesson_id)
         return lesson
 
-    def _normalize_comparison(self, parsed: dict) -> dict:
+    def _normalize_comparison(
+        self, parsed: dict, prior_meta: dict | None = None
+    ) -> dict:
         lesson_block = parsed.get("lesson") or {}
+        prior = prior_meta or {}
+        stance = _normalize_facilitator_stance(
+            parsed.get("facilitator_stance") or prior.get("facilitator_stance"),
+            parsed.get("outcome") or prior.get("outcome"),
+        )
+        outcome = parsed.get("outcome") or prior.get("outcome")
+        outcome_summary = parsed.get("outcome_summary") or prior.get("outcome_summary")
         return {
             "overview": parsed.get("overview", ""),
             "user_position_summary": parsed.get("user_position_summary", ""),
@@ -210,7 +559,17 @@ class LessonService:
                 "when_model_might_be_right": lesson_block.get("when_model_might_be_right", ""),
                 "recommended_next_step": lesson_block.get("recommended_next_step", ""),
             },
+            "facilitator_stance": stance,
+            "outcome": outcome,
+            "outcome_summary": outcome_summary,
         }
+
+    def _stance_from_lesson(self, lesson: VerdictLesson) -> str | None:
+        meta = _comparison_meta(lesson.comparison)
+        return _normalize_facilitator_stance(
+            meta.get("facilitator_stance"),
+            meta.get("outcome"),
+        )
 
     def _list_item(self, lesson: VerdictLesson) -> LessonListItemResponse:
         return LessonListItemResponse(
@@ -222,10 +581,16 @@ class LessonService:
             user_name=lesson.user_name,
             verdict_model_name=lesson.verdict_model_name,
             status=lesson.status.value,
+            facilitator_stance=self._stance_from_lesson(lesson),
             created_at=lesson.created_at,
         )
 
     def _detail(self, lesson: VerdictLesson) -> LessonDetailResponse:
+        meta = _comparison_meta(lesson.comparison)
+        stance = self._stance_from_lesson(lesson)
+        comparison_payload = dict(meta) if meta else {}
+        if stance and not comparison_payload.get("facilitator_stance"):
+            comparison_payload["facilitator_stance"] = stance
         return LessonDetailResponse(
             id=lesson.id,
             turn_id=lesson.turn_id,
@@ -241,8 +606,15 @@ class LessonService:
             strategy=lesson.strategy,
             title=lesson.title,
             summary=lesson.summary,
-            comparison=LessonComparisonResponse.model_validate(lesson.comparison),
+            comparison=LessonComparisonResponse.model_validate(comparison_payload or {}),
+            discussion_messages=[
+                DiscussMessageItem(role=m["role"], content=m["content"])
+                for m in _normalize_discuss_messages(lesson.discussion_messages)
+            ],
             status=lesson.status.value,
+            facilitator_stance=stance,
+            outcome=meta.get("outcome"),
+            outcome_summary=meta.get("outcome_summary"),
             error_message=lesson.error_message,
             created_at=lesson.created_at,
         )

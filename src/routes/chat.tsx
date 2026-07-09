@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Send,
   Gavel,
@@ -21,6 +21,7 @@ import {
   Image as ImageIcon,
   ThumbsDown,
   BookOpen,
+  Trophy,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
@@ -29,9 +30,8 @@ import ModelSetModal from "@/components/ModelSetModal";
 import { PromptBuilderModal } from "@/components/chat/PromptBuilderModal";
 import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/ChatReferenceModal";
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
-import { TemplateMenu } from "@/components/chat/TemplateMenu";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
-import { VerdictDisagreeModal } from "@/components/chat/VerdictDisagreeModal";
+import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
@@ -46,7 +46,7 @@ import {
   subscribeChatRunning,
   subscribeChatTurns,
 } from "@/lib/turnRunner";
-import type { ModelSet } from "@/lib/mock";
+import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 
@@ -61,12 +61,8 @@ async function buildComposerInstructions(
   auth: { token: string; orgId: string },
   ref: ChatReferencePick | null,
   files: ComposerFile[],
-  templateInstructions: string | null,
 ): Promise<string | undefined> {
   const parts: string[] = [];
-  if (templateInstructions?.trim()) {
-    parts.push(`Template instructions:\n${templateInstructions.trim()}`);
-  }
   if (ref) {
     if (ref.mode === "full") {
       try {
@@ -121,7 +117,6 @@ export function ChatPage() {
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<ComposerFile[]>([]);
   const [refChat, setRefChat] = useState<ChatReferencePick | null>(null);
-  const [templateInstructions, setTemplateInstructions] = useState<string | null>(null);
   const [showSet, setShowSet] = useState(false);
   const [showStrategy, setShowStrategy] = useState(false);
   const [showCouncil, setShowCouncil] = useState(false);
@@ -175,12 +170,7 @@ export function ChatPage() {
       let chatId = activeChatId;
       if (!chatId) chatId = await createChat();
       if (!chatId) return;
-      const customInstructions = await buildComposerInstructions(
-        auth,
-        refChat,
-        files,
-        templateInstructions,
-      );
+      const customInstructions = await buildComposerInstructions(auth, refChat, files);
       const pending = await api.chats.createTurn(auth, chatId, {
         user_message: question,
         model_set_id: set.id,
@@ -188,7 +178,6 @@ export function ChatPage() {
       });
       setRefChat(null);
       setFiles([]);
-      setTemplateInstructions(null);
       void runTurnInBackground(auth, chatId, pending).catch((error) => {
         console.error(error);
         alert(error instanceof Error ? error.message : "Failed to run turn");
@@ -279,8 +268,8 @@ export function ChatPage() {
         </div>
 
         {/* Thread */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6">
-          <div className="mx-auto max-w-4xl space-y-10">
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 xl:px-8">
+          <div className="mx-auto max-w-6xl space-y-10">
             {!isAuthenticated && (
               <GlassCard glow className="p-10 text-center animate-fade-up">
                 <Sparkles className="mx-auto size-8 text-primary" />
@@ -323,13 +312,7 @@ export function ChatPage() {
                 </button>
                 <div className="mx-auto grid max-w-5xl gap-3 sm:grid-cols-2 lg:grid-cols-5">
                   {(models.length ? models : flagshipModels).slice(0, 5).map((m) => (
-                    <ModelPill
-                      key={m.id}
-                      name={m.name}
-                      vendor={m.vendor}
-                      color={m.color}
-                      pricing={m.pricing ?? undefined}
-                    />
+                    <ModelPill key={m.id} name={m.name} vendor={m.vendor} color={m.color} />
                   ))}
                 </div>
               </div>
@@ -347,11 +330,14 @@ export function ChatPage() {
                     set={set}
                     turn={turn}
                     modelById={modelById}
-                    onLessonCreated={(lessonId) => {
+                    onLessonUpdate={(lessonId, lessonStatus) => {
                       setApiTurns((prev) =>
-                        prev.map((t) => (t.id === turn.id ? { ...t, lesson_id: lessonId } : t)),
+                        prev.map((t) =>
+                          t.id === turn.id
+                            ? { ...t, lesson_id: lessonId, lesson_status: lessonStatus }
+                            : t,
+                        ),
                       );
-                      void navigate({ to: "/lessons/$id", params: { id: lessonId } });
                     }}
                   />
                 </div>
@@ -366,8 +352,8 @@ export function ChatPage() {
         </div>
 
         {/* Composer */}
-        <div className="border-t border-border bg-background px-4 py-4 md:px-6">
-          <div className="mx-auto max-w-4xl">
+        <div className="border-t border-border bg-background px-4 py-4 md:px-6 xl:px-8">
+          <div className="mx-auto max-w-6xl">
             {refChat && (
               <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
                 <Link2 className="size-3 text-primary" />
@@ -377,18 +363,6 @@ export function ChatPage() {
                 <button
                   type="button"
                   onClick={() => setRefChat(null)}
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            )}
-            {templateInstructions && (
-              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1 text-xs">
-                <span className="text-muted-foreground">Template active</span>
-                <button
-                  type="button"
-                  onClick={() => setTemplateInstructions(null)}
                   className="text-muted-foreground hover:text-foreground"
                 >
                   <X className="size-3" />
@@ -492,12 +466,6 @@ export function ChatPage() {
                     </div>
                   )}
                 </div>
-                <TemplateMenu
-                  onPick={(t) => {
-                    setTemplateInstructions(t.instructions);
-                    setInput((v) => (v.trim() ? v : `[${t.title}] `));
-                  }}
-                />
                 <button
                   type="button"
                   onClick={() => setShowPrompt(true)}
@@ -711,19 +679,61 @@ function LoadingTurn({
   );
 }
 
+function inferTopModelId(
+  turn: ApiTurn,
+  councilModelIds: string[],
+  modelById: (id: string) => { name: string },
+): string | null {
+  const completed = (turn.model_answers ?? []).filter(
+    (a) => a.status === "completed" && a.confidence != null,
+  );
+  const strategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
+
+  if (strategy === "Pick Best" && turn.verdict) {
+    const excerpt = `${turn.verdict.text}\n${turn.verdict.reason}`.toLowerCase();
+    for (const id of councilModelIds) {
+      if (excerpt.includes(modelById(id).name.toLowerCase())) return id;
+    }
+  }
+
+  if (!completed.length) return null;
+  return completed.reduce((best, answer) =>
+    (answer.confidence ?? 0) > (best.confidence ?? 0) ? answer : best,
+  ).model_id;
+}
+
 function AiTurn({
   set,
   turn,
   modelById,
-  onLessonCreated,
+  onLessonUpdate,
 }: {
   set: ModelSet;
   turn: ApiTurn;
   modelById: (id: string) => { name: string; color: string };
-  onLessonCreated: (lessonId: string) => void;
+  onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
 }) {
-  const { authHeaders } = useAuth();
+  const { session } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
+  const verdictRef = useRef<HTMLDivElement>(null);
+  const scrolledToVerdictRef = useRef(false);
+
+  const topModelId = turn.verdict ? inferTopModelId(turn, set.models, modelById) : null;
+  const judgeModel = turn.verdict ? modelById(turn.verdict.model_id) : null;
+
+  useEffect(() => {
+    if (!turn.verdict || scrolledToVerdictRef.current) return;
+    scrolledToVerdictRef.current = true;
+    const timer = window.setTimeout(() => {
+      verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [turn.verdict]);
+
+  function openDisagree() {
+    verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setShowDisagree(true);
+  }
 
   return (
     <div className="space-y-4">
@@ -734,14 +744,27 @@ function AiTurn({
           const status = a?.status ?? "pending";
           const failed = status === "failed";
           const inProgress = status === "pending" || status === "running";
+          const isTopPick = topModelId === id;
           return (
-            <GlassCard key={id} className="p-4">
+            <GlassCard
+              key={id}
+              className={cn(
+                "p-4",
+                isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
+              )}
+            >
               <div className="flex items-center gap-2 text-sm">
                 <span
                   className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
                   style={{ color: m.color, background: m.color }}
                 />
                 <span className="font-medium">{m.name}</span>
+                {isTopPick && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                    <Trophy className="size-3" />
+                    Top pick
+                  </span>
+                )}
                 {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
                 {!inProgress && a?.confidence != null && (
                   <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
@@ -768,58 +791,78 @@ function AiTurn({
       </div>
 
       {turn.verdict && (
-        <GlassCard glow className="p-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-              <Gavel className="size-4" />
-            </span>
-            <span className="font-medium">Verdict</span>
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
-              {turn.verdict.strategy}
-            </span>
-            <div className="ml-auto flex flex-wrap items-center gap-2">
-              {turn.lesson_id ? (
-                <Link
-                  to="/lessons/$id"
-                  params={{ id: turn.lesson_id }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+        <div ref={verdictRef} className="scroll-mt-24">
+          <GlassCard glow className="p-5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+                <Gavel className="size-4" />
+              </span>
+              <span className="font-medium">Verdict</span>
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+                {turn.verdict.strategy}
+              </span>
+              {judgeModel && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
+                  <span className="size-2 rounded-full" style={{ background: judgeModel.color }} />
+                  Judge: {judgeModel.name}
+                </span>
+              )}
+              {topModelId && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                  <Trophy className="size-3" />
+                  Best: {modelById(topModelId).name}
+                </span>
+              )}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {turn.lesson_id && turn.lesson_status === "completed" ? (
+                  <Link
+                    to="/lessons/$id"
+                    params={{ id: turn.lesson_id }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                  >
+                    <BookOpen className="size-3.5" /> View lesson
+                  </Link>
+                ) : turn.lesson_id && turn.lesson_status === "discussing" ? (
+                  <button
+                    type="button"
+                    onClick={openDisagree}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
+                  >
+                    <ThumbsDown className="size-3.5" /> Continue discussion
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={openDisagree}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary shadow-sm hover:bg-primary/15"
+                  >
+                    <ThumbsDown className="size-3.5" /> I disagree
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              <MessageContent>{turn.verdict.text}</MessageContent>
+              {turn.verdict.reason && (
+                <MessageContent
+                  muted
+                  className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
                 >
-                  <BookOpen className="size-3.5" /> View lesson
-                </Link>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setShowDisagree(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <ThumbsDown className="size-3.5" /> I disagree
-                </button>
+                  {turn.verdict.reason}
+                </MessageContent>
               )}
             </div>
-          </div>
-          <div className="mt-4 space-y-3">
-            <MessageContent>{turn.verdict.text}</MessageContent>
-            {turn.verdict.reason && (
-              <MessageContent
-                muted
-                className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
-              >
-                {turn.verdict.reason}
-              </MessageContent>
-            )}
-          </div>
-        </GlassCard>
+          </GlassCard>
+        </div>
       )}
 
-      <VerdictDisagreeModal
+      <VerdictDisagreeChat
         open={showDisagree}
         onClose={() => setShowDisagree(false)}
-        onSubmit={async (data) => {
-          const auth = authHeaders();
-          if (!auth) return;
-          const lesson = await api.lessons.disagree(auth, turn.id, data);
-          onLessonCreated(lesson.id);
-        }}
+        turnId={turn.id}
+        userName={session?.user.full_name ?? "You"}
+        onDiscussStart={(lessonId) => onLessonUpdate(lessonId, "discussing")}
+        onLessonBuilt={(lessonId) => onLessonUpdate(lessonId, "completed")}
       />
     </div>
   );

@@ -1,13 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Plus, FolderKanban } from "lucide-react";
+import { FolderKanban, Plus } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
+import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { useChatStore } from "@/lib/store";
 
 export const Route = createFileRoute("/projects/")({
-  head: () => ({ meta: [{ title: "Projects — MultiAI" }] }),
+  head: () => ({ meta: [{ title: "Projects - MultiAI" }] }),
   component: ProjectsPage,
 });
 
@@ -39,13 +39,27 @@ function ProjectsPage() {
             </GlassCard>
           ) : (
             projects.map((p) => (
-              <Link key={p.id} to="/projects/$id" params={{ id: p.id }}>
-                <GlassCard className="p-5 transition hover:border-primary/30">
+              <Link
+                key={p.id}
+                to="/projects/$id"
+                params={{ id: p.id }}
+                className="block cursor-pointer rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+              >
+                <GlassCard className="h-full p-5 transition hover:border-primary/40 hover:shadow-sm">
                   <div className="flex items-center gap-3">
                     <span className="grid size-10 place-items-center rounded-xl bg-primary/15 text-primary">
                       <FolderKanban className="size-5" />
                     </span>
-                    <div className="font-medium">{p.name}</div>
+                    <div className="min-w-0">
+                      <div className="font-medium">{p.name}</div>
+                      {p.description ? (
+                        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                          {p.description}
+                        </p>
+                      ) : (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Open project</p>
+                      )}
+                    </div>
                   </div>
                   <div className="mt-4 flex justify-between text-xs text-muted-foreground">
                     <span>{projectChatCount(p.id)} chats</span>

@@ -36,7 +36,11 @@ async def sign_up(data: SignUpRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.id == session.user.id))
     user = result.scalar_one()
     token = auth_service.create_token(user, session.organization.id)
-    return TokenResponse(access_token=token)
+    return TokenResponse(
+        access_token=token,
+        user=session.user,
+        organization=session.organization,
+    )
 
 
 @router.post("/signin", response_model=TokenResponse)
@@ -71,7 +75,11 @@ async def sign_in(
         user_agent=request.headers.get("user-agent"),
     )
     token = auth_service.create_token(user, session.organization.id)
-    return TokenResponse(access_token=token)
+    return TokenResponse(
+        access_token=token,
+        user=session.user,
+        organization=session.organization,
+    )
 
 
 @router.get("/session", response_model=SessionResponse)
