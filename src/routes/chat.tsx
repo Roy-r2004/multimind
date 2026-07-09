@@ -49,6 +49,7 @@ import {
 import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
+import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 
 export const Route = createFileRoute("/chat")({
   head: () => ({ meta: [{ title: "Chat — MultiAI" }] }),
@@ -277,8 +278,8 @@ export function ChatPage() {
                   One question. Many minds.
                 </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro — real models via OpenRouter, one
-                  verdict.
+                  GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro, Grok, DeepSeek V3 — real models via
+                  OpenRouter, one verdict.
                 </p>
                 <Link
                   to="/login"
@@ -300,7 +301,7 @@ export function ChatPage() {
                   <span className="text-gradient">Decide with clarity.</span>
                 </h2>
                 <p className="mx-auto max-w-lg text-sm text-muted-foreground">
-                  {set.models.length} models answer in parallel — then Verdict AI synthesizes the
+                  {MAX_COUNCIL_MODELS} models answer in parallel — then Verdict AI synthesizes the
                   final answer using <strong className="text-foreground">{set.strategy}</strong>.
                 </p>
                 <button
@@ -308,10 +309,10 @@ export function ChatPage() {
                   onClick={() => setShowCouncil(true)}
                   className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10"
                 >
-                  Choose your 5 models
+                  Choose your {MAX_COUNCIL_MODELS} models
                 </button>
                 <div className="mx-auto grid max-w-5xl gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  {(models.length ? models : flagshipModels).slice(0, 5).map((m) => (
+                  {(models.length ? models : flagshipModels).slice(0, MAX_COUNCIL_MODELS).map((m) => (
                     <ModelPill key={m.id} name={m.name} vendor={m.vendor} color={m.color} />
                   ))}
                 </div>
