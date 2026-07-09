@@ -28,7 +28,7 @@ function AdminBrainsPage() {
   return (
     <AdminPageFrame
       title="User Brains"
-      description="Persistent memory profiles learned from verdict disagreements — what each user thinks."
+      description="Persistent memory profiles learned from verdict challenges — what each user thinks."
     >
       <DataTable
         columns={[
@@ -63,7 +63,7 @@ function AdminBrainsPage() {
             ),
           },
         }))}
-        empty="No brain profiles yet. Brains are created when users disagree with verdicts."
+        empty="No brain profiles yet. Brains are created when users challenge verdicts."
       />
     </AdminPageFrame>
   );

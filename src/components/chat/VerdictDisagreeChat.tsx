@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const OPENING =
-  "I read the verdict and your pushback matters. Walk me through what feels wrong — what did the council get wrong, and what would you do instead?\n\nI'll tell you clearly when I agree or disagree with you as we go.";
+  "I read the verdict and your challenge matters. Walk me through what feels wrong — what did the council get wrong, and what would you do instead?\n\nI'll tell you clearly when I agree or push back as we go.";
 
 const OPENING_MARKER = "Walk me through what feels wrong";
 
@@ -29,8 +29,7 @@ function looksLikeOpening(content: string, index: number): boolean {
 function normalizeMessages(messages: ApiDiscussMessage[]): ApiDiscussMessage[] {
   const roleKeys = new Set(messages.map((m) => m.role.trim().toLowerCase()));
   const fullyAmbiguous =
-    messages.length > 0 &&
-    [...roleKeys].every((r) => r === "chafic" || r === "chafiq");
+    messages.length > 0 && [...roleKeys].every((r) => r === "chafic" || r === "chafiq");
 
   let last: "assistant" | "user" | null = null;
   return messages.map((m, index) => {
@@ -145,7 +144,7 @@ export function VerdictDisagreeChat({
         const message = e instanceof Error ? e.message : "Could not start discussion";
         if (/turn not found/i.test(message)) {
           setError(
-            "This chat turn is no longer available (it may have been deleted during an API restart). Send a new question, wait for the verdict, then disagree again.",
+            "This chat turn is no longer available (it may have been deleted during an API restart). Send a new question, wait for the verdict, then challenge it again.",
           );
         } else {
           setError(message);
@@ -195,7 +194,7 @@ export function VerdictDisagreeChat({
     const auth = authHeaders();
     if (!auth) return;
     if (!hasUserMessage(messages)) {
-      setError("Send at least one message explaining why you disagree first.");
+      setError("Send at least one message explaining your challenge first.");
       return;
     }
     setFinalizing(true);
@@ -212,7 +211,8 @@ export function VerdictDisagreeChat({
     }
   }
 
-  const finishEnabled = (canFinalize || hasUserMessage(messages)) && ready && !loading && !finalizing;
+  const finishEnabled =
+    (canFinalize || hasUserMessage(messages)) && ready && !loading && !finalizing;
 
   return (
     <Modal open={open} onClose={onClose} title="Discuss with AI" size="xl">
@@ -337,7 +337,7 @@ export function VerdictDisagreeChat({
       </div>
       {!finishEnabled && ready && !error && (
         <p className="mt-2 text-center text-xs text-muted-foreground">
-          Send at least one reply explaining your disagreement, then finish.
+          Send at least one reply explaining your challenge, then finish.
         </p>
       )}
       {finishEnabled && (

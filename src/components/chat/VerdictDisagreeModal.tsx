@@ -26,7 +26,9 @@ export function VerdictDisagreeModal({
 
   async function handleSubmit() {
     if (reason.trim().length < 10 || position.trim().length < 10) {
-      setError("Please explain why you disagree and what you believe instead (at least 10 characters each).");
+      setError(
+        "Please explain what you want to challenge and what you believe instead (at least 10 characters each).",
+      );
       return;
     }
     setSaving(true);
@@ -44,9 +46,10 @@ export function VerdictDisagreeModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Disagree with the verdict" size="lg">
+    <Modal open={open} onClose={onClose} title="Challenge the verdict" size="lg">
       <p className="text-sm text-muted-foreground">
-        Tell us why the verdict missed the mark. We&apos;ll build a detailed comparison lesson — you vs the model.
+        Tell us why the verdict missed the mark. We&apos;ll build a detailed comparison lesson — you
+        vs the model.
       </p>
       {error && (
         <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -55,7 +58,7 @@ export function VerdictDisagreeModal({
       )}
       <div className="mt-4 space-y-4">
         <label className="block text-sm">
-          <div className="mb-1 font-medium">Why do you disagree?</div>
+          <div className="mb-1 font-medium">What do you want to challenge?</div>
           <textarea
             ref={reasonRef}
             value={reason}

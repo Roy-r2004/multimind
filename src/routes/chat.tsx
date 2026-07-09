@@ -19,7 +19,7 @@ import {
   FileSpreadsheet,
   Upload,
   Image as ImageIcon,
-  ThumbsDown,
+  Swords,
   BookOpen,
   Trophy,
 } from "lucide-react";
@@ -853,7 +853,7 @@ function AiTurn({
                     onClick={openDisagree}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
                   >
-                    <ThumbsDown className="size-3.5" /> Continue discussion
+                    <Swords className="size-3.5" /> challenge
                   </button>
                 ) : (
                   <button
@@ -861,7 +861,7 @@ function AiTurn({
                     onClick={openDisagree}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary shadow-sm hover:bg-primary/15"
                   >
-                    <ThumbsDown className="size-3.5" /> I disagree
+                    <Swords className="size-3.5" /> Challenge
                   </button>
                 )}
               </div>

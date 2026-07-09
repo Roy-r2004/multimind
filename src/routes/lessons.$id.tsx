@@ -21,7 +21,7 @@ import { useAuth } from "@/lib/auth";
 
 function stanceLabel(stance: FacilitatorStance | null | undefined): string | null {
   if (stance === "agreed") return "AI agreed with you";
-  if (stance === "disagreed") return "AI disagreed with you";
+  if (stance === "disagreed") return "AI pushed back";
   if (stance === "partly_agreed") return "AI partly agreed";
   return null;
 }
@@ -219,7 +219,7 @@ function LessonDetailPage() {
           )}
 
           <SkeletonReveal delayMs={500} className="mt-8">
-            <Section title="Why you disagreed">
+            <Section title="What you challenged">
               <p className="text-sm leading-relaxed text-muted-foreground">
                 {lesson.disagreement_reason}
               </p>
@@ -248,7 +248,7 @@ function LessonDetailPage() {
 
           {c.disagreements.length > 0 && (
             <Section
-              title="Points of disagreement"
+              title="Points of challenge"
               icon={<Scale className="size-4 text-primary" />}
               className="mt-8"
             >
