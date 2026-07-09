@@ -23,6 +23,7 @@ _BASE_CONTEXT_DEFAULTS = {
     "custom_instructions": None,
     "template_instructions": None,
     "user_brain_context": "",
+    "previous_verdict_context": "",
 }
 
 
@@ -61,6 +62,7 @@ class PromptEngine:
         template_instructions: str | None = None,
         chat_history: list[dict[str, str]] | None = None,
         user_brain_context: str | None = None,
+        previous_verdict_context: str | None = None,
     ) -> str:
         return self.render(
             "system/model_answer.j2",
@@ -73,6 +75,7 @@ class PromptEngine:
             template_instructions=template_instructions,
             chat_history=chat_history or [],
             user_brain_context=user_brain_context or "",
+            previous_verdict_context=previous_verdict_context or "",
         )
 
     def verdict_prompt(
@@ -84,6 +87,7 @@ class PromptEngine:
         custom_instructions: str | None = None,
         template_instructions: str | None = None,
         user_brain_context: str | None = None,
+        previous_verdict_context: str | None = None,
     ) -> str:
         template = STRATEGY_TEMPLATE_MAP.get(strategy, "system/verdict.j2")
         return self.render(
@@ -94,6 +98,7 @@ class PromptEngine:
             custom_instructions=custom_instructions,
             template_instructions=template_instructions,
             user_brain_context=user_brain_context or "",
+            previous_verdict_context=previous_verdict_context or "",
         )
 
     def decision_insurance_prompt(

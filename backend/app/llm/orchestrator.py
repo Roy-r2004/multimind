@@ -41,6 +41,7 @@ class TurnContext:
     custom_instructions: str | None = None
     template_instructions: str | None = None
     user_brain_context: str | None = None
+    previous_verdict_context: str | None = None
     skip_answer_seed: bool = False
 
 
@@ -127,6 +128,7 @@ class TurnOrchestrator:
                 custom_instructions=ctx.custom_instructions,
                 template_instructions=ctx.template_instructions,
                 user_brain_context=ctx.user_brain_context,
+                previous_verdict_context=ctx.previous_verdict_context,
             )
 
             try:
@@ -225,6 +227,7 @@ class TurnOrchestrator:
             custom_instructions=ctx.custom_instructions,
             template_instructions=ctx.template_instructions,
             user_brain_context=ctx.user_brain_context,
+            previous_verdict_context=ctx.previous_verdict_context,
         )
 
         verdict_model = get_model(ctx.verdict_model_id)
