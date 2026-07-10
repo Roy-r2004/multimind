@@ -47,11 +47,6 @@ services:
     plan: free
     healthCheckPath: /
     envVars:
-      - key: API_PUBLIC_URL
-        fromService:
-          type: web
-          name: multiai-api
-          envVarKey: RENDER_EXTERNAL_URL
       - key: BACKEND_PROXY_TARGET
         fromService:
           type: web

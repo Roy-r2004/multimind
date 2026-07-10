@@ -4,14 +4,10 @@ import type { ApiError } from "@/lib/api/types";
 
 export { ApiClientError } from "@/lib/api/types";
 
-const DEFAULT_TIMEOUT_MS = 25_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 function resolveApiBase(): string {
-  if (typeof document !== "undefined") {
-    const fromMeta = document.querySelector('meta[name="api-base"]')?.getAttribute("content");
-    if (fromMeta) return fromMeta;
-  }
-  return import.meta.env.VITE_API_URL ?? "/api/v1";
+  return (import.meta.env.VITE_API_URL ?? "/api/v1").replace(/\/$/, "");
 }
 
 type RequestOptions = {
@@ -53,7 +49,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   } catch (err) {
     const { ApiClientError } = await import("@/lib/api/types");
     const aborted =
-      (typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "AbortError") ||
+      (typeof DOMException !== "undefined" &&
+        err instanceof DOMException &&
+        err.name === "AbortError") ||
       (err instanceof Error && err.name === "AbortError");
     if (aborted) {
       throw new ApiClientError(
@@ -62,7 +60,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       );
     }
     throw new ApiClientError(
-      "Cannot reach the API. Check that multiai-api is running on Render.",
+      "Cannot reach the API. Check that the backend service is running and reachable.",
       0,
     );
   } finally {
