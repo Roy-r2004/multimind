@@ -19,6 +19,7 @@ async function proxyApiRequest(request: Request): Promise<Response | null> {
   const target = `${backendTarget()}${url.pathname}${url.search}`;
   const headers = new Headers(request.headers);
   headers.delete("host");
+  headers.set("accept-encoding", "identity");
 
   const init: RequestInit & { duplex?: "half" } = {
     method: request.method,
@@ -31,7 +32,19 @@ async function proxyApiRequest(request: Request): Promise<Response | null> {
   }
 
   try {
-    return await fetch(target, init);
+    const upstream = await fetch(target, init);
+    const responseHeaders = new Headers(upstream.headers);
+    responseHeaders.delete("content-encoding");
+    responseHeaders.delete("content-length");
+    responseHeaders.delete("transfer-encoding");
+    responseHeaders.delete("connection");
+    responseHeaders.delete("keep-alive");
+
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: responseHeaders,
+    });
   } catch (error) {
     console.error("api_proxy_failed", { target, error });
     return new Response(
