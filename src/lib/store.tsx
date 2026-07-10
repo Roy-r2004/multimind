@@ -87,6 +87,11 @@ function mapProject(p: ApiProject): Project {
   };
 }
 
+function selectExistingModelSetId(sets: ModelSet[], currentId: string): string {
+  if (sets.some((set) => set.id === currentId)) return currentId;
+  return sets[0]?.id ?? "";
+}
+
 export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, authHeaders, isLoading: authLoading } = useAuth();
   const isApiMode = isAuthenticated;
@@ -94,7 +99,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [modelSets, setModelSets] = useState<ModelSet[]>([]);
-  const [activeModelSetId, setActiveModelSetIdState] = useState("balanced");
+  const [activeModelSetId, setActiveModelSetIdState] = useState("");
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -110,7 +115,9 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       ]);
       setChats(chatList.map(mapChat));
       setProjects(projectList.map(mapProject));
-      setModelSets(setList.map(mapModelSet));
+      const mappedModelSets = setList.map(mapModelSet);
+      setModelSets(mappedModelSets);
+      setActiveModelSetIdState((activeId) => selectExistingModelSetId(mappedModelSets, activeId));
     } finally {
       setIsLoading(false);
     }
@@ -166,7 +173,9 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         best_for: set.bestFor,
         custom_instructions: set.customInstructions ?? null,
       });
-      setModelSets((prev) => prev.map((item) => (item.id === set.id ? mapModelSet(updated) : item)));
+      setModelSets((prev) =>
+        prev.map((item) => (item.id === set.id ? mapModelSet(updated) : item)),
+      );
     },
     [authHeaders],
   );
@@ -175,13 +184,19 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     async (id: string) => {
       const auth = authHeaders();
       if (!auth) {
-        setModelSets((prev) => prev.filter((item) => item.id !== id));
-        setActiveModelSetIdState((activeId) => (activeId === id ? "balanced" : activeId));
+        setModelSets((prev) => {
+          const remaining = prev.filter((item) => item.id !== id);
+          setActiveModelSetIdState((activeId) => selectExistingModelSetId(remaining, activeId));
+          return remaining;
+        });
         return;
       }
       await api.modelSets.delete(auth, id);
-      setModelSets((prev) => prev.filter((item) => item.id !== id));
-      setActiveModelSetIdState((activeId) => (activeId === id ? "balanced" : activeId));
+      setModelSets((prev) => {
+        const remaining = prev.filter((item) => item.id !== id);
+        setActiveModelSetIdState((activeId) => selectExistingModelSetId(remaining, activeId));
+        return remaining;
+      });
     },
     [authHeaders],
   );

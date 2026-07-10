@@ -92,25 +92,19 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "twitter:title", content: "MultiAI" },
     ];
 
-    const apiOrigin =
-      typeof process !== "undefined" ? process.env.API_PUBLIC_URL?.replace(/\/$/, "") : undefined;
-    if (apiOrigin) {
-      meta.push({ name: "api-base", content: `${apiOrigin}/api/v1` });
-    }
-
     return {
       meta,
       links: [
-      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
-      { rel: "apple-touch-icon", href: "/logo.svg" },
-      { rel: "preconnect", href: "https://fonts.googleapis.com" },
-      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
-      {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@500;600;700;800&display=swap",
-      },
-      { rel: "stylesheet", href: appCss },
-    ],
+        { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+        { rel: "apple-touch-icon", href: "/logo.svg" },
+        { rel: "preconnect", href: "https://fonts.googleapis.com" },
+        { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+        {
+          rel: "stylesheet",
+          href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@500;600;700;800&display=swap",
+        },
+        { rel: "stylesheet", href: appCss },
+      ],
     };
   },
   shellComponent: RootShell,
