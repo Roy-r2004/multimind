@@ -30,6 +30,8 @@ import type {
   ApiProject,
   ApiProjectDetail,
   ApiSession,
+  ApiPromptBuilderImproveRequest,
+  ApiPromptBuilderImproveResponse,
   ApiShareLink,
   ApiSharedChat,
   ApiTemplate,
@@ -224,6 +226,15 @@ export const api = {
     ) =>
       apiRequest<ApiTemplate>("/templates", {
         method: "POST",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  promptBuilder: {
+    improve: (auth: Auth, data: ApiPromptBuilderImproveRequest) =>
+      apiRequest<ApiPromptBuilderImproveResponse>("/prompt-builder/improve", {
         body: data,
         token: auth.token,
         orgId: auth.orgId,
