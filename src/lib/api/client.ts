@@ -82,7 +82,16 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     return undefined as T;
   }
 
-  return (await res.json()) as T;
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const { ApiClientError } = await import("@/lib/api/types");
+    throw new ApiClientError(
+      "The API returned an incomplete or invalid JSON response.",
+      res.status,
+    );
+  }
 }
 
 export function getApiBase(): string {
