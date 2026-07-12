@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid import UUID
+
 
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.session import get_db
@@ -26,7 +26,7 @@ async def list_projects(
 
 @router.get("/{project_id}", response_model=ProjectDetailResponse)
 async def get_project(
-    project_id: UUID,
+    project_id: str,
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -35,7 +35,7 @@ async def get_project(
 
 @router.patch("/{project_id}", response_model=ProjectDetailResponse)
 async def update_project(
-    project_id: UUID,
+    project_id: str,
     data: ProjectUpdateRequest,
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
