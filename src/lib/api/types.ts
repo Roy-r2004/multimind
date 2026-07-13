@@ -64,6 +64,17 @@ export type ApiProject = {
 
 export type ApiProjectDetail = ApiProject & {
   chats: ApiChat[];
+  scraping_missions: ApiProjectScrapingMission[];
+};
+
+export type ApiProjectScrapingMission = {
+  id: string;
+  title: string;
+  status: string;
+  project_id?: string | null;
+  active_blueprint_id?: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ApiDiscussMessage = {

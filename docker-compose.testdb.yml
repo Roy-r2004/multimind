@@ -1,0 +1,4 @@
+services:
+  api:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://multiai:multiai@postgres:5432/multiai_scraping_test

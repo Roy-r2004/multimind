@@ -5,12 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.models import (
     ModelSet,
     Project,
     ScrapingBlueprint,
     ScrapingMission,
+    ScrapingMissionStatus,
 )
 from app.schemas.api import (
     ScrapingMissionCreate,
@@ -51,11 +52,12 @@ class ScrapingMissionService:
         self, db: AsyncSession, auth: AuthContext
     ) -> list[ScrapingMissionSummary]:
         rows = await db.execute(
-            select(ScrapingMission, ScrapingBlueprint.version)
+            select(ScrapingMission, ScrapingBlueprint.version, Project.name)
             .outerjoin(
                 ScrapingBlueprint,
                 ScrapingBlueprint.id == ScrapingMission.active_blueprint_id,
             )
+            .outerjoin(Project, Project.id == ScrapingMission.project_id)
             .where(ScrapingMission.org_id == auth.org_id)
             .order_by(ScrapingMission.updated_at.desc())
         )
@@ -65,12 +67,14 @@ class ScrapingMissionService:
                 title=mission.title,
                 original_prompt=mission.original_prompt,
                 status=mission.status.value,
+                project_id=mission.project_id,
+                project_name=project_name,
                 active_blueprint_id=mission.active_blueprint_id,
                 active_blueprint_version=version,
                 created_at=mission.created_at,
                 updated_at=mission.updated_at,
             )
-            for mission, version in rows.all()
+            for mission, version, project_name in rows.all()
         ]
 
     async def get_mission(
@@ -116,14 +120,18 @@ class ScrapingMissionService:
                 raise ValidationError("Mission title is required")
             mission.title = title
         if "project_id" in data.model_fields_set:
+            project = None
             if data.project_id is not None:
-                await self.resolve_project(db, auth, data.project_id)
+                project = await self.resolve_project(db, auth, data.project_id)
             mission.project_id = data.project_id
+            mission.project = project
         await db.flush()
         return await self.get_mission(db, auth, mission_id)
 
     async def delete_mission(self, db: AsyncSession, auth: AuthContext, mission_id: str) -> None:
         mission = await self.get_mission_row(db, auth, mission_id)
+        if mission.status == ScrapingMissionStatus.BLUEPRINT_GENERATING:
+            raise ConflictError("A mission cannot be deleted while its blueprint is generating.")
         await db.execute(
             delete(ScrapingBlueprint).where(ScrapingBlueprint.mission_id == mission.id)
         )

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -158,6 +159,16 @@ class ProjectUpdateRequest(BaseModel):
     description: str | None = None
 
 
+class ProjectScrapingMissionResponse(BaseModel):
+    id: str
+    title: str
+    status: str
+    project_id: str | None = None
+    active_blueprint_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 # --- Scraping Council ---
 
 
@@ -173,7 +184,7 @@ class ScrapingMissionCreate(BaseModel):
 class ScrapingMissionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=512)
     project_id: str | None = None
 
 
@@ -201,11 +212,28 @@ class ScrapingBlueprintChangeRequest(BaseModel):
     change_instructions: str
 
 
+class ScrapingBlueprintRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("Blueprint name is required")
+        return value
+
+
 class ScrapingMissionSummary(BaseModel):
     id: str
     title: str
     original_prompt: str
     status: str
+    project_id: str | None = None
+    project_name: str | None = None
     active_blueprint_id: str | None = None
     active_blueprint_version: int | None = None
     created_at: datetime
@@ -315,6 +343,7 @@ class ScrapingBlueprintResponse(BaseModel):
     id: str
     mission_id: str
     version: int
+    display_name: str | None = None
     status: str
     blueprint_json: ScrapingBlueprintContent | None = None
     model_set_id: str
@@ -349,6 +378,7 @@ class ProjectDetailResponse(BaseModel):
     chat_count: int = 0
     updated_at: datetime
     chats: list[ChatResponse] = []
+    scraping_missions: list[ProjectScrapingMissionResponse] = []
 
 
 class ChatCreateRequest(BaseModel):

@@ -20,6 +20,8 @@ export type ScrapingMissionSummary = {
   title: string;
   original_prompt: string;
   status: ScrapingMissionStatus;
+  project_id?: string | null;
+  project_name?: string | null;
   active_blueprint_id?: string | null;
   active_blueprint_version?: number | null;
   created_at: string;
@@ -76,6 +78,7 @@ export type ScrapingBlueprint = {
   id: string;
   mission_id: string;
   version: number;
+  display_name: string | null;
   status: ScrapingBlueprintStatus;
   blueprint_json?: ScrapingBlueprintContent | null;
   model_set_id: string;
@@ -95,5 +98,10 @@ export type ScrapingMissionCreateInput = {
   title: string;
   original_prompt: string;
   model_set_id: string;
+  project_id?: string | null;
+};
+
+export type ScrapingMissionUpdateInput = {
+  title?: string;
   project_id?: string | null;
 };

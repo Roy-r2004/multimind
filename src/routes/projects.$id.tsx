@@ -1,6 +1,15 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { FolderKanban, MessageSquare, Pencil, Plus, Save, Trash2, X } from "lucide-react";
+import {
+  ClipboardList,
+  FolderKanban,
+  MessageSquare,
+  Pencil,
+  Plus,
+  Save,
+  Trash2,
+  X,
+} from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
@@ -82,6 +91,7 @@ function ProjectDetail() {
             ...summary,
             chat_count: chats.length,
             chats,
+            scraping_missions: [],
           };
           if (!cancelled) {
             setProject(data);
@@ -99,8 +109,10 @@ function ProjectDetail() {
     }
 
     void loadProject();
+    window.addEventListener("scraping-missions-updated", loadProject);
     return () => {
       cancelled = true;
+      window.removeEventListener("scraping-missions-updated", loadProject);
     };
   }, [id, authHeaders, isAuthenticated, authLoading]);
 
@@ -318,6 +330,42 @@ function ProjectDetail() {
                   </span>
                 </GlassCard>
               </button>
+            ))
+          )}
+        </div>
+
+        <div className="mt-8">
+          <h2 className="text-sm font-semibold">Scraping Missions</h2>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {project.scraping_missions.length === 0 ? (
+            <GlassCard className="p-10 text-center text-sm text-muted-foreground">
+              No scraping missions are assigned to this project.
+            </GlassCard>
+          ) : (
+            project.scraping_missions.map((mission) => (
+              <Link
+                key={mission.id}
+                to="/scraping/$missionId"
+                params={{ missionId: mission.id }}
+                className="block cursor-pointer"
+              >
+                <GlassCard className="flex items-center justify-between p-4 transition hover:border-primary/30">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <ClipboardList className="size-4 shrink-0 text-primary" />
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">{mission.title}</span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {mission.status}
+                      </span>
+                    </span>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatRelativeTime(mission.updated_at)}
+                  </span>
+                </GlassCard>
+              </Link>
             ))
           )}
         </div>

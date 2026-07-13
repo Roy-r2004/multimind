@@ -18,6 +18,7 @@ from app.schemas.api import (
     ProjectCreateRequest,
     ProjectDetailResponse,
     ProjectResponse,
+    ProjectScrapingMissionResponse,
     ProjectUpdateRequest,
     TemplateCreateRequest,
     TemplateResponse,
@@ -81,6 +82,12 @@ class ProjectService:
             .order_by(Chat.updated_at.desc())
         )
         chats = result.scalars().all()
+        mission_result = await db.execute(
+            select(ScrapingMission)
+            .where(ScrapingMission.project_id == project.id, ScrapingMission.org_id == auth.org_id)
+            .order_by(ScrapingMission.updated_at.desc())
+        )
+        scraping_missions = mission_result.scalars().all()
         return ProjectDetailResponse(
             id=project.id,
             name=project.name,
@@ -95,6 +102,18 @@ class ProjectService:
                     updated_at=c.updated_at,
                 )
                 for c in chats
+            ],
+            scraping_missions=[
+                ProjectScrapingMissionResponse(
+                    id=mission.id,
+                    title=mission.title,
+                    status=mission.status.value,
+                    project_id=mission.project_id,
+                    active_blueprint_id=mission.active_blueprint_id,
+                    created_at=mission.created_at,
+                    updated_at=mission.updated_at,
+                )
+                for mission in scraping_missions
             ],
         )
 

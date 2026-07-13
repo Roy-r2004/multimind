@@ -1,6 +1,6 @@
 """Scraping blueprint endpoints."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext, get_auth_context
@@ -9,6 +9,7 @@ from app.schemas.api import (
     ScrapingBlueprintApproveRequest,
     ScrapingBlueprintChangeRequest,
     ScrapingBlueprintRejectRequest,
+    ScrapingBlueprintRenameRequest,
     ScrapingBlueprintResponse,
 )
 from app.services.scraping.blueprint_service import blueprint_service
@@ -23,6 +24,26 @@ async def get_blueprint(
     db: AsyncSession = Depends(get_db),
 ):
     return await blueprint_service.get_blueprint(db, auth, blueprint_id)
+
+
+@router.patch("/{blueprint_id}/rename", response_model=ScrapingBlueprintResponse)
+async def rename_blueprint(
+    blueprint_id: str,
+    data: ScrapingBlueprintRenameRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await blueprint_service.rename_blueprint(db, auth, blueprint_id, data)
+
+
+@router.delete("/{blueprint_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_blueprint(
+    blueprint_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    await blueprint_service.delete_blueprint(db, auth, blueprint_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{blueprint_id}/approve", response_model=ScrapingBlueprintResponse)

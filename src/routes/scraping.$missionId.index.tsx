@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { MissionStatusBadge } from "@/components/scraping/MissionStatusBadge";
@@ -19,16 +19,26 @@ function ScrapingMissionPage() {
   const [mission, setMission] = useState<ScrapingMissionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadMission = useCallback(() => {
     const auth = authHeaders();
     if (!auth) {
       void navigate({ to: "/login" });
       return;
     }
+    setError(null);
     void getScrapingMission(auth, missionId)
       .then(setMission)
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load mission"));
   }, [authHeaders, missionId, navigate]);
+
+  useEffect(() => {
+    loadMission();
+  }, [loadMission]);
+
+  useEffect(() => {
+    window.addEventListener("scraping-missions-updated", loadMission);
+    return () => window.removeEventListener("scraping-missions-updated", loadMission);
+  }, [loadMission]);
 
   return (
     <AppShell>

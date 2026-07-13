@@ -1,12 +1,11 @@
 """Scraping mission endpoints."""
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.session import get_db
 from app.schemas.api import (
-    MessageResponse,
     ScrapingBlueprintGenerateRequest,
     ScrapingBlueprintResponse,
     ScrapingMissionCreate,
@@ -56,14 +55,14 @@ async def update_mission(
     return await mission_service.update_mission(db, auth, mission_id, data)
 
 
-@router.delete("/{mission_id}", response_model=MessageResponse)
+@router.delete("/{mission_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_mission(
     mission_id: str,
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     await mission_service.delete_mission(db, auth, mission_id)
-    return MessageResponse(message="Scraping mission deleted")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

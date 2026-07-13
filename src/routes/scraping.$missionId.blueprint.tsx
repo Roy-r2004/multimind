@@ -3,15 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { BlueprintApprovalBar } from "@/components/scraping/BlueprintApprovalBar";
+import { BlueprintVersionList } from "@/components/scraping/BlueprintVersionList";
 import { BlueprintViewer } from "@/components/scraping/BlueprintViewer";
 import { MissionStatusBadge } from "@/components/scraping/MissionStatusBadge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useAuth } from "@/lib/auth";
 import {
   approveScrapingBlueprint,
@@ -22,6 +16,10 @@ import {
   requestScrapingBlueprintChanges,
 } from "@/lib/scraping/api";
 import type { ScrapingBlueprint, ScrapingMissionDetail } from "@/lib/scraping/types";
+
+function blueprintDisplayName(blueprint: ScrapingBlueprint): string {
+  return blueprint.display_name?.trim() || `Blueprint v${blueprint.version}`;
+}
 
 export const Route = createFileRoute("/scraping/$missionId/blueprint")({
   head: () => ({ meta: [{ title: "Scraping Blueprint - MultiAI" }] }),
@@ -49,7 +47,7 @@ function ScrapingBlueprintPage() {
       const auth = authHeaders();
       if (!auth) {
         void navigate({ to: "/login" });
-        return;
+        return [];
       }
       setLoading(true);
       setError(null);
@@ -67,8 +65,10 @@ function ScrapingBlueprintPage() {
           }
           return blueprintResult[0]?.id ?? "";
         });
+        return blueprintResult;
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load blueprint");
+        return [];
       } finally {
         setLoading(false);
       }
@@ -79,6 +79,14 @@ function ScrapingBlueprintPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    function reloadMission() {
+      void load(selectedId);
+    }
+    window.addEventListener("scraping-missions-updated", reloadMission);
+    return () => window.removeEventListener("scraping-missions-updated", reloadMission);
+  }, [load, selectedId]);
 
   async function withAuth<T>(action: (auth: { token: string; orgId: string }) => Promise<T>) {
     const auth = authHeaders();
@@ -124,7 +132,10 @@ function ScrapingBlueprintPage() {
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div className="space-y-2 text-sm">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">Blueprint version v{selected.version}</span>
+                    <span className="font-medium">{blueprintDisplayName(selected)}</span>
+                    <span className="text-xs text-muted-foreground">
+                      Version {selected.version}
+                    </span>
                     <MissionStatusBadge status={selected.status} />
                   </div>
                   <div className="text-muted-foreground">
@@ -144,18 +155,14 @@ function ScrapingBlueprintPage() {
                     <div className="text-destructive">Reason: {selected.rejection_reason}</div>
                   )}
                 </div>
-                <Select value={selected.id} onValueChange={setSelectedId}>
-                  <SelectTrigger className="w-full md:w-56">
-                    <SelectValue placeholder="Blueprint version" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {blueprints.map((blueprint) => (
-                      <SelectItem key={blueprint.id} value={blueprint.id}>
-                        v{blueprint.version} · {blueprint.status}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {mission && (
+                  <BlueprintVersionList
+                    blueprints={blueprints}
+                    mission={mission}
+                    selectedId={selected.id}
+                    onSelect={setSelectedId}
+                  />
+                )}
               </div>
             </GlassCard>
             {selected.blueprint_json ? (

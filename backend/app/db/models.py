@@ -294,6 +294,7 @@ class ScrapingBlueprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
     blueprint_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     model_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
     judge_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     approved_by: Mapped[str | None] = mapped_column(

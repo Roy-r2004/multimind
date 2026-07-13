@@ -2,12 +2,13 @@
 
 from datetime import UTC, datetime
 from typing import Any
+
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.models import (
     ScrapingBlueprint,
     ScrapingBlueprintStatus,
@@ -17,6 +18,7 @@ from app.db.models import (
 from app.schemas.api import (
     ScrapingBlueprintChangeRequest,
     ScrapingBlueprintContent,
+    ScrapingBlueprintRenameRequest,
     ScrapingBlueprintResponse,
     ScrapingBlueprintRejectRequest,
 )
@@ -79,6 +81,47 @@ class ScrapingBlueprintService:
         self, db: AsyncSession, auth: AuthContext, blueprint_id: str
     ) -> ScrapingBlueprintResponse:
         return self._response(await self.get_blueprint_row(db, auth, blueprint_id))
+
+    async def rename_blueprint(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        blueprint_id: str,
+        data: ScrapingBlueprintRenameRequest,
+    ) -> ScrapingBlueprintResponse:
+        blueprint = await self.get_blueprint_row(db, auth, blueprint_id)
+        if blueprint.status == ScrapingBlueprintStatus.GENERATING:
+            raise ConflictError("A blueprint that is currently generating cannot be renamed.")
+
+        blueprint.display_name = data.name
+        await db.commit()
+        await db.refresh(blueprint)
+        return self._response(blueprint)
+
+    async def delete_blueprint(
+        self, db: AsyncSession, auth: AuthContext, blueprint_id: str
+    ) -> None:
+        blueprint = await self.get_blueprint_row(db, auth, blueprint_id)
+        mission = blueprint.mission
+        if (
+            mission.active_blueprint_id == blueprint.id
+            or blueprint.status == ScrapingBlueprintStatus.APPROVED
+        ):
+            raise ConflictError(
+                "The active approved blueprint cannot be deleted. "
+                "Approve another version or delete the mission instead."
+            )
+        if blueprint.status == ScrapingBlueprintStatus.GENERATING:
+            raise ConflictError("A blueprint that is currently generating cannot be deleted.")
+
+        await db.delete(blueprint)
+        await db.flush()
+        result = await db.execute(
+            select(ScrapingBlueprint).where(ScrapingBlueprint.mission_id == mission.id)
+        )
+        remaining = result.scalars().all()
+        self._recalculate_mission_status_after_delete(mission, remaining)
+        await db.commit()
 
     async def approve_blueprint(
         self, db: AsyncSession, auth: AuthContext, blueprint_id: str
@@ -219,6 +262,7 @@ class ScrapingBlueprintService:
             id=blueprint.id,
             mission_id=blueprint.mission_id,
             version=blueprint.version,
+            display_name=blueprint.display_name,
             status=blueprint.status.value,
             blueprint_json=content,
             model_set_id=blueprint.model_set_id,
@@ -233,6 +277,34 @@ class ScrapingBlueprintService:
             created_at=blueprint.created_at,
             updated_at=blueprint.updated_at,
         )
+
+    def _recalculate_mission_status_after_delete(
+        self, mission: ScrapingMission, blueprints: list[ScrapingBlueprint]
+    ) -> None:
+        if mission.active_blueprint_id is not None:
+            mission.status = ScrapingMissionStatus.APPROVED
+        elif any(
+            blueprint.status == ScrapingBlueprintStatus.GENERATING for blueprint in blueprints
+        ):
+            mission.status = ScrapingMissionStatus.BLUEPRINT_GENERATING
+        elif any(blueprint.status == ScrapingBlueprintStatus.DRAFT for blueprint in blueprints):
+            mission.status = ScrapingMissionStatus.AWAITING_APPROVAL
+        elif blueprints and all(
+            blueprint.status == ScrapingBlueprintStatus.FAILED for blueprint in blueprints
+        ):
+            mission.status = ScrapingMissionStatus.FAILED
+        elif blueprints and not any(
+            blueprint.status
+            in (
+                ScrapingBlueprintStatus.DRAFT,
+                ScrapingBlueprintStatus.GENERATING,
+                ScrapingBlueprintStatus.APPROVED,
+            )
+            for blueprint in blueprints
+        ):
+            mission.status = ScrapingMissionStatus.REJECTED
+        elif not blueprints:
+            mission.status = ScrapingMissionStatus.DRAFT
 
 
 blueprint_service = ScrapingBlueprintService()
