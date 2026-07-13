@@ -7,8 +7,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import ForbiddenError, NotFoundError
-from app.db.models import Chat, CostRecord, ModelSet, Project, Strategy, Template
+from app.core.exceptions import ConflictError, NotFoundError
+from app.db.models import Chat, CostRecord, ModelSet, Project, ScrapingMission, Strategy, Template
 from app.schemas.api import (
     CostSummaryResponse,
     ChatResponse,
@@ -121,6 +121,11 @@ class ProjectService:
             .where(Chat.project_id == project.id, Chat.org_id == auth.org_id)
             .values(project_id=None)
         )
+        await db.execute(
+            update(ScrapingMission)
+            .where(ScrapingMission.project_id == project.id, ScrapingMission.org_id == auth.org_id)
+            .values(project_id=None)
+        )
         await db.delete(project)
 
 
@@ -179,6 +184,14 @@ class ModelSetService:
 
     async def delete(self, db: AsyncSession, auth: AuthContext, slug: str) -> None:
         model_set = await self._get_editable(db, auth, slug)
+        in_use = await db.execute(
+            select(ScrapingMission.id).where(
+                ScrapingMission.org_id == auth.org_id,
+                ScrapingMission.model_set_id == model_set.slug,
+            )
+        )
+        if in_use.scalar_one_or_none() is not None:
+            raise ConflictError("Model set is used by a scraping mission")
         await db.delete(model_set)
 
     async def _get_editable(self, db: AsyncSession, auth: AuthContext, slug: str) -> ModelSet:

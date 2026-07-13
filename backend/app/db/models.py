@@ -12,6 +12,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -72,6 +73,25 @@ class LessonStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class ScrapingMissionStatus(str, enum.Enum):
+    DRAFT = "draft"
+    BLUEPRINT_GENERATING = "blueprint_generating"
+    AWAITING_APPROVAL = "awaiting_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ScrapingBlueprintStatus(str, enum.Enum):
+    GENERATING = "generating"
+    DRAFT = "draft"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    SUPERSEDED = "superseded"
+    FAILED = "failed"
+
+
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
 
@@ -100,6 +120,7 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     model_sets: Mapped[list["ModelSet"]] = relationship(back_populates="organization")
     templates: Mapped[list["Template"]] = relationship(back_populates="organization")
     org_models: Mapped[list["OrgModel"]] = relationship(back_populates="organization")
+    scraping_missions: Mapped[list["ScrapingMission"]] = relationship(back_populates="organization")
 
 
 class OrgModel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -171,6 +192,7 @@ class Project(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     organization: Mapped["Organization"] = relationship(back_populates="projects")
     chats: Mapped[list["Chat"]] = relationship(back_populates="project")
+    scraping_missions: Mapped[list["ScrapingMission"]] = relationship(back_populates="project")
 
 
 class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -203,6 +225,95 @@ class ModelSet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     organization: Mapped["Organization | None"] = relationship(back_populates="model_sets")
+
+
+class ScrapingMission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_missions"
+    __table_args__ = (
+        Index("ix_scraping_missions_org_id", "org_id"),
+        Index("ix_scraping_missions_created_by", "created_by"),
+        Index("ix_scraping_missions_status", "status"),
+        Index("ix_scraping_missions_updated_at", "updated_at"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    created_by: Mapped[str] = UuidFK("users")
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    model_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    original_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[ScrapingMissionStatus] = mapped_column(
+        Enum(
+            ScrapingMissionStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=ScrapingMissionStatus.DRAFT,
+        nullable=False,
+    )
+    active_blueprint_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    organization: Mapped["Organization"] = relationship(back_populates="scraping_missions")
+    creator: Mapped["User"] = relationship()
+    project: Mapped["Project | None"] = relationship(back_populates="scraping_missions")
+    blueprints: Mapped[list["ScrapingBlueprint"]] = relationship(
+        back_populates="mission",
+        cascade="all, delete-orphan",
+        order_by="ScrapingBlueprint.version",
+        foreign_keys="ScrapingBlueprint.mission_id",
+    )
+    active_blueprint: Mapped["ScrapingBlueprint | None"] = relationship(
+        "ScrapingBlueprint",
+        primaryjoin="ScrapingMission.active_blueprint_id == foreign(ScrapingBlueprint.id)",
+        viewonly=True,
+    )
+
+
+class ScrapingBlueprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_blueprints"
+    __table_args__ = (
+        UniqueConstraint("mission_id", "version", name="uq_scraping_blueprint_mission_version"),
+        Index("ix_scraping_blueprints_mission_id", "mission_id"),
+        Index("ix_scraping_blueprints_status", "status"),
+        Index("ix_scraping_blueprints_created_at", "created_at"),
+    )
+
+    mission_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_missions.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[ScrapingBlueprintStatus] = mapped_column(
+        Enum(
+            ScrapingBlueprintStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=ScrapingBlueprintStatus.GENERATING,
+        nullable=False,
+    )
+    blueprint_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    model_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    judge_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    change_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    mission: Mapped["ScrapingMission"] = relationship(
+        back_populates="blueprints",
+        foreign_keys=[mission_id],
+    )
+    approver: Mapped["User | None"] = relationship(foreign_keys=[approved_by])
+    rejecter: Mapped["User | None"] = relationship(foreign_keys=[rejected_by])
 
 
 class Template(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class StrategyEnum(str, Enum):
@@ -156,6 +156,178 @@ class ProjectCreateRequest(BaseModel):
 class ProjectUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
+
+
+# --- Scraping Council ---
+
+
+class ScrapingMissionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    original_prompt: str
+    model_set_id: str
+    project_id: str | None = None
+
+
+class ScrapingMissionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    project_id: str | None = None
+
+
+class ScrapingBlueprintGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pass
+
+
+class ScrapingBlueprintApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pass
+
+
+class ScrapingBlueprintRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
+
+
+class ScrapingBlueprintChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    change_instructions: str
+
+
+class ScrapingMissionSummary(BaseModel):
+    id: str
+    title: str
+    original_prompt: str
+    status: str
+    active_blueprint_id: str | None = None
+    active_blueprint_version: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingMissionDetail(ScrapingMissionSummary):
+    created_by: str
+    project_id: str | None = None
+    project_name: str | None = None
+    model_set_id: str
+    model_set_name: str | None = None
+
+
+class BlueprintMissionSummary(BaseModel):
+    goal: str
+    target_entities: list[str]
+    deliverables: list[str]
+
+    @field_validator("goal")
+    @classmethod
+    def goal_required(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mission goal cannot be empty")
+        return value
+
+    @field_validator("target_entities")
+    @classmethod
+    def target_entities_required(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("target_entities cannot be empty")
+        return value
+
+
+class BlueprintScope(BaseModel):
+    included: list[str]
+    excluded: list[str]
+    countries: list[str]
+    regions: list[str]
+
+
+class BlueprintSearchTerm(BaseModel):
+    language: str
+    term: str
+    purpose: str
+
+
+class BlueprintSourceStrategyItem(BaseModel):
+    source_type: str
+    priority: int = Field(ge=1)
+    trust_tier: str
+    purpose: str
+    required: bool
+
+
+class BlueprintDataSchemaItem(BaseModel):
+    field_name: str
+    description: str
+    required: bool
+
+
+class BlueprintTaskPlanItem(BaseModel):
+    order: int = Field(ge=1)
+    task: str
+    assigned_role: str
+
+
+class BlueprintEstimatedWorkload(BaseModel):
+    expected_queries: int | None = Field(default=None, ge=0)
+    expected_pages: int | None = Field(default=None, ge=0)
+    expected_ai_calls: int | None = Field(default=None, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+    notes: list[str]
+
+
+class BlueprintAgentAssignment(BaseModel):
+    role: str
+    responsibility: str
+    model_id: str
+
+
+class ScrapingBlueprintContent(BaseModel):
+    mission_summary: BlueprintMissionSummary
+    scope: BlueprintScope
+    languages: list[str]
+    search_terms: list[BlueprintSearchTerm]
+    source_strategy: list[BlueprintSourceStrategyItem]
+    data_schema: list[BlueprintDataSchemaItem]
+    classification_rules: list[str]
+    verification_rules: list[str]
+    deduplication_rules: list[str]
+    compliance_rules: list[str]
+    task_plan: list[BlueprintTaskPlanItem]
+    stop_conditions: list[str]
+    estimated_workload: BlueprintEstimatedWorkload
+    agent_assignments: list[BlueprintAgentAssignment]
+
+    @field_validator("task_plan")
+    @classmethod
+    def task_plan_required(cls, value: list[BlueprintTaskPlanItem]) -> list[BlueprintTaskPlanItem]:
+        if not value:
+            raise ValueError("task_plan cannot be empty")
+        return value
+
+
+class ScrapingBlueprintResponse(BaseModel):
+    id: str
+    mission_id: str
+    version: int
+    status: str
+    blueprint_json: ScrapingBlueprintContent | None = None
+    model_set_id: str
+    judge_model_id: str | None = None
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    rejected_by: str | None = None
+    rejected_at: datetime | None = None
+    rejection_reason: str | None = None
+    change_instructions: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 # --- Chats ---

@@ -15,14 +15,17 @@ import { Route as ModelSetsRouteImport } from './routes/model-sets'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as BrainRouteImport } from './routes/brain'
+import { Route as ScrapingRouteRouteImport } from './routes/scraping.route'
 import { Route as ProjectsRouteRouteImport } from './routes/projects.route'
 import { Route as LessonsRouteRouteImport } from './routes/lessons.route'
 import { Route as AdminRouteRouteImport } from './routes/admin/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ScrapingIndexRouteImport } from './routes/scraping.index'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as LessonsIndexRouteImport } from './routes/lessons.index'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as SharedTokenRouteImport } from './routes/shared.$token'
+import { Route as ScrapingNewRouteImport } from './routes/scraping.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
 import { Route as LessonsIdRouteImport } from './routes/lessons.$id'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
@@ -35,6 +38,9 @@ import { Route as AdminLessonsRouteImport } from './routes/admin/lessons'
 import { Route as AdminChatsRouteImport } from './routes/admin/chats'
 import { Route as AdminBrainsRouteImport } from './routes/admin/brains'
 import { Route as AdminAuditRouteImport } from './routes/admin/audit'
+import { Route as ScrapingMissionIdRouteRouteImport } from './routes/scraping.$missionId.route'
+import { Route as ScrapingMissionIdIndexRouteImport } from './routes/scraping.$missionId.index'
+import { Route as ScrapingMissionIdBlueprintRouteImport } from './routes/scraping.$missionId.blueprint'
 import { Route as AdminUsersUserIdRouteImport } from './routes/admin/users.$userId'
 import { Route as AdminChatsChatIdRouteImport } from './routes/admin/chats.$chatId'
 
@@ -68,6 +74,11 @@ const BrainRoute = BrainRouteImport.update({
   path: '/brain',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ScrapingRouteRoute = ScrapingRouteRouteImport.update({
+  id: '/scraping',
+  path: '/scraping',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProjectsRouteRoute = ProjectsRouteRouteImport.update({
   id: '/projects',
   path: '/projects',
@@ -88,6 +99,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ScrapingIndexRoute = ScrapingIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ScrapingRouteRoute,
+} as any)
 const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -107,6 +123,11 @@ const SharedTokenRoute = SharedTokenRouteImport.update({
   id: '/shared/$token',
   path: '/shared/$token',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ScrapingNewRoute = ScrapingNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => ScrapingRouteRoute,
 } as any)
 const ProjectsIdRoute = ProjectsIdRouteImport.update({
   id: '/$id',
@@ -168,6 +189,22 @@ const AdminAuditRoute = AdminAuditRouteImport.update({
   path: '/audit',
   getParentRoute: () => AdminRouteRoute,
 } as any)
+const ScrapingMissionIdRouteRoute = ScrapingMissionIdRouteRouteImport.update({
+  id: '/$missionId',
+  path: '/$missionId',
+  getParentRoute: () => ScrapingRouteRoute,
+} as any)
+const ScrapingMissionIdIndexRoute = ScrapingMissionIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ScrapingMissionIdRouteRoute,
+} as any)
+const ScrapingMissionIdBlueprintRoute =
+  ScrapingMissionIdBlueprintRouteImport.update({
+    id: '/blueprint',
+    path: '/blueprint',
+    getParentRoute: () => ScrapingMissionIdRouteRoute,
+  } as any)
 const AdminUsersUserIdRoute = AdminUsersUserIdRouteImport.update({
   id: '/$userId',
   path: '/$userId',
@@ -184,12 +221,14 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRouteRouteWithChildren
   '/lessons': typeof LessonsRouteRouteWithChildren
   '/projects': typeof ProjectsRouteRouteWithChildren
+  '/scraping': typeof ScrapingRouteRouteWithChildren
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
+  '/scraping/$missionId': typeof ScrapingMissionIdRouteRouteWithChildren
   '/admin/audit': typeof AdminAuditRoute
   '/admin/brains': typeof AdminBrainsRoute
   '/admin/chats': typeof AdminChatsRouteWithChildren
@@ -202,12 +241,16 @@ export interface FileRoutesByFullPath {
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
+  '/scraping/new': typeof ScrapingNewRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin/': typeof AdminIndexRoute
   '/lessons/': typeof LessonsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/scraping/': typeof ScrapingIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
+  '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
+  '/scraping/$missionId/': typeof ScrapingMissionIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -229,12 +272,16 @@ export interface FileRoutesByTo {
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
+  '/scraping/new': typeof ScrapingNewRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin': typeof AdminIndexRoute
   '/lessons': typeof LessonsIndexRoute
   '/projects': typeof ProjectsIndexRoute
+  '/scraping': typeof ScrapingIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
+  '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
+  '/scraping/$missionId': typeof ScrapingMissionIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -242,12 +289,14 @@ export interface FileRoutesById {
   '/admin': typeof AdminRouteRouteWithChildren
   '/lessons': typeof LessonsRouteRouteWithChildren
   '/projects': typeof ProjectsRouteRouteWithChildren
+  '/scraping': typeof ScrapingRouteRouteWithChildren
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
+  '/scraping/$missionId': typeof ScrapingMissionIdRouteRouteWithChildren
   '/admin/audit': typeof AdminAuditRoute
   '/admin/brains': typeof AdminBrainsRoute
   '/admin/chats': typeof AdminChatsRouteWithChildren
@@ -260,12 +309,16 @@ export interface FileRoutesById {
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
+  '/scraping/new': typeof ScrapingNewRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin/': typeof AdminIndexRoute
   '/lessons/': typeof LessonsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/scraping/': typeof ScrapingIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
+  '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
+  '/scraping/$missionId/': typeof ScrapingMissionIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -274,12 +327,14 @@ export interface FileRouteTypes {
     | '/admin'
     | '/lessons'
     | '/projects'
+    | '/scraping'
     | '/brain'
     | '/chat'
     | '/login'
     | '/model-sets'
     | '/settings'
     | '/templates'
+    | '/scraping/$missionId'
     | '/admin/audit'
     | '/admin/brains'
     | '/admin/chats'
@@ -292,12 +347,16 @@ export interface FileRouteTypes {
     | '/admin/users'
     | '/lessons/$id'
     | '/projects/$id'
+    | '/scraping/new'
     | '/shared/$token'
     | '/admin/'
     | '/lessons/'
     | '/projects/'
+    | '/scraping/'
     | '/admin/chats/$chatId'
     | '/admin/users/$userId'
+    | '/scraping/$missionId/blueprint'
+    | '/scraping/$missionId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -319,24 +378,30 @@ export interface FileRouteTypes {
     | '/admin/users'
     | '/lessons/$id'
     | '/projects/$id'
+    | '/scraping/new'
     | '/shared/$token'
     | '/admin'
     | '/lessons'
     | '/projects'
+    | '/scraping'
     | '/admin/chats/$chatId'
     | '/admin/users/$userId'
+    | '/scraping/$missionId/blueprint'
+    | '/scraping/$missionId'
   id:
     | '__root__'
     | '/'
     | '/admin'
     | '/lessons'
     | '/projects'
+    | '/scraping'
     | '/brain'
     | '/chat'
     | '/login'
     | '/model-sets'
     | '/settings'
     | '/templates'
+    | '/scraping/$missionId'
     | '/admin/audit'
     | '/admin/brains'
     | '/admin/chats'
@@ -349,12 +414,16 @@ export interface FileRouteTypes {
     | '/admin/users'
     | '/lessons/$id'
     | '/projects/$id'
+    | '/scraping/new'
     | '/shared/$token'
     | '/admin/'
     | '/lessons/'
     | '/projects/'
+    | '/scraping/'
     | '/admin/chats/$chatId'
     | '/admin/users/$userId'
+    | '/scraping/$missionId/blueprint'
+    | '/scraping/$missionId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -362,6 +431,7 @@ export interface RootRouteChildren {
   AdminRouteRoute: typeof AdminRouteRouteWithChildren
   LessonsRouteRoute: typeof LessonsRouteRouteWithChildren
   ProjectsRouteRoute: typeof ProjectsRouteRouteWithChildren
+  ScrapingRouteRoute: typeof ScrapingRouteRouteWithChildren
   BrainRoute: typeof BrainRoute
   ChatRoute: typeof ChatRoute
   LoginRoute: typeof LoginRoute
@@ -415,6 +485,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BrainRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/scraping': {
+      id: '/scraping'
+      path: '/scraping'
+      fullPath: '/scraping'
+      preLoaderRoute: typeof ScrapingRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/projects': {
       id: '/projects'
       path: '/projects'
@@ -443,6 +520,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/scraping/': {
+      id: '/scraping/'
+      path: '/'
+      fullPath: '/scraping/'
+      preLoaderRoute: typeof ScrapingIndexRouteImport
+      parentRoute: typeof ScrapingRouteRoute
+    }
     '/projects/': {
       id: '/projects/'
       path: '/'
@@ -470,6 +554,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/shared/$token'
       preLoaderRoute: typeof SharedTokenRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/scraping/new': {
+      id: '/scraping/new'
+      path: '/new'
+      fullPath: '/scraping/new'
+      preLoaderRoute: typeof ScrapingNewRouteImport
+      parentRoute: typeof ScrapingRouteRoute
     }
     '/projects/$id': {
       id: '/projects/$id'
@@ -554,6 +645,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/admin/audit'
       preLoaderRoute: typeof AdminAuditRouteImport
       parentRoute: typeof AdminRouteRoute
+    }
+    '/scraping/$missionId': {
+      id: '/scraping/$missionId'
+      path: '/$missionId'
+      fullPath: '/scraping/$missionId'
+      preLoaderRoute: typeof ScrapingMissionIdRouteRouteImport
+      parentRoute: typeof ScrapingRouteRoute
+    }
+    '/scraping/$missionId/': {
+      id: '/scraping/$missionId/'
+      path: '/'
+      fullPath: '/scraping/$missionId/'
+      preLoaderRoute: typeof ScrapingMissionIdIndexRouteImport
+      parentRoute: typeof ScrapingMissionIdRouteRoute
+    }
+    '/scraping/$missionId/blueprint': {
+      id: '/scraping/$missionId/blueprint'
+      path: '/blueprint'
+      fullPath: '/scraping/$missionId/blueprint'
+      preLoaderRoute: typeof ScrapingMissionIdBlueprintRouteImport
+      parentRoute: typeof ScrapingMissionIdRouteRoute
     }
     '/admin/users/$userId': {
       id: '/admin/users/$userId'
@@ -656,11 +768,44 @@ const ProjectsRouteRouteWithChildren = ProjectsRouteRoute._addFileChildren(
   ProjectsRouteRouteChildren,
 )
 
+interface ScrapingMissionIdRouteRouteChildren {
+  ScrapingMissionIdBlueprintRoute: typeof ScrapingMissionIdBlueprintRoute
+  ScrapingMissionIdIndexRoute: typeof ScrapingMissionIdIndexRoute
+}
+
+const ScrapingMissionIdRouteRouteChildren: ScrapingMissionIdRouteRouteChildren =
+  {
+    ScrapingMissionIdBlueprintRoute: ScrapingMissionIdBlueprintRoute,
+    ScrapingMissionIdIndexRoute: ScrapingMissionIdIndexRoute,
+  }
+
+const ScrapingMissionIdRouteRouteWithChildren =
+  ScrapingMissionIdRouteRoute._addFileChildren(
+    ScrapingMissionIdRouteRouteChildren,
+  )
+
+interface ScrapingRouteRouteChildren {
+  ScrapingMissionIdRouteRoute: typeof ScrapingMissionIdRouteRouteWithChildren
+  ScrapingNewRoute: typeof ScrapingNewRoute
+  ScrapingIndexRoute: typeof ScrapingIndexRoute
+}
+
+const ScrapingRouteRouteChildren: ScrapingRouteRouteChildren = {
+  ScrapingMissionIdRouteRoute: ScrapingMissionIdRouteRouteWithChildren,
+  ScrapingNewRoute: ScrapingNewRoute,
+  ScrapingIndexRoute: ScrapingIndexRoute,
+}
+
+const ScrapingRouteRouteWithChildren = ScrapingRouteRoute._addFileChildren(
+  ScrapingRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRouteRoute: AdminRouteRouteWithChildren,
   LessonsRouteRoute: LessonsRouteRouteWithChildren,
   ProjectsRouteRoute: ProjectsRouteRouteWithChildren,
+  ScrapingRouteRoute: ScrapingRouteRouteWithChildren,
   BrainRoute: BrainRoute,
   ChatRoute: ChatRoute,
   LoginRoute: LoginRoute,
