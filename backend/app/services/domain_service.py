@@ -1,7 +1,6 @@
 """Project, model set, template, and cost services."""
 
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
@@ -73,7 +72,7 @@ class ProjectService:
         return project
 
     async def get_detail(
-        self, db: AsyncSession, auth: AuthContext, project_id: UUID
+        self, db: AsyncSession, auth: AuthContext, project_id: str
     ) -> ProjectDetailResponse:
         project = await self.get(db, auth, project_id)
         result = await db.execute(
@@ -103,14 +102,15 @@ class ProjectService:
         self,
         db: AsyncSession,
         auth: AuthContext,
-        project_id: UUID,
+        project_id: str,
         data: ProjectUpdateRequest,
     ) -> ProjectDetailResponse:
         project = await self.get(db, auth, project_id)
         if data.name is not None:
             project.name = data.name.strip()
-        if data.description is not None:
-            project.description = data.description.strip() or None
+        if "description" in data.__fields_set__:
+            project.description = (data.description.strip() or None  
+                                   if data.description is not None else None)
         await db.flush()
         return await self.get_detail(db, auth, project_id)
 

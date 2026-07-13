@@ -53,7 +53,7 @@ MODEL_CATALOG: dict[str, ModelCatalogEntry] = {
         color="oklch(0.42 0.04 260)",
         blurb="xAI frontier model",
         provider="openrouter",
-        provider_model="x-ai/grok-4",
+        provider_model="x-ai/grok-4.3",
     ),
     "mistral": ModelCatalogEntry(
         id="mistral",

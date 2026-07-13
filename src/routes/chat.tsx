@@ -119,7 +119,7 @@ export function ChatPage() {
     deleteChat,
   } = useChatStore();
   const { authHeaders, isAuthenticated } = useAuth();
-  const { models, modelById, flagshipModels } = useModels();
+  const { modelById } = useModels();
   const navigate = useNavigate();
   const set = modelSets.find((s) => s.id === activeModelSetId) ?? modelSets[0];
   const [apiTurns, setApiTurns] = useState<ApiTurn[]>([]);
@@ -352,20 +352,30 @@ export function ChatPage() {
                   <span className="text-gradient">Decide with clarity.</span>
                 </h2>
                 <p className="mx-auto max-w-lg text-sm text-muted-foreground">
-                  {MAX_COUNCIL_MODELS} models answer in parallel — then Verdict AI synthesizes the
-                  final answer using <strong className="text-foreground">{set.strategy}</strong>.
+                  {set.models.length} {set.models.length === 1 ? "model answers" : "models answer"}{" "}
+                  in parallel — then Verdict AI synthesizes the final answer using{" "}
+                  <strong className="text-foreground">{set.strategy}</strong>.
                 </p>
                 <button
                   type="button"
                   onClick={() => setShowCouncil(true)}
                   className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10"
                 >
-                  Choose your {MAX_COUNCIL_MODELS} models
+                  Choose your models
                 </button>
                 <div className="mx-auto grid max-w-5xl gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  {(models.length ? models : flagshipModels).slice(0, MAX_COUNCIL_MODELS).map((m) => (
-                    <ModelPill key={m.id} name={m.name} vendor={m.vendor} color={m.color} />
-                  ))}
+                  {set.models.map((id) => {
+                    const model = modelById(id);
+
+                    return (
+                      <ModelPill
+                        key={id}
+                        name={model.name}
+                        vendor={model.vendor}
+                        color={model.color}
+                      />
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -856,62 +866,64 @@ function AiTurn({
             </div>
           )}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          {set.models.map((id) => {
-            const m = modelById(id);
-            const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
-            const status = a?.status ?? "pending";
-            const failed = status === "failed";
-            const inProgress = status === "pending" || status === "running";
-            const isTopPick = topModelId === id;
-            return (
-              <GlassCard
-                key={id}
-                className={cn(
-                  "p-4",
-                  isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
-                )}
-              >
-                <div className="flex items-center gap-2 text-sm">
-                  <span
-                    className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
-                    style={{ color: m.color, background: m.color }}
-                  />
-                  <span className="font-medium">{m.name}</span>
-                  {isTopPick && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
-                      <Trophy className="size-3" />
-                      Top pick
-                    </span>
+            {set.models.map((id) => {
+              const m = modelById(id);
+              const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
+              const status = a?.status ?? "pending";
+              const failed = status === "failed";
+              const inProgress = status === "pending" || status === "running";
+              const isTopPick = topModelId === id;
+              return (
+                <GlassCard
+                  key={id}
+                  className={cn(
+                    "p-4",
+                    isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
                   )}
-                  {inProgress && <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />}
-                  {!inProgress && a?.confidence != null && (
-                    <ModelConfidenceBadge
-                      confidence={a.confidence}
-                      isTopPick={isTopPick}
-                      strategy={turnStrategy}
-                      criteria={assessmentCriteria}
-                      modelName={m.name}
+                >
+                  <div className="flex items-center gap-2 text-sm">
+                    <span
+                      className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
+                      style={{ color: m.color, background: m.color }}
                     />
+                    <span className="font-medium">{m.name}</span>
+                    {isTopPick && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                        <Trophy className="size-3" />
+                        Top pick
+                      </span>
+                    )}
+                    {inProgress && (
+                      <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
+                    )}
+                    {!inProgress && a?.confidence != null && (
+                      <ModelConfidenceBadge
+                        confidence={a.confidence}
+                        isTopPick={isTopPick}
+                        strategy={turnStrategy}
+                        criteria={assessmentCriteria}
+                        modelName={m.name}
+                      />
+                    )}
+                  </div>
+                  {failed ? (
+                    <p className="mt-3 text-xs text-destructive">
+                      <AlertCircle className="mr-1 inline size-3.5" />
+                      {a?.error_message ?? "Failed"}
+                    </p>
+                  ) : inProgress ? (
+                    <div className="mt-3 space-y-2">
+                      <div className="h-2 animate-pulse rounded bg-muted" />
+                      <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+                    </div>
+                  ) : (
+                    <div className="mt-3">
+                      <MessageContent compact>{a?.text ?? ""}</MessageContent>
+                    </div>
                   )}
-                </div>
-                {failed ? (
-                  <p className="mt-3 text-xs text-destructive">
-                    <AlertCircle className="mr-1 inline size-3.5" />
-                    {a?.error_message ?? "Failed"}
-                  </p>
-                ) : inProgress ? (
-                  <div className="mt-3 space-y-2">
-                    <div className="h-2 animate-pulse rounded bg-muted" />
-                    <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
-                  </div>
-                ) : (
-                  <div className="mt-3">
-                    <MessageContent compact>{a?.text ?? ""}</MessageContent>
-                  </div>
-                )}
-              </GlassCard>
-            );
-          })}
+                </GlassCard>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1011,7 +1023,7 @@ function ModelSetPickerModal({
   onPick: (id: string) => void;
   onCreate: () => void;
 }) {
-  const { updateModelSet, deleteModelSet } = useChatStore();
+  const { createModelSet, updateModelSet, deleteModelSet } = useChatStore();
   const [editing, setEditing] = useState<ModelSet | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   if (!open) return null;
@@ -1101,8 +1113,18 @@ function ModelSetPickerModal({
         open={!!editing}
         onClose={() => setEditing(null)}
         initial={editing}
-        onUpdate={(s) => {
-          updateModelSet(s);
+        onUpdate={async (s) => {
+          if (SYSTEM_MODEL_SETS.has(s.id)) {
+            const created = await createModelSet({
+              ...s,
+              name: s.name.startsWith("My ") ? s.name : `My ${s.name}`,
+            });
+
+            onPick(created.id);
+          } else {
+            await updateModelSet(s);
+          }
+
           setEditing(null);
         }}
       />
