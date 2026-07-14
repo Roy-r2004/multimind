@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class StrategyEnum(str, Enum):
@@ -357,6 +357,87 @@ class ScrapingBlueprintResponse(BaseModel):
     error_message: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ScrapingRunAgentPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=160)
+    role: str = Field(min_length=1, max_length=120)
+    purpose: str = Field(min_length=1)
+    instructions: str = Field(min_length=1)
+    assigned_scope: dict[str, Any] = Field(default_factory=dict)
+    model_id: str = Field(min_length=1, max_length=64)
+    depends_on: list[int] = Field(default_factory=list)
+
+    @field_validator("name", "role", "purpose", "instructions", "model_id", mode="before")
+    @classmethod
+    def trim_required_string(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+        return value
+
+
+class ScrapingTeamPlanOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recommended_agent_count: int
+    rationale: str = Field(min_length=1)
+    agents: list[ScrapingRunAgentPlan] = Field(min_length=1)
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def trim_rationale(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+        return value
+
+    @model_validator(mode="after")
+    def validate_agent_count(self) -> "ScrapingTeamPlanOutput":
+        if self.recommended_agent_count != len(self.agents):
+            raise ValueError("recommended_agent_count must equal the number of agents")
+        return self
+
+
+class ScrapingRunAgentResponse(BaseModel):
+    id: str
+    run_id: str
+    parent_agent_id: str | None = None
+    sequence: int
+    name: str
+    role: str
+    purpose: str
+    instructions: str
+    assigned_scope: dict[str, Any]
+    model_id: str
+    status: str
+    dependency_agent_ids: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingRunSummary(BaseModel):
+    id: str
+    mission_id: str
+    blueprint_id: str
+    blueprint_version: int | None = None
+    status: str
+    recommended_agent_count: int | None = None
+    planner_model_id: str | None = None
+    planner_rationale: str | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingRunDetail(ScrapingRunSummary):
+    model_set_id: str
+    mission_title: str
+    plan_json: ScrapingTeamPlanOutput | None = None
+    agents: list[ScrapingRunAgentResponse] = []
 
 
 # --- Chats ---

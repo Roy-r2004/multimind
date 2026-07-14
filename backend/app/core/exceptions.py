@@ -35,5 +35,5 @@ class ValidationError(AppError):
 
 
 class ConflictError(AppError):
-    def __init__(self, message: str) -> None:
-        super().__init__(message, code="CONFLICT")
+    def __init__(self, message: str, details: Any = None) -> None:
+        super().__init__(message, code="CONFLICT", details=details)

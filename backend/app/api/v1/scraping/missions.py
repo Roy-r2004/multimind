@@ -12,9 +12,12 @@ from app.schemas.api import (
     ScrapingMissionDetail,
     ScrapingMissionSummary,
     ScrapingMissionUpdate,
+    ScrapingRunDetail,
+    ScrapingRunSummary,
 )
 from app.services.scraping.blueprint_service import blueprint_service
 from app.services.scraping.mission_service import mission_service
+from app.services.scraping.run_service import run_service
 
 router = APIRouter()
 
@@ -86,3 +89,21 @@ async def list_blueprints(
     db: AsyncSession = Depends(get_db),
 ):
     return await blueprint_service.list_blueprints(db, auth, mission_id)
+
+
+@router.post("/{mission_id}/runs/plan", response_model=ScrapingRunDetail)
+async def plan_scraping_team(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await run_service.plan_team(db, auth, mission_id)
+
+
+@router.get("/{mission_id}/runs", response_model=list[ScrapingRunSummary])
+async def list_scraping_runs(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await run_service.list_runs(db, auth, mission_id)

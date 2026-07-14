@@ -3,8 +3,17 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import AuthContext
-from app.db.models import ScrapingBlueprint, ScrapingBlueprintStatus, ScrapingMission, ScrapingMissionStatus
+from app.core.dependencies import AuthContext, get_auth_context
+from app.db.models import (
+    ScrapingBlueprint,
+    ScrapingBlueprintStatus,
+    ScrapingMission,
+    ScrapingMissionStatus,
+    ScrapingRun,
+    ScrapingRunAgent,
+    ScrapingRunStatus,
+)
+from app.llm.providers import LLMResponse
 from app.main import create_app
 from app.schemas.api import (
     ScrapingBlueprintChangeRequest,
@@ -13,11 +22,14 @@ from app.schemas.api import (
     ScrapingBlueprintRenameRequest,
     ScrapingMissionCreate,
     ScrapingMissionUpdate,
+    ScrapingTeamPlanOutput,
 )
 from app.scraping.blueprint_orchestrator import BlueprintOrchestrator
 from app.services.domain_service import project_service
 from app.services.scraping.blueprint_service import blueprint_service
 from app.services.scraping.mission_service import mission_service
+from app.services.scraping.run_service import run_service
+from app.services.scraping.team_planner_service import TeamPlannerService, team_planner_service
 from conftest import create_model_set, create_other_auth, create_project, valid_blueprint
 
 
@@ -936,3 +948,548 @@ async def test_cross_organization_mission_deletion_fails(db: AsyncSession, auth:
     other = await create_other_auth(db)
     with pytest.raises(Exception, match="ScrapingMission not found"):
         await mission_service.delete_mission(db, other, mission_id)
+
+
+def team_plan_payload(count: int, *, model_id: str = "gpt-4.1") -> dict:
+    agents = []
+    for index in range(1, count + 1):
+        agents.append(
+            {
+                "sequence": index,
+                "name": f"Agent {index}",
+                "role": "verification" if index == count else f"role_{index}",
+                "purpose": f"Purpose {index}",
+                "instructions": f"Instructions {index}",
+                "assigned_scope": {
+                    "regions": [f"Region {index}"],
+                    "languages": ["en"],
+                    "source_categories": ["official"],
+                },
+                "model_id": model_id,
+                "depends_on": [index - 1] if index > 1 else [],
+            }
+        )
+    return {
+        "recommended_agent_count": count,
+        "rationale": f"{count} agents are appropriate for the approved blueprint.",
+        "agents": agents,
+    }
+
+
+async def create_active_approved_blueprint(
+    db: AsyncSession, auth: AuthContext
+) -> ScrapingBlueprint:
+    return await create_blueprint_version(
+        db,
+        auth,
+        status=ScrapingBlueprintStatus.APPROVED,
+        active=True,
+    )
+
+
+def mock_planner(monkeypatch, count: int = 3):
+    async def fake_plan_team(mission, blueprint, model_set):
+        return (
+            ScrapingTeamPlanOutput.model_validate(team_plan_payload(count)),
+            model_set.verdict_model,
+        )
+
+    monkeypatch.setattr(team_planner_service, "plan_team", fake_plan_team)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [3, 7])
+async def test_dynamic_planning_persists_ai_selected_agent_count(
+    db: AsyncSession, auth: AuthContext, monkeypatch, count: int
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, count)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    assert run.status == "planned"
+    assert run.recommended_agent_count == count
+    assert len(run.agents) == count
+    assert count != 5 or len(run.agents) == 5
+    assert run.blueprint_id == blueprint.id
+    assert run.blueprint_version == blueprint.version
+    assert run.planner_model_id == "gpt-4.1"
+    assert run.planner_rationale == f"{count} agents are appropriate for the approved blueprint."
+    assert [agent.sequence for agent in run.agents] == list(range(1, count + 1))
+    assert run.agents[1].dependency_agent_ids == [run.agents[0].id]
+    assert run.agents[0].assigned_scope["regions"] == ["Region 1"]
+
+
+@pytest.mark.asyncio
+async def test_planning_rejects_mission_without_active_approved_blueprint(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_blueprint_version(db, auth, status=ScrapingBlueprintStatus.DRAFT)
+    mock_planner(monkeypatch)
+    with pytest.raises(Exception, match="active approved blueprint"):
+        await run_service.plan_team(db, auth, blueprint.mission_id)
+
+
+@pytest.mark.asyncio
+async def test_planning_rejects_generating_mission(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_blueprint_version(
+        db,
+        auth,
+        status=ScrapingBlueprintStatus.GENERATING,
+    )
+    mock_planner(monkeypatch)
+    with pytest.raises(Exception, match="active approved blueprint"):
+        await run_service.plan_team(db, auth, blueprint.mission_id)
+
+
+@pytest.mark.asyncio
+async def test_planning_does_not_use_non_active_approved_blueprint(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    mission_id = await create_mission(db, auth)
+    approved = await create_blueprint_version(
+        db,
+        auth,
+        mission_id=mission_id,
+        status=ScrapingBlueprintStatus.APPROVED,
+    )
+    draft = await create_blueprint_version(
+        db,
+        auth,
+        mission_id=mission_id,
+        version=2,
+        status=ScrapingBlueprintStatus.DRAFT,
+        active=True,
+    )
+    mission = await db.get(ScrapingMission, mission_id)
+    assert mission is not None
+    mission.active_blueprint_id = draft.id
+    await db.flush()
+    mock_planner(monkeypatch)
+    with pytest.raises(Exception, match="active approved blueprint"):
+        await run_service.plan_team(db, auth, approved.mission_id)
+
+
+@pytest.mark.asyncio
+async def test_cross_organization_mission_cannot_plan_run(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    other = await create_other_auth(db)
+    mock_planner(monkeypatch)
+    with pytest.raises(Exception, match="ScrapingMission not found"):
+        await run_service.plan_team(db, other, blueprint.mission_id)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_planning_run_is_rejected(db: AsyncSession, auth: AuthContext, monkeypatch):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    db.add(
+        ScrapingRun(
+            organization_id=auth.org_id,
+            mission_id=blueprint.mission_id,
+            blueprint_id=blueprint.id,
+            model_set_id="research-set",
+            status=ScrapingRunStatus.PLANNING,
+        )
+    )
+    await db.flush()
+    mock_planner(monkeypatch)
+    with pytest.raises(Exception, match="already exists"):
+        await run_service.plan_team(db, auth, blueprint.mission_id)
+
+
+@pytest.mark.asyncio
+async def test_second_plan_for_exact_blueprint_returns_409(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    from app.db.session import get_db
+
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch)
+    app = create_app()
+
+    async def override_db():
+        yield db
+
+    async def override_auth():
+        return auth
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_auth_context] = override_auth
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(f"/api/v1/scraping/missions/{blueprint.mission_id}/runs/plan")
+        second = await client.post(f"/api/v1/scraping/missions/{blueprint.mission_id}/runs/plan")
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    body = second.json()
+    assert body["message"] == "An AI scraping team plan already exists for this blueprint version."
+    assert body["details"] == {
+        "message": "An AI scraping team plan already exists for this blueprint version.",
+        "existing_run_id": first.json()["id"],
+        "existing_run_status": "planned",
+    }
+
+
+@pytest.mark.asyncio
+async def test_different_approved_blueprint_version_can_receive_own_run(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    first_blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch)
+    first_run = await run_service.plan_team(db, auth, first_blueprint.mission_id)
+    second_blueprint = await create_blueprint_version(
+        db,
+        auth,
+        mission_id=first_blueprint.mission_id,
+        version=2,
+        status=ScrapingBlueprintStatus.APPROVED,
+        active=True,
+    )
+    second_run = await run_service.plan_team(db, auth, first_blueprint.mission_id)
+    assert first_run.blueprint_id == first_blueprint.id
+    assert second_run.blueprint_id == second_blueprint.id
+    assert first_run.id != second_run.id
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (team_plan_payload(0), "too few|number of agents|at least 1"),
+        (team_plan_payload(1), "too few"),
+        (team_plan_payload(13), "too many"),
+        ({**team_plan_payload(3), "recommended_agent_count": 2}, "recommended_agent_count"),
+        (
+            {
+                **team_plan_payload(3),
+                "agents": [
+                    {**team_plan_payload(3)["agents"][0], "sequence": 1},
+                    {**team_plan_payload(3)["agents"][1], "sequence": 1},
+                    team_plan_payload(3)["agents"][2],
+                ],
+            },
+            "duplicate",
+        ),
+        (
+            {
+                **team_plan_payload(3),
+                "agents": [
+                    {**agent, "model_id": "invented"}
+                    for agent in team_plan_payload(3)["agents"]
+                ],
+            },
+            "outside",
+        ),
+        (
+            {
+                **team_plan_payload(3),
+                "agents": [
+                    {
+                        key: value
+                        for key, value in team_plan_payload(3)["agents"][0].items()
+                        if key != "role"
+                    },
+                    team_plan_payload(3)["agents"][1],
+                    team_plan_payload(3)["agents"][2],
+                ],
+            },
+            "schema",
+        ),
+        (
+            {
+                **team_plan_payload(3),
+                "agents": [
+                    {**team_plan_payload(3)["agents"][0], "depends_on": [1]},
+                    team_plan_payload(3)["agents"][1],
+                    team_plan_payload(3)["agents"][2],
+                ],
+            },
+            "self-dependency",
+        ),
+        (
+            {
+                **team_plan_payload(3),
+                "agents": [
+                    {**team_plan_payload(3)["agents"][0], "depends_on": [99]},
+                    team_plan_payload(3)["agents"][1],
+                    team_plan_payload(3)["agents"][2],
+                ],
+            },
+            "unknown dependency",
+        ),
+        (
+            {
+                **team_plan_payload(3),
+                "agents": [
+                    {**team_plan_payload(3)["agents"][0], "depends_on": [3]},
+                    team_plan_payload(3)["agents"][1],
+                    {**team_plan_payload(3)["agents"][2], "depends_on": [1]},
+                ],
+            },
+            "cycle",
+        ),
+        ({**team_plan_payload(3), "unexpected": "field"}, "schema"),
+    ],
+)
+def test_team_plan_validation_rejects_invalid_structures(payload, message):
+    with pytest.raises(Exception, match=message):
+        TeamPlannerService().validate_plan_data(payload, allowed_model_ids=["gpt-4.1", "claude"])
+
+
+@pytest.mark.asyncio
+async def test_malformed_planner_json_triggers_one_repair_call():
+    class Provider:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            return LLMResponse(
+                text=__import__("json").dumps(team_plan_payload(3)),
+                tokens_input=1,
+                tokens_output=1,
+            )
+
+    provider = Provider()
+    plan = await TeamPlannerService().parse_validate_or_repair(
+        provider=provider,
+        provider_model="openai/gpt-4.1",
+        raw_text="{not-json",
+        allowed_model_ids=["gpt-4.1", "claude"],
+    )
+    assert provider.calls == 1
+    assert plan.recommended_agent_count == 3
+
+
+@pytest.mark.asyncio
+async def test_invalid_repaired_planner_output_leaves_run_failed(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+
+    async def fake_plan_team(mission, blueprint, model_set):
+        raise RuntimeError("OpenRouter secret sk-test should not leak")
+
+    monkeypatch.setattr(team_planner_service, "plan_team", fake_plan_team)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    assert run.status == "failed"
+    assert run.agents == []
+    assert "sk-test" not in (run.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_list_runs_is_mission_and_organization_scoped(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    first = await create_active_approved_blueprint(db, auth)
+    second_mission = ScrapingMission(
+        org_id=auth.org_id,
+        created_by=auth.user.id,
+        model_set_id="research-set",
+        title="Second mission",
+        original_prompt="Second prompt",
+        status=ScrapingMissionStatus.APPROVED,
+    )
+    db.add(second_mission)
+    await db.flush()
+    second = ScrapingBlueprint(
+        mission_id=second_mission.id,
+        version=1,
+        status=ScrapingBlueprintStatus.APPROVED,
+        blueprint_json=valid_blueprint(),
+        model_set_id="research-set",
+        judge_model_id="gpt-4.1",
+    )
+    db.add(second)
+    await db.flush()
+    second_mission.active_blueprint_id = second.id
+    await db.flush()
+    mock_planner(monkeypatch, 3)
+    first_run = await run_service.plan_team(db, auth, first.mission_id)
+    await run_service.plan_team(db, auth, second.mission_id)
+    runs = await run_service.list_runs(db, auth, first.mission_id)
+    assert [run.id for run in runs] == [first_run.id]
+    other = await create_other_auth(db)
+    with pytest.raises(Exception, match="ScrapingMission not found"):
+        await run_service.list_runs(db, other, first.mission_id)
+
+
+@pytest.mark.asyncio
+async def test_run_detail_returns_agents_and_rejects_other_organization(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    detail = await run_service.get_run(db, auth, run.id)
+    assert len(detail.agents) == 3
+    other = await create_other_auth(db)
+    with pytest.raises(Exception, match="ScrapingRun not found"):
+        await run_service.get_run(db, other, run.id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_planned_run_preserves_agents_and_history(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    cancelled = await run_service.cancel_run(db, auth, run.id)
+    assert cancelled.status == "cancelled"
+    assert len(cancelled.agents) == 3
+    assert {agent.status for agent in cancelled.agents} == {"cancelled"}
+    visible = await run_service.list_runs(db, auth, blueprint.mission_id)
+    assert visible[0].id == run.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        ScrapingRunStatus.PLANNED,
+        ScrapingRunStatus.COMPLETED,
+        ScrapingRunStatus.FAILED,
+        ScrapingRunStatus.CANCELLED,
+    ],
+)
+async def test_delete_safe_run_statuses_succeeds(
+    db: AsyncSession,
+    auth: AuthContext,
+    monkeypatch,
+    status: ScrapingRunStatus,
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    row = await run_service.get_run_row(db, auth, run.id)
+    row.status = status
+    await db.flush()
+    await run_service.delete_run(db, auth, run.id)
+    assert await db.get(ScrapingRun, run.id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ScrapingRunStatus.PLANNING, ScrapingRunStatus.RUNNING])
+async def test_delete_active_run_statuses_returns_409(
+    db: AsyncSession,
+    auth: AuthContext,
+    status: ScrapingRunStatus,
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    run = ScrapingRun(
+        organization_id=auth.org_id,
+        mission_id=blueprint.mission_id,
+        blueprint_id=blueprint.id,
+        model_set_id="research-set",
+        status=status,
+    )
+    db.add(run)
+    await db.flush()
+    with pytest.raises(Exception, match="cannot be deleted while planning or executing"):
+        await run_service.delete_run(db, auth, run.id)
+    assert await db.get(ScrapingRun, run.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_after_deleting_run_same_blueprint_can_be_planned_again(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, 3)
+    first = await run_service.plan_team(db, auth, blueprint.mission_id)
+    await run_service.delete_run(db, auth, first.id)
+    second = await run_service.plan_team(db, auth, blueprint.mission_id)
+    assert second.blueprint_id == blueprint.id
+    assert second.id != first.id
+
+
+@pytest.mark.asyncio
+async def test_deleting_run_removes_agents(db: AsyncSession, auth: AuthContext, monkeypatch):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    await run_service.delete_run(db, auth, run.id)
+    rows = await db.execute(select(ScrapingRunAgent).where(ScrapingRunAgent.run_id == run.id))
+    assert rows.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_cross_organization_run_deletion_fails(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    other = await create_other_auth(db)
+    with pytest.raises(Exception, match="ScrapingRun not found"):
+        await run_service.delete_run(db, other, run.id)
+    assert await db.get(ScrapingRun, run.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_and_completed_cancellation_rules(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+
+    async def fake_plan_team(mission, blueprint, model_set):
+        raise RuntimeError("provider failed")
+
+    monkeypatch.setattr(team_planner_service, "plan_team", fake_plan_team)
+    failed = await run_service.plan_team(db, auth, blueprint.mission_id)
+    same = await run_service.cancel_run(db, auth, failed.id)
+    assert same.status == "failed"
+    row = await run_service.get_run_row(db, auth, failed.id)
+    row.status = ScrapingRunStatus.COMPLETED
+    await db.flush()
+    with pytest.raises(Exception, match="completed"):
+        await run_service.cancel_run(db, auth, failed.id)
+
+
+@pytest.mark.asyncio
+async def test_historical_integrity_and_no_blueprint_or_project_mutation(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    project = await create_project(db, auth)
+    blueprint = await create_active_approved_blueprint(db, auth)
+    await mission_service.update_mission(
+        db,
+        auth,
+        blueprint.mission_id,
+        ScrapingMissionUpdate(project_id=project.id),
+    )
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    await create_blueprint_version(
+        db,
+        auth,
+        mission_id=blueprint.mission_id,
+        version=2,
+        status=ScrapingBlueprintStatus.DRAFT,
+    )
+    reloaded_blueprint = await db.get(ScrapingBlueprint, blueprint.id)
+    assert reloaded_blueprint is not None
+    assert run.blueprint_id == blueprint.id
+    assert reloaded_blueprint.status == ScrapingBlueprintStatus.APPROVED
+    mission = await db.get(ScrapingMission, blueprint.mission_id)
+    assert mission is not None
+    assert mission.project_id == project.id
+    count = await db.execute(
+        select(ScrapingBlueprint).where(ScrapingBlueprint.mission_id == blueprint.mission_id)
+    )
+    assert len(count.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_planning_persists_allowed_models_only(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    assert {agent.model_id for agent in run.agents} == {"gpt-4.1"}
+    rows = await db.execute(select(ScrapingRunAgent).where(ScrapingRunAgent.run_id == run.id))
+    assert len(rows.scalars().all()) == 3

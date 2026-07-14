@@ -6,16 +6,25 @@ import { BlueprintApprovalBar } from "@/components/scraping/BlueprintApprovalBar
 import { BlueprintVersionList } from "@/components/scraping/BlueprintVersionList";
 import { BlueprintViewer } from "@/components/scraping/BlueprintViewer";
 import { MissionStatusBadge } from "@/components/scraping/MissionStatusBadge";
+import { Button } from "@/components/ui/button";
+import { ApiClientError } from "@/lib/api/client";
 import { useAuth } from "@/lib/auth";
 import {
   approveScrapingBlueprint,
   generateScrapingBlueprint,
   getScrapingMission,
   listScrapingBlueprints,
+  listScrapingRuns,
+  planScrapingTeam,
   rejectScrapingBlueprint,
   requestScrapingBlueprintChanges,
 } from "@/lib/scraping/api";
-import type { ScrapingBlueprint, ScrapingMissionDetail } from "@/lib/scraping/types";
+import type {
+  ScrapingBlueprint,
+  ScrapingMissionDetail,
+  ScrapingRunConflictDetails,
+  ScrapingRunSummary,
+} from "@/lib/scraping/types";
 
 function blueprintDisplayName(blueprint: ScrapingBlueprint): string {
   return blueprint.display_name?.trim() || `Blueprint v${blueprint.version}`;
@@ -32,8 +41,10 @@ function ScrapingBlueprintPage() {
   const navigate = useNavigate();
   const [mission, setMission] = useState<ScrapingMissionDetail | null>(null);
   const [blueprints, setBlueprints] = useState<ScrapingBlueprint[]>([]);
+  const [runs, setRuns] = useState<ScrapingRunSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [planning, setPlanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -52,12 +63,14 @@ function ScrapingBlueprintPage() {
       setLoading(true);
       setError(null);
       try {
-        const [missionResult, blueprintResult] = await Promise.all([
+        const [missionResult, blueprintResult, runResult] = await Promise.all([
           getScrapingMission(auth, missionId),
           listScrapingBlueprints(auth, missionId),
+          listScrapingRuns(auth, missionId),
         ]);
         setMission(missionResult);
         setBlueprints(blueprintResult);
+        setRuns(runResult);
         setSelectedId((currentId) => {
           const preferredId = preferredBlueprintId ?? currentId;
           if (preferredId && blueprintResult.some((blueprint) => blueprint.id === preferredId)) {
@@ -103,6 +116,38 @@ function ScrapingBlueprintPage() {
       throw err;
     }
   }
+
+  async function handlePlanTeam() {
+    const auth = authHeaders();
+    if (!auth) {
+      void navigate({ to: "/login" });
+      return;
+    }
+    setError(null);
+    setSuccess(null);
+    setPlanning(true);
+    try {
+      const run = await planScrapingTeam(auth, missionId);
+      void navigate({
+        to: "/scraping/$missionId/runs/$runId",
+        params: { missionId, runId: run.id },
+      });
+    } catch (err) {
+      const existingRun = existingRunConflictDetails(err);
+      if (existingRun) {
+        void navigate({
+          to: "/scraping/$missionId/runs/$runId",
+          params: { missionId, runId: existingRun.existing_run_id },
+        });
+        return;
+      }
+      setError(err instanceof Error ? err.message : "Failed to plan AI scraping team");
+    } finally {
+      setPlanning(false);
+    }
+  }
+
+  const selectedRun = selected ? runs.find((run) => run.blueprint_id === selected.id) : null;
 
   return (
     <AppShell>
@@ -172,6 +217,52 @@ function ScrapingBlueprintPage() {
                 Blueprint content is not available.
               </GlassCard>
             )}
+            {mission?.active_blueprint_id === selected.id &&
+              selected.status === "approved" &&
+              !selectedRun && (
+              <GlassCard className="p-5">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h2 className="text-base font-semibold">Plan AI Scraping Team</h2>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      The orchestrator will analyze the approved blueprint and choose the required
+                      AI scraping agents. No websites will be scraped yet.
+                    </p>
+                  </div>
+                  <Button type="button" disabled={planning} onClick={() => void handlePlanTeam()}>
+                    {planning ? "Planning AI Team..." : "Plan AI Scraping Team"}
+                  </Button>
+                </div>
+              </GlassCard>
+            )}
+            {mission?.active_blueprint_id === selected.id &&
+              selected.status === "approved" &&
+              selectedRun && (
+                <GlassCard className="p-5">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <h2 className="text-base font-semibold">View AI Team Plan</h2>
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        This approved blueprint version already has a persisted AI team plan.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      disabled={selectedRun.status === "planning"}
+                      onClick={() =>
+                        void navigate({
+                          to: "/scraping/$missionId/runs/$runId",
+                          params: { missionId, runId: selectedRun.id },
+                        })
+                      }
+                    >
+                      {selectedRun.status === "planning"
+                        ? "Planning AI Team..."
+                        : "View AI Team Plan"}
+                    </Button>
+                  </div>
+                </GlassCard>
+              )}
             <BlueprintApprovalBar
               blueprint={selected}
               activeBlueprintId={mission?.active_blueprint_id}
@@ -219,4 +310,22 @@ function ScrapingBlueprintPage() {
       </div>
     </AppShell>
   );
+}
+
+function existingRunConflictDetails(error: unknown): ScrapingRunConflictDetails | null {
+  if (!(error instanceof ApiClientError) || error.status !== 409) {
+    return null;
+  }
+  const details = error.body?.details;
+  if (
+    typeof details !== "object" ||
+    details === null ||
+    !("existing_run_id" in details) ||
+    !("existing_run_status" in details) ||
+    typeof details.existing_run_id !== "string" ||
+    typeof details.existing_run_status !== "string"
+  ) {
+    return null;
+  }
+  return details as ScrapingRunConflictDetails;
 }

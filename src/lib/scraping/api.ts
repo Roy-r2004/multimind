@@ -5,6 +5,8 @@ import type {
   ScrapingMissionDetail,
   ScrapingMissionSummary,
   ScrapingMissionUpdateInput,
+  ScrapingRunDetail,
+  ScrapingRunSummary,
 } from "@/lib/scraping/types";
 
 type Auth = { token: string; orgId: string };
@@ -123,5 +125,46 @@ export function requestScrapingBlueprintChanges(
     token: auth.token,
     orgId: auth.orgId,
     timeoutMs: 180_000,
+  });
+}
+
+export function planScrapingTeam(auth: Auth, missionId: string) {
+  return apiRequest<ScrapingRunDetail>(`/scraping/missions/${missionId}/runs/plan`, {
+    method: "POST",
+    body: {},
+    token: auth.token,
+    orgId: auth.orgId,
+    timeoutMs: 180_000,
+  });
+}
+
+export function listScrapingRuns(auth: Auth, missionId: string) {
+  return apiRequest<ScrapingRunSummary[]>(`/scraping/missions/${missionId}/runs`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function getScrapingRun(auth: Auth, runId: string) {
+  return apiRequest<ScrapingRunDetail>(`/scraping/runs/${runId}`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function cancelScrapingRun(auth: Auth, runId: string) {
+  return apiRequest<ScrapingRunDetail>(`/scraping/runs/${runId}/cancel`, {
+    method: "POST",
+    body: {},
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function deleteScrapingRun(auth: Auth, runId: string) {
+  return apiRequest<void>(`/scraping/runs/${runId}`, {
+    method: "DELETE",
+    token: auth.token,
+    orgId: auth.orgId,
   });
 }

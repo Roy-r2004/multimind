@@ -92,6 +92,24 @@ class ScrapingBlueprintStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class ScrapingRunStatus(str, enum.Enum):
+    PLANNING = "planning"
+    PLANNED = "planned"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ScrapingRunAgentStatus(str, enum.Enum):
+    PLANNED = "planned"
+    WAITING = "waiting"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
 
@@ -269,6 +287,11 @@ class ScrapingMission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         primaryjoin="ScrapingMission.active_blueprint_id == foreign(ScrapingBlueprint.id)",
         viewonly=True,
     )
+    runs: Mapped[list["ScrapingRun"]] = relationship(
+        back_populates="mission",
+        cascade="all, delete-orphan",
+        order_by="ScrapingRun.created_at",
+    )
 
 
 class ScrapingBlueprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -315,6 +338,91 @@ class ScrapingBlueprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     approver: Mapped["User | None"] = relationship(foreign_keys=[approved_by])
     rejecter: Mapped["User | None"] = relationship(foreign_keys=[rejected_by])
+    runs: Mapped[list["ScrapingRun"]] = relationship(back_populates="blueprint")
+
+
+class ScrapingRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_runs"
+    __table_args__ = (
+        UniqueConstraint("blueprint_id", name="uq_scraping_runs_blueprint_id"),
+        Index("ix_scraping_runs_organization_id", "organization_id"),
+        Index("ix_scraping_runs_mission_id", "mission_id"),
+        Index("ix_scraping_runs_status", "status"),
+        Index("ix_scraping_runs_created_at", "created_at"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    mission_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_missions.id", ondelete="CASCADE"), nullable=False
+    )
+    blueprint_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_blueprints.id"), nullable=False
+    )
+    model_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[ScrapingRunStatus] = mapped_column(
+        Enum(
+            ScrapingRunStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=ScrapingRunStatus.PLANNING,
+        nullable=False,
+    )
+    recommended_agent_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    planner_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    planner_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    organization: Mapped["Organization"] = relationship()
+    mission: Mapped["ScrapingMission"] = relationship(back_populates="runs")
+    blueprint: Mapped["ScrapingBlueprint"] = relationship(back_populates="runs")
+    agents: Mapped[list["ScrapingRunAgent"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="ScrapingRunAgent.sequence",
+    )
+
+
+class ScrapingRunAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_run_agents"
+    __table_args__ = (
+        Index("ix_scraping_run_agents_run_id", "run_id"),
+        Index("ix_scraping_run_agents_run_sequence", "run_id", "sequence"),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_agent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_run_agents.id", ondelete="SET NULL"), nullable=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    role: Mapped[str] = mapped_column(String(120), nullable=False)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    assigned_scope: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    model_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[ScrapingRunAgentStatus] = mapped_column(
+        Enum(
+            ScrapingRunAgentStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=ScrapingRunAgentStatus.PLANNED,
+        nullable=False,
+    )
+    dependency_agent_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+
+    run: Mapped["ScrapingRun"] = relationship(back_populates="agents")
+    parent_agent: Mapped["ScrapingRunAgent | None"] = relationship(
+        remote_side="ScrapingRunAgent.id"
+    )
 
 
 class Template(Base, UUIDPrimaryKeyMixin, TimestampMixin):

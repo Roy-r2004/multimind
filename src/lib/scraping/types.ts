@@ -15,6 +15,33 @@ export type ScrapingBlueprintStatus =
   | "superseded"
   | "failed";
 
+export type ScrapingRunStatus =
+  | "planning"
+  | "planned"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type DeletableScrapingRunStatus = Extract<
+  ScrapingRunStatus,
+  "planned" | "completed" | "failed" | "cancelled"
+>;
+
+export type ScrapingRunConflictDetails = {
+  message: string;
+  existing_run_id: string;
+  existing_run_status: ScrapingRunStatus;
+};
+
+export type ScrapingRunAgentStatus =
+  | "planned"
+  | "waiting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
 export type ScrapingMissionSummary = {
   id: string;
   title: string;
@@ -104,4 +131,61 @@ export type ScrapingMissionCreateInput = {
 export type ScrapingMissionUpdateInput = {
   title?: string;
   project_id?: string | null;
+};
+
+export type ScrapingRunAgentPlan = {
+  sequence: number;
+  name: string;
+  role: string;
+  purpose: string;
+  instructions: string;
+  assigned_scope: Record<string, unknown>;
+  model_id: string;
+  depends_on: number[];
+};
+
+export type ScrapingTeamPlanOutput = {
+  recommended_agent_count: number;
+  rationale: string;
+  agents: ScrapingRunAgentPlan[];
+};
+
+export type ScrapingRunAgent = {
+  id: string;
+  run_id: string;
+  parent_agent_id?: string | null;
+  sequence: number;
+  name: string;
+  role: string;
+  purpose: string;
+  instructions: string;
+  assigned_scope: Record<string, unknown>;
+  model_id: string;
+  status: ScrapingRunAgentStatus;
+  dependency_agent_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScrapingRunSummary = {
+  id: string;
+  mission_id: string;
+  blueprint_id: string;
+  blueprint_version?: number | null;
+  status: ScrapingRunStatus;
+  recommended_agent_count?: number | null;
+  planner_model_id?: string | null;
+  planner_rationale?: string | null;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScrapingRunDetail = ScrapingRunSummary & {
+  model_set_id: string;
+  mission_title: string;
+  plan_json?: ScrapingTeamPlanOutput | null;
+  agents: ScrapingRunAgent[];
 };

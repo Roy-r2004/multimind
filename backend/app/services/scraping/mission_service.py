@@ -1,6 +1,6 @@
 """Scraping mission business logic."""
 
-from sqlalchemy import delete, select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -132,10 +132,8 @@ class ScrapingMissionService:
         mission = await self.get_mission_row(db, auth, mission_id)
         if mission.status == ScrapingMissionStatus.BLUEPRINT_GENERATING:
             raise ConflictError("A mission cannot be deleted while its blueprint is generating.")
-        await db.execute(
-            delete(ScrapingBlueprint).where(ScrapingBlueprint.mission_id == mission.id)
-        )
         await db.delete(mission)
+        await db.flush()
 
     async def get_mission_row(
         self, db: AsyncSession, auth: AuthContext, mission_id: str
@@ -151,17 +149,32 @@ class ScrapingMissionService:
         return mission
 
     async def resolve_model_set(
-        self, db: AsyncSession, auth: AuthContext, model_set_id: str
+        self, db: AsyncSession, auth: AuthContext, model_set_id: str | None
     ) -> ModelSet:
-        result = await db.execute(
-            select(ModelSet).where(
-                ModelSet.slug == model_set_id,
-                (ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True)),
-            )
+        query = select(ModelSet).where(
+            (ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True))
         )
-        model_set = result.scalar_one_or_none()
+        if model_set_id is not None:
+            query = query.where(ModelSet.slug == model_set_id)
+        query = query.order_by(
+            desc(ModelSet.org_id == auth.org_id),
+            ModelSet.is_system.asc(),
+            ModelSet.updated_at.desc(),
+            ModelSet.created_at.desc(),
+            ModelSet.id.asc(),
+        ).limit(1)
+        result = await db.execute(query)
+        model_set = result.scalars().first()
+        if model_set is None and model_set_id is None:
+            result = await db.execute(
+                select(ModelSet)
+                .where(ModelSet.is_system.is_(True))
+                .order_by(ModelSet.updated_at.desc(), ModelSet.created_at.desc(), ModelSet.id.asc())
+                .limit(1)
+            )
+            model_set = result.scalars().first()
         if model_set is None:
-            raise NotFoundError("ModelSet", model_set_id)
+            raise NotFoundError("ModelSet", model_set_id or "default")
         return model_set
 
     async def resolve_project(
