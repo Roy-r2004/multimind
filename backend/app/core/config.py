@@ -35,6 +35,9 @@ class Settings(BaseSettings):
 
     # Redis / job queue
     redis_url: str = Field(default="redis://localhost:6379/0")
+    scraping_mock_step_delay_ms: int = 600
+    scraping_worker_concurrency: int = 4
+    scraping_execution_stale_seconds: int = 120
 
     # LLM — OpenRouter (single key for all models)
     openrouter_api_key: str | None = None

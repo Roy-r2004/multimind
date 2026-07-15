@@ -72,6 +72,8 @@ export type ApiProjectScrapingMission = {
   title: string;
   status: string;
   project_id?: string | null;
+  country_code?: string | null;
+  country_name?: string | null;
   active_blueprint_id?: string | null;
   created_at: string;
   updated_at: string;

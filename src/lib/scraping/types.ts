@@ -47,6 +47,8 @@ export type ScrapingMissionSummary = {
   title: string;
   original_prompt: string;
   status: ScrapingMissionStatus;
+  country_code?: string | null;
+  country_name?: string | null;
   project_id?: string | null;
   project_name?: string | null;
   active_blueprint_id?: string | null;
@@ -123,6 +125,7 @@ export type ScrapingBlueprint = {
 
 export type ScrapingMissionCreateInput = {
   title: string;
+  country_code: string;
   original_prompt: string;
   model_set_id: string;
   project_id?: string | null;
@@ -130,6 +133,7 @@ export type ScrapingMissionCreateInput = {
 
 export type ScrapingMissionUpdateInput = {
   title?: string;
+  country_code?: string | null;
   project_id?: string | null;
 };
 
@@ -188,4 +192,135 @@ export type ScrapingRunDetail = ScrapingRunSummary & {
   mission_title: string;
   plan_json?: ScrapingTeamPlanOutput | null;
   agents: ScrapingRunAgent[];
+};
+
+export type ScrapingExecutionStatus =
+  | "queued"
+  | "running"
+  | "cancel_requested"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type ScrapingExecutionConflictDetails = {
+  message: string;
+  existing_execution_id: string;
+  existing_execution_status: ScrapingExecutionStatus;
+};
+
+export type ScrapingExecutionSummary = {
+  id: string;
+  organization_id: string;
+  mission_id: string;
+  blueprint_id: string;
+  team_plan_id: string;
+  execution_type: string;
+  mode: string;
+  status: ScrapingExecutionStatus;
+  country_code: string;
+  country_name: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  cancel_requested_at?: string | null;
+  heartbeat_at?: string | null;
+  error_message?: string | null;
+  sources_discovered: number;
+  documents_found: number;
+  records_extracted: number;
+  records_verified: number;
+  duplicates_detected: number;
+  blocked_sources: number;
+  coverage_debt: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScrapingExecutionAgent = {
+  id: string;
+  execution_id: string;
+  team_agent_id: string;
+  planned_agent_name: string;
+  planned_agent_role: string;
+  model_id: string;
+  status: string;
+  current_task_id?: string | null;
+  current_task_title?: string | null;
+  current_action?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScrapingCoverageCell = {
+  id: string;
+  execution_id: string;
+  region_code?: string | null;
+  region_name: string;
+  language_code?: string | null;
+  language_name: string;
+  source_category: string;
+  status: string;
+  assigned_execution_agent_id?: string | null;
+  assigned_agent_name?: string | null;
+  result_count: number;
+  reason?: string | null;
+  metadata_json: Record<string, unknown>;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScrapingTask = {
+  id: string;
+  execution_id: string;
+  execution_agent_id: string;
+  agent_name?: string | null;
+  coverage_cell_id?: string | null;
+  coverage_label?: string | null;
+  parent_task_id?: string | null;
+  task_type: string;
+  title: string;
+  status: string;
+  priority: number;
+  attempt_count: number;
+  max_attempts: number;
+  current_action?: string | null;
+  input_json: Record<string, unknown>;
+  output_json: Record<string, unknown>;
+  dependency_task_ids_json: string[];
+  claimed_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScrapingEvent = {
+  id: string;
+  execution_id: string;
+  execution_agent_id?: string | null;
+  task_id?: string | null;
+  coverage_cell_id?: string | null;
+  sequence_number: number;
+  event_type: string;
+  message: string;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+};
+
+export type ScrapingExecutionDetail = {
+  execution: ScrapingExecutionSummary;
+  country_profile?: Record<string, unknown> | null;
+  agents: ScrapingExecutionAgent[];
+  task_summary_counts: Record<string, number>;
+  coverage_summary_counts: Record<string, number>;
+  recent_tasks: ScrapingTask[];
+  recent_events: ScrapingEvent[];
+  can_cancel: boolean;
+  can_delete: boolean;
+  mock: boolean;
 };

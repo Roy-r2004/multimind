@@ -46,6 +46,7 @@ import { Route as AdminChatsChatIdRouteImport } from './routes/admin/chats.$chat
 import { Route as ScrapingMissionIdRunsRouteRouteImport } from './routes/scraping.$missionId.runs.route'
 import { Route as ScrapingMissionIdRunsIndexRouteImport } from './routes/scraping.$missionId.runs.index'
 import { Route as ScrapingMissionIdRunsRunIdRouteImport } from './routes/scraping.$missionId.runs.$runId'
+import { Route as ScrapingMissionIdExecutionsExecutionIdRouteImport } from './routes/scraping.$missionId.executions.$executionId'
 
 const TemplatesRoute = TemplatesRouteImport.update({
   id: '/templates',
@@ -236,6 +237,12 @@ const ScrapingMissionIdRunsRunIdRoute =
     path: '/$runId',
     getParentRoute: () => ScrapingMissionIdRunsRouteRoute,
   } as any)
+const ScrapingMissionIdExecutionsExecutionIdRoute =
+  ScrapingMissionIdExecutionsExecutionIdRouteImport.update({
+    id: '/executions/$executionId',
+    path: '/executions/$executionId',
+    getParentRoute: () => ScrapingMissionIdRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -273,6 +280,7 @@ export interface FileRoutesByFullPath {
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
   '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
   '/scraping/$missionId/': typeof ScrapingMissionIdIndexRoute
+  '/scraping/$missionId/executions/$executionId': typeof ScrapingMissionIdExecutionsExecutionIdRoute
   '/scraping/$missionId/runs/$runId': typeof ScrapingMissionIdRunsRunIdRoute
   '/scraping/$missionId/runs/': typeof ScrapingMissionIdRunsIndexRoute
 }
@@ -306,6 +314,7 @@ export interface FileRoutesByTo {
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
   '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
   '/scraping/$missionId': typeof ScrapingMissionIdIndexRoute
+  '/scraping/$missionId/executions/$executionId': typeof ScrapingMissionIdExecutionsExecutionIdRoute
   '/scraping/$missionId/runs/$runId': typeof ScrapingMissionIdRunsRunIdRoute
   '/scraping/$missionId/runs': typeof ScrapingMissionIdRunsIndexRoute
 }
@@ -346,6 +355,7 @@ export interface FileRoutesById {
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
   '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
   '/scraping/$missionId/': typeof ScrapingMissionIdIndexRoute
+  '/scraping/$missionId/executions/$executionId': typeof ScrapingMissionIdExecutionsExecutionIdRoute
   '/scraping/$missionId/runs/$runId': typeof ScrapingMissionIdRunsRunIdRoute
   '/scraping/$missionId/runs/': typeof ScrapingMissionIdRunsIndexRoute
 }
@@ -387,6 +397,7 @@ export interface FileRouteTypes {
     | '/admin/users/$userId'
     | '/scraping/$missionId/blueprint'
     | '/scraping/$missionId/'
+    | '/scraping/$missionId/executions/$executionId'
     | '/scraping/$missionId/runs/$runId'
     | '/scraping/$missionId/runs/'
   fileRoutesByTo: FileRoutesByTo
@@ -420,6 +431,7 @@ export interface FileRouteTypes {
     | '/admin/users/$userId'
     | '/scraping/$missionId/blueprint'
     | '/scraping/$missionId'
+    | '/scraping/$missionId/executions/$executionId'
     | '/scraping/$missionId/runs/$runId'
     | '/scraping/$missionId/runs'
   id:
@@ -459,6 +471,7 @@ export interface FileRouteTypes {
     | '/admin/users/$userId'
     | '/scraping/$missionId/blueprint'
     | '/scraping/$missionId/'
+    | '/scraping/$missionId/executions/$executionId'
     | '/scraping/$missionId/runs/$runId'
     | '/scraping/$missionId/runs/'
   fileRoutesById: FileRoutesById
@@ -739,6 +752,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ScrapingMissionIdRunsRunIdRouteImport
       parentRoute: typeof ScrapingMissionIdRunsRouteRoute
     }
+    '/scraping/$missionId/executions/$executionId': {
+      id: '/scraping/$missionId/executions/$executionId'
+      path: '/executions/$executionId'
+      fullPath: '/scraping/$missionId/executions/$executionId'
+      preLoaderRoute: typeof ScrapingMissionIdExecutionsExecutionIdRouteImport
+      parentRoute: typeof ScrapingMissionIdRouteRoute
+    }
   }
 }
 
@@ -846,6 +866,7 @@ interface ScrapingMissionIdRouteRouteChildren {
   ScrapingMissionIdRunsRouteRoute: typeof ScrapingMissionIdRunsRouteRouteWithChildren
   ScrapingMissionIdBlueprintRoute: typeof ScrapingMissionIdBlueprintRoute
   ScrapingMissionIdIndexRoute: typeof ScrapingMissionIdIndexRoute
+  ScrapingMissionIdExecutionsExecutionIdRoute: typeof ScrapingMissionIdExecutionsExecutionIdRoute
 }
 
 const ScrapingMissionIdRouteRouteChildren: ScrapingMissionIdRouteRouteChildren =
@@ -854,6 +875,8 @@ const ScrapingMissionIdRouteRouteChildren: ScrapingMissionIdRouteRouteChildren =
       ScrapingMissionIdRunsRouteRouteWithChildren,
     ScrapingMissionIdBlueprintRoute: ScrapingMissionIdBlueprintRoute,
     ScrapingMissionIdIndexRoute: ScrapingMissionIdIndexRoute,
+    ScrapingMissionIdExecutionsExecutionIdRoute:
+      ScrapingMissionIdExecutionsExecutionIdRoute,
   }
 
 const ScrapingMissionIdRouteRouteWithChildren =

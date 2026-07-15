@@ -1,6 +1,6 @@
 """Scraping mission business logic."""
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,6 +12,7 @@ from app.db.models import (
     ScrapingBlueprint,
     ScrapingMission,
     ScrapingMissionStatus,
+    ScrapingRun,
 )
 from app.schemas.api import (
     ScrapingMissionCreate,
@@ -19,6 +20,7 @@ from app.schemas.api import (
     ScrapingMissionSummary,
     ScrapingMissionUpdate,
 )
+from app.services.scraping.countries import resolve_country
 
 
 class ScrapingMissionService:
@@ -31,6 +33,7 @@ class ScrapingMissionService:
             raise ValidationError("Mission title is required")
         if not prompt:
             raise ValidationError("Mission prompt is required")
+        country = resolve_country(data.country_code)
 
         model_set = await self.resolve_model_set(db, auth, data.model_set_id)
         if data.project_id is not None:
@@ -43,6 +46,8 @@ class ScrapingMissionService:
             model_set_id=model_set.slug,
             title=title,
             original_prompt=prompt,
+            country_code=country.code,
+            country_name=country.name,
         )
         db.add(mission)
         await db.flush()
@@ -67,6 +72,8 @@ class ScrapingMissionService:
                 title=mission.title,
                 original_prompt=mission.original_prompt,
                 status=mission.status.value,
+                country_code=mission.country_code,
+                country_name=mission.country_name,
                 project_id=mission.project_id,
                 project_name=project_name,
                 active_blueprint_id=mission.active_blueprint_id,
@@ -95,6 +102,8 @@ class ScrapingMissionService:
             title=mission.title,
             original_prompt=mission.original_prompt,
             status=mission.status.value,
+            country_code=mission.country_code,
+            country_name=mission.country_name,
             active_blueprint_id=mission.active_blueprint_id,
             active_blueprint_version=active_version,
             created_at=mission.created_at,
@@ -125,6 +134,10 @@ class ScrapingMissionService:
                 project = await self.resolve_project(db, auth, data.project_id)
             mission.project_id = data.project_id
             mission.project = project
+        if "country_code" in data.model_fields_set:
+            if data.country_code is None:
+                raise ValidationError("Country is required")
+            await self._apply_country_update(db, mission, data.country_code)
         await db.flush()
         return await self.get_mission(db, auth, mission_id)
 
@@ -187,6 +200,33 @@ class ScrapingMissionService:
         if project is None:
             raise NotFoundError("Project", project_id)
         return project
+
+    async def _apply_country_update(
+        self, db: AsyncSession, mission: ScrapingMission, country_code: str
+    ) -> None:
+        country = resolve_country(country_code)
+        if mission.country_code == country.code:
+            mission.country_name = country.name
+            return
+        if mission.country_code is None:
+            mission.country_code = country.code
+            mission.country_name = country.name
+            return
+
+        blueprint_count_result = await db.execute(
+            select(func.count(ScrapingBlueprint.id)).where(ScrapingBlueprint.mission_id == mission.id)
+        )
+        run_count_result = await db.execute(
+            select(func.count(ScrapingRun.id)).where(ScrapingRun.mission_id == mission.id)
+        )
+        if blueprint_count_result.scalar_one() > 0 or run_count_result.scalar_one() > 0:
+            raise ConflictError(
+                "Country cannot be changed after a blueprint or AI team plan exists. "
+                "Create a new mission for another country."
+            )
+
+        mission.country_code = country.code
+        mission.country_name = country.name
 
 
 mission_service = ScrapingMissionService()

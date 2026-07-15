@@ -1,12 +1,17 @@
-import { apiRequest } from "@/lib/api/client";
+import { apiRequest, getApiBase } from "@/lib/api/client";
 import type {
+  ScrapingCoverageCell,
   ScrapingBlueprint,
+  ScrapingEvent,
+  ScrapingExecutionDetail,
+  ScrapingExecutionSummary,
   ScrapingMissionCreateInput,
   ScrapingMissionDetail,
   ScrapingMissionSummary,
   ScrapingMissionUpdateInput,
   ScrapingRunDetail,
   ScrapingRunSummary,
+  ScrapingTask,
 } from "@/lib/scraping/types";
 
 type Auth = { token: string; orgId: string };
@@ -167,4 +172,75 @@ export function deleteScrapingRun(auth: Auth, runId: string) {
     token: auth.token,
     orgId: auth.orgId,
   });
+}
+
+export function createScrapingExecution(auth: Auth, runId: string) {
+  return apiRequest<ScrapingExecutionSummary>(`/scraping/runs/${runId}/executions`, {
+    method: "POST",
+    body: { execution_type: "initial_full_country", mode: "mock" },
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function listScrapingExecutions(auth: Auth, runId: string) {
+  return apiRequest<ScrapingExecutionSummary[]>(`/scraping/runs/${runId}/executions`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function getScrapingExecution(auth: Auth, executionId: string) {
+  return apiRequest<ScrapingExecutionDetail>(`/scraping/executions/${executionId}`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function listScrapingExecutionTasks(auth: Auth, executionId: string) {
+  return apiRequest<ScrapingTask[]>(`/scraping/executions/${executionId}/tasks`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function listScrapingExecutionCoverage(auth: Auth, executionId: string) {
+  return apiRequest<ScrapingCoverageCell[]>(`/scraping/executions/${executionId}/coverage`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function listScrapingExecutionEvents(
+  auth: Auth,
+  executionId: string,
+  afterSequence?: number,
+) {
+  const query = afterSequence ? `?after_sequence=${afterSequence}` : "";
+  return apiRequest<ScrapingEvent[]>(`/scraping/executions/${executionId}/events${query}`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function cancelScrapingExecution(auth: Auth, executionId: string) {
+  return apiRequest<ScrapingExecutionSummary>(`/scraping/executions/${executionId}/cancel`, {
+    method: "POST",
+    body: {},
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function deleteScrapingExecution(auth: Auth, executionId: string) {
+  return apiRequest<void>(`/scraping/executions/${executionId}`, {
+    method: "DELETE",
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function scrapingExecutionStreamUrl(executionId: string, afterSequence: number) {
+  const params = afterSequence > 0 ? `?after_sequence=${afterSequence}` : "";
+  return `${getApiBase()}/scraping/executions/${executionId}/events/stream${params}`;
 }

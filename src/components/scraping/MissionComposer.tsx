@@ -13,12 +13,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/lib/auth";
 import { useChatStore } from "@/lib/store";
 import { createScrapingMission, generateScrapingBlueprint } from "@/lib/scraping/api";
+import { SCRAPING_COUNTRIES } from "@/lib/scraping/countries";
 
 export function MissionComposer() {
   const navigate = useNavigate();
   const { authHeaders } = useAuth();
   const { modelSets, projects } = useChatStore();
   const [title, setTitle] = useState("");
+  const [countryCode, setCountryCode] = useState("");
   const [prompt, setPrompt] = useState("");
   const [modelSetId, setModelSetId] = useState(modelSets[0]?.id ?? "");
   const [projectId, setProjectId] = useState<string>("none");
@@ -43,6 +45,7 @@ export function MissionComposer() {
     try {
       const mission = await createScrapingMission(auth, {
         title,
+        country_code: countryCode,
         original_prompt: prompt,
         model_set_id: modelSetId,
         project_id: projectId === "none" ? null : projectId,
@@ -72,6 +75,25 @@ export function MissionComposer() {
           required
           className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
         />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="mission-country">Country</Label>
+        <input
+          id="mission-country"
+          list="scraping-country-options"
+          value={countryCode}
+          onChange={(event) => setCountryCode(event.target.value.toUpperCase())}
+          placeholder="Search country or enter code, e.g. LB"
+          required
+          className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+        />
+        <datalist id="scraping-country-options">
+          {SCRAPING_COUNTRIES.map((country) => (
+            <option key={country.code} value={country.code}>
+              {country.name}
+            </option>
+          ))}
+        </datalist>
       </div>
       <div className="space-y-2">
         <Label htmlFor="mission-prompt">Mission Prompt</Label>
@@ -119,7 +141,7 @@ export function MissionComposer() {
       </div>
       <button
         type="submit"
-        disabled={submitting || !title.trim() || !prompt.trim() || !modelSetId}
+        disabled={submitting || !title.trim() || !countryCode.trim() || !prompt.trim() || !modelSetId}
         className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
       >
         {submitting && <Loader2 className="size-4 animate-spin" />}

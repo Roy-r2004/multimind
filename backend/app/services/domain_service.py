@@ -109,6 +109,8 @@ class ProjectService:
                     title=mission.title,
                     status=mission.status.value,
                     project_id=mission.project_id,
+                    country_code=mission.country_code,
+                    country_name=mission.country_name,
                     active_blueprint_id=mission.active_blueprint_id,
                     created_at=mission.created_at,
                     updated_at=mission.updated_at,

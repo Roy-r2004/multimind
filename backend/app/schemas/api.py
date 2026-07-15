@@ -164,6 +164,8 @@ class ProjectScrapingMissionResponse(BaseModel):
     title: str
     status: str
     project_id: str | None = None
+    country_code: str | None = None
+    country_name: str | None = None
     active_blueprint_id: str | None = None
     created_at: datetime
     updated_at: datetime
@@ -176,6 +178,7 @@ class ScrapingMissionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str
+    country_code: str
     original_prompt: str
     model_set_id: str
     project_id: str | None = None
@@ -185,6 +188,7 @@ class ScrapingMissionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str | None = Field(default=None, max_length=512)
+    country_code: str | None = None
     project_id: str | None = None
 
 
@@ -232,6 +236,8 @@ class ScrapingMissionSummary(BaseModel):
     title: str
     original_prompt: str
     status: str
+    country_code: str | None = None
+    country_name: str | None = None
     project_id: str | None = None
     project_name: str | None = None
     active_blueprint_id: str | None = None
@@ -438,6 +444,130 @@ class ScrapingRunDetail(ScrapingRunSummary):
     mission_title: str
     plan_json: ScrapingTeamPlanOutput | None = None
     agents: list[ScrapingRunAgentResponse] = []
+
+
+class ScrapingExecutionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_type: str = "initial_full_country"
+    mode: str = "mock"
+
+
+class ScrapingExecutionAgentResponse(BaseModel):
+    id: str
+    execution_id: str
+    team_agent_id: str
+    planned_agent_name: str
+    planned_agent_role: str
+    model_id: str
+    status: str
+    current_task_id: str | None = None
+    current_task_title: str | None = None
+    current_action: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingExecutionSummary(BaseModel):
+    id: str
+    organization_id: str
+    mission_id: str
+    blueprint_id: str
+    team_plan_id: str
+    execution_type: str
+    mode: str
+    status: str
+    country_code: str
+    country_name: str
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    error_message: str | None = None
+    sources_discovered: int
+    documents_found: int
+    records_extracted: int
+    records_verified: int
+    duplicates_detected: int
+    blocked_sources: int
+    coverage_debt: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingCoverageCellResponse(BaseModel):
+    id: str
+    execution_id: str
+    region_code: str | None = None
+    region_name: str
+    language_code: str | None = None
+    language_name: str
+    source_category: str
+    status: str
+    assigned_execution_agent_id: str | None = None
+    assigned_agent_name: str | None = None
+    result_count: int
+    reason: str | None = None
+    metadata_json: dict[str, Any]
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingTaskResponse(BaseModel):
+    id: str
+    execution_id: str
+    execution_agent_id: str
+    agent_name: str | None = None
+    coverage_cell_id: str | None = None
+    coverage_label: str | None = None
+    parent_task_id: str | None = None
+    task_type: str
+    title: str
+    status: str
+    priority: int
+    attempt_count: int
+    max_attempts: int
+    current_action: str | None = None
+    input_json: dict[str, Any]
+    output_json: dict[str, Any]
+    dependency_task_ids_json: list[str]
+    claimed_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingEventResponse(BaseModel):
+    id: str
+    execution_id: str
+    execution_agent_id: str | None = None
+    task_id: str | None = None
+    coverage_cell_id: str | None = None
+    sequence_number: int
+    event_type: str
+    message: str
+    metadata_json: dict[str, Any]
+    created_at: datetime
+
+
+class ScrapingExecutionDetail(BaseModel):
+    execution: ScrapingExecutionSummary
+    country_profile: dict[str, Any] | None = None
+    agents: list[ScrapingExecutionAgentResponse]
+    task_summary_counts: dict[str, int]
+    coverage_summary_counts: dict[str, int]
+    recent_tasks: list[ScrapingTaskResponse]
+    recent_events: list[ScrapingEventResponse]
+    can_cancel: bool
+    can_delete: bool
+    mock: bool = True
 
 
 # --- Chats ---

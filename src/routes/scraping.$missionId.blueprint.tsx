@@ -19,6 +19,7 @@ import {
   rejectScrapingBlueprint,
   requestScrapingBlueprintChanges,
 } from "@/lib/scraping/api";
+import { countryLabel } from "@/lib/scraping/countries";
 import type {
   ScrapingBlueprint,
   ScrapingMissionDetail,
@@ -155,7 +156,14 @@ function ScrapingBlueprintPage() {
         <PageHeader
           eyebrow="Scraping Council"
           title={mission?.title ?? "Blueprint"}
-          description="Review the generated blueprint before approval."
+          description={
+            mission
+              ? `Review the generated blueprint before approval. ${countryLabel(
+                  mission.country_code,
+                  mission.country_name,
+                )}.`
+              : "Review the generated blueprint before approval."
+          }
         />
         {loading && (
           <GlassCard className="mt-8 p-8 text-sm text-muted-foreground">

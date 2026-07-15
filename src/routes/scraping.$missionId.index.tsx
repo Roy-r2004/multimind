@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
+import { Modal } from "@/components/Modal";
 import { MissionStatusBadge } from "@/components/scraping/MissionStatusBadge";
 import { Button } from "@/components/ui/button";
 import { ApiClientError } from "@/lib/api/client";
@@ -11,7 +12,9 @@ import {
   listScrapingBlueprints,
   listScrapingRuns,
   planScrapingTeam,
+  updateScrapingMission,
 } from "@/lib/scraping/api";
+import { countryLabel, SCRAPING_COUNTRIES } from "@/lib/scraping/countries";
 import type {
   ScrapingBlueprint,
   ScrapingMissionDetail,
@@ -33,6 +36,9 @@ function ScrapingMissionPage() {
   const [runs, setRuns] = useState<ScrapingRunSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [showCountryModal, setShowCountryModal] = useState(false);
+  const [countryCode, setCountryCode] = useState("");
+  const [savingCountry, setSavingCountry] = useState(false);
 
   const loadMission = useCallback(() => {
     const auth = authHeaders();
@@ -102,6 +108,25 @@ function ScrapingMissionPage() {
     }
   }
 
+  async function handleSetCountry() {
+    const auth = authHeaders();
+    if (!auth || !mission) {
+      return;
+    }
+    setSavingCountry(true);
+    setError(null);
+    try {
+      const updated = await updateScrapingMission(auth, mission.id, { country_code: countryCode });
+      setMission(updated);
+      setShowCountryModal(false);
+      setCountryCode("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set country");
+    } finally {
+      setSavingCountry(false);
+    }
+  }
+
   return (
     <AppShell>
       <div className="mx-auto max-w-4xl px-6 py-10">
@@ -141,6 +166,22 @@ function ScrapingMissionPage() {
                 <dt className="font-medium">Original prompt</dt>
                 <dd className="mt-1 whitespace-pre-wrap text-muted-foreground">
                   {mission.original_prompt}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-medium">Country</dt>
+                <dd className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground">
+                  <span>{countryLabel(mission.country_code, mission.country_name)}</span>
+                  {!mission.country_code && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowCountryModal(true)}
+                    >
+                      Set Country
+                    </Button>
+                  )}
                 </dd>
               </div>
               <div>
@@ -225,6 +266,49 @@ function ScrapingMissionPage() {
           </GlassCard>
         )}
       </div>
+      <Modal
+        open={showCountryModal}
+        onClose={savingCountry ? () => undefined : () => setShowCountryModal(false)}
+        title="Set Mission Country"
+        size="md"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Set the country for this legacy mission. A mission represents exactly one country.
+          </p>
+          <input
+            list="mission-country-options"
+            value={countryCode}
+            onChange={(event) => setCountryCode(event.target.value.toUpperCase())}
+            placeholder="Search country or enter code, e.g. LB"
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+          />
+          <datalist id="mission-country-options">
+            {SCRAPING_COUNTRIES.map((country) => (
+              <option key={country.code} value={country.code}>
+                {country.name}
+              </option>
+            ))}
+          </datalist>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={savingCountry}
+              onClick={() => setShowCountryModal(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={savingCountry || !countryCode.trim()}
+              onClick={() => void handleSetCountry()}
+            >
+              {savingCountry ? "Saving..." : "Set Country"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </AppShell>
   );
 }

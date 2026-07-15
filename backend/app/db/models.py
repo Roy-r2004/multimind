@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -104,6 +105,46 @@ class ScrapingRunStatus(str, enum.Enum):
 class ScrapingRunAgentStatus(str, enum.Enum):
     PLANNED = "planned"
     WAITING = "waiting"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ScrapingExecutionStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    CANCEL_REQUESTED = "cancel_requested"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ScrapingExecutionAgentStatus(str, enum.Enum):
+    WAITING = "waiting"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ScrapingCoverageStatus(str, enum.Enum):
+    NOT_STARTED = "not_started"
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    COVERED = "covered"
+    COVERED_NO_RESULTS = "covered_no_results"
+    PARTIALLY_COVERED = "partially_covered"
+    BLOCKED = "blocked"
+    HUMAN_REVIEW_REQUIRED = "human_review_required"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ScrapingTaskStatus(str, enum.Enum):
+    QUEUED = "queued"
+    BLOCKED = "blocked"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -262,6 +303,8 @@ class ScrapingMission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     model_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     original_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    country_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[ScrapingMissionStatus] = mapped_column(
         Enum(
             ScrapingMissionStatus,
@@ -291,6 +334,11 @@ class ScrapingMission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="mission",
         cascade="all, delete-orphan",
         order_by="ScrapingRun.created_at",
+    )
+    executions: Mapped[list["ScrapingExecution"]] = relationship(
+        back_populates="mission",
+        cascade="all, delete-orphan",
+        order_by="ScrapingExecution.created_at",
     )
 
 
@@ -386,6 +434,11 @@ class ScrapingRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="ScrapingRunAgent.sequence",
     )
+    executions: Mapped[list["ScrapingExecution"]] = relationship(
+        back_populates="team_plan",
+        cascade="all, delete-orphan",
+        order_by="ScrapingExecution.created_at",
+    )
 
 
 class ScrapingRunAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -423,6 +476,267 @@ class ScrapingRunAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     parent_agent: Mapped["ScrapingRunAgent | None"] = relationship(
         remote_side="ScrapingRunAgent.id"
     )
+    execution_agents: Mapped[list["ScrapingExecutionAgent"]] = relationship(
+        back_populates="team_agent"
+    )
+
+
+class ScrapingExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_executions"
+    __table_args__ = (
+        Index("ix_scraping_executions_organization_id", "organization_id"),
+        Index("ix_scraping_executions_mission_id", "mission_id"),
+        Index("ix_scraping_executions_blueprint_id", "blueprint_id"),
+        Index("ix_scraping_executions_team_plan_id", "team_plan_id"),
+        Index("ix_scraping_executions_status", "status"),
+        Index("ix_scraping_executions_created_at", "created_at"),
+        Index(
+            "uq_scraping_executions_active_team_plan",
+            "team_plan_id",
+            unique=True,
+            postgresql_where=text("status in ('queued', 'running', 'cancel_requested')"),
+            sqlite_where=text("status in ('queued', 'running', 'cancel_requested')"),
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    mission_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_missions.id", ondelete="CASCADE"), nullable=False
+    )
+    blueprint_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_blueprints.id"), nullable=False
+    )
+    team_plan_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[ScrapingExecutionStatus] = mapped_column(
+        Enum(
+            ScrapingExecutionStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=ScrapingExecutionStatus.QUEUED,
+        nullable=False,
+    )
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    country_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    country_profile_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_event_sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sources_discovered: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    documents_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    records_extracted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    records_verified: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duplicates_detected: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    blocked_sources: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    coverage_debt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    organization: Mapped["Organization"] = relationship()
+    mission: Mapped["ScrapingMission"] = relationship(back_populates="executions")
+    blueprint: Mapped["ScrapingBlueprint"] = relationship()
+    team_plan: Mapped["ScrapingRun"] = relationship(back_populates="executions")
+    execution_agents: Mapped[list["ScrapingExecutionAgent"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="ScrapingExecutionAgent.created_at",
+    )
+    coverage_cells: Mapped[list["ScrapingCoverageCell"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="ScrapingCoverageCell.created_at",
+    )
+    tasks: Mapped[list["ScrapingTask"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="ScrapingTask.created_at",
+    )
+    events: Mapped[list["ScrapingEvent"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="ScrapingEvent.sequence_number",
+    )
+
+
+class ScrapingExecutionAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_execution_agents"
+    __table_args__ = (
+        UniqueConstraint("execution_id", "team_agent_id", name="uq_execution_agent_team_agent"),
+        Index("ix_scraping_execution_agents_execution_id", "execution_id"),
+        Index("ix_scraping_execution_agents_team_agent_id", "team_agent_id"),
+        Index("ix_scraping_execution_agents_status", "status"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    team_agent_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_run_agents.id"), nullable=False
+    )
+    status: Mapped[ScrapingExecutionAgentStatus] = mapped_column(
+        Enum(
+            ScrapingExecutionAgentStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=ScrapingExecutionAgentStatus.WAITING,
+        nullable=False,
+    )
+    current_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    current_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    execution: Mapped["ScrapingExecution"] = relationship(back_populates="execution_agents")
+    team_agent: Mapped["ScrapingRunAgent"] = relationship(back_populates="execution_agents")
+    coverage_cells: Mapped[list["ScrapingCoverageCell"]] = relationship(
+        back_populates="assigned_execution_agent"
+    )
+    tasks: Mapped[list["ScrapingTask"]] = relationship(back_populates="execution_agent")
+
+
+class ScrapingCoverageCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_coverage_cells"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_id",
+            "region_name",
+            "language_name",
+            "source_category",
+            name="uq_scraping_coverage_cell_matrix",
+        ),
+        Index("ix_scraping_coverage_cells_execution_id", "execution_id"),
+        Index("ix_scraping_coverage_cells_status", "status"),
+        Index("ix_scraping_coverage_cells_assigned_agent", "assigned_execution_agent_id"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    region_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    region_name: Mapped[str] = mapped_column(Text, nullable=False)
+    language_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    language_name: Mapped[str] = mapped_column(Text, nullable=False)
+    source_category: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[ScrapingCoverageStatus] = mapped_column(
+        Enum(
+            ScrapingCoverageStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=ScrapingCoverageStatus.NOT_STARTED,
+        nullable=False,
+    )
+    assigned_execution_agent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_execution_agents.id", ondelete="SET NULL"), nullable=True
+    )
+    result_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    execution: Mapped["ScrapingExecution"] = relationship(back_populates="coverage_cells")
+    assigned_execution_agent: Mapped["ScrapingExecutionAgent | None"] = relationship(
+        back_populates="coverage_cells"
+    )
+    tasks: Mapped[list["ScrapingTask"]] = relationship(back_populates="coverage_cell")
+
+
+class ScrapingTask(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_tasks"
+    __table_args__ = (
+        Index("ix_scraping_tasks_execution_id", "execution_id"),
+        Index("ix_scraping_tasks_execution_agent_id", "execution_agent_id"),
+        Index("ix_scraping_tasks_coverage_cell_id", "coverage_cell_id"),
+        Index("ix_scraping_tasks_status", "status"),
+        Index("ix_scraping_tasks_task_type", "task_type"),
+        Index("ix_scraping_tasks_priority", "priority"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_agent_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_execution_agents.id", ondelete="CASCADE"), nullable=False
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    parent_task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[ScrapingTaskStatus] = mapped_column(
+        Enum(
+            ScrapingTaskStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=ScrapingTaskStatus.QUEUED,
+        nullable=False,
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    current_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    output_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    dependency_task_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    execution: Mapped["ScrapingExecution"] = relationship(back_populates="tasks")
+    execution_agent: Mapped["ScrapingExecutionAgent"] = relationship(back_populates="tasks")
+    coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship(back_populates="tasks")
+    parent_task: Mapped["ScrapingTask | None"] = relationship(remote_side="ScrapingTask.id")
+
+
+class ScrapingEvent(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "scraping_events"
+    __table_args__ = (
+        UniqueConstraint("execution_id", "sequence_number", name="uq_scraping_event_sequence"),
+        Index("ix_scraping_events_execution_sequence", "execution_id", "sequence_number"),
+        Index("ix_scraping_events_execution_agent_id", "execution_agent_id"),
+        Index("ix_scraping_events_task_id", "task_id"),
+        Index("ix_scraping_events_event_type", "event_type"),
+        Index("ix_scraping_events_created_at", "created_at"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_agent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_execution_agents.id", ondelete="SET NULL"), nullable=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    execution: Mapped["ScrapingExecution"] = relationship(back_populates="events")
 
 
 class Template(Base, UUIDPrimaryKeyMixin, TimestampMixin):

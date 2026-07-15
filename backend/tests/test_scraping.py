@@ -7,6 +7,11 @@ from app.core.dependencies import AuthContext, get_auth_context
 from app.db.models import (
     ScrapingBlueprint,
     ScrapingBlueprintStatus,
+    ScrapingCoverageCell,
+    ScrapingEvent,
+    ScrapingExecution,
+    ScrapingExecutionAgent,
+    ScrapingExecutionStatus,
     ScrapingMission,
     ScrapingMissionStatus,
     ScrapingRun,
@@ -22,11 +27,15 @@ from app.schemas.api import (
     ScrapingBlueprintRenameRequest,
     ScrapingMissionCreate,
     ScrapingMissionUpdate,
+    ScrapingExecutionCreate,
     ScrapingTeamPlanOutput,
 )
 from app.scraping.blueprint_orchestrator import BlueprintOrchestrator
 from app.services.domain_service import project_service
 from app.services.scraping.blueprint_service import blueprint_service
+from app.services.scraping.countries import COUNTRIES, resolve_country
+from app.services.scraping.execution_orchestrator import MockExecutionOrchestrator
+from app.services.scraping.execution_service import execution_service
 from app.services.scraping.mission_service import mission_service
 from app.services.scraping.run_service import run_service
 from app.services.scraping.team_planner_service import TeamPlannerService, team_planner_service
@@ -46,13 +55,24 @@ class FakeOrchestrator:
         return ScrapingBlueprintContent.model_validate(self.payload)
 
 
+def logged_execution_reason(caplog, reason: str) -> bool:
+    return any(getattr(record, "reason", None) == reason for record in caplog.records)
+
+
 async def create_mission(db: AsyncSession, auth: AuthContext) -> str:
+    return await create_country_mission(db, auth, country_code="LB")
+
+
+async def create_country_mission(
+    db: AsyncSession, auth: AuthContext, *, country_code: str
+) -> str:
     await create_model_set(db, auth)
     mission = await mission_service.create_mission(
         db,
         auth,
         ScrapingMissionCreate(
             title="Mission",
+            country_code=country_code,
             original_prompt="Find facilities",
             model_set_id="research-set",
         ),
@@ -120,7 +140,12 @@ async def test_mission_creation_succeeds(db: AsyncSession, auth: AuthContext):
     mission = await mission_service.create_mission(
         db,
         auth,
-        ScrapingMissionCreate(title=" Mission ", original_prompt=" Prompt ", model_set_id="research-set"),
+        ScrapingMissionCreate(
+            title=" Mission ",
+            country_code="LB",
+            original_prompt=" Prompt ",
+            model_set_id="research-set",
+        ),
     )
     assert mission.title == "Mission"
     assert mission.original_prompt == "Prompt"
@@ -134,7 +159,12 @@ async def test_mission_creation_rejects_empty_title(db: AsyncSession, auth: Auth
         await mission_service.create_mission(
             db,
             auth,
-            ScrapingMissionCreate(title=" ", original_prompt="Prompt", model_set_id="research-set"),
+            ScrapingMissionCreate(
+                title=" ",
+                country_code="LB",
+                original_prompt="Prompt",
+                model_set_id="research-set",
+            ),
         )
 
 
@@ -145,7 +175,12 @@ async def test_mission_creation_rejects_empty_prompt(db: AsyncSession, auth: Aut
         await mission_service.create_mission(
             db,
             auth,
-            ScrapingMissionCreate(title="Mission", original_prompt=" ", model_set_id="research-set"),
+            ScrapingMissionCreate(
+                title="Mission",
+                country_code="LB",
+                original_prompt=" ",
+                model_set_id="research-set",
+            ),
         )
 
 
@@ -157,7 +192,12 @@ async def test_mission_creation_rejects_another_organizations_model_set(db: Asyn
         await mission_service.create_mission(
             db,
             auth,
-            ScrapingMissionCreate(title="Mission", original_prompt="Prompt", model_set_id="other-set"),
+            ScrapingMissionCreate(
+                title="Mission",
+                country_code="LB",
+                original_prompt="Prompt",
+                model_set_id="other-set",
+            ),
         )
 
 
@@ -172,6 +212,7 @@ async def test_mission_creation_rejects_another_organizations_project(db: AsyncS
             auth,
             ScrapingMissionCreate(
                 title="Mission",
+                country_code="LB",
                 original_prompt="Prompt",
                 model_set_id="research-set",
                 project_id=other_project.id,
@@ -1493,3 +1534,591 @@ async def test_planning_persists_allowed_models_only(
     assert {agent.model_id for agent in run.agents} == {"gpt-4.1"}
     rows = await db.execute(select(ScrapingRunAgent).where(ScrapingRunAgent.run_id == run.id))
     assert len(rows.scalars().all()) == 3
+
+
+def test_offline_country_catalog_has_complete_valid_iso_codes():
+    assert len(COUNTRIES) == 249
+    assert len(set(COUNTRIES)) == 249
+    assert all(len(code) == 2 for code in COUNTRIES)
+    assert all(code.isalpha() and code.isupper() for code in COUNTRIES)
+    assert all(country.code == code for code, country in COUNTRIES.items())
+    assert all(country.name.strip() for country in COUNTRIES.values())
+
+
+def test_country_resolution_normalizes_and_rejects_unsupported_codes():
+    lebanon = resolve_country("lb")
+    assert lebanon.code == "LB"
+    assert lebanon.name == "Lebanon"
+
+    turkiye = resolve_country(" tr ")
+    assert turkiye.code == "TR"
+    assert turkiye.name == "Türkiye"
+
+    aland = resolve_country("ax")
+    assert aland.code == "AX"
+    assert aland.name == "Åland Islands"
+
+    with pytest.raises(Exception, match="Unsupported country code"):
+        resolve_country("XX")
+    with pytest.raises(Exception, match="Unsupported country code"):
+        resolve_country("XK")
+
+
+@pytest.mark.asyncio
+async def test_mission_creation_requires_valid_country(db: AsyncSession, auth: AuthContext):
+    await create_model_set(db, auth)
+    with pytest.raises(Exception, match="Unsupported country code"):
+        await mission_service.create_mission(
+            db,
+            auth,
+            ScrapingMissionCreate(
+                title="Mission",
+                country_code="XX",
+                original_prompt="Prompt",
+                model_set_id="research-set",
+            ),
+        )
+    mission = await mission_service.create_mission(
+        db,
+        auth,
+        ScrapingMissionCreate(
+            title="Mission",
+            country_code="lb",
+            original_prompt="Prompt",
+            model_set_id="research-set",
+        ),
+    )
+    assert mission.country_code == "LB"
+    assert mission.country_name == "Lebanon"
+
+
+@pytest.mark.asyncio
+async def test_legacy_mission_can_set_country_once_and_locks_after_blueprint(
+    db: AsyncSession, auth: AuthContext
+):
+    await create_model_set(db, auth)
+    mission = ScrapingMission(
+        org_id=auth.org_id,
+        created_by=auth.user.id,
+        model_set_id="research-set",
+        title="Legacy",
+        original_prompt="Prompt",
+    )
+    db.add(mission)
+    await db.flush()
+    updated = await mission_service.update_mission(
+        db, auth, mission.id, ScrapingMissionUpdate(country_code="JO")
+    )
+    assert updated.country_code == "JO"
+    await create_blueprint_version(
+        db,
+        auth,
+        mission_id=mission.id,
+        status=ScrapingBlueprintStatus.APPROVED,
+        active=True,
+    )
+    with pytest.raises(Exception, match="Country cannot be changed"):
+        await mission_service.update_mission(
+            db, auth, mission.id, ScrapingMissionUpdate(country_code="LB")
+        )
+
+
+async def create_planned_team_plan(db: AsyncSession, auth: AuthContext, monkeypatch) -> ScrapingRun:
+    blueprint = await create_active_approved_blueprint(db, auth)
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+    return await run_service.get_run_row(db, auth, run.id)
+
+
+@pytest.mark.asyncio
+async def test_legacy_mission_without_country_cannot_start_execution(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    await create_model_set(db, auth)
+    mission = ScrapingMission(
+        org_id=auth.org_id,
+        created_by=auth.user.id,
+        model_set_id="research-set",
+        title="Legacy",
+        original_prompt="Prompt",
+        status=ScrapingMissionStatus.APPROVED,
+    )
+    db.add(mission)
+    await db.flush()
+    blueprint = await create_blueprint_version(
+        db,
+        auth,
+        mission_id=mission.id,
+        status=ScrapingBlueprintStatus.APPROVED,
+        active=True,
+    )
+    mission.active_blueprint_id = blueprint.id
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, mission.id)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    with pytest.raises(Exception, match="Set a mission country"):
+        await execution_service.create_execution(
+            db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+        )
+
+
+@pytest.mark.asyncio
+async def test_first_mock_execution_snapshots_country_and_agents(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    assert execution.status == "queued"
+    assert execution.country_code == "LB"
+    agents = await db.execute(
+        select(ScrapingExecutionAgent).where(ScrapingExecutionAgent.execution_id == execution.id)
+    )
+    assert len(agents.scalars().all()) == len(run.agents)
+
+
+@pytest.mark.asyncio
+async def test_second_active_execution_for_team_plan_returns_conflict(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    first = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    with pytest.raises(Exception, match="active mock execution"):
+        await execution_service.create_execution(
+            db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+        )
+    row = await db.get(ScrapingExecution, first.id)
+    assert row is not None
+    row.status = ScrapingExecutionStatus.COMPLETED
+    await db.flush()
+    second = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    assert second.id != first.id
+
+
+@pytest.mark.asyncio
+async def test_mock_worker_persists_profile_cells_tasks_events_and_metrics(
+    db: AsyncSession, auth: AuthContext, monkeypatch, caplog
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+
+    async def no_delay():
+        return None
+
+    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    assert execution.status == "queued"
+    caplog.set_level("INFO", logger="app.services.scraping.execution_orchestrator")
+    await MockExecutionOrchestrator(db).run(execution.id)
+    detail = await execution_service.get_detail(db, auth, execution.id)
+    assert detail.execution.status == "completed"
+    assert detail.execution.started_at is not None
+    assert detail.country_profile is not None
+    assert detail.coverage_summary_counts
+    assert detail.task_summary_counts["completed"] > 0
+    assert detail.recent_events[0].sequence_number == 1
+    assert detail.execution.sources_discovered >= 0
+    events = await db.execute(
+        select(ScrapingEvent).where(ScrapingEvent.execution_id == execution.id)
+    )
+    sequences = [event.sequence_number for event in events.scalars().all()]
+    assert sequences == sorted(set(sequences))
+    assert "scraping_execution_execution_claim_succeeded" in caplog.text
+    assert "scraping_execution_orchestrator_completed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mock_worker_generic_country_profile_creates_cells_and_tasks(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    mission_id = await create_country_mission(db, auth, country_code="BR")
+    blueprint = await create_blueprint_version(
+        db,
+        auth,
+        mission_id=mission_id,
+        status=ScrapingBlueprintStatus.APPROVED,
+        active=True,
+    )
+    blueprint.blueprint_json = {
+        **valid_blueprint(),
+        "scope": {
+            "included": ["public listings"],
+            "excluded": ["private data"],
+            "countries": ["Brazil"],
+            "regions": [],
+        },
+        "languages": [],
+        "source_strategy": [],
+    }
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    async def no_delay():
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await MockExecutionOrchestrator(db).run(execution.id)
+    detail = await execution_service.get_detail(db, auth, execution.id)
+    assert detail.execution.status == "completed"
+    assert detail.country_profile is not None
+    assert detail.country_profile["country_code"] == "BR"
+    assert detail.country_profile["country_name"] == "Brazil"
+    assert detail.country_profile["administrative_regions"] == [
+        {"code": "brazil", "name": "Brazil"}
+    ]
+    assert detail.country_profile["languages"] == [{"code": "en", "name": "English"}]
+    assert detail.coverage_summary_counts
+    assert detail.task_summary_counts["completed"] > 0
+    cells = (
+        await db.execute(
+            select(ScrapingCoverageCell)
+            .where(ScrapingCoverageCell.execution_id == execution.id)
+            .order_by(ScrapingCoverageCell.region_name)
+        )
+    ).scalars().all()
+    assert cells
+    assert all(cell.region_code and len(cell.region_code) <= 32 for cell in cells)
+    identities = {
+        (cell.region_name, cell.language_name, cell.source_category) for cell in cells
+    }
+    assert len(identities) == len(cells)
+
+
+@pytest.mark.asyncio
+async def test_mock_worker_deduplicates_coverage_dimensions(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    blueprint.blueprint_json = {
+        **valid_blueprint(),
+        "scope": {
+            "included": ["public listings"],
+            "excluded": ["private data"],
+            "countries": ["Lebanon"],
+            "regions": [" Beirut ", "Beirut", " BEIRUT ", "Mount Lebanon"],
+        },
+        "languages": [" English ", "English"],
+        "source_strategy": [
+            {"source_type": " official directory ", "priority": 1},
+            {"source_type": "Official Directory", "priority": 2},
+        ],
+    }
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    async def no_delay():
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await MockExecutionOrchestrator(db).run(execution.id)
+    cells = (
+        await db.execute(
+            select(ScrapingCoverageCell)
+            .where(ScrapingCoverageCell.execution_id == execution.id)
+            .order_by(ScrapingCoverageCell.region_name)
+        )
+    ).scalars().all()
+    identities = [
+        (cell.region_name, cell.language_name, cell.source_category) for cell in cells
+    ]
+    assert len(cells) == 2
+    assert len(set(identities)) == len(identities)
+    assert [cell.region_name for cell in cells] == ["Beirut", "Mount Lebanon"]
+
+
+def test_coverage_dimensions_keep_region_codes_inside_schema_limit(db: AsyncSession):
+    orchestrator = MockExecutionOrchestrator(db)
+    long_name = "A Very Long Administrative Region Name That Exceeds The Database Limit"
+    regions, languages, categories = orchestrator._coverage_dimensions(
+        {
+            "administrative_regions": [{"code": long_name, "name": long_name}],
+            "languages": [{"code": " en ", "name": " English "}],
+            "source_categories": [" general web "],
+        },
+        "ZZ",
+        "Fallback Country",
+    )
+    assert regions == [{"code": regions[0]["code"], "name": long_name}]
+    assert regions[0]["code"]
+    assert len(regions[0]["code"]) <= 32
+    assert languages == [{"code": "en", "name": "English"}]
+    assert categories == ["general web"]
+
+
+@pytest.mark.asyncio
+async def test_mock_worker_missing_execution_logs_skip_reason(db: AsyncSession, caplog):
+    caplog.set_level("INFO", logger="app.services.scraping.execution_orchestrator")
+    await MockExecutionOrchestrator(db).run("missing-execution-id")
+    assert logged_execution_reason(caplog, "execution_not_found")
+
+
+@pytest.mark.asyncio
+async def test_mock_worker_terminal_execution_logs_skip_reason(
+    db: AsyncSession, auth: AuthContext, monkeypatch, caplog
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    row = await db.get(ScrapingExecution, execution.id)
+    assert row is not None
+    row.status = ScrapingExecutionStatus.COMPLETED
+    await db.flush()
+    caplog.set_level("INFO", logger="app.services.scraping.execution_orchestrator")
+    await MockExecutionOrchestrator(db).run(execution.id)
+    assert logged_execution_reason(caplog, "execution_already_terminal")
+
+
+@pytest.mark.asyncio
+async def test_mock_worker_missing_execution_agents_fails_deterministically(
+    db: AsyncSession, auth: AuthContext, monkeypatch, caplog
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    agents = (
+        await db.execute(
+            select(ScrapingExecutionAgent).where(
+                ScrapingExecutionAgent.execution_id == execution.id
+            )
+        )
+    ).scalars().all()
+    for agent in agents:
+        await db.delete(agent)
+    await db.flush()
+    caplog.set_level("INFO", logger="app.services.scraping.execution_orchestrator")
+    await MockExecutionOrchestrator(db).run(execution.id)
+    failed = await db.get(ScrapingExecution, execution.id)
+    assert failed is not None
+    assert failed.status == ScrapingExecutionStatus.FAILED
+    assert failed.error_message == "Mock execution failed."
+    events = await db.execute(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "execution_failed",
+        )
+    )
+    assert len(events.scalars().all()) == 1
+    assert logged_execution_reason(caplog, "no_execution_agents")
+
+
+@pytest.mark.asyncio
+async def test_mock_worker_accepts_long_descriptive_source_category(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    long_category = (
+        "Government Ministry/Registry (Ministry of Public Health, Ministry of Social Affairs)"
+    )
+    blueprint = await create_active_approved_blueprint(db, auth)
+    blueprint.blueprint_json = {
+        **valid_blueprint(),
+        "source_strategy": [
+            {
+                "source_type": long_category,
+                "priority": 1,
+                "trust_tier": "high",
+                "purpose": "seed sources",
+                "required": True,
+            }
+        ],
+    }
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    async def no_delay():
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await MockExecutionOrchestrator(db).run(execution.id)
+    cells = await db.execute(
+        select(ScrapingCoverageCell).where(ScrapingCoverageCell.execution_id == execution.id)
+    )
+    categories = {cell.source_category for cell in cells.scalars().all()}
+    assert long_category in categories
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_failure_log_renders_stage_and_exception_type(
+    db: AsyncSession, auth: AuthContext, monkeypatch, caplog
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    orchestrator = MockExecutionOrchestrator(db)
+
+    async def fail_after_profile(execution_row, execution_agents):
+        orchestrator.current_stage = "flush_coverage_cells"
+        orchestrator.coverage_region_count = 2
+        orchestrator.coverage_language_count = 1
+        orchestrator.coverage_source_category_count = 3
+        orchestrator.attempted_coverage_cell_count = 6
+        raise RuntimeError("database detail that must not be persisted")
+
+    monkeypatch.setattr(
+        orchestrator, "_ensure_profile_matrix_and_tasks", fail_after_profile
+    )
+    caplog.set_level("ERROR", logger="app.services.scraping.execution_orchestrator")
+    await orchestrator.run(execution.id)
+    failed = await db.get(ScrapingExecution, execution.id)
+    assert failed is not None
+    assert failed.status == ScrapingExecutionStatus.FAILED
+    assert failed.error_message == "Mock execution failed."
+    assert "database detail that must not be persisted" not in failed.error_message
+    events = await db.execute(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "execution_failed",
+        )
+    )
+    failed_events = events.scalars().all()
+    assert len(failed_events) == 1
+    assert failed_events[0].message == "Mock execution failed."
+    assert "database detail that must not be persisted" not in failed_events[0].message
+    rendered_log = caplog.text
+    assert f"scraping_execution_failed execution_id={execution.id}" in rendered_log
+    assert "stage=flush_coverage_cells" in rendered_log
+    assert "exception_type=RuntimeError" in rendered_log
+    assert "region_count=2" in rendered_log
+    assert "language_count=1" in rendered_log
+    assert "source_category_count=3" in rendered_log
+    assert "attempted_coverage_cell_count=6" in rendered_log
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_failed_flush_rolls_back_and_stores_failed_event(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    orchestrator = MockExecutionOrchestrator(db)
+
+    async def fail_with_pending_rollback(execution_row, execution_agents):
+        db.add(
+            ScrapingEvent(
+                execution_id=execution_row.id,
+                sequence_number=1,
+                event_type="duplicate_sequence_for_test",
+                message="This duplicate event intentionally fails.",
+                metadata_json={"mock": True},
+            )
+        )
+        await db.flush()
+
+    monkeypatch.setattr(
+        orchestrator, "_ensure_profile_matrix_and_tasks", fail_with_pending_rollback
+    )
+    await orchestrator.run(execution.id)
+    failed = await db.get(ScrapingExecution, execution.id)
+    assert failed is not None
+    assert failed.status == ScrapingExecutionStatus.FAILED
+    assert failed.error_message == "Mock execution failed."
+    events = await db.execute(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "execution_failed",
+        )
+    )
+    assert len(events.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_execution_delete_and_team_plan_active_execution_rules(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    with pytest.raises(Exception, match="child execution campaign is active"):
+        await run_service.delete_run(db, auth, run.id)
+    with pytest.raises(Exception, match="Active mock executions cannot be deleted"):
+        await execution_service.delete_execution(db, auth, execution.id)
+    row = await db.get(ScrapingExecution, execution.id)
+    assert row is not None
+    row.status = ScrapingExecutionStatus.CANCELLED
+    await db.flush()
+    await execution_service.delete_execution(db, auth, execution.id)
+    assert await db.get(ScrapingExecution, execution.id) is None
+    agents = await db.execute(
+        select(ScrapingExecutionAgent).where(ScrapingExecutionAgent.execution_id == execution.id)
+    )
+    cells = await db.execute(
+        select(ScrapingCoverageCell).where(ScrapingCoverageCell.execution_id == execution.id)
+    )
+    assert agents.scalars().all() == []
+    assert cells.scalars().all() == []

@@ -14,6 +14,8 @@ from app.db.models import (
     ScrapingBlueprintStatus,
     ScrapingMission,
     ScrapingMissionStatus,
+    ScrapingExecution,
+    ScrapingExecutionStatus,
     ScrapingRun,
     ScrapingRunAgent,
     ScrapingRunAgentStatus,
@@ -34,6 +36,10 @@ ACTIVE_APPROVED_BLUEPRINT_REQUIRED = (
 RUN_ALREADY_EXISTS_MESSAGE = "An AI scraping team plan already exists for this blueprint version."
 RUN_DELETE_ACTIVE_MESSAGE = (
     "This run cannot be deleted while planning or executing. Cancel it first."
+)
+RUN_DELETE_ACTIVE_EXECUTION_MESSAGE = (
+    "This AI team plan cannot be deleted while a child execution campaign is active. "
+    "Cancel the execution first."
 )
 DELETABLE_RUN_STATUSES = {
     ScrapingRunStatus.PLANNED,
@@ -137,6 +143,21 @@ class ScrapingRunService:
         run = await self.get_run_row(db, auth, run_id)
         if run.status not in DELETABLE_RUN_STATUSES:
             raise ConflictError(RUN_DELETE_ACTIVE_MESSAGE)
+        active_execution = await db.execute(
+            select(ScrapingExecution.id).where(
+                ScrapingExecution.team_plan_id == run.id,
+                ScrapingExecution.organization_id == auth.org_id,
+                ScrapingExecution.status.in_(
+                    [
+                        ScrapingExecutionStatus.QUEUED,
+                        ScrapingExecutionStatus.RUNNING,
+                        ScrapingExecutionStatus.CANCEL_REQUESTED,
+                    ]
+                ),
+            )
+        )
+        if active_execution.scalar_one_or_none() is not None:
+            raise ConflictError(RUN_DELETE_ACTIVE_EXECUTION_MESSAGE)
         await db.delete(run)
         await db.commit()
 
