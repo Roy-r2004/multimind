@@ -1,0 +1,83 @@
+# Production stack for Coolify / Hostinger VPS
+# Coolify → New Resource → Docker Compose → this file
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-multiai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-multiai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multiai -d multiai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      PORT: "8000"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-multiai}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-multiai}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-change-me-now}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://187.127.230.233:3000}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://187.127.230.233:3000}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_SITE_URL: ${PUBLIC_APP_URL:-http://187.127.230.233:3000}
+      OPENROUTER_APP_NAME: MultiAI
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      HOST: 0.0.0.0
+      BACKEND_PROXY_TARGET: http://api:8000
+      API_PUBLIC_URL: ${PUBLIC_APP_URL:-http://187.127.230.233:3000}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
