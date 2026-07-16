@@ -2,10 +2,12 @@
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from sqlalchemy import (
+    CheckConstraint,
+    Date,
     JSON,
     Boolean,
     DateTime,
@@ -14,8 +16,10 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
+    Time,
     UniqueConstraint,
     func,
     text,
@@ -565,6 +569,16 @@ class ScrapingExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="ScrapingEvent.sequence_number",
     )
+    rehabilitation_facilities: Mapped[list["RehabilitationFacility"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="RehabilitationFacility.stable_key",
+    )
+    rehabilitation_sources: Mapped[list["RehabilitationSource"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="RehabilitationSource.created_at",
+    )
 
 
 class ScrapingExecutionAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -737,6 +751,421 @@ class ScrapingEvent(Base, UUIDPrimaryKeyMixin):
     )
 
     execution: Mapped["ScrapingExecution"] = relationship(back_populates="events")
+
+
+CONFIDENCE_CHECK = "confidence_score >= 0 AND confidence_score <= 1"
+
+
+class RehabilitationFacility(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "rehabilitation_facilities"
+    __table_args__ = (
+        UniqueConstraint("execution_id", "stable_key", name="uq_rehab_facility_execution_key"),
+        CheckConstraint(CONFIDENCE_CHECK, name="ck_rehab_facility_confidence_score"),
+        Index("ix_rehab_facilities_execution_id", "execution_id"),
+        Index("ix_rehab_facilities_organization_id", "organization_id"),
+        Index("ix_rehab_facilities_verification_status", "verification_status"),
+        Index("ix_rehab_facilities_country_region", "country_code", "primary_region"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    stable_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_language_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    facility_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    organization_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    operational_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    country_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    primary_region: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    primary_city: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    primary_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
+    primary_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    duplicate_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    human_review_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    execution: Mapped["ScrapingExecution"] = relationship(back_populates="rehabilitation_facilities")
+    organization: Mapped["Organization"] = relationship()
+    aliases: Mapped[list["RehabilitationFacilityAlias"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityAlias.name"
+    )
+    locations: Mapped[list["RehabilitationFacilityLocation"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityLocation.created_at"
+    )
+    contacts: Mapped[list["RehabilitationFacilityContact"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityContact.created_at"
+    )
+    attributes: Mapped[list["RehabilitationFacilityAttribute"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityAttribute.created_at"
+    )
+    staff: Mapped[list["RehabilitationFacilityStaff"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityStaff.created_at"
+    )
+    licenses: Mapped[list["RehabilitationFacilityLicense"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityLicense.created_at"
+    )
+    operating_hours: Mapped[list["RehabilitationFacilityOperatingHours"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityOperatingHours.day_of_week"
+    )
+    source_links: Mapped[list["RehabilitationFacilitySourceLink"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilitySourceLink.created_at"
+    )
+    evidence: Mapped[list["RehabilitationFieldEvidence"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFieldEvidence.created_at"
+    )
+    unresolved_fields: Mapped[list["RehabilitationUnresolvedField"]] = relationship(
+        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationUnresolvedField.created_at"
+    )
+
+
+class RehabilitationFacilityAlias(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_facility_aliases"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "name", "alias_type", name="uq_rehab_alias_facility_name_type"),
+        Index("ix_rehab_aliases_facility_id", "facility_id"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    language_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    alias_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="aliases")
+
+
+class RehabilitationFacilityLocation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "rehabilitation_facility_locations"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "location_type", "location_name", name="uq_rehab_location_identity"),
+        CheckConstraint(CONFIDENCE_CHECK, name="ck_rehab_location_confidence_score"),
+        Index("ix_rehab_locations_facility_id", "facility_id"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    location_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    location_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    country_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    region: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    district: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    area: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    full_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    postal_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="locations")
+
+
+class RehabilitationFacilityContact(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_facility_contacts"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "contact_type", "value", name="uq_rehab_contact_facility_type_value"),
+        CheckConstraint(CONFIDENCE_CHECK, name="ck_rehab_contact_confidence_score"),
+        Index("ix_rehab_contacts_facility_id", "facility_id"),
+        Index("ix_rehab_contacts_type", "contact_type"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    contact_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    value: Mapped[str] = mapped_column(String(512), nullable=False)
+    normalized_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    available_24_7: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="contacts")
+
+
+class RehabilitationFacilityAttribute(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "rehabilitation_facility_attributes"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "attribute_group", "attribute_key", name="uq_rehab_attribute_identity"),
+        CheckConstraint(CONFIDENCE_CHECK, name="ck_rehab_attribute_confidence_score"),
+        Index("ix_rehab_attributes_facility_id", "facility_id"),
+        Index("ix_rehab_attributes_group", "attribute_group"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    attribute_group: Mapped[str] = mapped_column(String(80), nullable=False)
+    attribute_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    value_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    value_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value_boolean: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    value_number: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    value_unit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    currency_code: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    period: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="attributes")
+
+
+class RehabilitationFacilityStaff(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_facility_staff"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "name", "role", name="uq_rehab_staff_facility_name_role"),
+        CheckConstraint(CONFIDENCE_CHECK, name="ck_rehab_staff_confidence_score"),
+        Index("ix_rehab_staff_facility_id", "facility_id"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(160), nullable=False)
+    specialty: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    credentials: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    public_profile_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="staff")
+
+
+class RehabilitationFacilityLicense(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_facility_licenses"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "record_type", "identifier", name="uq_rehab_license_identity"),
+        CheckConstraint(CONFIDENCE_CHECK, name="ck_rehab_license_confidence_score"),
+        Index("ix_rehab_licenses_facility_id", "facility_id"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    record_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    issuing_authority: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    identifier: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(80), nullable=False)
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="licenses")
+
+
+class RehabilitationFacilityOperatingHours(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_facility_operating_hours"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "day_of_week", name="uq_rehab_hours_facility_day"),
+        Index("ix_rehab_hours_facility_id", "facility_id"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    day_of_week: Mapped[int] = mapped_column(Integer, nullable=False)
+    opens_at: Mapped[time | None] = mapped_column(Time, nullable=True)
+    closes_at: Mapped[time | None] = mapped_column(Time, nullable=True)
+    is_closed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_24_hours: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="operating_hours")
+
+
+class RehabilitationSource(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "rehabilitation_sources"
+    __table_args__ = (
+        UniqueConstraint("execution_id", "canonical_url", name="uq_rehab_source_execution_url"),
+        Index("ix_rehab_sources_execution_id", "execution_id"),
+        Index("ix_rehab_sources_coverage_cell_id", "coverage_cell_id"),
+        Index("ix_rehab_sources_task_id", "task_id"),
+        Index("ix_rehab_sources_fetch_status", "fetch_status"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    original_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    canonical_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_category: Mapped[str] = mapped_column(String(120), nullable=False)
+    discovery_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    language_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    fetch_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    execution: Mapped["ScrapingExecution"] = relationship(back_populates="rehabilitation_sources")
+    coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship()
+    task: Mapped["ScrapingTask | None"] = relationship()
+    facility_links: Mapped[list["RehabilitationFacilitySourceLink"]] = relationship(
+        back_populates="source", cascade="all, delete-orphan", order_by="RehabilitationFacilitySourceLink.created_at"
+    )
+    evidence: Mapped[list["RehabilitationFieldEvidence"]] = relationship(back_populates="source")
+
+
+class RehabilitationFacilitySourceLink(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_facility_source_links"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "source_id", "relationship_type", name="uq_rehab_source_link_identity"),
+        Index("ix_rehab_source_links_facility_id", "facility_id"),
+        Index("ix_rehab_source_links_source_id", "source_id"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    relationship_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="source_links")
+    source: Mapped["RehabilitationSource"] = relationship(back_populates="facility_links")
+
+
+class RehabilitationFieldEvidence(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_field_evidence"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "source_id", "field_path", name="uq_rehab_evidence_field_source"),
+        CheckConstraint(CONFIDENCE_CHECK, name="ck_rehab_evidence_confidence_score"),
+        Index("ix_rehab_evidence_facility_id", "facility_id"),
+        Index("ix_rehab_evidence_source_id", "source_id"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("rehabilitation_sources.id", ondelete="SET NULL"), nullable=True
+    )
+    field_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    extracted_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    evidence_text: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    page_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_url_snapshot: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    language_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    extraction_method: Mapped[str] = mapped_column(String(80), nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="evidence")
+    source: Mapped["RehabilitationSource | None"] = relationship(back_populates="evidence")
+
+
+class RehabilitationPossibleDuplicate(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_possible_duplicates"
+    __table_args__ = (
+        UniqueConstraint("execution_id", "left_facility_id", "right_facility_id", name="uq_rehab_duplicate_pair"),
+        CheckConstraint("left_facility_id < right_facility_id", name="ck_rehab_duplicate_ordered_pair"),
+        CheckConstraint("match_score >= 0 AND match_score <= 1", name="ck_rehab_duplicate_match_score"),
+        Index("ix_rehab_duplicates_execution_id", "execution_id"),
+        Index("ix_rehab_duplicates_left_facility_id", "left_facility_id"),
+        Index("ix_rehab_duplicates_right_facility_id", "right_facility_id"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    left_facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    right_facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    match_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    matching_reasons: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    resolved_facility_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="SET NULL"), nullable=True
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    execution: Mapped["ScrapingExecution"] = relationship()
+    left_facility: Mapped["RehabilitationFacility"] = relationship(foreign_keys=[left_facility_id])
+    right_facility: Mapped["RehabilitationFacility"] = relationship(foreign_keys=[right_facility_id])
+    resolved_facility: Mapped["RehabilitationFacility | None"] = relationship(foreign_keys=[resolved_facility_id])
+
+
+class RehabilitationUnresolvedField(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "rehabilitation_unresolved_fields"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "field_path", "unresolved_status", name="uq_rehab_unresolved_identity"),
+        Index("ix_rehab_unresolved_facility_id", "facility_id"),
+        Index("ix_rehab_unresolved_source_id", "source_id"),
+        Index("ix_rehab_unresolved_status", "unresolved_status"),
+    )
+
+    facility_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
+    )
+    field_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    unresolved_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recommended_follow_up: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("rehabilitation_sources.id", ondelete="SET NULL"), nullable=True
+    )
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    facility: Mapped["RehabilitationFacility"] = relationship(back_populates="unresolved_fields")
+    source: Mapped["RehabilitationSource | None"] = relationship()
 
 
 class Template(Base, UUIDPrimaryKeyMixin, TimestampMixin):

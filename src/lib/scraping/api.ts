@@ -5,6 +5,7 @@ import type {
   ScrapingEvent,
   ScrapingExecutionDetail,
   ScrapingExecutionSummary,
+  ScrapingFacilitySummary,
   ScrapingMissionCreateInput,
   ScrapingMissionDetail,
   ScrapingMissionSummary,
@@ -223,6 +224,30 @@ export function listScrapingExecutionEvents(
   });
 }
 
+export function listScrapingExecutionFacilities(auth: Auth, executionId: string) {
+  return apiRequest<ScrapingFacilitySummary[]>(`/scraping/executions/${executionId}/facilities`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export async function downloadScrapingExecutionWorkbook(auth: Auth, executionId: string) {
+  const response = await fetch(`${getApiBase()}/scraping/executions/${executionId}/export.xlsx`, {
+    headers: {
+      Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      Authorization: `Bearer ${auth.token}`,
+      "X-Org-Id": auth.orgId,
+    },
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to prepare Excel report.");
+  }
+  const contentDisposition = response.headers.get("Content-Disposition");
+  const filename = parseAttachmentFilename(contentDisposition) ?? "mock-rehabilitation-dataset.xlsx";
+  return { blob: await response.blob(), filename };
+}
+
 export function cancelScrapingExecution(auth: Auth, executionId: string) {
   return apiRequest<ScrapingExecutionSummary>(`/scraping/executions/${executionId}/cancel`, {
     method: "POST",
@@ -243,4 +268,10 @@ export function deleteScrapingExecution(auth: Auth, executionId: string) {
 export function scrapingExecutionStreamUrl(executionId: string, afterSequence: number) {
   const params = afterSequence > 0 ? `?after_sequence=${afterSequence}` : "";
   return `${getApiBase()}/scraping/executions/${executionId}/events/stream${params}`;
+}
+
+function parseAttachmentFilename(contentDisposition: string | null) {
+  if (!contentDisposition) return null;
+  const match = /filename="?(?<filename>[^";]+)"?/i.exec(contentDisposition);
+  return match?.groups?.filename ?? null;
 }

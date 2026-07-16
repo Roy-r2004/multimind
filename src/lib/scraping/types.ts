@@ -217,6 +217,7 @@ export type ScrapingExecutionSummary = {
   execution_type: string;
   mode: string;
   status: ScrapingExecutionStatus;
+  status_label: string;
   country_code: string;
   country_name: string;
   started_at?: string | null;
@@ -231,6 +232,27 @@ export type ScrapingExecutionSummary = {
   duplicates_detected: number;
   blocked_sources: number;
   coverage_debt: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScrapingFacilitySummary = {
+  id: string;
+  execution_id: string;
+  stable_key: string;
+  canonical_name: string;
+  country_code: string;
+  country_name: string;
+  primary_region?: string | null;
+  primary_city?: string | null;
+  facility_type: string;
+  primary_website?: string | null;
+  primary_contact?: string | null;
+  verification_status: string;
+  confidence_score: number;
+  human_review_status: string;
+  is_mock: boolean;
+  source_count: number;
   created_at: string;
   updated_at: string;
 };

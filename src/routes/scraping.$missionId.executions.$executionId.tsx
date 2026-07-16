@@ -9,7 +9,9 @@ import { useAuth } from "@/lib/auth";
 import {
   cancelScrapingExecution,
   deleteScrapingExecution,
+  downloadScrapingExecutionWorkbook,
   getScrapingExecution,
+  listScrapingExecutionFacilities,
   listScrapingExecutionCoverage,
   listScrapingExecutionEvents,
   listScrapingExecutionTasks,
@@ -19,6 +21,7 @@ import type {
   ScrapingCoverageCell,
   ScrapingEvent,
   ScrapingExecutionDetail,
+  ScrapingFacilitySummary,
   ScrapingTask,
 } from "@/lib/scraping/types";
 
@@ -35,12 +38,14 @@ function ScrapingExecutionPage() {
   const [tasks, setTasks] = useState<ScrapingTask[]>([]);
   const [coverage, setCoverage] = useState<ScrapingCoverageCell[]>([]);
   const [events, setEvents] = useState<ScrapingEvent[]>([]);
+  const [facilities, setFacilities] = useState<ScrapingFacilitySummary[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<"Live" | "Reconnecting" | "Disconnected">(
     "Disconnected",
   );
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
+  const [downloadingExcel, setDownloadingExcel] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastSequenceRef = useRef(0);
@@ -52,16 +57,18 @@ function ScrapingExecutionPage() {
       void navigate({ to: "/login" });
       return;
     }
-    const [loadedDetail, loadedTasks, loadedCoverage, loadedEvents] = await Promise.all([
+    const [loadedDetail, loadedTasks, loadedCoverage, loadedEvents, loadedFacilities] = await Promise.all([
       getScrapingExecution(auth, executionId),
       listScrapingExecutionTasks(auth, executionId),
       listScrapingExecutionCoverage(auth, executionId),
       listScrapingExecutionEvents(auth, executionId),
+      listScrapingExecutionFacilities(auth, executionId),
     ]);
     setDetail(loadedDetail);
     setTasks(loadedTasks);
     setCoverage(loadedCoverage);
     setEvents(loadedEvents);
+    setFacilities(loadedFacilities);
     lastSequenceRef.current = Math.max(0, ...loadedEvents.map((event) => event.sequence_number));
   }, [authHeaders, executionId, navigate]);
 
@@ -170,6 +177,10 @@ function ScrapingExecutionPage() {
     ["covered", "covered_no_results", "partially_covered"].includes(cell.status),
   ).length;
   const activeAgents = detail?.agents.filter((agent) => agent.status === "running").length ?? 0;
+  const isTerminal = execution
+    ? ["completed", "failed", "cancelled"].includes(execution.status)
+    : false;
+  const hasMockFacilities = facilities.some((facility) => facility.is_mock);
   const summaryCounts = useMemo(() => {
     const count = (status: string) => tasks.filter((task) => task.status === status).length;
     return {
@@ -211,6 +222,28 @@ function ScrapingExecutionPage() {
     }
   }
 
+  async function handleDownloadExcel() {
+    const auth = authHeaders();
+    if (!auth || downloadingExcel) return;
+    setDownloadingExcel(true);
+    setError(null);
+    try {
+      const { blob, filename } = await downloadScrapingExecutionWorkbook(auth, executionId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to download Excel report");
+    } finally {
+      setDownloadingExcel(false);
+    }
+  }
+
   return (
     <AppShell>
       <div className="mx-auto max-w-7xl px-6 py-10">
@@ -247,7 +280,7 @@ function ScrapingExecutionPage() {
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">{execution.status}</Badge>
+                    <Badge variant="secondary">{execution.status_label}</Badge>
                     <Badge variant="outline">{execution.mode}</Badge>
                     <span className="text-sm text-muted-foreground">
                       {execution.country_name} ({execution.country_code})
@@ -259,7 +292,15 @@ function ScrapingExecutionPage() {
                     Completed {execution.completed_at ? new Date(execution.completed_at).toLocaleString() : "not yet"}
                   </p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!isTerminal || downloadingExcel}
+                    onClick={() => void handleDownloadExcel()}
+                  >
+                    {downloadingExcel ? "Preparing Excel…" : "Download Excel Report"}
+                  </Button>
                   {detail.can_cancel && (
                     <Button type="button" disabled={acting} onClick={() => void handleCancel()}>
                       {acting ? "Cancelling..." : "Cancel Execution"}
@@ -289,6 +330,79 @@ function ScrapingExecutionPage() {
                 <Metric label="Duplicates detected" value={execution.duplicates_detected} />
                 <Metric label="Blocked sources" value={execution.blocked_sources} />
               </div>
+              {!isTerminal && (
+                <p className="mt-4 text-sm text-muted-foreground">
+                  Excel report available after execution finishes.
+                </p>
+              )}
+            </GlassCard>
+            <GlassCard className="p-6">
+              <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Extracted Rehabilitation Centers</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Persisted fictional mock rows for this execution.
+                  </p>
+                </div>
+                <Badge variant="secondary">{facilities.length} records</Badge>
+              </div>
+              {hasMockFacilities && (
+                <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
+                  Mock sample: {facilities.length} fictional facilities generated for structural
+                  testing. This is not the total number of rehabilitation centers in{" "}
+                  {execution.country_name}.
+                </div>
+              )}
+              {facilities.length === 0 ? (
+                <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
+                  No rehabilitation-center records have been persisted for this execution yet.
+                </div>
+              ) : (
+                <div className="overflow-auto rounded-lg border border-border">
+                  <table className="w-full min-w-[980px] text-left text-sm">
+                    <thead className="bg-muted/50">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">Facility</th>
+                        <th className="px-3 py-2 font-medium">Country</th>
+                        <th className="px-3 py-2 font-medium">Region / City</th>
+                        <th className="px-3 py-2 font-medium">Type</th>
+                        <th className="px-3 py-2 font-medium">Primary Contact</th>
+                        <th className="px-3 py-2 font-medium">Verification</th>
+                        <th className="px-3 py-2 font-medium">Confidence</th>
+                        <th className="px-3 py-2 font-medium">Sources</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {facilities.map((facility) => (
+                        <tr key={facility.id} className="border-t border-border">
+                          <td className="px-3 py-2 align-top">
+                            <div className="font-medium">{facility.canonical_name}</div>
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {facility.is_mock && <Badge variant="secondary">Mock</Badge>}
+                              {facility.human_review_status === "required" && (
+                                <Badge variant="outline">Human review</Badge>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            {facility.country_name} ({facility.country_code})
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            {[facility.primary_region, facility.primary_city].filter(Boolean).join(" / ") || "—"}
+                          </td>
+                          <td className="px-3 py-2 align-top">{facility.facility_type}</td>
+                          <td className="px-3 py-2 align-top">
+                            {facility.primary_website ?? facility.primary_contact ?? "—"}
+                          </td>
+                          <td className="px-3 py-2 align-top">{facility.verification_status}</td>
+                          <td className="px-3 py-2 align-top">{Math.round(facility.confidence_score * 100)}%</td>
+                          <td className="px-3 py-2 align-top">{facility.source_count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </GlassCard>
             <GlassCard className="p-6">
               <div className="mb-4 flex items-center justify-between">

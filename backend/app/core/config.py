@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     scraping_mock_step_delay_ms: int = 600
     scraping_worker_concurrency: int = 4
     scraping_execution_stale_seconds: int = 120
+    scraping_worker_job_timeout_seconds: int = 1800
 
     # LLM — OpenRouter (single key for all models)
     openrouter_api_key: str | None = None

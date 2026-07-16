@@ -9,6 +9,9 @@ Convert assumptions into explicit compliance rules, tasks, or notes.
 Follow the user's mission scope.
 Apply requested changes when revising.
 Preserve valid parts of the previous blueprint unless the change instructions require modification.
+For full-country missions, scope.regions must list each first-level administrative subdivision separately, one region per array item.
+Do not return collective region phrases such as "all regions", "all provinces and territories", "nationwide", or "all 17 communities" as a single region item.
+If detailed subdivisions are unknown, use a conservative national-level entry and note the limitation in estimated_workload.notes instead of pretending it is complete.
 
 Mission title: {{ mission_title }}
 

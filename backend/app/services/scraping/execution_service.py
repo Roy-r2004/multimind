@@ -19,6 +19,8 @@ from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.models import (
+    RehabilitationFacility,
+    RehabilitationFacilityContact,
     ScrapingCoverageCell,
     ScrapingCoverageStatus,
     ScrapingEvent,
@@ -38,8 +40,10 @@ from app.schemas.api import (
     ScrapingExecutionCreate,
     ScrapingExecutionDetail,
     ScrapingExecutionSummary,
+    ScrapingFacilitySummary,
     ScrapingTaskResponse,
 )
+from app.services.scraping.execution_outcome import execution_outcome_label
 
 ACTIVE_EXECUTION_STATUSES = {
     ScrapingExecutionStatus.QUEUED,
@@ -291,6 +295,32 @@ class ScrapingExecutionService:
         result = await db.execute(query)
         return [self._event_response(event) for event in result.scalars().all()]
 
+    async def list_facilities(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        execution_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ScrapingFacilitySummary]:
+        await self._execution_row(db, auth, execution_id)
+        result = await db.execute(
+            select(RehabilitationFacility)
+            .where(
+                RehabilitationFacility.execution_id == execution_id,
+                RehabilitationFacility.organization_id == auth.org_id,
+            )
+            .options(
+                selectinload(RehabilitationFacility.contacts),
+                selectinload(RehabilitationFacility.source_links),
+            )
+            .order_by(RehabilitationFacility.stable_key)
+            .offset(max(offset, 0))
+            .limit(min(max(limit, 1), 500))
+        )
+        return [self._facility_response(facility) for facility in result.scalars().all()]
+
     async def cancel_execution(
         self, db: AsyncSession, auth: AuthContext, execution_id: str
     ) -> ScrapingExecutionSummary:
@@ -343,18 +373,18 @@ class ScrapingExecutionService:
         metadata: dict[str, Any] | None = None,
     ) -> ScrapingEvent:
         result = await db.execute(
-            select(ScrapingExecution)
+            update(ScrapingExecution)
             .where(ScrapingExecution.id == execution_id)
-            .with_for_update()
+            .values(last_event_sequence=ScrapingExecution.last_event_sequence + 1)
+            .returning(ScrapingExecution.last_event_sequence)
         )
-        execution = result.scalar_one()
-        execution.last_event_sequence += 1
+        sequence_number = result.scalar_one()
         event = ScrapingEvent(
             execution_id=execution_id,
             execution_agent_id=execution_agent_id,
             task_id=task_id,
             coverage_cell_id=coverage_cell_id,
-            sequence_number=execution.last_event_sequence,
+            sequence_number=sequence_number,
             event_type=event_type,
             message=message,
             metadata_json={"mock": True, **(metadata or {})},
@@ -497,6 +527,7 @@ class ScrapingExecutionService:
             execution_type=execution.execution_type,
             mode=execution.mode,
             status=execution.status.value,
+            status_label=execution_outcome_label(execution.status, execution.coverage_debt),
             country_code=execution.country_code,
             country_name=execution.country_name,
             started_at=execution.started_at,
@@ -593,6 +624,29 @@ class ScrapingExecutionService:
             updated_at=task.updated_at,
         )
 
+    def _facility_response(self, facility: RehabilitationFacility) -> ScrapingFacilitySummary:
+        contact = _primary_contact(facility.contacts)
+        return ScrapingFacilitySummary(
+            id=facility.id,
+            execution_id=facility.execution_id,
+            stable_key=facility.stable_key,
+            canonical_name=facility.canonical_name,
+            country_code=facility.country_code,
+            country_name=facility.country_name,
+            primary_region=facility.primary_region,
+            primary_city=facility.primary_city,
+            facility_type=facility.facility_type,
+            primary_website=facility.primary_website,
+            primary_contact=contact.value if contact else None,
+            verification_status=facility.verification_status,
+            confidence_score=float(facility.confidence_score),
+            human_review_status=facility.human_review_status,
+            is_mock=facility.is_mock,
+            source_count=len(facility.source_links),
+            created_at=facility.created_at,
+            updated_at=facility.updated_at,
+        )
+
     def _event_response(self, event: ScrapingEvent) -> ScrapingEventResponse:
         return ScrapingEventResponse(
             id=event.id,
@@ -625,3 +679,15 @@ async def sleep_mock_delay() -> None:
 
 
 execution_service = ScrapingExecutionService()
+
+
+def _primary_contact(
+    contacts: list[RehabilitationFacilityContact],
+) -> RehabilitationFacilityContact | None:
+    normal_contacts = [
+        contact
+        for contact in contacts
+        if contact.contact_type in {"phone", "hotline", "whatsapp", "email", "website", "booking_url", "other"}
+    ]
+    primary = [contact for contact in normal_contacts if contact.is_primary]
+    return (primary or normal_contacts or [None])[0]

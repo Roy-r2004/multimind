@@ -14,6 +14,7 @@ function List({ items }: { items: string[] }) {
 }
 
 export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent }) {
+  const regionWarning = broadRegionWarning(content.scope.regions);
   return (
     <div className="space-y-4">
       <BlueprintSection title="Mission Summary">
@@ -46,6 +47,11 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
           <div>
             <div className="font-medium">Regions</div>
             <List items={content.scope.regions} />
+            {regionWarning && (
+              <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+                {regionWarning}
+              </div>
+            )}
           </div>
         </div>
       </BlueprintSection>
@@ -153,4 +159,27 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
       </BlueprintSection>
     </div>
   );
+}
+
+function broadRegionWarning(regions: string[]) {
+  if (regions.length !== 1) {
+    return null;
+  }
+  const normalized = regions[0]?.trim().toLowerCase() ?? "";
+  if (!normalized) {
+    return null;
+  }
+  const collectivePatterns = [
+    /^all\b/,
+    /\ball\s+\d+\b/,
+    /\ball\s+[a-z\s-]*(regions|communities|provinces|territories|states|departments|governorates|cities)\b/,
+    /\bnationwide\b/,
+    /\bnational\b/,
+    /\bwhole country\b/,
+    /\bentire country\b/,
+  ];
+  if (!collectivePatterns.some((pattern) => pattern.test(normalized))) {
+    return null;
+  }
+  return "Coverage uses one broad national region. For detailed country coverage, regenerate the blueprint with each administrative region listed separately.";
 }

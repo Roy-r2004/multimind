@@ -480,6 +480,7 @@ class ScrapingExecutionSummary(BaseModel):
     execution_type: str
     mode: str
     status: str
+    status_label: str
     country_code: str
     country_name: str
     started_at: datetime | None = None
@@ -494,6 +495,27 @@ class ScrapingExecutionSummary(BaseModel):
     duplicates_detected: int
     blocked_sources: int
     coverage_debt: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingFacilitySummary(BaseModel):
+    id: str
+    execution_id: str
+    stable_key: str
+    canonical_name: str
+    country_code: str
+    country_name: str
+    primary_region: str | None = None
+    primary_city: str | None = None
+    facility_type: str
+    primary_website: str | None = None
+    primary_contact: str | None = None
+    verification_status: str
+    confidence_score: float
+    human_review_status: str
+    is_mock: bool
+    source_count: int
     created_at: datetime
     updated_at: datetime
 

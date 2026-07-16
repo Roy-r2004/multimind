@@ -17,8 +17,10 @@ from app.schemas.api import (
     ScrapingEventResponse,
     ScrapingExecutionDetail,
     ScrapingExecutionSummary,
+    ScrapingFacilitySummary,
     ScrapingTaskResponse,
 )
+from app.services.scraping.execution_export_service import MIME_XLSX, execution_export_service
 from app.services.scraping.execution_service import execution_service
 
 router = APIRouter()
@@ -103,6 +105,37 @@ async def list_events(
         limit=limit,
         execution_agent_id=execution_agent_id,
         event_type=event_type,
+    )
+
+
+@router.get("/{execution_id}/facilities", response_model=list[ScrapingFacilitySummary])
+async def list_facilities(
+    execution_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await execution_service.list_facilities(
+        db,
+        auth,
+        execution_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/{execution_id}/export.xlsx")
+async def export_execution_workbook(
+    execution_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    payload, filename = await execution_export_service.build_workbook(db, auth, execution_id)
+    return Response(
+        content=payload,
+        media_type=MIME_XLSX,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

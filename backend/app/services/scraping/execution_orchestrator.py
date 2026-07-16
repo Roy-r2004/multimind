@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.db.models import (
+    RehabilitationFacility,
     ScrapingCoverageCell,
     ScrapingCoverageStatus,
     ScrapingEvent,
@@ -25,6 +27,8 @@ from app.db.models import (
 )
 from app.db.session import AsyncSessionLocal
 from app.services.scraping.execution_service import execution_service, sleep_mock_delay
+from app.services.scraping.execution_outcome import GAP_COVERAGE_STATUSES
+from app.services.scraping.mock_facility_generator import mock_facility_generator
 from app.services.scraping.mock_tools import (
     MockBrowserFetchTool,
     MockCountryProfileProvider,
@@ -55,6 +59,32 @@ TASK_TYPES = [
     "create_gap_tasks",
 ]
 
+METRIC_REFRESH_TASK_INTERVAL = 25
+MOCK_DELAY_EVERY_N_TASKS = 25
+MOCK_DELAY_ALL_TASKS_LIMIT = 25
+
+LANGUAGE_CODE_BY_NAME = {
+    "arabic": "ar",
+    "bengali": "bn",
+    "catalan": "ca",
+    "chinese": "zh",
+    "dutch": "nl",
+    "english": "en",
+    "french": "fr",
+    "german": "de",
+    "hindi": "hi",
+    "indonesian": "id",
+    "italian": "it",
+    "japanese": "ja",
+    "korean": "ko",
+    "malay": "ms",
+    "portuguese": "pt",
+    "russian": "ru",
+    "spanish": "es",
+    "turkish": "tr",
+    "urdu": "ur",
+}
+
 
 class ExecutionCancelled(Exception):
     pass
@@ -65,8 +95,31 @@ async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
         "scraping_execution_job_entered",
         extra={"execution_id": execution_id},
     )
+    try:
+        async with AsyncSessionLocal() as db:
+            await MockExecutionOrchestrator(db).run(execution_id)
+    except asyncio.CancelledError:
+        logger.warning(
+            "scraping_execution_job_cancelled",
+            extra={"execution_id": execution_id, "scraping_execution_event": "job_cancelled"},
+        )
+        cleanup_task = asyncio.create_task(
+            mark_scraping_execution_timeout_failed(execution_id)
+        )
+        try:
+            await asyncio.shield(cleanup_task)
+        finally:
+            raise
+
+
+async def mark_scraping_execution_timeout_failed(execution_id: str) -> None:
     async with AsyncSessionLocal() as db:
-        await MockExecutionOrchestrator(db).run(execution_id)
+        await MockExecutionOrchestrator(db)._mark_failed_safely(
+            execution_id,
+            "worker_timeout",
+            error_message="Mock execution failed after the worker job timed out.",
+            event_message="Mock execution failed after the worker job timed out.",
+        )
 
 
 async def recover_scraping_executions(ctx: dict) -> None:
@@ -208,6 +261,9 @@ class MockExecutionOrchestrator:
         try:
             await self._ensure_profile_matrix_and_tasks(execution, execution_agents)
             await self._process_tasks(execution)
+            await self._check_cancelled(execution)
+            self.current_stage = "persist_mock_rehabilitation_dataset"
+            await mock_facility_generator.generate(self.db, execution)
             await self._refresh_metrics(execution)
             if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
                 await self._finish_cancelled(execution)
@@ -391,7 +447,7 @@ class MockExecutionOrchestrator:
 
     async def _process_tasks(self, execution: ScrapingExecution) -> None:
         tasks = await self._queued_tasks(execution.id)
-        for task in tasks:
+        for processed_count, task in enumerate(tasks, start=1):
             execution = await self._load_execution(execution.id)
             await self._check_cancelled(execution)
             agent = task.execution_agent
@@ -415,7 +471,8 @@ class MockExecutionOrchestrator:
                 coverage_cell_id=task.coverage_cell_id,
             )
             await self.db.commit()
-            await sleep_mock_delay()
+            if _should_sleep_after_task(processed_count, len(tasks)):
+                await sleep_mock_delay()
 
             output = self.search_tool.run(task)
             output.update(self.discovery_tool.run(task))
@@ -448,7 +505,8 @@ class MockExecutionOrchestrator:
             agent.current_action = None
             agent.completed_at = datetime.now(UTC)
             execution.heartbeat_at = datetime.now(UTC)
-            await self._refresh_metrics(execution)
+            if processed_count % METRIC_REFRESH_TASK_INTERVAL == 0:
+                await self._refresh_metrics(execution)
             await execution_service.emit_event(
                 self.db,
                 execution.id,
@@ -460,6 +518,8 @@ class MockExecutionOrchestrator:
             )
             await self.db.commit()
 
+        await self._refresh_metrics(execution)
+        await self.db.commit()
         await self._create_gap_audit_task(execution)
 
     async def _create_gap_audit_task(self, execution: ScrapingExecution) -> None:
@@ -535,6 +595,11 @@ class MockExecutionOrchestrator:
             cell.reason = None
 
     async def _refresh_metrics(self, execution: ScrapingExecution) -> None:
+        facility_count = await self._facility_count(execution.id)
+        if facility_count:
+            await mock_facility_generator.refresh_execution_metrics(self.db, execution)
+            execution.coverage_debt = await self._coverage_debt(execution.id)
+            return
         result = await self.db.execute(
             select(ScrapingTask).where(
                 ScrapingTask.execution_id == execution.id,
@@ -582,7 +647,14 @@ class MockExecutionOrchestrator:
             await self._finish_cancelled(execution)
             raise ExecutionCancelled()
 
-    async def _mark_failed_safely(self, execution_id: str, failure_category: str) -> None:
+    async def _mark_failed_safely(
+        self,
+        execution_id: str,
+        failure_category: str,
+        *,
+        error_message: str = "Mock execution failed.",
+        event_message: str = "Mock execution failed.",
+    ) -> None:
         try:
             await self.db.rollback()
             execution = await self._load_execution(execution_id)
@@ -608,8 +680,10 @@ class MockExecutionOrchestrator:
                 )
                 return
             execution.status = ScrapingExecutionStatus.FAILED
-            execution.error_message = "Mock execution failed."
+            execution.error_message = error_message
             execution.completed_at = datetime.now(UTC)
+            await self._terminalize_failed_children(execution_id, error_message)
+            execution.coverage_debt = await self._coverage_debt(execution_id)
             existing_event = await self.db.execute(
                 select(ScrapingEvent.id).where(
                     ScrapingEvent.execution_id == execution_id,
@@ -621,7 +695,7 @@ class MockExecutionOrchestrator:
                     self.db,
                     execution_id,
                     "execution_failed",
-                    "Mock execution failed.",
+                    event_message,
                 )
             await self.db.commit()
             self._log(
@@ -641,6 +715,48 @@ class MockExecutionOrchestrator:
                     level="error",
                 )
             raise RuntimeError("Failed to persist scraping execution failure state.") from None
+
+    async def _terminalize_failed_children(self, execution_id: str, error_message: str) -> None:
+        now = datetime.now(UTC)
+        await self.db.execute(
+            update(ScrapingExecutionAgent)
+            .where(
+                ScrapingExecutionAgent.execution_id == execution_id,
+                ScrapingExecutionAgent.status.in_(
+                    [
+                        ScrapingExecutionAgentStatus.WAITING,
+                        ScrapingExecutionAgentStatus.QUEUED,
+                        ScrapingExecutionAgentStatus.RUNNING,
+                    ]
+                ),
+            )
+            .values(
+                status=ScrapingExecutionAgentStatus.FAILED,
+                current_task_id=None,
+                current_action=None,
+                completed_at=now,
+                error_message=error_message,
+            )
+        )
+        await self.db.execute(
+            update(ScrapingTask)
+            .where(
+                ScrapingTask.execution_id == execution_id,
+                ScrapingTask.status.in_(
+                    [
+                        ScrapingTaskStatus.QUEUED,
+                        ScrapingTaskStatus.BLOCKED,
+                        ScrapingTaskStatus.RUNNING,
+                    ]
+                ),
+            )
+            .values(
+                status=ScrapingTaskStatus.FAILED,
+                current_action=None,
+                completed_at=now,
+                error_message=error_message,
+            )
+        )
 
     async def _claim_execution(self, execution: ScrapingExecution) -> bool:
         now = datetime.now(UTC)
@@ -726,6 +842,14 @@ class MockExecutionOrchestrator:
         )
         return len(result.scalars().all())
 
+    async def _facility_count(self, execution_id: str) -> int:
+        result = await self.db.execute(
+            select(RehabilitationFacility.id).where(
+                RehabilitationFacility.execution_id == execution_id
+            )
+        )
+        return len(result.scalars().all())
+
     async def _cell_status_count(
         self, execution_id: str, status: ScrapingCoverageStatus
     ) -> int:
@@ -742,13 +866,7 @@ class MockExecutionOrchestrator:
             select(ScrapingCoverageCell.id).where(
                 ScrapingCoverageCell.execution_id == execution_id,
                 ScrapingCoverageCell.status.in_(
-                    [
-                        ScrapingCoverageStatus.NOT_STARTED,
-                        ScrapingCoverageStatus.PARTIALLY_COVERED,
-                        ScrapingCoverageStatus.BLOCKED,
-                        ScrapingCoverageStatus.HUMAN_REVIEW_REQUIRED,
-                        ScrapingCoverageStatus.FAILED,
-                    ]
+                    [ScrapingCoverageStatus(status) for status in GAP_COVERAGE_STATUSES]
                 ),
             )
         )
@@ -798,10 +916,10 @@ class MockExecutionOrchestrator:
         for raw_language in raw_languages if isinstance(raw_languages, list) else []:
             if isinstance(raw_language, dict):
                 name = self._clean_text(raw_language.get("name"))
-                code = self._clean_text(raw_language.get("code"))
+                code = self._coverage_language_code(raw_language.get("code"), name)
             else:
                 name = self._clean_text(raw_language)
-                code = None
+                code = self._coverage_language_code(None, name)
             if not name:
                 continue
             identity = (code.casefold() if code else "", name.casefold())
@@ -838,6 +956,27 @@ class MockExecutionOrchestrator:
         digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8]
         return f"{slug[:23].rstrip('-')}-{digest}"[:32]
 
+    def _coverage_language_code(self, code: object, name: str) -> str:
+        explicit_code = self._clean_text(code)
+        if explicit_code:
+            return self._bounded_language_code(explicit_code)
+
+        normalized_name = " ".join(name.casefold().split())
+        mapped_code = LANGUAGE_CODE_BY_NAME.get(normalized_name)
+        if mapped_code:
+            return mapped_code
+
+        return self._bounded_language_code(name or "language")
+
+    def _bounded_language_code(self, value: str) -> str:
+        slug = "-".join(value.lower().replace("_", " ").split())
+        slug = "".join(char for char in slug if char.isalnum() or char == "-").strip("-")
+        slug = slug or "language"
+        if len(slug) <= 16:
+            return slug
+        digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:6]
+        return f"{slug[:9].rstrip('-')}-{digest}"[:16]
+
     def _clean_text(self, value: object) -> str:
         if value is None:
             return ""
@@ -868,3 +1007,9 @@ class MockExecutionOrchestrator:
             event,
             extra={"scraping_execution_event": event, **fields},
         )
+
+
+def _should_sleep_after_task(processed_count: int, total_tasks: int) -> bool:
+    if total_tasks <= MOCK_DELAY_ALL_TASKS_LIMIT:
+        return True
+    return processed_count % MOCK_DELAY_EVERY_N_TASKS == 0

@@ -1,22 +1,39 @@
+import asyncio
+from io import BytesIO
+from decimal import Decimal
+from pathlib import Path
+
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.models import (
+    RehabilitationFacility,
+    RehabilitationFacilityAttribute,
+    RehabilitationFacilityContact,
+    RehabilitationFieldEvidence,
+    RehabilitationPossibleDuplicate,
+    RehabilitationSource,
+    RehabilitationUnresolvedField,
     ScrapingBlueprint,
     ScrapingBlueprintStatus,
     ScrapingCoverageCell,
+    ScrapingCoverageStatus,
     ScrapingEvent,
     ScrapingExecution,
     ScrapingExecutionAgent,
+    ScrapingExecutionAgentStatus,
     ScrapingExecutionStatus,
     ScrapingMission,
     ScrapingMissionStatus,
     ScrapingRun,
     ScrapingRunAgent,
     ScrapingRunStatus,
+    ScrapingTask,
+    ScrapingTaskStatus,
 )
 from app.llm.providers import LLMResponse
 from app.main import create_app
@@ -30,12 +47,26 @@ from app.schemas.api import (
     ScrapingExecutionCreate,
     ScrapingTeamPlanOutput,
 )
+from app.scraping.worker import WorkerSettings
 from app.scraping.blueprint_orchestrator import BlueprintOrchestrator
 from app.services.domain_service import project_service
 from app.services.scraping.blueprint_service import blueprint_service
 from app.services.scraping.countries import COUNTRIES, resolve_country
-from app.services.scraping.execution_orchestrator import MockExecutionOrchestrator
+from app.services.scraping.execution_orchestrator import (
+    METRIC_REFRESH_TASK_INTERVAL,
+    MOCK_DELAY_EVERY_N_TASKS,
+    MockExecutionOrchestrator,
+    _should_sleep_after_task,
+)
+from app.services.scraping.execution_export_service import SHEET_ORDER, safe_cell
+from app.services.scraping.execution_outcome import coverage_gap_count, execution_outcome_label
 from app.services.scraping.execution_service import execution_service
+from app.services.scraping.mock_facility_generator import (
+    _CellFallback,
+    _facility_coverage_contexts,
+    _typed_attribute_values,
+    mock_facility_generator,
+)
 from app.services.scraping.mission_service import mission_service
 from app.services.scraping.run_service import run_service
 from app.services.scraping.team_planner_service import TeamPlannerService, team_planner_service
@@ -1753,6 +1784,85 @@ async def test_mock_worker_persists_profile_cells_tasks_events_and_metrics(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_event_creation_uses_unique_monotonic_sequences(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    sessionmaker = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
+
+    async def write_event(index: int) -> None:
+        async with sessionmaker() as session:
+            await execution_service.emit_event(
+                session,
+                execution.id,
+                "concurrent_event",
+                f"Concurrent mock event {index}",
+            )
+            await session.commit()
+
+    await asyncio.gather(*(write_event(index) for index in range(12)))
+    events = (
+        await db.execute(
+            select(ScrapingEvent)
+            .where(ScrapingEvent.execution_id == execution.id)
+            .order_by(ScrapingEvent.sequence_number)
+        )
+    ).scalars().all()
+    sequences = [event.sequence_number for event in events]
+    assert sequences == list(range(1, len(events) + 1))
+    assert len(sequences) == len(set(sequences))
+
+
+@pytest.mark.asyncio
+async def test_event_sequences_are_independent_per_execution(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    first = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    first_row = await db.get(ScrapingExecution, first.id)
+    assert first_row is not None
+    first_row.status = ScrapingExecutionStatus.COMPLETED
+    await db.flush()
+    second = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await execution_service.emit_event(db, first.id, "first_extra", "First execution extra.")
+    await execution_service.emit_event(db, second.id, "second_extra", "Second execution extra.")
+    await db.commit()
+    first_sequences = (
+        await db.execute(
+            select(ScrapingEvent.sequence_number)
+            .where(ScrapingEvent.execution_id == first.id)
+            .order_by(ScrapingEvent.sequence_number)
+        )
+    ).scalars().all()
+    second_sequences = (
+        await db.execute(
+            select(ScrapingEvent.sequence_number)
+            .where(ScrapingEvent.execution_id == second.id)
+            .order_by(ScrapingEvent.sequence_number)
+        )
+    ).scalars().all()
+    assert first_sequences == [1, 2]
+    assert second_sequences == [1, 2]
+
+
+@pytest.mark.asyncio
 async def test_mock_worker_generic_country_profile_creates_cells_and_tasks(
     db: AsyncSession, auth: AuthContext, monkeypatch
 ):
@@ -1882,6 +1992,133 @@ def test_coverage_dimensions_keep_region_codes_inside_schema_limit(db: AsyncSess
     assert len(regions[0]["code"]) <= 32
     assert languages == [{"code": "en", "name": "English"}]
     assert categories == ["general web"]
+
+
+def test_coverage_dimensions_derives_codes_for_string_languages(db: AsyncSession):
+    orchestrator = MockExecutionOrchestrator(db)
+    _, languages, _ = orchestrator._coverage_dimensions(
+        {
+            "administrative_regions": ["North"],
+            "languages": [" Spanish ", "Catalan", "Spanish"],
+            "source_categories": ["directory"],
+        },
+        "ZZ",
+        "Fallback Country",
+    )
+    assert languages == [
+        {"code": "es", "name": "Spanish"},
+        {"code": "ca", "name": "Catalan"},
+    ]
+
+
+def test_mock_facility_contexts_rotate_regions_and_languages():
+    cells = [
+        _CellFallback(
+            id=f"{region}-{language}-official",
+            region_name=region,
+            region_code=region.lower(),
+            language_code=language,
+            language_name=language.upper(),
+            source_category="official",
+        )
+        for region in ["North", "South", "East"]
+        for language in ["es", "ca"]
+    ] + [
+        _CellFallback(
+            id="north-es-directory",
+            region_name="North",
+            region_code="north",
+            language_code="es",
+            language_name="ES",
+            source_category="directory",
+        )
+    ]
+    contexts = _facility_coverage_contexts(cells, 6)
+    assert {context.region_name for context in contexts} == {"North", "South", "East"}
+    assert {context.language_code for context in contexts} == {"es", "ca"}
+    assert [(context.region_name, context.language_code) for context in contexts] == [
+        ("East", "ca"),
+        ("North", "es"),
+        ("South", "ca"),
+        ("East", "es"),
+        ("North", "ca"),
+        ("South", "es"),
+    ]
+    retry_contexts = _facility_coverage_contexts(cells, 6)
+    assert [context.id for context in retry_contexts] == [context.id for context in contexts]
+
+
+def test_execution_outcome_labels_completed_with_meaningful_gaps():
+    assert execution_outcome_label(ScrapingExecutionStatus.COMPLETED, 0) == "Completed"
+    assert execution_outcome_label(ScrapingExecutionStatus.COMPLETED, 1) == "Completed with Gaps"
+    assert execution_outcome_label(ScrapingExecutionStatus.FAILED, 5) == "Failed"
+    assert execution_outcome_label(ScrapingExecutionStatus.CANCELLED, 5) == "Cancelled"
+    assert execution_outcome_label(ScrapingExecutionStatus.QUEUED, 0) == "Queued"
+    assert execution_outcome_label(ScrapingExecutionStatus.RUNNING, 0) == "Running"
+    assert (
+        execution_outcome_label(ScrapingExecutionStatus.CANCEL_REQUESTED, 0)
+        == "Cancellation Requested"
+    )
+
+
+@pytest.mark.parametrize(
+    "gap_status",
+    [
+        ScrapingCoverageStatus.PARTIALLY_COVERED,
+        ScrapingCoverageStatus.BLOCKED,
+        ScrapingCoverageStatus.HUMAN_REVIEW_REQUIRED,
+    ],
+)
+def test_completed_execution_outcome_uses_meaningful_gap_statuses(gap_status):
+    coverage = [ScrapingCoverageCell(status=gap_status)]
+    assert coverage_gap_count(coverage) == 1
+    assert (
+        execution_outcome_label(ScrapingExecutionStatus.COMPLETED, coverage_gap_count(coverage))
+        == "Completed with Gaps"
+    )
+
+
+def test_coverage_gap_count_excludes_covered_no_results():
+    coverage = [
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.COVERED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.COVERED_NO_RESULTS),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.PARTIALLY_COVERED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.BLOCKED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.HUMAN_REVIEW_REQUIRED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.FAILED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.CANCELLED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.NOT_STARTED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.QUEUED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.IN_PROGRESS),
+    ]
+    assert coverage_gap_count(coverage) == 8
+
+
+def test_completed_execution_outcome_stays_completed_for_covered_cells():
+    coverage = [
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.COVERED),
+        ScrapingCoverageCell(status=ScrapingCoverageStatus.COVERED_NO_RESULTS),
+    ]
+    assert coverage_gap_count(coverage) == 0
+    assert (
+        execution_outcome_label(ScrapingExecutionStatus.COMPLETED, coverage_gap_count(coverage))
+        == "Completed"
+    )
+
+
+def test_blueprint_judge_prompt_requires_separate_administrative_regions():
+    prompt_path = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "prompts"
+        / "scraping"
+        / "blueprint_judge.j2"
+    )
+    prompt = prompt_path.read_text(encoding="utf-8")
+    assert "one region per array item" in prompt
+    assert "first-level administrative subdivision" in prompt
+    assert "all provinces and territories" in prompt
+    assert "nationwide" in prompt
 
 
 @pytest.mark.asyncio
@@ -2092,6 +2329,177 @@ async def test_orchestrator_failed_flush_rolls_back_and_stores_failed_event(
 
 
 @pytest.mark.asyncio
+async def test_failed_execution_cleanup_terminalizes_active_agents_and_tasks(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    summary = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    agent = (
+        await db.execute(
+            select(ScrapingExecutionAgent).where(
+                ScrapingExecutionAgent.execution_id == execution.id
+            )
+        )
+    ).scalars().first()
+    assert agent is not None
+    task = ScrapingTask(
+        execution_id=execution.id,
+        execution_agent_id=agent.id,
+        task_type="discover_sources",
+        title="Running mock task",
+        status=ScrapingTaskStatus.RUNNING,
+        priority=1,
+        input_json={"mock": True},
+        output_json={},
+        dependency_task_ids_json=[],
+        started_at=None,
+        current_action="Running",
+    )
+    db.add(task)
+    await db.flush()
+    agent.status = ScrapingExecutionAgentStatus.RUNNING
+    agent.current_task_id = task.id
+    agent.current_action = "Running deterministic mock discovery"
+    await db.commit()
+
+    await MockExecutionOrchestrator(db)._mark_failed_safely(execution.id, "RuntimeError")
+    failed = await db.get(ScrapingExecution, execution.id)
+    assert failed is not None
+    assert failed.status == ScrapingExecutionStatus.FAILED
+    agents = (
+        await db.execute(
+            select(ScrapingExecutionAgent).where(
+                ScrapingExecutionAgent.execution_id == execution.id
+            )
+        )
+    ).scalars().all()
+    tasks = (
+        await db.execute(
+            select(ScrapingTask).where(ScrapingTask.execution_id == execution.id)
+        )
+    ).scalars().all()
+    assert all(agent.status != ScrapingExecutionAgentStatus.RUNNING for agent in agents)
+    assert all(agent.status != ScrapingExecutionAgentStatus.WAITING for agent in agents)
+    assert all(agent.current_task_id is None for agent in agents)
+    assert all(agent.current_action is None for agent in agents)
+    assert all(agent.completed_at is not None for agent in agents)
+    assert all(task.status == ScrapingTaskStatus.FAILED for task in tasks)
+    assert all(task.current_action is None for task in tasks)
+    assert all(task.completed_at is not None for task in tasks)
+    failed_events = (
+        await db.execute(
+            select(ScrapingEvent)
+            .where(
+                ScrapingEvent.execution_id == execution.id,
+                ScrapingEvent.event_type == "execution_failed",
+            )
+            .order_by(ScrapingEvent.sequence_number)
+        )
+    ).scalars().all()
+    assert len(failed_events) == 1
+
+
+def test_scraping_worker_timeout_is_explicit_and_above_default():
+    assert WorkerSettings.job_timeout > 300
+
+
+def test_large_mock_execution_throttles_mock_sleep_delay():
+    assert _should_sleep_after_task(1, 3) is True
+    assert _should_sleep_after_task(3, 3) is True
+    assert _should_sleep_after_task(1, 456) is False
+    assert _should_sleep_after_task(MOCK_DELAY_EVERY_N_TASKS, 456) is True
+    assert _should_sleep_after_task(MOCK_DELAY_EVERY_N_TASKS + 1, 456) is False
+
+
+@pytest.mark.asyncio
+async def test_timeout_cleanup_marks_execution_failed_and_terminalizes_children(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    summary = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    agent = (
+        await db.execute(
+            select(ScrapingExecutionAgent).where(
+                ScrapingExecutionAgent.execution_id == execution.id
+            )
+        )
+    ).scalars().first()
+    assert agent is not None
+    task = ScrapingTask(
+        execution_id=execution.id,
+        execution_agent_id=agent.id,
+        task_type="discover_sources",
+        title="Timeout mock task",
+        status=ScrapingTaskStatus.QUEUED,
+        priority=1,
+        input_json={"mock": True},
+        output_json={},
+        dependency_task_ids_json=[],
+        current_action="Queued",
+    )
+    db.add(task)
+    agent.status = ScrapingExecutionAgentStatus.RUNNING
+    agent.current_action = "Running deterministic mock discovery"
+    execution.status = ScrapingExecutionStatus.RUNNING
+    await db.commit()
+
+    await MockExecutionOrchestrator(db)._mark_failed_safely(
+        execution.id,
+        "worker_timeout",
+        error_message="Mock execution failed after the worker job timed out.",
+        event_message="Mock execution failed after the worker job timed out.",
+    )
+    failed = await db.get(ScrapingExecution, execution.id)
+    assert failed is not None
+    assert failed.status == ScrapingExecutionStatus.FAILED
+    assert failed.completed_at is not None
+    assert "timed out" in (failed.error_message or "")
+    agents = (
+        await db.execute(
+            select(ScrapingExecutionAgent).where(
+                ScrapingExecutionAgent.execution_id == execution.id
+            )
+        )
+    ).scalars().all()
+    tasks = (
+        await db.execute(
+            select(ScrapingTask).where(ScrapingTask.execution_id == execution.id)
+        )
+    ).scalars().all()
+    assert all(agent.status == ScrapingExecutionAgentStatus.FAILED for agent in agents)
+    assert all(agent.current_action is None for agent in agents)
+    assert all(task.status == ScrapingTaskStatus.FAILED for task in tasks)
+    assert all(task.current_action is None for task in tasks)
+    events = (
+        await db.execute(
+            select(ScrapingEvent)
+            .where(ScrapingEvent.execution_id == execution.id)
+            .order_by(ScrapingEvent.sequence_number)
+        )
+    ).scalars().all()
+    assert [event.sequence_number for event in events] == list(range(1, len(events) + 1))
+    assert any("timed out" in event.message for event in events)
+
+
+@pytest.mark.asyncio
 async def test_execution_delete_and_team_plan_active_execution_rules(
     db: AsyncSession, auth: AuthContext, monkeypatch
 ):
@@ -2122,3 +2530,761 @@ async def test_execution_delete_and_team_plan_active_execution_rules(
     )
     assert agents.scalars().all() == []
     assert cells.scalars().all() == []
+
+
+async def run_completed_mock_execution(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+) -> ScrapingExecution:
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    async def no_delay():
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    summary = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await MockExecutionOrchestrator(db).run(summary.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    return execution
+
+
+async def run_completed_mock_execution_with_blueprint(
+    db: AsyncSession,
+    auth: AuthContext,
+    monkeypatch,
+    blueprint_json: dict,
+) -> ScrapingExecution:
+    blueprint = await create_active_approved_blueprint(db, auth)
+    blueprint.blueprint_json = blueprint_json
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    async def no_delay():
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    summary = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await MockExecutionOrchestrator(db).run(summary.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    return execution
+
+
+def test_mock_attribute_typed_values_dispatch_by_exact_type():
+    true_values = _typed_attribute_values(True)
+    assert true_values["value_boolean"] is True
+    assert true_values["value_number"] is None
+    assert true_values["value_text"] is None
+
+    false_values = _typed_attribute_values(False)
+    assert false_values["value_boolean"] is False
+    assert false_values["value_number"] is None
+    assert false_values["value_text"] is None
+
+    integer_values = _typed_attribute_values(18)
+    assert integer_values["value_boolean"] is None
+    assert integer_values["value_number"] == Decimal("18")
+    assert integer_values["value_text"] is None
+
+    float_values = _typed_attribute_values(12.5)
+    assert float_values["value_boolean"] is None
+    assert float_values["value_number"] == Decimal("12.5")
+    assert float_values["value_text"] is None
+
+    decimal_values = _typed_attribute_values(Decimal("1200.25"))
+    assert decimal_values["value_boolean"] is None
+    assert decimal_values["value_number"] == Decimal("1200.25")
+    assert decimal_values["value_text"] is None
+
+    string_values = _typed_attribute_values("Mock available")
+    assert string_values["value_boolean"] is None
+    assert string_values["value_number"] is None
+    assert string_values["value_text"] == "Mock available"
+
+    none_values = _typed_attribute_values(None)
+    assert none_values["value_boolean"] is None
+    assert none_values["value_number"] is None
+    assert none_values["value_text"] is None
+
+    with pytest.raises(TypeError, match="Unsupported mock facility attribute value type"):
+        _typed_attribute_values(["unsupported"])
+
+
+def test_mock_attribute_typed_values_reject_nonfinite_numbers():
+    with pytest.raises(ValueError, match="numeric value must be finite"):
+        _typed_attribute_values(float("nan"))
+    with pytest.raises(ValueError, match="numeric value must be finite"):
+        _typed_attribute_values(float("inf"))
+    with pytest.raises(ValueError, match="Decimal value must be finite"):
+        _typed_attribute_values(Decimal("NaN"))
+
+
+@pytest.mark.asyncio
+async def test_mock_execution_persists_idempotent_rehabilitation_dataset(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    execution = await run_completed_mock_execution(db, auth, monkeypatch)
+    facilities = (
+        await db.execute(
+            select(RehabilitationFacility)
+            .options(selectinload(RehabilitationFacility.locations))
+            .where(RehabilitationFacility.execution_id == execution.id)
+            .order_by(RehabilitationFacility.stable_key)
+        )
+    ).scalars().all()
+    assert 4 <= len(facilities) <= 8
+    assert all(facility.is_mock for facility in facilities)
+    assert all("Mock" in facility.canonical_name for facility in facilities)
+    assert len({facility.stable_key for facility in facilities}) == len(facilities)
+    sources = (
+        await db.execute(select(RehabilitationSource).where(RehabilitationSource.execution_id == execution.id))
+    ).scalars().all()
+    assert sources
+    assert all(source.is_mock for source in sources)
+    assert {source.domain for source in sources} == {"example.invalid"}
+    attributes = (
+        await db.execute(
+            select(RehabilitationFacilityAttribute).where(
+                RehabilitationFacilityAttribute.facility_id.in_(
+                    [facility.id for facility in facilities]
+                )
+            )
+        )
+    ).scalars().all()
+    assert attributes
+    boolean_attribute = next(
+        attribute for attribute in attributes if attribute.attribute_key == "counseling"
+    )
+    assert boolean_attribute.value_boolean is True
+    assert boolean_attribute.value_number is None
+    assert boolean_attribute.value_text is None
+    false_attribute = next(
+        attribute
+        for attribute in attributes
+        if attribute.attribute_key == "detoxification" and attribute.value_boolean is False
+    )
+    assert false_attribute.value_boolean is False
+    assert false_attribute.value_number is None
+    numeric_attribute = next(
+        attribute for attribute in attributes if attribute.attribute_key == "minimum_age"
+    )
+    assert Decimal(str(numeric_attribute.value_number)) == Decimal("18.00")
+    assert numeric_attribute.value_boolean is None
+    text_attribute = next(
+        attribute for attribute in attributes if attribute.attribute_key == "residential_30_day"
+    )
+    assert text_attribute.value_text == "Mock available"
+    assert text_attribute.value_boolean is None
+    assert text_attribute.value_number is None
+    staff_names = (
+        await db.execute(
+            select(func.count()).select_from(RehabilitationFacility).where(
+                RehabilitationFacility.execution_id == execution.id
+            )
+        )
+    ).scalar_one()
+    assert staff_names == len(facilities)
+    first_counts = {
+        "facilities": len(facilities),
+        "contacts": await _count_rows(db, RehabilitationFacilityContact),
+        "sources": len(sources),
+        "evidence": await _count_rows(db, RehabilitationFieldEvidence),
+        "unresolved": await _count_rows(db, RehabilitationUnresolvedField),
+    }
+    await mock_facility_generator.generate(db, execution)
+    await mock_facility_generator.refresh_execution_metrics(db, execution)
+    await db.flush()
+    second_counts = {
+        "facilities": await _execution_facility_count(db, execution.id),
+        "contacts": await _count_rows(db, RehabilitationFacilityContact),
+        "sources": await _execution_source_count(db, execution.id),
+        "evidence": await _count_rows(db, RehabilitationFieldEvidence),
+        "unresolved": await _count_rows(db, RehabilitationUnresolvedField),
+    }
+    assert second_counts == first_counts
+    assert execution.records_extracted == first_counts["facilities"]
+    assert execution.sources_discovered == first_counts["sources"]
+    assert execution.records_verified == len(
+        [facility for facility in facilities if facility.verification_status == "verified"]
+    )
+    assert execution.duplicates_detected == 1
+
+
+@pytest.mark.asyncio
+async def test_rehabilitation_dataset_relationships_and_statuses(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    execution = await run_completed_mock_execution(db, auth, monkeypatch)
+    facilities = (
+        await db.execute(
+            select(RehabilitationFacility)
+            .options(selectinload(RehabilitationFacility.locations))
+            .where(RehabilitationFacility.execution_id == execution.id)
+            .order_by(RehabilitationFacility.stable_key)
+        )
+    ).scalars().all()
+    evidence = (
+        await db.execute(select(RehabilitationFieldEvidence).order_by(RehabilitationFieldEvidence.created_at))
+    ).scalars().all()
+    assert evidence
+    assert all(row.facility_id in {facility.id for facility in facilities} for row in evidence)
+    assert all(row.source_id is not None for row in evidence)
+    shared_sources = (
+        await db.execute(
+            select(RehabilitationSource)
+            .where(RehabilitationSource.execution_id == execution.id)
+            .order_by(RehabilitationSource.canonical_url)
+        )
+    ).scalars().all()
+    assert any(source.canonical_url.endswith("/mock-index") for source in shared_sources)
+    duplicate = (
+        await db.execute(
+            select(RehabilitationPossibleDuplicate).where(
+                RehabilitationPossibleDuplicate.execution_id == execution.id
+            )
+        )
+    ).scalar_one()
+    assert duplicate.left_facility_id < duplicate.right_facility_id
+    unresolved_statuses = {
+        status
+        for (status,) in (
+            await db.execute(select(RehabilitationUnresolvedField.unresolved_status))
+        ).all()
+    }
+    assert {"searched_not_found", "conflicting"}.issubset(unresolved_statuses)
+
+
+@pytest.mark.asyncio
+async def test_mock_facilities_distribute_across_persisted_regions_and_languages(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint_json = {
+        **valid_blueprint(),
+        "scope": {
+            "included": ["public listings"],
+            "excluded": ["private data"],
+            "countries": ["Mock Country"],
+            "regions": ["Mock North", "Mock South", "Mock East"],
+        },
+        "languages": ["Spanish", "Catalan"],
+        "source_strategy": [
+            {
+                "source_type": "official directory",
+                "priority": 1,
+                "trust_tier": "high",
+                "purpose": "seed sources",
+                "required": True,
+            },
+            {
+                "source_type": "professional registry",
+                "priority": 2,
+                "trust_tier": "medium",
+                "purpose": "supporting sources",
+                "required": False,
+            },
+        ],
+    }
+    execution = await run_completed_mock_execution_with_blueprint(
+        db, auth, monkeypatch, blueprint_json
+    )
+    facilities = (
+        await db.execute(
+            select(RehabilitationFacility)
+            .options(selectinload(RehabilitationFacility.locations))
+            .where(RehabilitationFacility.execution_id == execution.id)
+            .order_by(RehabilitationFacility.stable_key)
+        )
+    ).scalars().all()
+    cells = (
+        await db.execute(
+            select(ScrapingCoverageCell).where(ScrapingCoverageCell.execution_id == execution.id)
+        )
+    ).scalars().all()
+    cell_regions = {cell.region_name for cell in cells}
+    cell_languages = {cell.language_code for cell in cells}
+    assert {"es", "ca"}.issubset(cell_languages)
+    assert "" not in cell_languages
+    facility_regions = {facility.primary_region for facility in facilities}
+    assert len(facility_regions) > 1
+    assert facility_regions.issubset(cell_regions)
+    assert all(facility.latitude is None and facility.longitude is None for facility in facilities)
+
+    locations = [
+        location
+        for facility in facilities
+        for location in facility.locations
+        if location.is_primary
+    ]
+    assert all(location.region in cell_regions for location in locations)
+    assert all(
+        location.region
+        == next(facility.primary_region for facility in facilities if facility.id == location.facility_id)
+        for location in locations
+    )
+
+    sources = (
+        await db.execute(
+            select(RehabilitationSource).where(RehabilitationSource.execution_id == execution.id)
+        )
+    ).scalars().all()
+    source_language_codes = {source.language_code for source in sources}
+    assert "" not in source_language_codes
+    assert source_language_codes.issubset(cell_languages)
+    assert len(source_language_codes) > 1
+    assert {source.region for source in sources}.issubset(cell_regions)
+    source_ids = [source.id for source in sources]
+    evidence_rows = (
+        await db.execute(
+            select(RehabilitationFieldEvidence).where(
+                RehabilitationFieldEvidence.source_id.in_(source_ids)
+            )
+        )
+    ).scalars().all()
+    source_languages = {source.id: source.language_code for source in sources}
+    assert all(
+        evidence.language_code == source_languages[evidence.source_id]
+        for evidence in evidence_rows
+        if evidence.source_id
+    )
+    facility_snapshot = [
+        (facility.stable_key, facility.primary_region, facility.primary_city)
+        for facility in facilities
+    ]
+    source_snapshot = [
+        (source.canonical_url, source.region, source.language_code, source.source_category)
+        for source in sorted(sources, key=lambda source: source.canonical_url)
+    ]
+    evidence_snapshot = [
+        (evidence.field_path, evidence.extracted_value, evidence.language_code)
+        for evidence in sorted(
+            evidence_rows,
+            key=lambda evidence: (
+                evidence.field_path,
+                evidence.extracted_value or "",
+                evidence.language_code or "",
+            ),
+        )
+    ]
+    child_counts = {
+        "facilities": await _execution_facility_count(db, execution.id),
+        "sources": await _execution_source_count(db, execution.id),
+        "evidence": len(evidence_rows),
+        "attributes": await _count_rows(db, RehabilitationFacilityAttribute),
+        "contacts": await _count_rows(db, RehabilitationFacilityContact),
+    }
+    await mock_facility_generator.generate(db, execution)
+    await db.flush()
+    retry_facilities = (
+        await db.execute(
+            select(RehabilitationFacility)
+            .where(RehabilitationFacility.execution_id == execution.id)
+            .order_by(RehabilitationFacility.stable_key)
+        )
+    ).scalars().all()
+    retry_sources = (
+        await db.execute(
+            select(RehabilitationSource).where(RehabilitationSource.execution_id == execution.id)
+        )
+    ).scalars().all()
+    retry_source_ids = [source.id for source in retry_sources]
+    retry_evidence_rows = (
+        await db.execute(
+            select(RehabilitationFieldEvidence).where(
+                RehabilitationFieldEvidence.source_id.in_(retry_source_ids)
+            )
+        )
+    ).scalars().all()
+    assert [
+        (facility.stable_key, facility.primary_region, facility.primary_city)
+        for facility in retry_facilities
+    ] == facility_snapshot
+    assert [
+        (source.canonical_url, source.region, source.language_code, source.source_category)
+        for source in sorted(retry_sources, key=lambda source: source.canonical_url)
+    ] == source_snapshot
+    assert [
+        (evidence.field_path, evidence.extracted_value, evidence.language_code)
+        for evidence in sorted(
+            retry_evidence_rows,
+            key=lambda evidence: (
+                evidence.field_path,
+                evidence.extracted_value or "",
+                evidence.language_code or "",
+            ),
+        )
+    ] == evidence_snapshot
+    assert {
+        "facilities": await _execution_facility_count(db, execution.id),
+        "sources": await _execution_source_count(db, execution.id),
+        "evidence": len(retry_evidence_rows),
+        "attributes": await _count_rows(db, RehabilitationFacilityAttribute),
+        "contacts": await _count_rows(db, RehabilitationFacilityContact),
+    } == child_counts
+
+
+@pytest.mark.asyncio
+async def test_multi_dimension_mock_execution_emits_unique_ordered_events(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint_json = {
+        **valid_blueprint(),
+        "scope": {
+            "included": ["public listings"],
+            "excluded": ["private data"],
+            "countries": ["Mock Country"],
+            "regions": [f"Mock Region {index}" for index in range(1, 6)],
+        },
+        "languages": ["English", "Spanish", "Catalan"],
+        "source_strategy": [
+            {"source_type": f"mock source {index}", "priority": index}
+            for index in range(1, 4)
+        ],
+    }
+    execution = await run_completed_mock_execution_with_blueprint(
+        db, auth, monkeypatch, blueprint_json
+    )
+    events = (
+        await db.execute(
+            select(ScrapingEvent)
+            .where(ScrapingEvent.execution_id == execution.id)
+            .order_by(ScrapingEvent.sequence_number)
+        )
+    ).scalars().all()
+    sequences = [event.sequence_number for event in events]
+    assert len(events) > 50
+    assert sequences == list(range(1, len(events) + 1))
+    assert len(sequences) == len(set(sequences))
+
+
+@pytest.mark.asyncio
+async def test_large_mock_execution_batches_metric_refreshes(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    refresh_calls = 0
+    original_refresh = MockExecutionOrchestrator._refresh_metrics
+
+    async def counted_refresh(self, execution):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        await original_refresh(self, execution)
+
+    monkeypatch.setattr(MockExecutionOrchestrator, "_refresh_metrics", counted_refresh)
+    blueprint_json = {
+        **valid_blueprint(),
+        "scope": {
+            "included": ["public listings"],
+            "excluded": ["private data"],
+            "countries": ["Mock Country"],
+            "regions": [f"Mock Region {index}" for index in range(1, 20)],
+        },
+        "languages": ["English", "Spanish", "Catalan", "French"],
+        "source_strategy": [
+            {"source_type": f"mock source {index}", "priority": index}
+            for index in range(1, 7)
+        ],
+    }
+    execution = await run_completed_mock_execution_with_blueprint(
+        db, auth, monkeypatch, blueprint_json
+    )
+    task_count = int(
+        (
+            await db.execute(
+                select(func.count(ScrapingTask.id)).where(
+                    ScrapingTask.execution_id == execution.id,
+                    ScrapingTask.task_type == "discover_sources",
+                )
+            )
+        ).scalar_one()
+    )
+    assert task_count == 19 * 4 * 6
+    assert 1 < refresh_calls <= (task_count // METRIC_REFRESH_TASK_INTERVAL) + 3
+    facility_count = await _execution_facility_count(db, execution.id)
+    source_count = await _execution_source_count(db, execution.id)
+    assert execution.status == ScrapingExecutionStatus.COMPLETED
+    assert execution.records_extracted == facility_count
+    assert execution.sources_discovered == source_count
+    events = (
+        await db.execute(
+            select(ScrapingEvent.sequence_number)
+            .where(ScrapingEvent.execution_id == execution.id)
+            .order_by(ScrapingEvent.sequence_number)
+        )
+    ).scalars().all()
+    assert events == list(range(1, len(events) + 1))
+
+
+@pytest.mark.asyncio
+async def test_cancel_requested_execution_does_not_generate_rehabilitation_dataset(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    summary = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    execution.status = ScrapingExecutionStatus.CANCEL_REQUESTED
+    await db.flush()
+    await mock_facility_generator.generate(db, execution)
+    assert await _execution_facility_count(db, execution.id) == 0
+
+
+@pytest.mark.asyncio
+async def test_authorized_facility_api_lists_deterministic_summaries(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    execution = await run_completed_mock_execution(db, auth, monkeypatch)
+    rows = await execution_service.list_facilities(db, auth, execution.id)
+    assert rows
+    assert [row.stable_key for row in rows] == sorted(row.stable_key for row in rows)
+    assert rows[0].is_mock is True
+    assert rows[0].verification_status in {"verified", "unverified"}
+    assert rows[0].confidence_score > 0
+    assert rows[0].source_count > 0
+    other = await create_other_auth(db)
+    with pytest.raises(Exception, match="ScrapingExecution not found"):
+        await execution_service.list_facilities(db, other, execution.id)
+
+
+@pytest.mark.asyncio
+async def test_completed_execution_without_coverage_gaps_keeps_completed_label(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    execution = await run_completed_mock_execution(db, auth, monkeypatch)
+    await _force_coverage_statuses(
+        db,
+        execution,
+        [ScrapingCoverageStatus.COVERED, ScrapingCoverageStatus.COVERED_NO_RESULTS],
+    )
+    detail = await execution_service.get_detail(db, auth, execution.id)
+    assert detail.execution.status == "completed"
+    assert detail.execution.status_label == "Completed"
+    assert detail.execution.coverage_debt == 0
+    row = await db.get(ScrapingExecution, execution.id)
+    assert row is not None
+    assert row.status == ScrapingExecutionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_excel_export_workbook_contract_and_active_rejection(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    from app.db.session import get_db
+    from openpyxl import load_workbook
+
+    execution = await run_completed_mock_execution(db, auth, monkeypatch)
+    await _force_coverage_statuses(
+        db,
+        execution,
+        [ScrapingCoverageStatus.PARTIALLY_COVERED],
+    )
+    app = create_app()
+
+    async def override_db():
+        yield db
+
+    async def override_auth():
+        return auth
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_auth_context] = override_auth
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        detail_response = await client.get(f"/api/v1/scraping/executions/{execution.id}")
+        response = await client.get(f"/api/v1/scraping/executions/{execution.id}/export.xlsx")
+    assert detail_response.status_code == 200
+    detail_body = detail_response.json()["execution"]
+    assert detail_body["status"] == "completed"
+    assert detail_body["status_label"] == "Completed with Gaps"
+    assert detail_body["coverage_debt"] > 0
+    assert execution.status == ScrapingExecutionStatus.COMPLETED
+    assert response.status_code == 200
+    assert response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert "mock-rehabilitation-dataset" in response.headers["content-disposition"]
+    workbook = load_workbook(BytesIO(response.content))
+    assert workbook.sheetnames == SHEET_ORDER
+    rehab_sheet = workbook["Rehab Centers"]
+    assert [rehab_sheet.cell(row=1, column=column).value for column in range(1, 6)] == [
+        "Official Name",
+        "Alternative Names",
+        "Original-Language Name",
+        "Facility Type",
+        "Organization Type",
+    ]
+    rehab_headers = [cell.value for cell in rehab_sheet[1]]
+    assert "Facility ID" in rehab_headers
+    assert rehab_sheet.max_row == execution.records_extracted + 1
+    confidence_column = rehab_headers.index("Confidence Score") + 1
+    mock_column = rehab_headers.index("Mock") + 1
+    website_column = rehab_headers.index("Primary Website") + 1
+    latitude_column = rehab_headers.index("Latitude") + 1
+    longitude_column = rehab_headers.index("Longitude") + 1
+    status_column = rehab_headers.index("Duplicate Status") + 1
+    assert isinstance(rehab_sheet.cell(row=2, column=confidence_column).value, int | float)
+    assert rehab_sheet.cell(row=2, column=confidence_column).number_format == "0.0%"
+    assert rehab_sheet.cell(row=2, column=mock_column).value == "Yes"
+    assert rehab_sheet.cell(row=2, column=website_column).hyperlink is not None
+    assert rehab_sheet.cell(row=2, column=status_column).value in {
+        "Unique",
+        "Possible Duplicate",
+    }
+    assert rehab_sheet.cell(row=2, column=latitude_column).value is None
+    assert rehab_sheet.cell(row=2, column=longitude_column).value is None
+    assert workbook["Contacts"].max_row - 1 == await _normal_contact_count(db)
+    contact_headers = [cell.value for cell in workbook["Contacts"][1]]
+    contact_value_column = contact_headers.index("Value") + 1
+    assert workbook["Contacts"].cell(row=2, column=contact_value_column).hyperlink is None
+    assert workbook["Social Media"].max_row - 1 == await _social_contact_count(db)
+    assert workbook["Social Media"].cell(row=2, column=6).hyperlink is not None
+    assert workbook["Sources"].max_row - 1 == execution.sources_discovered
+    assert workbook["Sources"].cell(row=2, column=6).hyperlink is not None
+    assert workbook["Field Evidence"].max_row - 1 == await _count_rows(db, RehabilitationFieldEvidence)
+    assert workbook["Possible Duplicates"].max_row - 1 == execution.duplicates_detected
+    assert workbook["Unresolved Records"].max_row - 1 == await _count_rows(db, RehabilitationUnresolvedField)
+    coverage_sheet = workbook["Coverage Report"]
+    assert coverage_sheet["A1"].value == "Coverage Status"
+    assert coverage_sheet["A2"].value == "Total Coverage Cells"
+    assert coverage_sheet["B2"].value == await _count_rows(db, ScrapingCoverageCell)
+    assert coverage_sheet["A14"].value == "Coverage Cell ID"
+    assert coverage_sheet.max_row - 14 == await _count_rows(db, ScrapingCoverageCell)
+    assert workbook["Execution Summary"]["A1"].value.startswith("MOCK REHABILITATION DATASET")
+    assert workbook["Execution Summary"]["A2"].value == (
+        "All facility records in this workbook were generated for testing."
+    )
+    assert workbook["Execution Summary"]["A4"].value == (
+        "The facility rows in this workbook are fictional sample records used to test "
+        "the dataset structure. They are not a count or estimate of real rehabilitation "
+        "centers in the selected country."
+    )
+    assert workbook["Execution Summary"]["A5"].value == "KPI"
+    assert workbook["Execution Summary"]["A6"].value == "Total Facilities"
+    assert workbook["Execution Summary"]["B6"].value == execution.records_extracted
+    assert workbook["Execution Summary"]["C6"].value == "Sample Facility Count"
+    assert workbook["Execution Summary"]["D6"].value == execution.records_extracted
+    assert workbook["Execution Summary"]["A10"].value == "Coverage Percentage"
+    assert workbook["Execution Summary"]["B10"].number_format == "0.0%"
+    assert workbook["Execution Summary"]["C10"].value == "Coverage Outcome"
+    assert workbook["Execution Summary"]["D10"].value == "Completed with Gaps"
+    summary_values = {
+        workbook["Execution Summary"].cell(row=row, column=1).value:
+        workbook["Execution Summary"].cell(row=row, column=2).value
+        for row in range(1, workbook["Execution Summary"].max_row + 1)
+    }
+    assert summary_values["Dataset Type"] == "Mock Sample Dataset"
+    assert summary_values["Sample Facility Count"] == execution.records_extracted
+    assert summary_values["Country Completeness"] == "Not measured in mock mode"
+    assert summary_values["Coverage Outcome"] == "Completed with Gaps"
+    assert all(workbook[sheet].max_row >= 1 for sheet in SHEET_ORDER)
+
+    queued = await execution_service.create_execution(
+        db,
+        auth,
+        execution.team_plan_id,
+        ScrapingExecutionCreate(execution_type="initial_full_country"),
+    )
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        active_response = await client.get(f"/api/v1/scraping/executions/{queued.id}/export.xlsx")
+    assert active_response.status_code == 409
+
+
+def test_excel_safe_cell_escapes_formula_like_text():
+    assert safe_cell("=SUM(1,1)") == "'=SUM(1,1)"
+    assert safe_cell("+CMD") == "'+CMD"
+    assert safe_cell("-1+2") == "'-1+2"
+    assert safe_cell("@IMPORT") == "'@IMPORT"
+    assert safe_cell(12) == 12
+
+
+async def _count_rows(db: AsyncSession, model) -> int:
+    return int((await db.execute(select(func.count(model.id)))).scalar_one())
+
+
+async def _execution_facility_count(db: AsyncSession, execution_id: str) -> int:
+    return int(
+        (
+            await db.execute(
+                select(func.count(RehabilitationFacility.id)).where(
+                    RehabilitationFacility.execution_id == execution_id
+                )
+            )
+        ).scalar_one()
+    )
+
+
+async def _execution_source_count(db: AsyncSession, execution_id: str) -> int:
+    return int(
+        (
+            await db.execute(
+                select(func.count(RehabilitationSource.id)).where(
+                    RehabilitationSource.execution_id == execution_id
+                )
+            )
+        ).scalar_one()
+    )
+
+
+async def _force_coverage_statuses(
+    db: AsyncSession,
+    execution: ScrapingExecution,
+    statuses: list[ScrapingCoverageStatus],
+) -> None:
+    cells = (
+        await db.execute(
+            select(ScrapingCoverageCell)
+            .where(ScrapingCoverageCell.execution_id == execution.id)
+            .order_by(ScrapingCoverageCell.created_at)
+        )
+    ).scalars().all()
+    assert cells
+    for index, cell in enumerate(cells):
+        cell.status = statuses[index] if index < len(statuses) else ScrapingCoverageStatus.COVERED
+    execution.coverage_debt = coverage_gap_count(list(cells))
+    await db.flush()
+    await db.refresh(execution)
+
+
+async def _normal_contact_count(db: AsyncSession) -> int:
+    return int(
+        (
+            await db.execute(
+                select(func.count(RehabilitationFacilityContact.id)).where(
+                    RehabilitationFacilityContact.contact_type.not_in(
+                        ["facebook", "instagram", "linkedin", "youtube", "other_social"]
+                    )
+                )
+            )
+        ).scalar_one()
+    )
+
+
+async def _social_contact_count(db: AsyncSession) -> int:
+    return int(
+        (
+            await db.execute(
+                select(func.count(RehabilitationFacilityContact.id)).where(
+                    RehabilitationFacilityContact.contact_type.in_(
+                        ["facebook", "instagram", "linkedin", "youtube", "other_social"]
+                    )
+                )
+            )
+        ).scalar_one()
+    )
