@@ -19,9 +19,12 @@ from app.schemas.api import (
     ScrapingExecutionSummary,
     ScrapingFacilitySummary,
     ScrapingTaskResponse,
+    SourceCandidateResponse,
+    SourceDiscoveryQueryResponse,
 )
 from app.services.scraping.execution_export_service import MIME_XLSX, execution_export_service
 from app.services.scraping.execution_service import execution_service
+from app.services.scraping.source_discovery_service import source_discovery_service
 
 router = APIRouter()
 
@@ -120,6 +123,69 @@ async def list_facilities(
         db,
         auth,
         execution_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/{execution_id}/source-discovery-queries",
+    response_model=list[SourceDiscoveryQueryResponse],
+)
+async def list_source_discovery_queries(
+    execution_id: str,
+    coverage_cell_id: str | None = None,
+    provider: str | None = None,
+    source_category: str | None = None,
+    language_code: str | None = None,
+    region_code: str | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await source_discovery_service.list_queries(
+        db,
+        auth,
+        execution_id,
+        coverage_cell_id=coverage_cell_id,
+        provider=provider,
+        source_category=source_category,
+        language_code=language_code,
+        region_code=region_code,
+        status=status_filter,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/{execution_id}/source-candidates", response_model=list[SourceCandidateResponse])
+async def list_source_candidates(
+    execution_id: str,
+    coverage_cell_id: str | None = None,
+    provider: str | None = None,
+    source_category: str | None = None,
+    language_code: str | None = None,
+    region_code: str | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    domain: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await source_discovery_service.list_candidates(
+        db,
+        auth,
+        execution_id,
+        coverage_cell_id=coverage_cell_id,
+        provider=provider,
+        source_category=source_category,
+        language_code=language_code,
+        region_code=region_code,
+        status=status_filter,
+        domain=domain,
         limit=limit,
         offset=offset,
     )

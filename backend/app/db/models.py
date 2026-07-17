@@ -155,6 +155,19 @@ class ScrapingTaskStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class SourceDiscoveryQueryStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class SourceCandidateStatus(str, enum.Enum):
+    DISCOVERED = "discovered"
+    REJECTED = "rejected"
+    ACCEPTED = "accepted"
+
+
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
 
@@ -751,6 +764,162 @@ class ScrapingEvent(Base, UUIDPrimaryKeyMixin):
     )
 
     execution: Mapped["ScrapingExecution"] = relationship(back_populates="events")
+
+
+class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_source_discovery_queries"
+    __table_args__ = (
+        CheckConstraint("length(trim(query_text)) > 0", name="ck_source_discovery_query_not_blank"),
+        CheckConstraint("result_count >= 0", name="ck_source_discovery_query_result_count"),
+        Index("ix_source_discovery_queries_org", "organization_id"),
+        Index("ix_source_discovery_queries_execution", "execution_id"),
+        Index("ix_source_discovery_queries_coverage", "coverage_cell_id"),
+        Index("ix_source_discovery_queries_task", "task_id"),
+        Index("ix_source_discovery_queries_provider", "provider"),
+        Index("ix_source_discovery_queries_status", "status"),
+        Index(
+            "ix_source_discovery_queries_context",
+            "organization_id",
+            "execution_id",
+            "coverage_cell_id",
+            "provider",
+            "source_category",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    execution_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=True
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    country_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    region_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    region_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    language_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    language_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_category: Mapped[str] = mapped_column(String(120), nullable=False)
+    query_text: Mapped[str] = mapped_column(String(512), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[SourceDiscoveryQueryStatus] = mapped_column(
+        Enum(
+            SourceDiscoveryQueryStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=SourceDiscoveryQueryStatus.PENDING,
+        nullable=False,
+    )
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+    organization: Mapped["Organization"] = relationship()
+    execution: Mapped["ScrapingExecution | None"] = relationship()
+    coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship()
+    task: Mapped["ScrapingTask | None"] = relationship()
+    candidates: Mapped[list["ScrapingSourceCandidate"]] = relationship(
+        back_populates="discovery_query",
+        cascade="all, delete-orphan",
+        order_by="ScrapingSourceCandidate.rank",
+    )
+
+
+class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_source_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "discovery_query_id",
+            "canonical_url",
+            name="uq_source_candidate_query_url",
+        ),
+        CheckConstraint("rank >= 1", name="ck_source_candidate_rank"),
+        CheckConstraint(
+            "initial_relevance_score >= 0 AND initial_relevance_score <= 1",
+            name="ck_source_candidate_relevance_score",
+        ),
+        CheckConstraint(
+            "(lower(url) LIKE 'http://%' OR lower(url) LIKE 'https://%') AND "
+            "(lower(canonical_url) LIKE 'http://%' OR lower(canonical_url) LIKE 'https://%')",
+            name="ck_source_candidate_http_urls",
+        ),
+        Index("ix_source_candidates_org", "organization_id"),
+        Index("ix_source_candidates_execution", "execution_id"),
+        Index("ix_source_candidates_coverage", "coverage_cell_id"),
+        Index("ix_source_candidates_query", "discovery_query_id"),
+        Index("ix_source_candidates_provider", "provider"),
+        Index("ix_source_candidates_domain", "domain"),
+        Index("ix_source_candidates_status", "status"),
+        Index("ix_source_candidates_canonical_url", "canonical_url"),
+        Index(
+            "ix_source_candidates_context_url",
+            "organization_id",
+            "execution_id",
+            "coverage_cell_id",
+            "canonical_url",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    execution_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=True
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    discovery_query_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scraping_source_discovery_queries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_result_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    canonical_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    snippet: Mapped[str] = mapped_column(String(1000), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    country_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    region_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    region_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    language_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    language_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_category: Mapped[str] = mapped_column(String(120), nullable=False)
+    initial_relevance_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    initial_trust_tier: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[SourceCandidateStatus] = mapped_column(
+        Enum(
+            SourceCandidateStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=SourceCandidateStatus.DISCOVERED,
+        nullable=False,
+    )
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+    organization: Mapped["Organization"] = relationship()
+    execution: Mapped["ScrapingExecution | None"] = relationship()
+    coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship()
+    discovery_query: Mapped["ScrapingSourceDiscoveryQuery"] = relationship(
+        back_populates="candidates"
+    )
 
 
 CONFIDENCE_CHECK = "confidence_score >= 0 AND confidence_score <= 1"

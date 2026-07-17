@@ -592,6 +592,130 @@ class ScrapingExecutionDetail(BaseModel):
     mock: bool = True
 
 
+class SourceDiscoveryContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: str
+    execution_id: str | None = None
+    coverage_cell_id: str | None = None
+    task_id: str | None = None
+    country_code: str = Field(min_length=2, max_length=2)
+    country_name: str = Field(min_length=1, max_length=120)
+    region_code: str | None = Field(default=None, max_length=32)
+    region_name: str = Field(min_length=1, max_length=160)
+    language_code: str = Field(min_length=1, max_length=16)
+    language_name: str = Field(min_length=1, max_length=120)
+    source_category: str = Field(min_length=1, max_length=120)
+    mission_goal: str = Field(min_length=1, max_length=2000)
+    requested_fields: list[str] = Field(default_factory=list, max_length=50)
+    blueprint_context: dict[str, Any] = Field(default_factory=dict)
+    provider: str = Field(default="brave", min_length=1, max_length=64)
+
+    @field_validator("requested_fields")
+    @classmethod
+    def bound_requested_fields(cls, value: list[str]) -> list[str]:
+        return [item.strip()[:120] for item in value if item.strip()]
+
+
+class SourceDiscoveryPlannedQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=240)
+    language_code: str = Field(min_length=1, max_length=16)
+    purpose: str = Field(min_length=1, max_length=300)
+
+    @field_validator("query", "language_code", "purpose", mode="before")
+    @classmethod
+    def trim_required_string(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class SourceDiscoveryQueryPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queries: list[SourceDiscoveryPlannedQuery] = Field(min_length=1, max_length=8)
+
+
+class SourceDiscoveryProviderResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_result_id: str | None = Field(default=None, max_length=255)
+    rank: int = Field(ge=1)
+    url: str = Field(min_length=1, max_length=2048)
+    title: str = Field(default="", max_length=300)
+    snippet: str = Field(default="", max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceDiscoveryQueryResponse(BaseModel):
+    id: str
+    organization_id: str
+    execution_id: str | None = None
+    coverage_cell_id: str | None = None
+    task_id: str | None = None
+    country_code: str
+    country_name: str
+    region_code: str | None = None
+    region_name: str
+    language_code: str
+    language_name: str
+    source_category: str
+    query_text: str
+    provider: str
+    status: str
+    requested_at: datetime
+    completed_at: datetime | None = None
+    result_count: int
+    error_code: str | None = None
+    error_message: str | None = None
+    metadata_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceCandidateResponse(BaseModel):
+    id: str
+    organization_id: str
+    execution_id: str | None = None
+    coverage_cell_id: str | None = None
+    discovery_query_id: str
+    provider: str
+    provider_result_id: str | None = None
+    rank: int
+    url: str
+    canonical_url: str
+    domain: str
+    title: str
+    snippet: str
+    country_code: str
+    country_name: str
+    region_code: str | None = None
+    region_name: str
+    language_code: str
+    language_name: str
+    source_category: str
+    initial_relevance_score: float
+    initial_trust_tier: str
+    status: str
+    discovered_at: datetime
+    metadata_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceDiscoverySummary(BaseModel):
+    provider: str
+    planned_query_count: int
+    query_count: int
+    succeeded_query_count: int
+    failed_query_count: int
+    candidate_count: int
+    duplicate_candidate_count: int
+    rejected_result_count: int
+
+
 # --- Chats ---
 
 

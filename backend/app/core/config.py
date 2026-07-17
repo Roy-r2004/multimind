@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 120.0
     llm_max_retries: int = 2
 
+    # Real source discovery — Brave Search
+    brave_search_api_key: str | None = None
+    brave_search_base_url: str = "https://api.search.brave.com/res/v1/web/search"
+    brave_search_timeout_seconds: float = 20.0
+    brave_search_results_per_query: int = 10
+    brave_search_max_queries_per_discovery: int = 6
+
     # Public URL for share links
     public_app_url: str = Field(default="http://localhost:5173")
 
