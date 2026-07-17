@@ -609,7 +609,7 @@ class SourceDiscoveryContext(BaseModel):
     mission_goal: str = Field(min_length=1, max_length=2000)
     requested_fields: list[str] = Field(default_factory=list, max_length=50)
     blueprint_context: dict[str, Any] = Field(default_factory=dict)
-    provider: str = Field(default="brave", min_length=1, max_length=64)
+    provider: str = Field(default="serper", min_length=1, max_length=64)
 
     @field_validator("requested_fields")
     @classmethod

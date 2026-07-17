@@ -31,7 +31,7 @@ from app.schemas.api import (
     SourceDiscoveryQueryResponse,
     SourceDiscoverySummary,
 )
-from app.services.scraping.search_providers import BraveSearchProvider
+from app.services.scraping.search_providers import create_search_provider
 from app.services.scraping.search_providers.base import (
     SearchProvider,
     SearchProviderError,
@@ -47,7 +47,7 @@ MAX_ERROR_MESSAGE_LENGTH = 500
 class SourceDiscoveryQueryPlanner:
     async def plan_queries(self, context: SourceDiscoveryContext) -> list[SourceDiscoveryPlannedQuery]:
         settings = get_settings()
-        max_queries = min(max(settings.brave_search_max_queries_per_discovery, 1), 8)
+        max_queries = _max_queries_for_provider(context.provider, settings)
         model = get_model("gpt-4.1")
         provider = get_provider_registry().get_provider(model.provider)
         prompt = get_prompt_engine().render(
@@ -87,15 +87,15 @@ class SourceDiscoveryService:
         providers: dict[str, SearchProvider] | None = None,
     ) -> None:
         self.planner = planner or SourceDiscoveryQueryPlanner()
-        self.providers = providers or {"brave": BraveSearchProvider()}
+        self.providers = providers
 
     async def discover(
         self,
         db: AsyncSession,
         context: SourceDiscoveryContext,
     ) -> SourceDiscoverySummary:
-        planned_queries = await self.planner.plan_queries(context)
         provider = self._provider(context.provider)
+        planned_queries = await self.planner.plan_queries(context)
         summary = SourceDiscoverySummary(
             provider=provider.name,
             planned_query_count=len(planned_queries),
@@ -116,7 +116,7 @@ class SourceDiscoveryService:
                         query=planned.query,
                         country_code=context.country_code,
                         search_language=planned.language_code or context.language_code,
-                        result_limit=get_settings().brave_search_results_per_query,
+                        result_limit=_result_limit_for_provider(provider.name, get_settings()),
                         metadata={
                             "source_category": context.source_category,
                             "region_code": context.region_code,
@@ -235,10 +235,16 @@ class SourceDiscoveryService:
         return [self._candidate_response(row) for row in result.scalars().all()]
 
     def _provider(self, provider_name: str) -> SearchProvider:
-        provider = self.providers.get(provider_name)
-        if provider is None:
-            raise ValidationError(f"Unsupported source discovery provider: {provider_name}")
-        return provider
+        normalized = provider_name.strip().lower()
+        if self.providers is not None:
+            provider = self.providers.get(normalized) or self.providers.get(provider_name)
+            if provider is None:
+                raise ValidationError(f"Unsupported source discovery provider: {provider_name}")
+            return provider
+        try:
+            return create_search_provider(normalized)
+        except SearchProviderError as exc:
+            raise ValidationError(str(exc)) from exc
 
     async def _create_query_row(
         self,
@@ -473,6 +479,22 @@ def _trust_tier(source_category: str) -> str:
 
 def _bounded_error(message: str) -> str:
     return str(message or "")[:MAX_ERROR_MESSAGE_LENGTH]
+
+
+def _max_queries_for_provider(provider: str, settings: Any) -> int:
+    if provider.strip().lower() == "brave":
+        configured = settings.brave_search_max_queries_per_discovery
+    else:
+        configured = settings.serper_search_max_queries_per_discovery
+    return min(max(configured, 1), 8)
+
+
+def _result_limit_for_provider(provider: str, settings: Any) -> int:
+    if provider.strip().lower() == "brave":
+        configured = settings.brave_search_results_per_query
+    else:
+        configured = settings.serper_search_results_per_query
+    return min(max(configured, 1), 20)
 
 
 def _safe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

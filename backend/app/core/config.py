@@ -48,7 +48,15 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 120.0
     llm_max_retries: int = 2
 
-    # Real source discovery — Brave Search
+    # Real source discovery
+    source_discovery_provider: str = "serper"
+    serper_api_key: str | None = None
+    serper_search_base_url: str = "https://google.serper.dev/search"
+    serper_search_timeout_seconds: float = 10.0
+    serper_search_results_per_query: int = 5
+    serper_search_max_queries_per_discovery: int = 2
+
+    # Optional source discovery provider — Brave Search
     brave_search_api_key: str | None = None
     brave_search_base_url: str = "https://api.search.brave.com/res/v1/web/search"
     brave_search_timeout_seconds: float = 20.0

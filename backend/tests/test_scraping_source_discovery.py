@@ -29,10 +29,17 @@ from app.schemas.api import SourceDiscoveryContext, SourceDiscoveryPlannedQuery
 from app.services.scraping.search_providers.base import (
     SearchProviderAuthError,
     SearchProviderConfigurationError,
+    SearchProviderInvalidResponseError,
+    SearchProviderRateLimitedError,
     SearchProviderRequest,
     SearchProviderResult,
+    SearchProviderTimeoutError,
 )
-from app.services.scraping.search_providers.brave import BraveSearchProvider
+from app.services.scraping.search_providers import (
+    BraveSearchProvider,
+    SerperSearchProvider,
+    create_search_provider,
+)
 from app.services.scraping.source_discovery_service import SourceDiscoveryService
 from app.services.scraping.url_canonicalization import UrlRejected, canonicalize_discovery_url
 from tests.conftest import create_model_set, create_other_auth, valid_blueprint
@@ -148,12 +155,32 @@ def planned_queries() -> list[SourceDiscoveryPlannedQuery]:
     ]
 
 
-@pytest.mark.asyncio
-async def test_missing_brave_api_key_fails_closed(monkeypatch):
-    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+def test_serper_is_default_provider(monkeypatch):
+    monkeypatch.delenv("SOURCE_DISCOVERY_PROVIDER", raising=False)
     get_settings.cache_clear()
     try:
-        provider = BraveSearchProvider()
+        assert get_settings().source_discovery_provider == "serper"
+        assert isinstance(create_search_provider(), SerperSearchProvider)
+        assert SourceDiscoveryContext(
+            organization_id="org",
+            country_code="FR",
+            country_name="France",
+            region_name="Ile-de-France",
+            language_code="fr",
+            language_name="French",
+            source_category="official registry",
+            mission_goal="Find rehabilitation facility source candidates",
+        ).provider == "serper"
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_missing_serper_api_key_fails_closed(monkeypatch):
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    get_settings.cache_clear()
+    try:
+        provider = SerperSearchProvider()
         with pytest.raises(SearchProviderConfigurationError):
             await provider.search(
                 SearchProviderRequest(
@@ -168,7 +195,7 @@ async def test_missing_brave_api_key_fails_closed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_brave_uses_auth_header_and_country_language(monkeypatch):
+async def test_serper_uses_auth_header_country_language_query_and_bounded_num(monkeypatch):
     captured: dict[str, Any] = {}
 
     class Client:
@@ -181,39 +208,180 @@ async def test_brave_uses_auth_header_and_country_language(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def get(self, url, *, headers, params):
+        async def post(self, url, *, headers, json):
             captured["url"] = url
             captured["headers"] = headers
-            captured["params"] = params
+            captured["json"] = json
             return httpx.Response(
                 200,
-                json={"web": {"results": [{"url": "https://example.fr/source", "title": "Title", "description": "Snippet"}]}},
+                json={
+                    "organic": [
+                        {
+                            "position": 7,
+                            "link": "https://sante.gouv.fr/source",
+                            "title": "Title",
+                            "snippet": "Snippet",
+                        }
+                    ]
+                },
             )
 
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "secret-key")
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
+    monkeypatch.setenv("SERPER_SEARCH_RESULTS_PER_QUERY", "5")
     get_settings.cache_clear()
     monkeypatch.setattr(httpx, "AsyncClient", Client)
     try:
-        results = await BraveSearchProvider().search(
+        results = await SerperSearchProvider().search(
             SearchProviderRequest(
                 query="registre officiel",
                 country_code="FR",
                 search_language="fr",
-                result_limit=2,
+                result_limit=100,
             )
         )
     finally:
         get_settings.cache_clear()
 
-    assert captured["headers"]["X-Subscription-Token"] == "secret-key"
+    assert captured["url"] == "https://google.serper.dev/search"
+    assert captured["headers"]["X-API-KEY"] == "secret-key"
+    assert captured["headers"]["Content-Type"] == "application/json"
     assert "secret-key" not in repr(results)
-    assert captured["params"]["country"] == "FR"
-    assert captured["params"]["search_lang"] == "fr"
-    assert captured["params"]["count"] == 2
+    assert captured["json"]["q"] == "registre officiel"
+    assert captured["json"]["gl"] == "fr"
+    assert captured["json"]["hl"] == "fr"
+    assert captured["json"]["num"] == 20
+    assert results[0].rank == 7
+    assert results[0].title == "Title"
+    assert results[0].url == "https://sante.gouv.fr/source"
+    assert results[0].snippet == "Snippet"
+    assert results[0].metadata == {"position": 7}
 
 
 @pytest.mark.asyncio
-async def test_brave_auth_failure_is_not_retried(monkeypatch):
+async def test_serper_missing_optional_fields_are_safe(monkeypatch):
+    class Client:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, json):
+            return httpx.Response(200, json={"organic": [{"link": "https://sante.gouv.fr/empty"}]})
+
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    try:
+        results = await SerperSearchProvider().search(
+            SearchProviderRequest(query="x", country_code="FR", search_language="fr", result_limit=1)
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert results[0].rank == 1
+    assert results[0].title == ""
+    assert results[0].snippet == ""
+
+
+@pytest.mark.asyncio
+async def test_serper_malformed_response_fails_explicitly(monkeypatch):
+    class Client:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, json):
+            return httpx.Response(200, json={"organic": {"bad": "shape"}})
+
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    try:
+        with pytest.raises(SearchProviderInvalidResponseError):
+            await SerperSearchProvider().search(
+                SearchProviderRequest(query="x", country_code="FR", search_language="fr", result_limit=1)
+            )
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "error_type"),
+    [
+        (401, SearchProviderAuthError),
+        (403, SearchProviderAuthError),
+        (429, SearchProviderRateLimitedError),
+    ],
+)
+async def test_serper_status_errors_map_without_secret(monkeypatch, status_code, error_type):
+    class Client:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, json):
+            return httpx.Response(status_code, json={"error": "secret-key"})
+
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    try:
+        with pytest.raises(error_type) as exc_info:
+            await SerperSearchProvider().search(
+                SearchProviderRequest(query="x", country_code="FR", search_language="fr", result_limit=1)
+            )
+    finally:
+        get_settings.cache_clear()
+
+    assert "secret-key" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_serper_timeout_maps_correctly(monkeypatch):
+    class Client:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, json):
+            raise httpx.TimeoutException("timed out with secret-key")
+
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    try:
+        with pytest.raises(SearchProviderTimeoutError) as exc_info:
+            await SerperSearchProvider().search(
+                SearchProviderRequest(query="x", country_code="FR", search_language="fr", result_limit=1)
+            )
+    finally:
+        get_settings.cache_clear()
+
+    assert "secret-key" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_serper_temporary_failures_are_retried(monkeypatch):
     calls = 0
 
     class Client:
@@ -226,22 +394,83 @@ async def test_brave_auth_failure_is_not_retried(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def get(self, url, *, headers, params):
+        async def post(self, url, *, headers, json):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(503, json={"error": "temporary"})
+            return httpx.Response(200, json={"organic": [{"link": "https://sante.gouv.fr/a"}]})
+
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    try:
+        results = await SerperSearchProvider().search(
+            SearchProviderRequest(query="x", country_code="FR", search_language="fr", result_limit=1)
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert calls == 2
+    assert len(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_serper_auth_failure_is_not_retried(monkeypatch):
+    calls = 0
+
+    class Client:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, json):
             nonlocal calls
             calls += 1
             return httpx.Response(401, json={"error": "bad key"})
 
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "secret-key")
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
     get_settings.cache_clear()
     monkeypatch.setattr(httpx, "AsyncClient", Client)
     try:
         with pytest.raises(SearchProviderAuthError):
-            await BraveSearchProvider().search(
+            await SerperSearchProvider().search(
                 SearchProviderRequest(query="x", country_code="FR", search_language="fr", result_limit=1)
             )
     finally:
         get_settings.cache_clear()
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_brave_remains_optional_and_explicit(monkeypatch):
+    monkeypatch.setenv("SOURCE_DISCOVERY_PROVIDER", "brave")
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    get_settings.cache_clear()
+    try:
+        provider = create_search_provider()
+        assert isinstance(provider, BraveSearchProvider)
+        with pytest.raises(SearchProviderConfigurationError):
+            await provider.search(
+                SearchProviderRequest(query="x", country_code="FR", search_language="fr", result_limit=1)
+            )
+    finally:
+        get_settings.cache_clear()
+
+
+def test_unknown_source_discovery_provider_fails_explicitly(monkeypatch):
+    monkeypatch.setenv("SOURCE_DISCOVERY_PROVIDER", "unknown")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(SearchProviderConfigurationError):
+            create_search_provider()
+    finally:
+        get_settings.cache_clear()
 
 
 def test_canonicalize_discovery_url_rejects_unsafe_urls():
@@ -346,6 +575,82 @@ async def test_query_records_persist_zero_results_and_failure(db: AsyncSession, 
 
 
 @pytest.mark.asyncio
+async def test_serper_zero_organic_results_persist_successful_zero_result_query(
+    db: AsyncSession, auth, monkeypatch
+):
+    execution = await create_execution(db, auth)
+
+    class Client:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, json):
+            return httpx.Response(200, json={"organic": []})
+
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    try:
+        service = SourceDiscoveryService(planner=FakePlanner(planned_queries()[:1]))
+        summary = await service.discover(db, context(auth, execution, provider="serper"))
+    finally:
+        get_settings.cache_clear()
+
+    assert summary.provider == "serper"
+    assert summary.succeeded_query_count == 1
+    assert summary.candidate_count == 0
+    queries = await service.list_queries(db, auth, execution.id, provider="serper")
+    assert len(queries) == 1
+    assert queries[0].status == SourceDiscoveryQueryStatus.SUCCEEDED.value
+    assert queries[0].result_count == 0
+
+
+@pytest.mark.asyncio
+async def test_serper_provider_error_persists_no_secret_and_no_candidates(
+    db: AsyncSession, auth, monkeypatch, caplog
+):
+    execution = await create_execution(db, auth)
+
+    class Client:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, json):
+            return httpx.Response(401, json={"message": "secret-key"})
+
+    monkeypatch.setenv("SERPER_API_KEY", "secret-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    try:
+        service = SourceDiscoveryService(planner=FakePlanner(planned_queries()[:1]))
+        summary = await service.discover(db, context(auth, execution, provider="serper"))
+    finally:
+        get_settings.cache_clear()
+
+    assert summary.failed_query_count == 1
+    assert summary.candidate_count == 0
+    queries = await service.list_queries(db, auth, execution.id, provider="serper")
+    assert queries[0].status == SourceDiscoveryQueryStatus.FAILED.value
+    serialized_query = repr(queries[0].model_dump())
+    assert "secret-key" not in serialized_query
+    assert "secret-key" not in caplog.text
+    candidate_count = await db.scalar(select(func.count()).select_from(ScrapingSourceCandidate))
+    assert candidate_count == 0
+
+
+@pytest.mark.asyncio
 async def test_provider_errors_do_not_create_candidates_or_downstream_rows(db: AsyncSession, auth):
     execution = await create_execution(db, auth)
     service = SourceDiscoveryService(
@@ -390,7 +695,11 @@ def test_query_planner_output_is_bounded_and_deduped():
 
 def test_source_discovery_service_does_not_import_mock_production_modules():
     import app.services.scraping.source_discovery_service as module
+    import app.services.scraping.search_providers.serper as serper_module
 
     names = set(module.__dict__)
+    serper_names = set(serper_module.__dict__)
     assert "mock_tools" not in names
     assert "mock_facility_generator" not in names
+    assert "mock_tools" not in serper_names
+    assert "mock_facility_generator" not in serper_names
