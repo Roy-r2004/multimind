@@ -1,8 +1,7 @@
-"""Country-aware mock execution campaign persistence and orchestration API."""
+"""Country-aware source-discovery execution campaign persistence and orchestration API."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -64,8 +63,8 @@ SUPPORTED_EXECUTION_TYPES = {
     "scheduled_refresh",
 }
 STARTABLE_EXECUTION_TYPES = {"initial_full_country"}
-SUPPORTED_MODES = {"mock"}
-ACTIVE_EXECUTION_MESSAGE = "An active mock execution already exists for this AI team plan."
+SUPPORTED_MODES = {"real"}
+ACTIVE_EXECUTION_MESSAGE = "An active source discovery execution already exists for this AI team plan."
 
 
 class ScrapingExecutionService:
@@ -81,15 +80,15 @@ class ScrapingExecutionService:
         if data.execution_type not in STARTABLE_EXECUTION_TYPES:
             raise ValidationError("This execution type is not startable in this phase.")
         if data.mode not in SUPPORTED_MODES:
-            raise ValidationError("Only mock execution mode is supported in this phase.")
+            raise ValidationError("Only real source discovery execution mode is supported in this phase.")
 
         team_plan = await self._team_plan_row(db, auth, team_plan_id)
         if team_plan.status != ScrapingRunStatus.PLANNED:
-            raise ConflictError("Only a planned AI team plan can start a mock execution.")
+            raise ConflictError("Only a planned AI team plan can start a source discovery execution.")
         if not team_plan.agents:
             raise ConflictError("This AI team plan has no planned agents.")
         if not team_plan.mission.country_code or not team_plan.mission.country_name:
-            raise ConflictError("Set a mission country before starting a mock execution.")
+            raise ConflictError("Set a mission country before starting a source discovery execution.")
         if team_plan.blueprint_id != team_plan.mission.active_blueprint_id:
             raise ConflictError("The AI team plan no longer matches the mission's active blueprint.")
 
@@ -124,8 +123,7 @@ class ScrapingExecutionService:
                 db,
                 execution.id,
                 "execution_queued",
-                "Mock execution campaign queued.",
-                metadata={"mock": True},
+                "Real source discovery campaign queued.",
             )
             await db.commit()
         except IntegrityError as exc:
@@ -181,7 +179,7 @@ class ScrapingExecutionService:
                 ScrapingExecutionStatus.RUNNING,
             },
             can_delete=execution.status in DELETABLE_EXECUTION_STATUSES,
-            mock=True,
+            mock=False,
         )
 
     async def list_tasks(
@@ -335,7 +333,7 @@ class ScrapingExecutionService:
                 db,
                 execution.id,
                 "execution_cancelled",
-                "Queued mock execution was cancelled before work began.",
+                "Queued source discovery execution was cancelled before work began.",
             )
         elif execution.status == ScrapingExecutionStatus.RUNNING:
             execution.status = ScrapingExecutionStatus.CANCEL_REQUESTED
@@ -344,7 +342,7 @@ class ScrapingExecutionService:
                 db,
                 execution.id,
                 "execution_cancel_requested",
-                "Mock execution cancellation requested.",
+                "Source discovery execution cancellation requested.",
             )
         elif execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
             pass
@@ -356,7 +354,7 @@ class ScrapingExecutionService:
     async def delete_execution(self, db: AsyncSession, auth: AuthContext, execution_id: str) -> None:
         execution = await self._execution_row(db, auth, execution_id)
         if execution.status not in DELETABLE_EXECUTION_STATUSES:
-            raise ConflictError("Active mock executions cannot be deleted.")
+            raise ConflictError("Active source discovery executions cannot be deleted.")
         await db.delete(execution)
         await db.commit()
 
@@ -387,7 +385,7 @@ class ScrapingExecutionService:
             sequence_number=sequence_number,
             event_type=event_type,
             message=message,
-            metadata_json={"mock": True, **(metadata or {})},
+            metadata_json=metadata or {},
         )
         db.add(event)
         await db.flush()
@@ -670,12 +668,6 @@ def _redis_settings() -> RedisSettings:
         database=int((parsed.path or "/0").lstrip("/") or "0"),
         password=parsed.password,
     )
-
-
-async def sleep_mock_delay() -> None:
-    delay_ms = get_settings().scraping_mock_step_delay_ms
-    if delay_ms > 0:
-        await asyncio.sleep(delay_ms / 1000)
 
 
 execution_service = ScrapingExecutionService()

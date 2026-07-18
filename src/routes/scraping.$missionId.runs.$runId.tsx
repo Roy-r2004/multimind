@@ -153,7 +153,7 @@ function ScrapingRunDetailPage() {
           return;
         }
       }
-      setError(err instanceof Error ? err.message : "Failed to start mock execution");
+      setError(err instanceof Error ? err.message : "Failed to start source discovery execution");
     } finally {
       setStartingExecution(false);
     }
@@ -185,7 +185,7 @@ function ScrapingRunDetailPage() {
         <PageHeader
           eyebrow="Scraping Council"
           title={run ? `AI Team Plan for ${run.mission_title}` : "AI Team Plan"}
-          description="Saved AI team plan and mock execution campaigns. No websites are being scraped."
+          description="Saved AI team plan and real source discovery campaigns."
           action={
             <Link
               to="/scraping/$missionId/runs"
@@ -256,7 +256,7 @@ function ScrapingRunDetailPage() {
                 <div>
                   <h2 className="text-lg font-semibold">Execution Campaigns</h2>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    MOCK EXECUTION - No external websites or data sources are being contacted.
+                    This phase discovers and stores real candidate sources. Website retrieval and facility extraction are not yet enabled.
                   </p>
                 </div>
                 <Button
@@ -265,10 +265,10 @@ function ScrapingRunDetailPage() {
                   onClick={() => void handleStartExecution()}
                 >
                   {startingExecution
-                    ? "Starting Mock Execution..."
+                    ? "Starting Source Discovery..."
                     : activeExecution
-                      ? "View Active Mock Execution"
-                      : "Start Mock Execution"}
+                      ? "View Active Source Discovery"
+                      : "Start Source Discovery"}
                 </Button>
               </div>
               {executions.length === 0 ? (
@@ -295,7 +295,7 @@ function ScrapingRunDetailPage() {
                           </span>
                         </div>
                         <p className="mt-1 text-sm text-muted-foreground">
-                          {execution.mode} · {execution.records_verified} verified ·{" "}
+                          {execution.mode} · {execution.sources_discovered} candidate sources ·{" "}
                           {execution.coverage_debt} coverage debt ·{" "}
                           {new Date(execution.created_at).toLocaleString()}
                         </p>
@@ -371,7 +371,7 @@ function ScrapingRunDetailPage() {
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Delete this terminal mock execution campaign? This permanently deletes its tasks,
+            Delete this terminal source discovery execution campaign? This permanently deletes its tasks,
             coverage history, and event history. This action cannot be undone.
           </p>
           <div className="flex justify-end gap-2">

@@ -2,6 +2,7 @@ import asyncio
 from io import BytesIO
 from decimal import Decimal
 from pathlib import Path
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -32,8 +33,12 @@ from app.db.models import (
     ScrapingRun,
     ScrapingRunAgent,
     ScrapingRunStatus,
+    ScrapingSourceCandidate,
+    ScrapingSourceDiscoveryQuery,
     ScrapingTask,
     ScrapingTaskStatus,
+    SourceCandidateStatus,
+    SourceDiscoveryQueryStatus,
 )
 from app.llm.providers import LLMResponse
 from app.main import create_app
@@ -45,18 +50,17 @@ from app.schemas.api import (
     ScrapingMissionCreate,
     ScrapingMissionUpdate,
     ScrapingExecutionCreate,
+    SourceDiscoverySummary,
     ScrapingTeamPlanOutput,
 )
-from app.scraping.worker import WorkerSettings
+from app.scraping.worker import WorkerSettings, run_scraping_execution
 from app.scraping.blueprint_orchestrator import BlueprintOrchestrator
 from app.services.domain_service import project_service
 from app.services.scraping.blueprint_service import blueprint_service
 from app.services.scraping.countries import COUNTRIES, resolve_country
 from app.services.scraping.execution_orchestrator import (
     METRIC_REFRESH_TASK_INTERVAL,
-    MOCK_DELAY_EVERY_N_TASKS,
-    MockExecutionOrchestrator,
-    _should_sleep_after_task,
+    SourceDiscoveryExecutionOrchestrator,
 )
 from app.services.scraping.execution_export_service import SHEET_ORDER, safe_cell
 from app.services.scraping.execution_outcome import coverage_gap_count, execution_outcome_label
@@ -1069,6 +1073,79 @@ def mock_planner(monkeypatch, count: int = 3):
     monkeypatch.setattr(team_planner_service, "plan_team", fake_plan_team)
 
 
+def mock_source_discovery(monkeypatch, candidate_count: int = 1) -> None:
+    async def fake_discover(service_db, context):
+        now = datetime.now(UTC)
+        query = ScrapingSourceDiscoveryQuery(
+            organization_id=context.organization_id,
+            execution_id=context.execution_id,
+            coverage_cell_id=context.coverage_cell_id,
+            task_id=context.task_id,
+            country_code=context.country_code,
+            country_name=context.country_name,
+            region_code=context.region_code,
+            region_name=context.region_name,
+            language_code=context.language_code,
+            language_name=context.language_name,
+            source_category=context.source_category,
+            query_text="real source discovery query",
+            provider="serper",
+            status=SourceDiscoveryQueryStatus.SUCCEEDED,
+            requested_at=now,
+            completed_at=now,
+            result_count=candidate_count,
+            metadata_json={"purpose": "test"},
+        )
+        service_db.add(query)
+        await service_db.flush()
+        for index in range(candidate_count):
+            url = f"https://sources.example.org/{context.task_id}/{index + 1}"
+            service_db.add(
+                ScrapingSourceCandidate(
+                    organization_id=context.organization_id,
+                    execution_id=context.execution_id,
+                    coverage_cell_id=context.coverage_cell_id,
+                    discovery_query_id=query.id,
+                    provider="serper",
+                    provider_result_id=url,
+                    rank=index + 1,
+                    url=url,
+                    canonical_url=url,
+                    domain="sources.example.org",
+                    title=f"Real source {index + 1}",
+                    snippet="Real snippet",
+                    country_code=context.country_code,
+                    country_name=context.country_name,
+                    region_code=context.region_code,
+                    region_name=context.region_name,
+                    language_code=context.language_code,
+                    language_name=context.language_name,
+                    source_category=context.source_category,
+                    initial_relevance_score=Decimal("1.0"),
+                    initial_trust_tier="high",
+                    status=SourceCandidateStatus.DISCOVERED,
+                    discovered_at=now,
+                    metadata_json={"position": index + 1},
+                )
+            )
+        await service_db.flush()
+        return SourceDiscoverySummary(
+            provider="serper",
+            planned_query_count=1,
+            query_count=1,
+            succeeded_query_count=1,
+            failed_query_count=0,
+            candidate_count=candidate_count,
+            duplicate_candidate_count=0,
+            rejected_result_count=0,
+        )
+
+    monkeypatch.setattr(
+        "app.services.scraping.execution_orchestrator.source_discovery_service.discover",
+        fake_discover,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("count", [3, 7])
 async def test_dynamic_planning_persists_ai_selected_agent_count(
@@ -1707,6 +1784,7 @@ async def test_first_mock_execution_snapshots_country_and_agents(
         return None
 
     monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    mock_source_discovery(monkeypatch)
     execution = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
@@ -1716,6 +1794,25 @@ async def test_first_mock_execution_snapshots_country_and_agents(
         select(ScrapingExecutionAgent).where(ScrapingExecutionAgent.execution_id == execution.id)
     )
     assert len(agents.scalars().all()) == len(run.agents)
+
+
+@pytest.mark.asyncio
+async def test_production_execution_rejects_mock_mode(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    with pytest.raises(Exception, match="real source discovery"):
+        await execution_service.create_execution(
+            db,
+            auth,
+            run.id,
+            ScrapingExecutionCreate(execution_type="initial_full_country", mode="mock"),
+        )
 
 
 @pytest.mark.asyncio
@@ -1731,7 +1828,7 @@ async def test_second_active_execution_for_team_plan_returns_conflict(
     first = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
-    with pytest.raises(Exception, match="active mock execution"):
+    with pytest.raises(Exception, match="active source discovery execution"):
         await execution_service.create_execution(
             db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
         )
@@ -1746,7 +1843,7 @@ async def test_second_active_execution_for_team_plan_returns_conflict(
 
 
 @pytest.mark.asyncio
-async def test_mock_worker_persists_profile_cells_tasks_events_and_metrics(
+async def test_source_discovery_worker_persists_candidates_without_facilities(
     db: AsyncSession, auth: AuthContext, monkeypatch, caplog
 ):
     run = await create_planned_team_plan(db, auth, monkeypatch)
@@ -1754,18 +1851,86 @@ async def test_mock_worker_persists_profile_cells_tasks_events_and_metrics(
     async def fake_enqueue(execution_id):
         return None
 
+    async def fake_discover(service_db, context):
+        now = datetime.now(UTC)
+        query = ScrapingSourceDiscoveryQuery(
+            organization_id=context.organization_id,
+            execution_id=context.execution_id,
+            coverage_cell_id=context.coverage_cell_id,
+            task_id=context.task_id,
+            country_code=context.country_code,
+            country_name=context.country_name,
+            region_code=context.region_code,
+            region_name=context.region_name,
+            language_code=context.language_code,
+            language_name=context.language_name,
+            source_category=context.source_category,
+            query_text="real rehabilitation registry",
+            provider="serper",
+            status=SourceDiscoveryQueryStatus.SUCCEEDED,
+            requested_at=now,
+            completed_at=now,
+            result_count=1,
+            metadata_json={"purpose": "test"},
+        )
+        service_db.add(query)
+        await service_db.flush()
+        service_db.add(
+            ScrapingSourceCandidate(
+                organization_id=context.organization_id,
+                execution_id=context.execution_id,
+                coverage_cell_id=context.coverage_cell_id,
+                discovery_query_id=query.id,
+                provider="serper",
+                provider_result_id="https://sante.gouv.fr/source",
+                rank=1,
+                url="https://sante.gouv.fr/source",
+                canonical_url="https://sante.gouv.fr/source",
+                domain="sante.gouv.fr",
+                title="Real source",
+                snippet="Real snippet",
+                country_code=context.country_code,
+                country_name=context.country_name,
+                region_code=context.region_code,
+                region_name=context.region_name,
+                language_code=context.language_code,
+                language_name=context.language_name,
+                source_category=context.source_category,
+                initial_relevance_score=Decimal("1.0"),
+                initial_trust_tier="high",
+                status=SourceCandidateStatus.DISCOVERED,
+                discovered_at=now,
+                metadata_json={"position": 1},
+            )
+        )
+        await service_db.flush()
+        return SourceDiscoverySummary(
+            provider="serper",
+            planned_query_count=1,
+            query_count=1,
+            succeeded_query_count=1,
+            failed_query_count=0,
+            candidate_count=1,
+            duplicate_candidate_count=0,
+            rejected_result_count=0,
+        )
+
     monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr(
+        "app.services.scraping.execution_orchestrator.source_discovery_service.discover",
+        fake_discover,
+    )
 
-    async def no_delay():
-        return None
+    async def fail_generate(*args, **kwargs):
+        raise AssertionError("MockFacilityGenerator must not run in the real discovery path")
 
-    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    monkeypatch.setattr(mock_facility_generator, "generate", fail_generate)
     execution = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
     assert execution.status == "queued"
     caplog.set_level("INFO", logger="app.services.scraping.execution_orchestrator")
-    await MockExecutionOrchestrator(db).run(execution.id)
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
     detail = await execution_service.get_detail(db, auth, execution.id)
     assert detail.execution.status == "completed"
     assert detail.execution.started_at is not None
@@ -1773,7 +1938,18 @@ async def test_mock_worker_persists_profile_cells_tasks_events_and_metrics(
     assert detail.coverage_summary_counts
     assert detail.task_summary_counts["completed"] > 0
     assert detail.recent_events[0].sequence_number == 1
-    assert detail.execution.sources_discovered >= 0
+    assert detail.execution.mode == "real"
+    assert detail.execution.sources_discovered > 0
+    assert detail.execution.records_extracted == 0
+    assert await _execution_facility_count(db, execution.id) == 0
+    assert await _execution_source_count(db, execution.id) == 0
+    assert await _count_rows(db, RehabilitationFieldEvidence) == 0
+    cells = (
+        await db.execute(
+            select(ScrapingCoverageCell).where(ScrapingCoverageCell.execution_id == execution.id)
+        )
+    ).scalars().all()
+    assert all(cell.status == ScrapingCoverageStatus.PARTIALLY_COVERED for cell in cells)
     events = await db.execute(
         select(ScrapingEvent).where(ScrapingEvent.execution_id == execution.id)
     )
@@ -1781,6 +1957,45 @@ async def test_mock_worker_persists_profile_cells_tasks_events_and_metrics(
     assert sequences == sorted(set(sequences))
     assert "scraping_execution_execution_claim_succeeded" in caplog.text
     assert "scraping_execution_orchestrator_completed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_excel_export_rejects_real_discovery_without_extracted_facilities(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    from app.db.session import get_db
+
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    mock_source_discovery(monkeypatch)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
+
+    app = create_app()
+
+    async def override_db():
+        yield db
+
+    async def override_auth():
+        return auth
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_auth_context] = override_auth
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/v1/scraping/executions/{execution.id}/export.xlsx")
+
+    assert response.status_code == 409
+    assert "only discovered candidate sources" in response.text
+    assert await _execution_facility_count(db, execution.id) == 0
+    assert await _execution_source_count(db, execution.id) == 0
+    assert await _count_rows(db, RehabilitationFieldEvidence) == 0
 
 
 @pytest.mark.asyncio
@@ -1793,6 +2008,7 @@ async def test_concurrent_event_creation_uses_unique_monotonic_sequences(
         return None
 
     monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    mock_source_discovery(monkeypatch)
     execution = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
@@ -1804,7 +2020,7 @@ async def test_concurrent_event_creation_uses_unique_monotonic_sequences(
                 session,
                 execution.id,
                 "concurrent_event",
-                f"Concurrent mock event {index}",
+                f"Concurrent source-discovery event {index}",
             )
             await session.commit()
 
@@ -1863,7 +2079,7 @@ async def test_event_sequences_are_independent_per_execution(
 
 
 @pytest.mark.asyncio
-async def test_mock_worker_generic_country_profile_creates_cells_and_tasks(
+async def test_source_discovery_worker_rejects_blueprint_without_required_dimensions(
     db: AsyncSession, auth: AuthContext, monkeypatch
 ):
     mission_id = await create_country_mission(db, auth, country_code="BR")
@@ -1891,26 +2107,18 @@ async def test_mock_worker_generic_country_profile_creates_cells_and_tasks(
     async def fake_enqueue(execution_id):
         return None
 
-    async def no_delay():
-        return None
-
     monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
-    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    mock_source_discovery(monkeypatch)
     execution = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
-    await MockExecutionOrchestrator(db).run(execution.id)
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
     detail = await execution_service.get_detail(db, auth, execution.id)
-    assert detail.execution.status == "completed"
-    assert detail.country_profile is not None
-    assert detail.country_profile["country_code"] == "BR"
-    assert detail.country_profile["country_name"] == "Brazil"
-    assert detail.country_profile["administrative_regions"] == [
-        {"code": "brazil", "name": "Brazil"}
-    ]
-    assert detail.country_profile["languages"] == [{"code": "en", "name": "English"}]
-    assert detail.coverage_summary_counts
-    assert detail.task_summary_counts["completed"] > 0
+    assert detail.execution.status == "failed"
+    assert detail.execution.error_message == "Source discovery execution failed."
+    assert detail.country_profile is None
+    assert detail.coverage_summary_counts == {}
+    assert detail.task_summary_counts == {}
     cells = (
         await db.execute(
             select(ScrapingCoverageCell)
@@ -1918,16 +2126,11 @@ async def test_mock_worker_generic_country_profile_creates_cells_and_tasks(
             .order_by(ScrapingCoverageCell.region_name)
         )
     ).scalars().all()
-    assert cells
-    assert all(cell.region_code and len(cell.region_code) <= 32 for cell in cells)
-    identities = {
-        (cell.region_name, cell.language_name, cell.source_category) for cell in cells
-    }
-    assert len(identities) == len(cells)
+    assert cells == []
 
 
 @pytest.mark.asyncio
-async def test_mock_worker_deduplicates_coverage_dimensions(
+async def test_source_discovery_worker_deduplicates_coverage_dimensions(
     db: AsyncSession, auth: AuthContext, monkeypatch
 ):
     blueprint = await create_active_approved_blueprint(db, auth)
@@ -1951,15 +2154,11 @@ async def test_mock_worker_deduplicates_coverage_dimensions(
     async def fake_enqueue(execution_id):
         return None
 
-    async def no_delay():
-        return None
-
     monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
-    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
     execution = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
-    await MockExecutionOrchestrator(db).run(execution.id)
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
     cells = (
         await db.execute(
             select(ScrapingCoverageCell)
@@ -1975,41 +2174,76 @@ async def test_mock_worker_deduplicates_coverage_dimensions(
     assert [cell.region_name for cell in cells] == ["Beirut", "Mount Lebanon"]
 
 
-def test_coverage_dimensions_keep_region_codes_inside_schema_limit(db: AsyncSession):
-    orchestrator = MockExecutionOrchestrator(db)
-    long_name = "A Very Long Administrative Region Name That Exceeds The Database Limit"
-    regions, languages, categories = orchestrator._coverage_dimensions(
-        {
-            "administrative_regions": [{"code": long_name, "name": long_name}],
-            "languages": [{"code": " en ", "name": " English "}],
-            "source_categories": [" general web "],
-        },
-        "ZZ",
-        "Fallback Country",
+def test_coverage_dimensions_keep_region_codes_inside_schema_limit(
+    db: AsyncSession,
+):
+    orchestrator = SourceDiscoveryExecutionOrchestrator(db)
+    long_name = (
+        "A Very Long Administrative Region Name "
+        "That Exceeds The Database Limit"
     )
-    assert regions == [{"code": regions[0]["code"], "name": long_name}]
+
+    regions, languages, categories = (
+        orchestrator._coverage_dimensions_from_blueprint(
+            {
+                "scope": {
+                    "regions": [
+                        {
+                            "code": long_name,
+                            "name": long_name,
+                        }
+                    ]
+                },
+                "languages": [
+                    {
+                        "code": " en ",
+                        "name": " English ",
+                    }
+                ],
+                "source_strategy": [" general web "],
+            },
+            "ZZ",
+            "Fallback Country",
+        )
+    )
+
+    assert regions == [
+        {
+            "code": regions[0]["code"],
+            "name": long_name,
+        }
+    ]
     assert regions[0]["code"]
     assert len(regions[0]["code"]) <= 32
     assert languages == [{"code": "en", "name": "English"}]
     assert categories == ["general web"]
 
 
-def test_coverage_dimensions_derives_codes_for_string_languages(db: AsyncSession):
-    orchestrator = MockExecutionOrchestrator(db)
-    _, languages, _ = orchestrator._coverage_dimensions(
+def test_coverage_dimensions_derives_codes_for_string_languages(
+    db: AsyncSession,
+):
+    orchestrator = SourceDiscoveryExecutionOrchestrator(db)
+
+    _, languages, _ = orchestrator._coverage_dimensions_from_blueprint(
         {
-            "administrative_regions": ["North"],
-            "languages": [" Spanish ", "Catalan", "Spanish"],
-            "source_categories": ["directory"],
+            "scope": {
+                "regions": ["North"],
+            },
+            "languages": [
+                " Spanish ",
+                "Catalan",
+                "Spanish",
+            ],
+            "source_strategy": ["directory"],
         },
         "ZZ",
         "Fallback Country",
     )
+
     assert languages == [
         {"code": "es", "name": "Spanish"},
         {"code": "ca", "name": "Catalan"},
     ]
-
 
 def test_mock_facility_contexts_rotate_regions_and_languages():
     cells = [
@@ -2122,14 +2356,14 @@ def test_blueprint_judge_prompt_requires_separate_administrative_regions():
 
 
 @pytest.mark.asyncio
-async def test_mock_worker_missing_execution_logs_skip_reason(db: AsyncSession, caplog):
+async def test_source_discovery_worker_missing_execution_logs_skip_reason(db: AsyncSession, caplog):
     caplog.set_level("INFO", logger="app.services.scraping.execution_orchestrator")
-    await MockExecutionOrchestrator(db).run("missing-execution-id")
+    await SourceDiscoveryExecutionOrchestrator(db).run("missing-execution-id")
     assert logged_execution_reason(caplog, "execution_not_found")
 
 
 @pytest.mark.asyncio
-async def test_mock_worker_terminal_execution_logs_skip_reason(
+async def test_source_discovery_worker_terminal_execution_logs_skip_reason(
     db: AsyncSession, auth: AuthContext, monkeypatch, caplog
 ):
     run = await create_planned_team_plan(db, auth, monkeypatch)
@@ -2146,12 +2380,12 @@ async def test_mock_worker_terminal_execution_logs_skip_reason(
     row.status = ScrapingExecutionStatus.COMPLETED
     await db.flush()
     caplog.set_level("INFO", logger="app.services.scraping.execution_orchestrator")
-    await MockExecutionOrchestrator(db).run(execution.id)
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
     assert logged_execution_reason(caplog, "execution_already_terminal")
 
 
 @pytest.mark.asyncio
-async def test_mock_worker_missing_execution_agents_fails_deterministically(
+async def test_source_discovery_worker_missing_execution_agents_fails_deterministically(
     db: AsyncSession, auth: AuthContext, monkeypatch, caplog
 ):
     run = await create_planned_team_plan(db, auth, monkeypatch)
@@ -2174,11 +2408,11 @@ async def test_mock_worker_missing_execution_agents_fails_deterministically(
         await db.delete(agent)
     await db.flush()
     caplog.set_level("INFO", logger="app.services.scraping.execution_orchestrator")
-    await MockExecutionOrchestrator(db).run(execution.id)
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
     failed = await db.get(ScrapingExecution, execution.id)
     assert failed is not None
     assert failed.status == ScrapingExecutionStatus.FAILED
-    assert failed.error_message == "Mock execution failed."
+    assert failed.error_message == "Source discovery execution failed."
     events = await db.execute(
         select(ScrapingEvent).where(
             ScrapingEvent.execution_id == execution.id,
@@ -2190,7 +2424,7 @@ async def test_mock_worker_missing_execution_agents_fails_deterministically(
 
 
 @pytest.mark.asyncio
-async def test_mock_worker_accepts_long_descriptive_source_category(
+async def test_source_discovery_worker_accepts_long_descriptive_source_category(
     db: AsyncSession, auth: AuthContext, monkeypatch
 ):
     long_category = (
@@ -2215,15 +2449,12 @@ async def test_mock_worker_accepts_long_descriptive_source_category(
     async def fake_enqueue(execution_id):
         return None
 
-    async def no_delay():
-        return None
-
     monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
-    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    mock_source_discovery(monkeypatch)
     execution = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
-    await MockExecutionOrchestrator(db).run(execution.id)
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
     cells = await db.execute(
         select(ScrapingCoverageCell).where(ScrapingCoverageCell.execution_id == execution.id)
     )
@@ -2244,7 +2475,7 @@ async def test_orchestrator_failure_log_renders_stage_and_exception_type(
     execution = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
-    orchestrator = MockExecutionOrchestrator(db)
+    orchestrator = SourceDiscoveryExecutionOrchestrator(db)
 
     async def fail_after_profile(execution_row, execution_agents):
         orchestrator.current_stage = "flush_coverage_cells"
@@ -2262,7 +2493,7 @@ async def test_orchestrator_failure_log_renders_stage_and_exception_type(
     failed = await db.get(ScrapingExecution, execution.id)
     assert failed is not None
     assert failed.status == ScrapingExecutionStatus.FAILED
-    assert failed.error_message == "Mock execution failed."
+    assert failed.error_message == "Source discovery execution failed."
     assert "database detail that must not be persisted" not in failed.error_message
     events = await db.execute(
         select(ScrapingEvent).where(
@@ -2272,7 +2503,7 @@ async def test_orchestrator_failure_log_renders_stage_and_exception_type(
     )
     failed_events = events.scalars().all()
     assert len(failed_events) == 1
-    assert failed_events[0].message == "Mock execution failed."
+    assert failed_events[0].message == "Source discovery execution failed."
     assert "database detail that must not be persisted" not in failed_events[0].message
     rendered_log = caplog.text
     assert f"scraping_execution_failed execution_id={execution.id}" in rendered_log
@@ -2297,7 +2528,7 @@ async def test_orchestrator_failed_flush_rolls_back_and_stores_failed_event(
     execution = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
-    orchestrator = MockExecutionOrchestrator(db)
+    orchestrator = SourceDiscoveryExecutionOrchestrator(db)
 
     async def fail_with_pending_rollback(execution_row, execution_agents):
         db.add(
@@ -2306,7 +2537,7 @@ async def test_orchestrator_failed_flush_rolls_back_and_stores_failed_event(
                 sequence_number=1,
                 event_type="duplicate_sequence_for_test",
                 message="This duplicate event intentionally fails.",
-                metadata_json={"mock": True},
+                metadata_json={"phase": "source_discovery"},
             )
         )
         await db.flush()
@@ -2318,7 +2549,7 @@ async def test_orchestrator_failed_flush_rolls_back_and_stores_failed_event(
     failed = await db.get(ScrapingExecution, execution.id)
     assert failed is not None
     assert failed.status == ScrapingExecutionStatus.FAILED
-    assert failed.error_message == "Mock execution failed."
+    assert failed.error_message == "Source discovery execution failed."
     events = await db.execute(
         select(ScrapingEvent).where(
             ScrapingEvent.execution_id == execution.id,
@@ -2355,10 +2586,10 @@ async def test_failed_execution_cleanup_terminalizes_active_agents_and_tasks(
         execution_id=execution.id,
         execution_agent_id=agent.id,
         task_type="discover_sources",
-        title="Running mock task",
+        title="Running source discovery task",
         status=ScrapingTaskStatus.RUNNING,
         priority=1,
-        input_json={"mock": True},
+        input_json={"phase": "source_discovery"},
         output_json={},
         dependency_task_ids_json=[],
         started_at=None,
@@ -2368,10 +2599,10 @@ async def test_failed_execution_cleanup_terminalizes_active_agents_and_tasks(
     await db.flush()
     agent.status = ScrapingExecutionAgentStatus.RUNNING
     agent.current_task_id = task.id
-    agent.current_action = "Running deterministic mock discovery"
+    agent.current_action = "Running real source discovery"
     await db.commit()
 
-    await MockExecutionOrchestrator(db)._mark_failed_safely(execution.id, "RuntimeError")
+    await SourceDiscoveryExecutionOrchestrator(db)._mark_failed_safely(execution.id, "RuntimeError")
     failed = await db.get(ScrapingExecution, execution.id)
     assert failed is not None
     assert failed.status == ScrapingExecutionStatus.FAILED
@@ -2412,12 +2643,8 @@ def test_scraping_worker_timeout_is_explicit_and_above_default():
     assert WorkerSettings.job_timeout > 300
 
 
-def test_large_mock_execution_throttles_mock_sleep_delay():
-    assert _should_sleep_after_task(1, 3) is True
-    assert _should_sleep_after_task(3, 3) is True
-    assert _should_sleep_after_task(1, 456) is False
-    assert _should_sleep_after_task(MOCK_DELAY_EVERY_N_TASKS, 456) is True
-    assert _should_sleep_after_task(MOCK_DELAY_EVERY_N_TASKS + 1, 456) is False
+def test_worker_uses_real_source_discovery_function():
+    assert WorkerSettings.functions == [run_scraping_execution]
 
 
 @pytest.mark.asyncio
@@ -2447,25 +2674,25 @@ async def test_timeout_cleanup_marks_execution_failed_and_terminalizes_children(
         execution_id=execution.id,
         execution_agent_id=agent.id,
         task_type="discover_sources",
-        title="Timeout mock task",
+        title="Timeout source discovery task",
         status=ScrapingTaskStatus.QUEUED,
         priority=1,
-        input_json={"mock": True},
+        input_json={"phase": "source_discovery"},
         output_json={},
         dependency_task_ids_json=[],
         current_action="Queued",
     )
     db.add(task)
     agent.status = ScrapingExecutionAgentStatus.RUNNING
-    agent.current_action = "Running deterministic mock discovery"
+    agent.current_action = "Running real source discovery"
     execution.status = ScrapingExecutionStatus.RUNNING
     await db.commit()
 
-    await MockExecutionOrchestrator(db)._mark_failed_safely(
+    await SourceDiscoveryExecutionOrchestrator(db)._mark_failed_safely(
         execution.id,
         "worker_timeout",
-        error_message="Mock execution failed after the worker job timed out.",
-        event_message="Mock execution failed after the worker job timed out.",
+        error_message="Source discovery execution failed after the worker job timed out.",
+        event_message="Source discovery execution failed after the worker job timed out.",
     )
     failed = await db.get(ScrapingExecution, execution.id)
     assert failed is not None
@@ -2514,7 +2741,7 @@ async def test_execution_delete_and_team_plan_active_execution_rules(
     )
     with pytest.raises(Exception, match="child execution campaign is active"):
         await run_service.delete_run(db, auth, run.id)
-    with pytest.raises(Exception, match="Active mock executions cannot be deleted"):
+    with pytest.raises(Exception, match="Active source discovery executions cannot be deleted"):
         await execution_service.delete_execution(db, auth, execution.id)
     row = await db.get(ScrapingExecution, execution.id)
     assert row is not None
@@ -2540,17 +2767,17 @@ async def run_completed_mock_execution(
     async def fake_enqueue(execution_id):
         return None
 
-    async def no_delay():
-        return None
-
     monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
-    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    mock_source_discovery(monkeypatch)
     summary = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
-    await MockExecutionOrchestrator(db).run(summary.id)
+    await SourceDiscoveryExecutionOrchestrator(db).run(summary.id)
     execution = await db.get(ScrapingExecution, summary.id)
     assert execution is not None
+    await mock_facility_generator.generate(db, execution)
+    await mock_facility_generator.refresh_execution_metrics(db, execution)
+    await db.flush()
     return execution
 
 
@@ -2568,17 +2795,17 @@ async def run_completed_mock_execution_with_blueprint(
     async def fake_enqueue(execution_id):
         return None
 
-    async def no_delay():
-        return None
-
     monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
-    monkeypatch.setattr("app.services.scraping.execution_orchestrator.sleep_mock_delay", no_delay)
+    mock_source_discovery(monkeypatch)
     summary = await execution_service.create_execution(
         db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
     )
-    await MockExecutionOrchestrator(db).run(summary.id)
+    await SourceDiscoveryExecutionOrchestrator(db).run(summary.id)
     execution = await db.get(ScrapingExecution, summary.id)
     assert execution is not None
+    await mock_facility_generator.generate(db, execution)
+    await mock_facility_generator.refresh_execution_metrics(db, execution)
+    await db.flush()
     return execution
 
 
@@ -2973,14 +3200,14 @@ async def test_large_mock_execution_batches_metric_refreshes(
     db: AsyncSession, auth: AuthContext, monkeypatch
 ):
     refresh_calls = 0
-    original_refresh = MockExecutionOrchestrator._refresh_metrics
+    original_refresh = SourceDiscoveryExecutionOrchestrator._refresh_metrics
 
     async def counted_refresh(self, execution):
         nonlocal refresh_calls
         refresh_calls += 1
         await original_refresh(self, execution)
 
-    monkeypatch.setattr(MockExecutionOrchestrator, "_refresh_metrics", counted_refresh)
+    monkeypatch.setattr(SourceDiscoveryExecutionOrchestrator, "_refresh_metrics", counted_refresh)
     blueprint_json = {
         **valid_blueprint(),
         "scope": {

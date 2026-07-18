@@ -13,6 +13,8 @@ import type {
   ScrapingRunDetail,
   ScrapingRunSummary,
   ScrapingTask,
+  SourceCandidate,
+  SourceDiscoveryQuery,
 } from "@/lib/scraping/types";
 
 type Auth = { token: string; orgId: string };
@@ -178,7 +180,7 @@ export function deleteScrapingRun(auth: Auth, runId: string) {
 export function createScrapingExecution(auth: Auth, runId: string) {
   return apiRequest<ScrapingExecutionSummary>(`/scraping/runs/${runId}/executions`, {
     method: "POST",
-    body: { execution_type: "initial_full_country", mode: "mock" },
+    body: { execution_type: "initial_full_country" },
     token: auth.token,
     orgId: auth.orgId,
   });
@@ -231,6 +233,23 @@ export function listScrapingExecutionFacilities(auth: Auth, executionId: string)
   });
 }
 
+export function listScrapingSourceCandidates(auth: Auth, executionId: string) {
+  return apiRequest<SourceCandidate[]>(`/scraping/executions/${executionId}/source-candidates`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function listScrapingSourceDiscoveryQueries(auth: Auth, executionId: string) {
+  return apiRequest<SourceDiscoveryQuery[]>(
+    `/scraping/executions/${executionId}/source-discovery-queries`,
+    {
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
+}
+
 export async function downloadScrapingExecutionWorkbook(auth: Auth, executionId: string) {
   const response = await fetch(`${getApiBase()}/scraping/executions/${executionId}/export.xlsx`, {
     headers: {
@@ -244,7 +263,7 @@ export async function downloadScrapingExecutionWorkbook(auth: Auth, executionId:
     throw new Error("Failed to prepare Excel report.");
   }
   const contentDisposition = response.headers.get("Content-Disposition");
-  const filename = parseAttachmentFilename(contentDisposition) ?? "mock-rehabilitation-dataset.xlsx";
+  const filename = parseAttachmentFilename(contentDisposition) ?? "rehabilitation-dataset.xlsx";
   return { blob: await response.blob(), filename };
 }
 

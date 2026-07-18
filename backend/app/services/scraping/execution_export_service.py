@@ -118,6 +118,11 @@ class ExecutionExportService:
         execution = data["execution"]
         if execution.status not in TERMINAL_STATUSES:
             raise ConflictError("Excel report available after execution finishes.")
+        if not data["facilities"]:
+            raise ConflictError(
+                "Excel export is unavailable because this execution only discovered candidate "
+                "sources. Website retrieval and facility extraction are not enabled yet."
+            )
 
         workbook = Workbook()
         workbook.properties.title = "Mock Rehabilitation Dataset"

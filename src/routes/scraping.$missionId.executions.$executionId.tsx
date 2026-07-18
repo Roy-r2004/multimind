@@ -14,6 +14,8 @@ import {
   listScrapingExecutionFacilities,
   listScrapingExecutionCoverage,
   listScrapingExecutionEvents,
+  listScrapingSourceCandidates,
+  listScrapingSourceDiscoveryQueries,
   listScrapingExecutionTasks,
   scrapingExecutionStreamUrl,
 } from "@/lib/scraping/api";
@@ -23,10 +25,12 @@ import type {
   ScrapingExecutionDetail,
   ScrapingFacilitySummary,
   ScrapingTask,
+  SourceCandidate,
+  SourceDiscoveryQuery,
 } from "@/lib/scraping/types";
 
 export const Route = createFileRoute("/scraping/$missionId/executions/$executionId")({
-  head: () => ({ meta: [{ title: "Mock Execution Campaign - MultiAI" }] }),
+  head: () => ({ meta: [{ title: "Real Source Discovery Campaign - MultiAI" }] }),
   component: ScrapingExecutionPage,
 });
 
@@ -39,6 +43,8 @@ function ScrapingExecutionPage() {
   const [coverage, setCoverage] = useState<ScrapingCoverageCell[]>([]);
   const [events, setEvents] = useState<ScrapingEvent[]>([]);
   const [facilities, setFacilities] = useState<ScrapingFacilitySummary[]>([]);
+  const [sourceCandidates, setSourceCandidates] = useState<SourceCandidate[]>([]);
+  const [discoveryQueries, setDiscoveryQueries] = useState<SourceDiscoveryQuery[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<"Live" | "Reconnecting" | "Disconnected">(
     "Disconnected",
@@ -57,18 +63,30 @@ function ScrapingExecutionPage() {
       void navigate({ to: "/login" });
       return;
     }
-    const [loadedDetail, loadedTasks, loadedCoverage, loadedEvents, loadedFacilities] = await Promise.all([
+    const [
+      loadedDetail,
+      loadedTasks,
+      loadedCoverage,
+      loadedEvents,
+      loadedFacilities,
+      loadedCandidates,
+      loadedQueries,
+    ] = await Promise.all([
       getScrapingExecution(auth, executionId),
       listScrapingExecutionTasks(auth, executionId),
       listScrapingExecutionCoverage(auth, executionId),
       listScrapingExecutionEvents(auth, executionId),
       listScrapingExecutionFacilities(auth, executionId),
+      listScrapingSourceCandidates(auth, executionId),
+      listScrapingSourceDiscoveryQueries(auth, executionId),
     ]);
     setDetail(loadedDetail);
     setTasks(loadedTasks);
     setCoverage(loadedCoverage);
     setEvents(loadedEvents);
     setFacilities(loadedFacilities);
+    setSourceCandidates(loadedCandidates);
+    setDiscoveryQueries(loadedQueries);
     lastSequenceRef.current = Math.max(0, ...loadedEvents.map((event) => event.sequence_number));
   }, [authHeaders, executionId, navigate]);
 
@@ -180,7 +198,11 @@ function ScrapingExecutionPage() {
   const isTerminal = execution
     ? ["completed", "failed", "cancelled"].includes(execution.status)
     : false;
-  const hasMockFacilities = facilities.some((facility) => facility.is_mock);
+  const uniqueDomainCount = useMemo(
+    () => new Set(sourceCandidates.map((candidate) => candidate.domain)).size,
+    [sourceCandidates],
+  );
+  const failedQueryCount = discoveryQueries.filter((query) => query.status === "failed").length;
   const summaryCounts = useMemo(() => {
     const count = (status: string) => tasks.filter((task) => task.status === status).length;
     return {
@@ -249,8 +271,8 @@ function ScrapingExecutionPage() {
       <div className="mx-auto max-w-7xl px-6 py-10">
         <PageHeader
           eyebrow="Execution Campaigns"
-          title="Mock Execution Campaign"
-          description="MOCK EXECUTION - No external websites or data sources are being contacted."
+          title="Real Source Discovery Campaign"
+          description="This phase discovers and stores real candidate sources. Website retrieval and facility extraction are not yet enabled."
           action={
             <Link
               to="/scraping/$missionId/runs/$runId"
@@ -265,12 +287,12 @@ function ScrapingExecutionPage() {
         {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
         {detail && execution && (
           <div className="mt-8 space-y-5">
-            <GlassCard className="border-amber-500/40 bg-amber-500/10 p-5">
+            <GlassCard className="border-emerald-500/40 bg-emerald-500/10 p-5">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <p className="font-semibold">MOCK EXECUTION</p>
+                  <p className="font-semibold">Real source discovery only</p>
                   <p className="text-sm text-muted-foreground">
-                    No external websites or data sources are being contacted.
+                    Candidate source URLs are persisted. Retrieval, extraction, facilities, and Excel export wait for the next phase.
                   </p>
                 </div>
                 <Badge variant="secondary">{connectionState}</Badge>
@@ -296,7 +318,7 @@ function ScrapingExecutionPage() {
                   <Button
                     type="button"
                     variant="outline"
-                    disabled={!isTerminal || downloadingExcel}
+                    disabled={!isTerminal || downloadingExcel || facilities.length === 0}
                     onClick={() => void handleDownloadExcel()}
                   >
                     {downloadingExcel ? "Preparing Excel…" : "Download Excel Report"}
@@ -323,14 +345,14 @@ function ScrapingExecutionPage() {
                 <Metric label="Tasks queued/running/completed/failed" value={`${summaryCounts.queued}/${summaryCounts.running}/${summaryCounts.completed}/${summaryCounts.failed}`} />
                 <Metric label="Coverage cells" value={`${completedCoverage}/${coverage.length}`} />
                 <Metric label="Coverage debt" value={execution.coverage_debt} />
-                <Metric label="Sources discovered" value={execution.sources_discovered} />
-                <Metric label="Documents found" value={execution.documents_found} />
-                <Metric label="Records extracted" value={execution.records_extracted} />
-                <Metric label="Records verified" value={execution.records_verified} />
-                <Metric label="Duplicates detected" value={execution.duplicates_detected} />
-                <Metric label="Blocked sources" value={execution.blocked_sources} />
+                <Metric label="Source candidates" value={sourceCandidates.length} />
+                <Metric label="Unique domains" value={uniqueDomainCount} />
+                <Metric label="Discovery queries" value={discoveryQueries.length} />
+                <Metric label="Query failures" value={failedQueryCount} />
+                <Metric label="Facilities extracted" value={facilities.length} />
+                <Metric label="Blocked cells" value={execution.blocked_sources} />
               </div>
-              {!isTerminal && (
+              {!isTerminal && facilities.length > 0 && (
                 <p className="mt-4 text-sm text-muted-foreground">
                   Excel report available after execution finishes.
                 </p>
@@ -339,64 +361,55 @@ function ScrapingExecutionPage() {
             <GlassCard className="p-6">
               <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold">Extracted Rehabilitation Centers</h2>
+                  <h2 className="text-lg font-semibold">Candidate Sources</h2>
                   <p className="text-sm text-muted-foreground">
-                    Persisted fictional mock rows for this execution.
+                    Real HTTP/HTTPS candidates discovered by the configured search provider.
                   </p>
                 </div>
-                <Badge variant="secondary">{facilities.length} records</Badge>
+                <Badge variant="secondary">{sourceCandidates.length} candidates</Badge>
               </div>
-              {hasMockFacilities && (
-                <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
-                  Mock sample: {facilities.length} fictional facilities generated for structural
-                  testing. This is not the total number of rehabilitation centers in{" "}
-                  {execution.country_name}.
-                </div>
-              )}
-              {facilities.length === 0 ? (
+              {sourceCandidates.length === 0 ? (
                 <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
-                  No rehabilitation-center records have been persisted for this execution yet.
+                  No source candidates have been persisted for this execution yet.
                 </div>
               ) : (
                 <div className="overflow-auto rounded-lg border border-border">
                   <table className="w-full min-w-[980px] text-left text-sm">
                     <thead className="bg-muted/50">
                       <tr>
-                        <th className="px-3 py-2 font-medium">Facility</th>
-                        <th className="px-3 py-2 font-medium">Country</th>
-                        <th className="px-3 py-2 font-medium">Region / City</th>
-                        <th className="px-3 py-2 font-medium">Type</th>
-                        <th className="px-3 py-2 font-medium">Primary Contact</th>
-                        <th className="px-3 py-2 font-medium">Verification</th>
-                        <th className="px-3 py-2 font-medium">Confidence</th>
-                        <th className="px-3 py-2 font-medium">Sources</th>
+                        <th className="px-3 py-2 font-medium">Source</th>
+                        <th className="px-3 py-2 font-medium">Domain</th>
+                        <th className="px-3 py-2 font-medium">Category</th>
+                        <th className="px-3 py-2 font-medium">Region</th>
+                        <th className="px-3 py-2 font-medium">Language</th>
+                        <th className="px-3 py-2 font-medium">Provider</th>
+                        <th className="px-3 py-2 font-medium">Rank</th>
+                        <th className="px-3 py-2 font-medium">Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {facilities.map((facility) => (
-                        <tr key={facility.id} className="border-t border-border">
+                      {sourceCandidates.map((candidate) => (
+                        <tr key={candidate.id} className="border-t border-border">
                           <td className="px-3 py-2 align-top">
-                            <div className="font-medium">{facility.canonical_name}</div>
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {facility.is_mock && <Badge variant="secondary">Mock</Badge>}
-                              {facility.human_review_status === "required" && (
-                                <Badge variant="outline">Human review</Badge>
-                              )}
+                            <a
+                              href={candidate.canonical_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-medium text-primary underline-offset-4 hover:underline"
+                            >
+                              {candidate.title || candidate.canonical_url}
+                            </a>
+                            <div className="mt-1 max-w-xl truncate text-xs text-muted-foreground">
+                              {candidate.canonical_url}
                             </div>
                           </td>
-                          <td className="px-3 py-2 align-top">
-                            {facility.country_name} ({facility.country_code})
-                          </td>
-                          <td className="px-3 py-2 align-top">
-                            {[facility.primary_region, facility.primary_city].filter(Boolean).join(" / ") || "—"}
-                          </td>
-                          <td className="px-3 py-2 align-top">{facility.facility_type}</td>
-                          <td className="px-3 py-2 align-top">
-                            {facility.primary_website ?? facility.primary_contact ?? "—"}
-                          </td>
-                          <td className="px-3 py-2 align-top">{facility.verification_status}</td>
-                          <td className="px-3 py-2 align-top">{Math.round(facility.confidence_score * 100)}%</td>
-                          <td className="px-3 py-2 align-top">{facility.source_count}</td>
+                          <td className="px-3 py-2 align-top">{candidate.domain}</td>
+                          <td className="px-3 py-2 align-top">{candidate.source_category}</td>
+                          <td className="px-3 py-2 align-top">{candidate.region_name}</td>
+                          <td className="px-3 py-2 align-top">{candidate.language_name}</td>
+                          <td className="px-3 py-2 align-top">{candidate.provider}</td>
+                          <td className="px-3 py-2 align-top">{candidate.rank}</td>
+                          <td className="px-3 py-2 align-top">{candidate.status}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -438,6 +451,7 @@ function ScrapingExecutionPage() {
             </GlassCard>
             <GridSection title="Coverage" rows={filteredCoverage.map(formatCoverageRow)} />
             <GridSection title="Tasks" rows={filteredTasks.map(formatTaskRow)} />
+            <GridSection title="Discovery Queries" rows={discoveryQueries.map(formatQueryRow)} />
             <GlassCard className="p-6">
               <h2 className="text-lg font-semibold">Live Activity</h2>
               <div className="mt-4 max-h-[520px] space-y-3 overflow-auto">
@@ -463,7 +477,7 @@ function ScrapingExecutionPage() {
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Delete this terminal mock execution campaign? This permanently deletes tasks, coverage
+            Delete this terminal source discovery execution campaign? This permanently deletes tasks, coverage
             history, and event history. This action cannot be undone.
           </p>
           <div className="flex justify-end gap-2">
@@ -533,5 +547,18 @@ function formatTaskRow(task: ScrapingTask) {
     task.status,
     task.current_action ?? "",
     `${task.attempt_count}/${task.max_attempts}`,
+  ];
+}
+
+function formatQueryRow(query: SourceDiscoveryQuery) {
+  return [
+    query.query_text,
+    query.provider,
+    query.status,
+    `${query.result_count} candidates`,
+    query.region_name ?? "",
+    query.language_name,
+    query.source_category,
+    query.error_code ?? "",
   ];
 }

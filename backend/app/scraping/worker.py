@@ -24,7 +24,7 @@ def _redis_settings() -> RedisSettings:
 
 
 async def startup(ctx: dict) -> None:
-    print("scraping-worker: starting country-aware mock execution worker", flush=True)
+    print("scraping-worker: starting country-aware source discovery worker", flush=True)
     await recover_scraping_executions(ctx)
 
 

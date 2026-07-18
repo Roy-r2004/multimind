@@ -107,7 +107,7 @@ async def create_execution(db: AsyncSession, auth) -> ScrapingExecution:
         blueprint_id=blueprint.id,
         team_plan_id=run.id,
         execution_type="initial_full_country",
-        mode="mock",
+        mode="real",
         status=ScrapingExecutionStatus.QUEUED,
         country_code="FR",
         country_name="France",

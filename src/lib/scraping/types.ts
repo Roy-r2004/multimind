@@ -257,6 +257,62 @@ export type ScrapingFacilitySummary = {
   updated_at: string;
 };
 
+export type SourceCandidate = {
+  id: string;
+  organization_id: string;
+  execution_id?: string | null;
+  coverage_cell_id?: string | null;
+  discovery_query_id: string;
+  provider: string;
+  provider_result_id?: string | null;
+  rank: number;
+  url: string;
+  canonical_url: string;
+  domain: string;
+  title: string;
+  snippet: string;
+  country_code: string;
+  country_name: string;
+  region_code?: string | null;
+  region_name: string;
+  language_code: string;
+  language_name: string;
+  source_category: string;
+  initial_relevance_score: number;
+  initial_trust_tier: string;
+  status: string;
+  discovered_at: string;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SourceDiscoveryQuery = {
+  id: string;
+  organization_id: string;
+  execution_id?: string | null;
+  coverage_cell_id?: string | null;
+  task_id?: string | null;
+  country_code: string;
+  country_name: string;
+  region_code?: string | null;
+  region_name?: string | null;
+  language_code: string;
+  language_name: string;
+  source_category: string;
+  query_text: string;
+  provider: string;
+  status: string;
+  requested_at: string;
+  completed_at?: string | null;
+  result_count: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ScrapingExecutionAgent = {
   id: string;
   execution_id: string;

@@ -1,4 +1,4 @@
-"""Persistent mock execution campaign worker logic."""
+"""Persistent real source-discovery execution campaign worker logic."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +14,6 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.db.models import (
-    RehabilitationFacility,
     ScrapingCoverageCell,
     ScrapingCoverageStatus,
     ScrapingEvent,
@@ -22,46 +22,23 @@ from app.db.models import (
     ScrapingExecutionAgentStatus,
     ScrapingExecutionStatus,
     ScrapingRun,
+    ScrapingSourceCandidate,
+    ScrapingSourceDiscoveryQuery,
     ScrapingTask,
     ScrapingTaskStatus,
+    SourceDiscoveryQueryStatus,
 )
 from app.db.session import AsyncSessionLocal
-from app.services.scraping.execution_service import execution_service, sleep_mock_delay
+from app.schemas.api import SourceDiscoveryContext, SourceDiscoverySummary
+from app.services.scraping.execution_service import execution_service
 from app.services.scraping.execution_outcome import GAP_COVERAGE_STATUSES
-from app.services.scraping.mock_facility_generator import mock_facility_generator
-from app.services.scraping.mock_tools import (
-    MockBrowserFetchTool,
-    MockCountryProfileProvider,
-    MockCoverageAuditTool,
-    MockDocumentParserTool,
-    MockEntityResolutionTool,
-    MockHttpFetchTool,
-    MockRecordExtractorTool,
-    MockSearchTool,
-    MockSocialDiscoveryTool,
-    MockSourceDiscoveryTool,
-    MockVerificationTool,
-)
+from app.services.scraping.source_discovery_service import source_discovery_service
 
 logger = logging.getLogger(__name__)
 
-TASK_TYPES = [
-    "build_country_profile",
-    "create_coverage_matrix",
-    "generate_queries",
-    "discover_sources",
-    "inspect_source",
-    "process_document",
-    "extract_records",
-    "resolve_duplicates",
-    "verify_records",
-    "audit_coverage",
-    "create_gap_tasks",
-]
+TASK_TYPES = ["create_coverage_matrix", "discover_sources", "audit_coverage"]
 
 METRIC_REFRESH_TASK_INTERVAL = 25
-MOCK_DELAY_EVERY_N_TASKS = 25
-MOCK_DELAY_ALL_TASKS_LIMIT = 25
 
 LANGUAGE_CODE_BY_NAME = {
     "arabic": "ar",
@@ -90,6 +67,10 @@ class ExecutionCancelled(Exception):
     pass
 
 
+class CoverageDimensionError(RuntimeError):
+    pass
+
+
 async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
     logger.info(
         "scraping_execution_job_entered",
@@ -97,7 +78,7 @@ async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
     )
     try:
         async with AsyncSessionLocal() as db:
-            await MockExecutionOrchestrator(db).run(execution_id)
+            await SourceDiscoveryExecutionOrchestrator(db).run(execution_id)
     except asyncio.CancelledError:
         logger.warning(
             "scraping_execution_job_cancelled",
@@ -114,11 +95,11 @@ async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
 
 async def mark_scraping_execution_timeout_failed(execution_id: str) -> None:
     async with AsyncSessionLocal() as db:
-        await MockExecutionOrchestrator(db)._mark_failed_safely(
+        await SourceDiscoveryExecutionOrchestrator(db)._mark_failed_safely(
             execution_id,
             "worker_timeout",
-            error_message="Mock execution failed after the worker job timed out.",
-            event_message="Mock execution failed after the worker job timed out.",
+            error_message="Source discovery execution failed after the worker job timed out.",
+            event_message="Source discovery execution failed after the worker job timed out.",
         )
 
 
@@ -145,7 +126,7 @@ async def recover_scraping_executions(ctx: dict) -> None:
         await db.commit()
 
 
-class MockExecutionOrchestrator:
+class SourceDiscoveryExecutionOrchestrator:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
         self.current_stage = "not_started"
@@ -153,17 +134,6 @@ class MockExecutionOrchestrator:
         self.coverage_language_count = 0
         self.coverage_source_category_count = 0
         self.attempted_coverage_cell_count = 0
-        self.profile_provider = MockCountryProfileProvider()
-        self.search_tool = MockSearchTool()
-        self.discovery_tool = MockSourceDiscoveryTool()
-        self.http_tool = MockHttpFetchTool()
-        self.browser_tool = MockBrowserFetchTool()
-        self.document_tool = MockDocumentParserTool()
-        self.social_tool = MockSocialDiscoveryTool()
-        self.extractor_tool = MockRecordExtractorTool()
-        self.resolution_tool = MockEntityResolutionTool()
-        self.verification_tool = MockVerificationTool()
-        self.audit_tool = MockCoverageAuditTool()
 
     async def run(self, execution_id: str) -> None:
         safe_execution_id = execution_id
@@ -254,7 +224,7 @@ class MockExecutionOrchestrator:
             return
         self._log("execution_claim_succeeded", execution_id=execution.id)
         await execution_service.emit_event(
-            self.db, execution.id, "execution_started", "Mock execution campaign started."
+            self.db, execution.id, "execution_started", "Real source discovery campaign started."
         )
         await self.db.commit()
 
@@ -262,8 +232,6 @@ class MockExecutionOrchestrator:
             await self._ensure_profile_matrix_and_tasks(execution, execution_agents)
             await self._process_tasks(execution)
             await self._check_cancelled(execution)
-            self.current_stage = "persist_mock_rehabilitation_dataset"
-            await mock_facility_generator.generate(self.db, execution)
             await self._refresh_metrics(execution)
             if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
                 await self._finish_cancelled(execution)
@@ -275,7 +243,7 @@ class MockExecutionOrchestrator:
                 self.db,
                 execution.id,
                 "execution_completed",
-                "Mock execution completed with persisted coverage and task state.",
+                "Real source discovery completed. Retrieval and extraction are not enabled yet.",
             )
             await self.db.commit()
             self._log(
@@ -327,35 +295,52 @@ class MockExecutionOrchestrator:
     ) -> None:
         await self._check_cancelled(execution)
         if execution.country_profile_json is None:
-            self.current_stage = "build_country_profile"
-            profile = self.profile_provider.build_profile(execution, execution.blueprint)
-            execution.country_profile_json = profile.as_json()
-            self.current_stage = "persist_country_profile"
+            self.current_stage = "snapshot_source_discovery_profile"
+            regions, languages, categories = self._coverage_dimensions_from_blueprint(
+                execution.blueprint.blueprint_json or {},
+                execution.country_code,
+                execution.country_name,
+            )
+            max_queries = min(max(get_settings().serper_search_max_queries_per_discovery, 1), 8)
+            execution.country_profile_json = {
+                "phase": "source_discovery",
+                "country_code": execution.country_code,
+                "country_name": execution.country_name,
+                "administrative_regions": regions,
+                "languages": languages,
+                "source_categories": categories,
+                "max_queries_per_discovery": max_queries,
+                "results_per_query": min(max(get_settings().serper_search_results_per_query, 1), 20),
+                "max_search_request_count": len(regions) * len(languages) * len(categories) * max_queries,
+            }
             await execution_service.emit_event(
                 self.db,
                 execution.id,
                 "task_completed",
-                "Country profile snapshot created from the approved blueprint.",
-                metadata={"task_type": "build_country_profile"},
+                "Source discovery profile snapshot created from the approved blueprint.",
+                metadata={
+                    "task_type": "source_discovery_profile",
+                    "max_search_request_count": execution.country_profile_json[
+                        "max_search_request_count"
+                    ],
+                },
             )
             await self.db.commit()
             self._log(
-                "country_profile_created",
+                "source_discovery_profile_created",
                 execution_id=execution.id,
-                region_count=len(profile.administrative_regions),
-                language_count=len(profile.languages),
-                source_category_count=len(profile.source_categories),
+                region_count=len(regions),
+                language_count=len(languages),
+                source_category_count=len(categories),
             )
 
         coverage_count = await self._coverage_count(execution.id)
         if coverage_count == 0:
             self.current_stage = "normalize_coverage_dimensions"
             profile_json = execution.country_profile_json or {}
-            regions, languages, categories = self._coverage_dimensions(
-                profile_json,
-                execution.country_code,
-                execution.country_name,
-            )
+            regions = profile_json["administrative_regions"]
+            languages = profile_json["languages"]
+            categories = profile_json["source_categories"]
             self.coverage_region_count = len(regions)
             self.coverage_language_count = len(languages)
             self.coverage_source_category_count = len(categories)
@@ -376,7 +361,10 @@ class MockExecutionOrchestrator:
                                 source_category=category,
                                 status=ScrapingCoverageStatus.NOT_STARTED,
                                 assigned_execution_agent_id=assigned.id,
-                                metadata_json={"mock": True},
+                                metadata_json={
+                                    "phase": "source_discovery",
+                                    "provider": get_settings().source_discovery_provider,
+                                },
                             )
                         )
             self.db.add_all(coverage_cells)
@@ -418,11 +406,14 @@ class MockExecutionOrchestrator:
                         status=ScrapingTaskStatus.QUEUED,
                         priority=100 + index,
                         input_json={
-                            "mock": True,
                             "country_code": execution.country_code,
+                            "country_name": execution.country_name,
+                            "region_code": cell.region_code,
                             "region_name": cell.region_name,
+                            "language_code": cell.language_code,
                             "language_name": cell.language_name,
                             "source_category": cell.source_category,
+                            "phase": "source_discovery",
                         },
                         output_json={},
                         dependency_task_ids_json=[],
@@ -453,11 +444,11 @@ class MockExecutionOrchestrator:
             agent = task.execution_agent
             agent.status = ScrapingExecutionAgentStatus.RUNNING
             agent.current_task_id = task.id
-            agent.current_action = "Running deterministic mock discovery"
+            agent.current_action = "Running real source discovery"
             agent.started_at = agent.started_at or datetime.now(UTC)
             task.status = ScrapingTaskStatus.RUNNING
             task.started_at = datetime.now(UTC)
-            task.current_action = "Generating mock queries"
+            task.current_action = "Planning and searching real source candidates"
             if task.coverage_cell:
                 task.coverage_cell.status = ScrapingCoverageStatus.IN_PROGRESS
                 task.coverage_cell.started_at = datetime.now(UTC)
@@ -471,29 +462,21 @@ class MockExecutionOrchestrator:
                 coverage_cell_id=task.coverage_cell_id,
             )
             await self.db.commit()
-            if _should_sleep_after_task(processed_count, len(tasks)):
-                await sleep_mock_delay()
-
-            output = self.search_tool.run(task)
-            output.update(self.discovery_tool.run(task))
-            output.update(self.http_tool.run(task))
-            output.update(self.browser_tool.run(task))
-            output.update(self.document_tool.run(task))
-            output.update(self.social_tool.run(task))
-            output.update(self.extractor_tool.run(task))
-            output.update(self.resolution_tool.run(task))
-            output.update(self.verification_tool.run(task))
-            output.update(self.audit_tool.run(task))
-            task.output_json = output
             await execution_service.emit_event(
                 self.db,
                 execution.id,
-                "source_discovered",
-                f"Mock discovery produced {len(output.get('sources', []))} candidate sources.",
+                "discovery_started",
+                "Real source discovery started for this coverage cell.",
                 execution_agent_id=agent.id,
                 task_id=task.id,
                 coverage_cell_id=task.coverage_cell_id,
             )
+
+            context = self._source_discovery_context(execution, task)
+            summary = await source_discovery_service.discover(self.db, context)
+            output = await self._task_output(task, summary)
+            task.output_json = output
+            await self._emit_discovery_outcome_events(execution, task, agent, output)
 
             task.status = ScrapingTaskStatus.COMPLETED
             task.completed_at = datetime.now(UTC)
@@ -511,7 +494,7 @@ class MockExecutionOrchestrator:
                 self.db,
                 execution.id,
                 "task_completed",
-                f"{task.title} completed with mock persisted output.",
+                f"{task.title} completed with real source discovery output.",
                 execution_agent_id=agent.id,
                 task_id=task.id,
                 coverage_cell_id=task.coverage_cell_id,
@@ -521,6 +504,136 @@ class MockExecutionOrchestrator:
         await self._refresh_metrics(execution)
         await self.db.commit()
         await self._create_gap_audit_task(execution)
+
+    def _source_discovery_context(
+        self, execution: ScrapingExecution, task: ScrapingTask
+    ) -> SourceDiscoveryContext:
+        if task.coverage_cell is None:
+            raise RuntimeError("discover_sources_task_missing_coverage_cell")
+        blueprint_json = execution.blueprint.blueprint_json or {}
+        return SourceDiscoveryContext(
+            organization_id=execution.organization_id,
+            execution_id=execution.id,
+            coverage_cell_id=task.coverage_cell.id,
+            task_id=task.id,
+            country_code=execution.country_code,
+            country_name=execution.country_name,
+            region_code=task.coverage_cell.region_code,
+            region_name=task.coverage_cell.region_name,
+            language_code=task.coverage_cell.language_code or "und",
+            language_name=task.coverage_cell.language_name,
+            source_category=task.coverage_cell.source_category,
+            mission_goal=self._mission_goal(blueprint_json),
+            requested_fields=self._requested_fields(blueprint_json),
+            blueprint_context=blueprint_json,
+            provider=get_settings().source_discovery_provider,
+        )
+
+    async def _task_output(
+        self, task: ScrapingTask, summary: SourceDiscoverySummary
+    ) -> dict[str, Any]:
+        query_result = await self.db.execute(
+            select(ScrapingSourceDiscoveryQuery).where(
+                ScrapingSourceDiscoveryQuery.task_id == task.id
+            )
+        )
+        queries = list(query_result.scalars().all())
+        candidate_result = await self.db.execute(
+            select(ScrapingSourceCandidate).where(
+                ScrapingSourceCandidate.coverage_cell_id == task.coverage_cell_id
+            )
+        )
+        candidates = list(candidate_result.scalars().all())
+        error_codes = sorted(
+            {
+                query.error_code
+                for query in queries
+                if query.status == SourceDiscoveryQueryStatus.FAILED and query.error_code
+            }
+        )
+        return {
+            "phase": "source_discovery",
+            "provider": summary.provider,
+            "query_count": summary.query_count,
+            "successful_query_count": summary.succeeded_query_count,
+            "failed_query_count": summary.failed_query_count,
+            "zero_result_query_count": len(
+                [
+                    query
+                    for query in queries
+                    if query.status == SourceDiscoveryQueryStatus.SUCCEEDED
+                    and query.result_count == 0
+                ]
+            ),
+            "candidate_count": len(candidates),
+            "unique_domain_count": len({candidate.domain for candidate in candidates}),
+            "error_codes": error_codes,
+            "rejected_result_count": summary.rejected_result_count,
+            "duplicate_candidate_count": summary.duplicate_candidate_count,
+        }
+
+    async def _emit_discovery_outcome_events(
+        self,
+        execution: ScrapingExecution,
+        task: ScrapingTask,
+        agent: ScrapingExecutionAgent,
+        output: dict[str, Any],
+    ) -> None:
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "discovery_query_completed",
+            (
+                f"{output['successful_query_count']} discovery queries succeeded; "
+                f"{output['failed_query_count']} failed."
+            ),
+            execution_agent_id=agent.id,
+            task_id=task.id,
+            coverage_cell_id=task.coverage_cell_id,
+            metadata={
+                "provider": output["provider"],
+                "query_count": output["query_count"],
+                "successful_query_count": output["successful_query_count"],
+                "failed_query_count": output["failed_query_count"],
+                "error_codes": output["error_codes"],
+            },
+        )
+        if int(output.get("candidate_count") or 0) > 0:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "source_candidates_discovered",
+                f"{output['candidate_count']} real source candidates discovered.",
+                execution_agent_id=agent.id,
+                task_id=task.id,
+                coverage_cell_id=task.coverage_cell_id,
+                metadata={
+                    "candidate_count": output["candidate_count"],
+                    "unique_domain_count": output["unique_domain_count"],
+                },
+            )
+        elif int(output.get("failed_query_count") or 0) == 0:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "discovery_zero_results",
+                "Real discovery queries completed with zero source candidates.",
+                execution_agent_id=agent.id,
+                task_id=task.id,
+                coverage_cell_id=task.coverage_cell_id,
+                metadata={"zero_result_query_count": output["zero_result_query_count"]},
+            )
+        else:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "discovery_failed",
+                "Real source discovery failed for this coverage cell.",
+                execution_agent_id=agent.id,
+                task_id=task.id,
+                coverage_cell_id=task.coverage_cell_id,
+                metadata={"error_codes": output["error_codes"]},
+            )
 
     async def _create_gap_audit_task(self, execution: ScrapingExecution) -> None:
         debt = await self._coverage_debt(execution.id)
@@ -552,11 +665,11 @@ class MockExecutionOrchestrator:
                 execution_id=execution.id,
                 execution_agent_id=agent.id,
                 task_type="audit_coverage",
-                title="Audit remaining mock coverage debt",
+                title="Audit remaining source discovery coverage debt",
                 status=ScrapingTaskStatus.COMPLETED,
                 priority=1000,
-                input_json={"mock": True, "coverage_debt": debt},
-                output_json={"mock": True, "gap_tasks_created": debt},
+                input_json={"coverage_debt": debt, "phase": "source_discovery"},
+                output_json={"gap_tasks_created": debt, "phase": "source_discovery"},
                 dependency_task_ids_json=[],
                 started_at=datetime.now(UTC),
                 completed_at=datetime.now(UTC),
@@ -566,62 +679,55 @@ class MockExecutionOrchestrator:
             self.db,
             execution.id,
             "coverage_gap_detected",
-            f"Coverage audit detected {debt} incomplete mock coverage cells.",
+            f"Coverage audit detected {debt} incomplete source discovery coverage cells.",
             execution_agent_id=agent.id,
         )
         await self.db.commit()
 
     def _complete_cell(self, cell: ScrapingCoverageCell, task: ScrapingTask) -> None:
         output = task.output_json or {}
-        selector = (sum(ord(char) for char in cell.id) + len(cell.source_category)) % 7
-        result_count = int(output.get("records_extracted") or 0)
+        candidate_count = int(output.get("candidate_count") or 0)
+        query_count = int(output.get("query_count") or 0)
+        successful_query_count = int(output.get("successful_query_count") or 0)
+        failed_query_count = int(output.get("failed_query_count") or 0)
+        error_codes = set(output.get("error_codes") or [])
+        result_count = candidate_count
         cell.result_count = result_count
         cell.completed_at = datetime.now(UTC)
-        if selector == 0:
-            cell.status = ScrapingCoverageStatus.BLOCKED
-            cell.reason = "Mock source blocked for demonstration."
-        elif selector == 1:
-            cell.status = ScrapingCoverageStatus.HUMAN_REVIEW_REQUIRED
-            cell.reason = "Mock ambiguity requires human review."
-        elif selector == 2:
+        if candidate_count > 0:
+            cell.status = ScrapingCoverageStatus.PARTIALLY_COVERED
+            cell.reason = (
+                "Real source candidates were discovered. Retrieval and extraction are not enabled yet."
+            )
+        elif query_count > 0 and successful_query_count == query_count:
             cell.status = ScrapingCoverageStatus.COVERED_NO_RESULTS
             cell.result_count = 0
-            cell.reason = "Mock coverage completed with no results."
-        elif selector == 3:
-            cell.status = ScrapingCoverageStatus.PARTIALLY_COVERED
-            cell.reason = "Mock coverage is incomplete."
+            cell.reason = "Real discovery queries completed but produced no source candidates."
+        elif error_codes & {"configuration_missing", "authentication_failed", "rate_limited"}:
+            cell.status = ScrapingCoverageStatus.BLOCKED
+            cell.reason = "Provider configuration, authentication, or rate limits blocked discovery."
+        elif failed_query_count > 0:
+            cell.status = ScrapingCoverageStatus.FAILED
+            cell.reason = "Source discovery failed before usable candidates were found."
         else:
-            cell.status = ScrapingCoverageStatus.COVERED
-            cell.reason = None
+            cell.status = ScrapingCoverageStatus.FAILED
+            cell.reason = "Source discovery ended without a clear successful outcome."
 
     async def _refresh_metrics(self, execution: ScrapingExecution) -> None:
-        facility_count = await self._facility_count(execution.id)
-        if facility_count:
-            await mock_facility_generator.refresh_execution_metrics(self.db, execution)
-            execution.coverage_debt = await self._coverage_debt(execution.id)
-            return
-        result = await self.db.execute(
-            select(ScrapingTask).where(
-                ScrapingTask.execution_id == execution.id,
-                ScrapingTask.status == ScrapingTaskStatus.COMPLETED,
-            )
+        candidate_count = len(
+            (
+                await self.db.execute(
+                    select(ScrapingSourceCandidate.id).where(
+                        ScrapingSourceCandidate.execution_id == execution.id
+                    )
+                )
+            ).scalars().all()
         )
-        tasks = result.scalars().all()
-        execution.sources_discovered = sum(
-            len((task.output_json or {}).get("sources", [])) for task in tasks
-        )
-        execution.documents_found = sum(
-            int((task.output_json or {}).get("documents_found") or 0) for task in tasks
-        )
-        execution.records_extracted = sum(
-            int((task.output_json or {}).get("records_extracted") or 0) for task in tasks
-        )
-        execution.records_verified = sum(
-            int((task.output_json or {}).get("records_verified") or 0) for task in tasks
-        )
-        execution.duplicates_detected = sum(
-            int((task.output_json or {}).get("duplicates_detected") or 0) for task in tasks
-        )
+        execution.sources_discovered = candidate_count
+        execution.documents_found = 0
+        execution.records_extracted = 0
+        execution.records_verified = 0
+        execution.duplicates_detected = 0
         execution.blocked_sources = await self._cell_status_count(
             execution.id, ScrapingCoverageStatus.BLOCKED
         )
@@ -632,7 +738,7 @@ class MockExecutionOrchestrator:
         execution.status = ScrapingExecutionStatus.CANCELLED
         execution.completed_at = datetime.now(UTC)
         await execution_service.emit_event(
-            self.db, execution.id, "execution_cancelled", "Mock execution cancelled."
+            self.db, execution.id, "execution_cancelled", "Source discovery execution cancelled."
         )
         await self.db.commit()
         self._log(
@@ -652,8 +758,8 @@ class MockExecutionOrchestrator:
         execution_id: str,
         failure_category: str,
         *,
-        error_message: str = "Mock execution failed.",
-        event_message: str = "Mock execution failed.",
+        error_message: str = "Source discovery execution failed.",
+        event_message: str = "Source discovery execution failed.",
     ) -> None:
         try:
             await self.db.rollback()
@@ -842,14 +948,6 @@ class MockExecutionOrchestrator:
         )
         return len(result.scalars().all())
 
-    async def _facility_count(self, execution_id: str) -> int:
-        result = await self.db.execute(
-            select(RehabilitationFacility.id).where(
-                RehabilitationFacility.execution_id == execution_id
-            )
-        )
-        return len(result.scalars().all())
-
     async def _cell_status_count(
         self, execution_id: str, status: ScrapingCoverageStatus
     ) -> int:
@@ -872,15 +970,16 @@ class MockExecutionOrchestrator:
         )
         return len(result.scalars().all())
 
-    def _coverage_dimensions(
+    def _coverage_dimensions_from_blueprint(
         self,
-        profile_json: dict,
+        blueprint_json: dict,
         country_code: str,
         country_name: str,
     ) -> tuple[list[dict[str, str | None]], list[dict[str, str | None]], list[str]]:
-        raw_regions = profile_json.get("administrative_regions")
-        raw_languages = profile_json.get("languages")
-        raw_categories = profile_json.get("source_categories")
+        scope = blueprint_json.get("scope") if isinstance(blueprint_json, dict) else {}
+        raw_regions = scope.get("regions") if isinstance(scope, dict) else None
+        raw_languages = blueprint_json.get("languages") if isinstance(blueprint_json, dict) else None
+        source_strategy = blueprint_json.get("source_strategy") if isinstance(blueprint_json, dict) else None
 
         regions: list[dict[str, str | None]] = []
         seen_regions: set[str] = set()
@@ -904,12 +1003,7 @@ class MockExecutionOrchestrator:
                 }
             )
         if not regions:
-            regions.append(
-                {
-                    "code": self._coverage_region_code(country_name, country_code),
-                    "name": country_name.strip() or country_code,
-                }
-            )
+            raise CoverageDimensionError("Approved blueprint has no usable scope.regions.")
 
         languages: list[dict[str, str | None]] = []
         seen_languages: set[tuple[str, str]] = set()
@@ -928,12 +1022,15 @@ class MockExecutionOrchestrator:
             seen_languages.add(identity)
             languages.append({"code": code, "name": name})
         if not languages:
-            languages.append({"code": "en", "name": "English"})
+            raise CoverageDimensionError("Approved blueprint has no usable languages.")
 
         categories: list[str] = []
         seen_categories: set[str] = set()
-        for raw_category in raw_categories if isinstance(raw_categories, list) else []:
-            category = self._clean_text(raw_category)
+        for raw_item in source_strategy if isinstance(source_strategy, list) else []:
+            if isinstance(raw_item, dict):
+                category = self._clean_text(raw_item.get("source_type"))
+            else:
+                category = self._clean_text(raw_item)
             if not category:
                 continue
             identity = category.casefold()
@@ -942,9 +1039,29 @@ class MockExecutionOrchestrator:
             seen_categories.add(identity)
             categories.append(category)
         if not categories:
-            categories.append("general_web")
+            raise CoverageDimensionError("Approved blueprint has no usable source_strategy entries.")
 
         return regions, languages, categories
+
+    def _mission_goal(self, blueprint_json: dict[str, Any]) -> str:
+        mission_summary = blueprint_json.get("mission_summary")
+        if isinstance(mission_summary, dict):
+            goal = self._clean_text(mission_summary.get("goal"))
+            if goal:
+                return goal
+        return "Discover real candidate source URLs for this scraping mission."
+
+    def _requested_fields(self, blueprint_json: dict[str, Any]) -> list[str]:
+        schema = blueprint_json.get("data_schema")
+        fields: list[str] = []
+        for raw_field in schema if isinstance(schema, list) else []:
+            if isinstance(raw_field, dict):
+                field_name = self._clean_text(raw_field.get("field_name"))
+            else:
+                field_name = self._clean_text(raw_field)
+            if field_name:
+                fields.append(field_name)
+        return fields
 
     def _coverage_region_code(self, value: str | None, country_code: str) -> str:
         text = self._clean_text(value) or self._clean_text(country_code) or "region"
@@ -1007,9 +1124,3 @@ class MockExecutionOrchestrator:
             event,
             extra={"scraping_execution_event": event, **fields},
         )
-
-
-def _should_sleep_after_task(processed_count: int, total_tasks: int) -> bool:
-    if total_tasks <= MOCK_DELAY_ALL_TASKS_LIMIT:
-        return True
-    return processed_count % MOCK_DELAY_EVERY_N_TASKS == 0

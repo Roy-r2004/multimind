@@ -450,7 +450,7 @@ class ScrapingExecutionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     execution_type: str = "initial_full_country"
-    mode: str = "mock"
+    mode: str = "real"
 
 
 class ScrapingExecutionAgentResponse(BaseModel):
@@ -589,7 +589,7 @@ class ScrapingExecutionDetail(BaseModel):
     recent_events: list[ScrapingEventResponse]
     can_cancel: bool
     can_delete: bool
-    mock: bool = True
+    mock: bool = False
 
 
 class SourceDiscoveryContext(BaseModel):

@@ -117,20 +117,6 @@ class MockSearchTool:
         return {"mock": True, "queries": _queries(task)}
 
 
-class MockSourceDiscoveryTool:
-    def run(self, task: ScrapingTask) -> dict[str, Any]:
-        count = _stable_int(task.id, "sources", minimum=0, maximum=4)
-        sources = [
-            {
-                "id": f"mock://source/{task.id}/{index}",
-                "url": f"https://mock.example/{_slug(task.task_type)}/{index}",
-                "title": f"Mock source {index + 1}",
-            }
-            for index in range(count)
-        ]
-        return {"mock": True, "sources": sources}
-
-
 class MockHttpFetchTool:
     def run(self, task: ScrapingTask) -> dict[str, Any]:
         return {"mock": True, "fetched": True, "identifier": f"mock://http/{task.id}"}
