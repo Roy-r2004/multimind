@@ -14,8 +14,10 @@ from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import (
+    AudioTooLongError,
     InvalidAudioError,
     SilentAudioError,
+    TranscriptionBusyError,
     TranscriptionDisabledError,
     TranscriptionModelUnavailableError,
     TranscriptionTimeoutError,
@@ -55,7 +57,8 @@ class TranscriptionService:
         self._model_cls = model_cls
         self._model: ResolvedTranscriptionModel | None = None
         self._init_lock = asyncio.Lock()
-        self._semaphore = asyncio.Semaphore(self.settings.transcription_concurrency)
+        self._capacity_condition = asyncio.Condition()
+        self._active_transcriptions = 0
 
     async def initialize(self) -> None:
         if not self.settings.transcription_enabled:
@@ -72,83 +75,139 @@ class TranscriptionService:
         *,
         language: str | None = None,
     ) -> TranscriptionResult:
+        return await self._transcribe(file_path, language=language)
+
+    async def transcribe_nowait(
+        self,
+        file_path: Path,
+        *,
+        language: str | None = None,
+    ) -> TranscriptionResult:
+        if not self.settings.transcription_enabled:
+            raise TranscriptionDisabledError()
+        if language is not None and language not in SUPPORTED_LANGUAGES:
+            raise InvalidAudioError("Unsupported transcription language")
+        self._validate_input_file(file_path)
+        await self._acquire_capacity_nowait()
+        try:
+            return await self._run_with_capacity(file_path, language)
+        finally:
+            await self._release_capacity()
+
+    async def _transcribe(
+        self,
+        file_path: Path,
+        *,
+        language: str | None = None,
+        capacity_acquired: bool = False,
+    ) -> TranscriptionResult:
         if not self.settings.transcription_enabled:
             raise TranscriptionDisabledError()
         if language is not None and language not in SUPPORTED_LANGUAGES:
             raise InvalidAudioError("Unsupported transcription language")
         self._validate_input_file(file_path)
 
-        async with self._semaphore:
-            model = await self._get_model()
-            started = time.perf_counter()
-            inference_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self._run_transcription,
-                    model,
-                    file_path,
-                    language,
-                )
-            )
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.shield(inference_task),
-                    timeout=self.settings.transcription_timeout_seconds,
-                )
-            except TimeoutError as exc:
-                with suppress(Exception):
-                    await inference_task
-                logger.warning(
-                    "transcription_timeout",
-                    configured_model=self.settings.transcription_model,
-                    resolved_model=model.model_name,
-                    configured_device=self.settings.transcription_device,
-                    resolved_device=model.device,
-                    compute_type=model.compute_type,
-                    failure_category="timeout",
-                )
-                raise TranscriptionTimeoutError() from exc
-            except SilentAudioError:
-                raise
-            except InvalidAudioError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "transcription_invalid_audio",
-                    configured_model=self.settings.transcription_model,
-                    resolved_model=model.model_name,
-                    configured_device=self.settings.transcription_device,
-                    resolved_device=model.device,
-                    compute_type=model.compute_type,
-                    failure_category="invalid_audio",
-                )
-                raise InvalidAudioError() from exc
+        if not capacity_acquired:
+            await self._acquire_capacity()
+        try:
+            return await self._run_with_capacity(file_path, language)
+        finally:
+            if not capacity_acquired:
+                await self._release_capacity()
 
-            processing_seconds = time.perf_counter() - started
-            if result.duration_seconds is not None and (
-                result.duration_seconds > self.settings.transcription_max_duration_seconds
-            ):
-                raise InvalidAudioError("Audio duration exceeds transcription limit")
-
-            final = TranscriptionResult(
-                text=result.text,
-                language=result.language,
-                language_probability=result.language_probability,
-                duration_seconds=result.duration_seconds,
-                processing_seconds=processing_seconds,
+    async def _run_with_capacity(
+        self,
+        file_path: Path,
+        language: str | None,
+    ) -> TranscriptionResult:
+        model = await self._get_model()
+        started = time.perf_counter()
+        inference_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._run_transcription,
+                model,
+                file_path,
+                language,
             )
-            logger.info(
-                "transcription_completed",
+        )
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(inference_task),
+                timeout=self.settings.transcription_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            with suppress(Exception):
+                await inference_task
+            logger.warning(
+                "transcription_timeout",
                 configured_model=self.settings.transcription_model,
                 resolved_model=model.model_name,
                 configured_device=self.settings.transcription_device,
                 resolved_device=model.device,
                 compute_type=model.compute_type,
-                duration_seconds=final.duration_seconds,
-                processing_seconds=final.processing_seconds,
-                detected_language=final.language,
-                success=True,
+                failure_category="timeout",
             )
-            return final
+            raise TranscriptionTimeoutError() from exc
+        except SilentAudioError:
+            raise
+        except InvalidAudioError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "transcription_invalid_audio",
+                configured_model=self.settings.transcription_model,
+                resolved_model=model.model_name,
+                configured_device=self.settings.transcription_device,
+                resolved_device=model.device,
+                compute_type=model.compute_type,
+                failure_category="invalid_audio",
+            )
+            raise InvalidAudioError() from exc
+
+        processing_seconds = time.perf_counter() - started
+        if result.duration_seconds is not None and (
+            result.duration_seconds > self.settings.transcription_max_duration_seconds
+        ):
+            raise AudioTooLongError()
+
+        final = TranscriptionResult(
+            text=result.text,
+            language=result.language,
+            language_probability=result.language_probability,
+            duration_seconds=result.duration_seconds,
+            processing_seconds=processing_seconds,
+        )
+        logger.info(
+            "transcription_completed",
+            configured_model=self.settings.transcription_model,
+            resolved_model=model.model_name,
+            configured_device=self.settings.transcription_device,
+            resolved_device=model.device,
+            compute_type=model.compute_type,
+            duration_seconds=final.duration_seconds,
+            processing_seconds=final.processing_seconds,
+            detected_language=final.language,
+            success=True,
+        )
+        return final
+
+    async def _acquire_capacity(self) -> None:
+        async with self._capacity_condition:
+            while self._active_transcriptions >= self.settings.transcription_concurrency:
+                await self._capacity_condition.wait()
+            self._active_transcriptions += 1
+
+    async def _acquire_capacity_nowait(self) -> None:
+        async with self._capacity_condition:
+            if self._active_transcriptions >= self.settings.transcription_concurrency:
+                raise TranscriptionBusyError()
+            self._active_transcriptions += 1
+
+    async def _release_capacity(self) -> None:
+        async with self._capacity_condition:
+            if self._active_transcriptions > 0:
+                self._active_transcriptions -= 1
+                self._capacity_condition.notify()
 
     async def _get_model(self) -> ResolvedTranscriptionModel:
         if self._model is not None:

@@ -8,6 +8,7 @@ import pytest
 from app.core.config import Settings
 from app.core.exceptions import (
     SilentAudioError,
+    TranscriptionBusyError,
     TranscriptionDisabledError,
     TranscriptionModelUnavailableError,
 )
@@ -258,6 +259,99 @@ async def test_timeout_raises_domain_error_and_waits_for_worker_completion(tmp_p
     assert time.perf_counter() - started >= 0.05
     assert FakeWhisperModel.max_active_calls == 1
     assert FakeWhisperModel.active_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_nowait_capacity_rejects_immediately_when_full(tmp_path):
+    FakeWhisperModel.transcribe_sleep = 0.05
+    service = TranscriptionService(
+        settings=make_settings(tmp_path, transcription_concurrency=1),
+        model_cls=FakeWhisperModel,
+    )
+    first = audio_file(tmp_path)
+    second = tmp_path / "second.wav"
+    second.write_bytes(b"audio")
+
+    results = await asyncio.gather(
+        service.transcribe_nowait(first),
+        service.transcribe_nowait(second),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, TranscriptionBusyError) for result in results) == 1
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+    assert FakeWhisperModel.max_active_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_nowait_capacity_released_after_success(tmp_path):
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+    path = audio_file(tmp_path)
+
+    await service.transcribe_nowait(path)
+    await service.transcribe_nowait(path)
+
+    assert len(FakeWhisperModel.transcribe_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_nowait_capacity_released_after_normal_failure(tmp_path):
+    FakeWhisperModel.texts = [" "]
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+    path = audio_file(tmp_path)
+
+    with pytest.raises(SilentAudioError):
+        await service.transcribe_nowait(path)
+
+    FakeWhisperModel.texts = ["Recovered"]
+    result = await service.transcribe_nowait(path)
+
+    assert result.text == "Recovered"
+
+
+@pytest.mark.asyncio
+async def test_nowait_timeout_holds_capacity_until_worker_finishes(tmp_path):
+    FakeWhisperModel.transcribe_sleep = 0.05
+    service = TranscriptionService(
+        settings=make_settings(tmp_path, transcription_timeout_seconds=0.01),
+        model_cls=FakeWhisperModel,
+    )
+    first = audio_file(tmp_path)
+    second = tmp_path / "second.wav"
+    second.write_bytes(b"audio")
+
+    started = time.perf_counter()
+    timeout_result, busy_result = await asyncio.gather(
+        service.transcribe_nowait(first),
+        service.transcribe_nowait(second),
+        return_exceptions=True,
+    )
+
+    assert isinstance(timeout_result, transcription_module.TranscriptionTimeoutError)
+    assert isinstance(busy_result, TranscriptionBusyError)
+    assert time.perf_counter() - started >= 0.05
+    assert FakeWhisperModel.active_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_nowait_capacity_never_exceeds_configured_concurrency(tmp_path):
+    FakeWhisperModel.transcribe_sleep = 0.05
+    service = TranscriptionService(
+        settings=make_settings(tmp_path, transcription_concurrency=2),
+        model_cls=FakeWhisperModel,
+    )
+    paths = [tmp_path / f"audio-{index}.wav" for index in range(3)]
+    for path in paths:
+        path.write_bytes(b"audio")
+
+    results = await asyncio.gather(
+        *(service.transcribe_nowait(path) for path in paths),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, TranscriptionBusyError) for result in results) == 1
+    assert sum(not isinstance(result, Exception) for result in results) == 2
+    assert FakeWhisperModel.max_active_calls <= 2
 
 
 @pytest.mark.asyncio

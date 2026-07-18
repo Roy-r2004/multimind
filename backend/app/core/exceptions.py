@@ -39,6 +39,11 @@ class ConflictError(AppError):
         super().__init__(message, code="CONFLICT")
 
 
+class InternalServerError(AppError):
+    def __init__(self, message: str = "Internal server error") -> None:
+        super().__init__(message, code="INTERNAL_ERROR")
+
+
 class TranscriptionDisabledError(AppError):
     def __init__(self, message: str = "Transcription is disabled") -> None:
         super().__init__(message, code="TRANSCRIPTION_DISABLED")
@@ -57,6 +62,22 @@ class TranscriptionBusyError(AppError):
 class TranscriptionTimeoutError(AppError):
     def __init__(self, message: str = "Transcription timed out") -> None:
         super().__init__(message, code="TRANSCRIPTION_TIMEOUT")
+
+
+class UnsupportedAudioTypeError(AppError):
+    def __init__(self, message: str = "Unsupported audio media type") -> None:
+        super().__init__(message, code="UNSUPPORTED_AUDIO_TYPE")
+
+
+class AudioTooLargeError(AppError):
+    def __init__(self, message: str = "Audio upload exceeds transcription limit") -> None:
+        super().__init__(message, code="AUDIO_TOO_LARGE")
+
+
+class AudioTooLongError(ValidationError):
+    def __init__(self, message: str = "Audio duration exceeds transcription limit") -> None:
+        super().__init__(message)
+        self.code = "AUDIO_TOO_LONG"
 
 
 class InvalidAudioError(ValidationError):

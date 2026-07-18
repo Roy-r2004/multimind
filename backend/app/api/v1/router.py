@@ -17,6 +17,7 @@ from app.api.v1 import (
     prompt_builder,
     share,
     templates,
+    transcriptions,
 )
 
 api_router = APIRouter()
@@ -34,3 +35,4 @@ api_router.include_router(prompt_builder.router, prefix="/prompt-builder", tags=
 api_router.include_router(costs.router, prefix="/costs", tags=["costs"])
 api_router.include_router(lessons.router, prefix="/lessons", tags=["lessons"])
 api_router.include_router(brain.router, prefix="/brain", tags=["brain"])
+api_router.include_router(transcriptions.router, prefix="/transcriptions", tags=["transcriptions"])
