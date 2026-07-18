@@ -37,3 +37,35 @@ class ValidationError(AppError):
 class ConflictError(AppError):
     def __init__(self, message: str) -> None:
         super().__init__(message, code="CONFLICT")
+
+
+class TranscriptionDisabledError(AppError):
+    def __init__(self, message: str = "Transcription is disabled") -> None:
+        super().__init__(message, code="TRANSCRIPTION_DISABLED")
+
+
+class TranscriptionModelUnavailableError(AppError):
+    def __init__(self, message: str = "Transcription model is unavailable") -> None:
+        super().__init__(message, code="TRANSCRIPTION_MODEL_UNAVAILABLE")
+
+
+class TranscriptionBusyError(AppError):
+    def __init__(self, message: str = "Transcription service is busy") -> None:
+        super().__init__(message, code="TRANSCRIPTION_BUSY")
+
+
+class TranscriptionTimeoutError(AppError):
+    def __init__(self, message: str = "Transcription timed out") -> None:
+        super().__init__(message, code="TRANSCRIPTION_TIMEOUT")
+
+
+class InvalidAudioError(ValidationError):
+    def __init__(self, message: str = "Invalid audio file", details: Any = None) -> None:
+        super().__init__(message, details=details)
+        self.code = "INVALID_AUDIO"
+
+
+class SilentAudioError(ValidationError):
+    def __init__(self, message: str = "Audio contains no meaningful speech") -> None:
+        super().__init__(message)
+        self.code = "SILENT_AUDIO"
