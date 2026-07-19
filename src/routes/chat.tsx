@@ -36,11 +36,12 @@ import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
 import { AssessmentCriteriaModal } from "@/components/chat/AssessmentCriteriaModal";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { MessageContent } from "@/components/chat/MessageContent";
+import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
 import { api } from "@/lib/api";
-import type { ApiTurn } from "@/lib/api/types";
+import type { ApiTranscriptionResponse, ApiTurn } from "@/lib/api/types";
 import {
   mergeWithCachedTurns,
   resumeRunningTurns,
@@ -66,6 +67,44 @@ export const Route = createFileRoute("/chat")({
 });
 
 type ComposerFile = { name: string; state: "uploading" | "uploaded" | "error" };
+
+function transcriptInsertion(
+  current: string,
+  transcript: string,
+  selectionStart: number | null,
+  selectionEnd: number | null,
+): { value: string; cursor: number } {
+  const hasSelection =
+    selectionStart !== null &&
+    selectionEnd !== null &&
+    selectionStart >= 0 &&
+    selectionEnd >= selectionStart &&
+    selectionEnd <= current.length;
+
+  if (!hasSelection) {
+    const prefix = current.trim() ? `${current}\n\n` : "";
+    return { value: `${prefix}${transcript}`, cursor: prefix.length + transcript.length };
+  }
+
+  const before = current.slice(0, selectionStart);
+  const after = current.slice(selectionEnd);
+  const replacing = selectionEnd > selectionStart;
+  const beforeNeedsParagraph = before.endsWith(":") && after.trim().length === 0;
+  const afterStartsWithBoundary = after.length === 0 || /^[\s.,!?;:)\]}]/.test(after);
+  const prefix =
+    replacing || before.length === 0 || /\s$/.test(before)
+      ? ""
+      : beforeNeedsParagraph
+        ? "\n\n"
+        : " ";
+  const suffix = replacing || afterStartsWithBoundary ? "" : " ";
+  const insertion = `${prefix}${transcript}${suffix}`;
+
+  return {
+    value: `${before}${insertion}${after}`,
+    cursor: before.length + prefix.length + transcript.length,
+  };
+}
 
 async function buildComposerInstructions(
   auth: { token: string; orgId: string },
@@ -125,6 +164,7 @@ export function ChatPage() {
   const [apiTurns, setApiTurns] = useState<ApiTurn[]>([]);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [files, setFiles] = useState<ComposerFile[]>([]);
   const [refChat, setRefChat] = useState<ChatReferencePick | null>(null);
   const [showSet, setShowSet] = useState(false);
@@ -142,6 +182,7 @@ export function ChatPage() {
   const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
   const [showCriteria, setShowCriteria] = useState(false);
   const [savingCriteria, setSavingCriteria] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeChat = chats.find((c) => c.id === activeChatId);
 
   useEffect(() => {
@@ -196,8 +237,33 @@ export function ChatPage() {
     };
   }, [isApiMode, activeChatId, authHeaders]);
 
+  function handleVoiceTranscript(result: ApiTranscriptionResponse) {
+    const transcript = result.text.trim();
+    if (!transcript) return;
+
+    const textarea = textareaRef.current;
+    const selectionStart = textarea ? textarea.selectionStart : null;
+    const selectionEnd = textarea ? textarea.selectionEnd : null;
+    let cursorPosition: number | null = null;
+
+    setInput((current) => {
+      const next = transcriptInsertion(current, transcript, selectionStart, selectionEnd);
+      cursorPosition = next.cursor;
+      return next.value;
+    });
+
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        const currentTextarea = textareaRef.current;
+        if (!currentTextarea || cursorPosition === null) return;
+        currentTextarea.focus();
+        currentTextarea.setSelectionRange(cursorPosition, cursorPosition);
+      });
+    }
+  }
+
   async function send() {
-    if (!input.trim() || !set) return;
+    if (isVoiceActive || !input.trim() || !set) return;
     const question = input.trim();
     setInput("");
     const auth = authHeaders();
@@ -243,6 +309,8 @@ export function ChatPage() {
   }
 
   const empty = isAuthenticated && apiTurns.length === 0 && !loading;
+  const voiceAuth = authHeaders();
+  const voiceDisabled = !voiceAuth || !set || sending || loading;
 
   return (
     <AppShell>
@@ -456,11 +524,13 @@ export function ChatPage() {
             )}
             <div className="rounded-2xl border border-border bg-card shadow-sm">
               <textarea
+                ref={textareaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
+                    if (isVoiceActive) return;
                     void send();
                   }
                 }}
@@ -546,19 +616,34 @@ export function ChatPage() {
                 >
                   <Link2 className="size-3.5" /> Reference
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void send()}
-                  disabled={!input.trim() || sending || loading || !isAuthenticated}
-                  className="ml-auto inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
-                >
-                  {loading ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Send className="size-3.5" />
-                  )}
-                  Send
-                </button>
+                <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
+                  <VoiceRecorderButton
+                    auth={voiceAuth}
+                    disabled={voiceDisabled}
+                    onTranscript={handleVoiceTranscript}
+                    onRecordingStateChange={setIsVoiceActive}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void send()}
+                    disabled={
+                      !input.trim() ||
+                      sending ||
+                      loading ||
+                      !isAuthenticated ||
+                      !set ||
+                      isVoiceActive
+                    }
+                    className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
+                  >
+                    {loading ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Send className="size-3.5" />
+                    )}
+                    Send
+                  </button>
+                </div>
               </div>
             </div>
             <p className="mt-2 text-center text-[11px] text-muted-foreground">

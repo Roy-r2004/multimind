@@ -609,6 +609,17 @@ class PricingCatalogResponse(BaseModel):
     models: list[PricingCatalogItem]
 
 
+# --- Transcriptions ---
+
+
+class TranscriptionResponse(BaseModel):
+    text: str
+    language: str | None = None
+    language_probability: float | None = None
+    duration_seconds: float | None = None
+    processing_seconds: float
+
+
 # --- Share ---
 
 
