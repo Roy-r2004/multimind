@@ -168,6 +168,32 @@ class SourceCandidateStatus(str, enum.Enum):
     ACCEPTED = "accepted"
 
 
+class SourceRetrievalAttemptStatus(str, enum.Enum):
+    SUCCEEDED = "succeeded"
+    BLOCKED_BY_ROBOTS = "blocked_by_robots"
+    UNSAFE_URL = "unsafe_url"
+    DNS_RESOLUTION_FAILED = "dns_resolution_failed"
+    PRIVATE_OR_RESERVED_ADDRESS = "private_or_reserved_address"
+    REDIRECT_LIMIT_EXCEEDED = "redirect_limit_exceeded"
+    UNSAFE_REDIRECT = "unsafe_redirect"
+    TIMEOUT = "timeout"
+    CONNECTION_FAILED = "connection_failed"
+    PROVIDER_HTTP_ERROR = "provider_http_error"
+    RESPONSE_TOO_LARGE = "response_too_large"
+    UNSUPPORTED_CONTENT_TYPE = "unsupported_content_type"
+    MALFORMED_CONTENT = "malformed_content"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class SourceRetrievalRobotsStatus(str, enum.Enum):
+    ALLOWED = "allowed"
+    NO_RULES = "no_rules"
+    DISALLOWED = "disallowed"
+    BLOCKED = "blocked"
+    UNAVAILABLE = "unavailable"
+
+
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
 
@@ -592,6 +618,16 @@ class ScrapingExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="RehabilitationSource.created_at",
     )
+    source_retrieval_attempts: Mapped[list["ScrapingSourceRetrievalAttempt"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="ScrapingSourceRetrievalAttempt.started_at",
+    )
+    source_documents: Mapped[list["ScrapingSourceDocument"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="ScrapingSourceDocument.retrieval_timestamp",
+    )
 
 
 class ScrapingExecutionAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -919,6 +955,162 @@ class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship()
     discovery_query: Mapped["ScrapingSourceDiscoveryQuery"] = relationship(
         back_populates="candidates"
+    )
+    retrieval_attempts: Mapped[list["ScrapingSourceRetrievalAttempt"]] = relationship(
+        back_populates="source_candidate",
+        cascade="all, delete-orphan",
+        order_by="ScrapingSourceRetrievalAttempt.started_at",
+    )
+    source_documents: Mapped[list["ScrapingSourceDocument"]] = relationship(
+        back_populates="source_candidate",
+        cascade="all, delete-orphan",
+        order_by="ScrapingSourceDocument.retrieval_timestamp",
+    )
+
+
+class ScrapingSourceRetrievalAttempt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_source_retrieval_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "idempotency_key",
+            name="uq_source_retrieval_attempt_idempotency",
+        ),
+        CheckConstraint("redirect_count >= 0", name="ck_source_retrieval_attempt_redirect_count"),
+        CheckConstraint(
+            "bytes_received IS NULL OR bytes_received >= 0",
+            name="ck_source_retrieval_attempt_bytes_received",
+        ),
+        Index("ix_source_retrieval_attempts_org", "organization_id"),
+        Index("ix_source_retrieval_attempts_execution", "execution_id"),
+        Index("ix_source_retrieval_attempts_candidate", "source_candidate_id"),
+        Index("ix_source_retrieval_attempts_coverage", "coverage_cell_id"),
+        Index("ix_source_retrieval_attempts_task", "task_id"),
+        Index("ix_source_retrieval_attempts_status", "status"),
+        Index(
+            "ix_source_retrieval_attempts_context",
+            "organization_id",
+            "execution_id",
+            "source_candidate_id",
+            "status",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    source_candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[SourceRetrievalAttemptStatus] = mapped_column(
+        Enum(
+            SourceRetrievalAttemptStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        nullable=False,
+    )
+    requested_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    final_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    redirect_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    declared_content_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bytes_received: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    robots_status: Mapped[SourceRetrievalRobotsStatus | None] = mapped_column(
+        Enum(
+            SourceRetrievalRobotsStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        nullable=True,
+    )
+    failure_classification: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    safe_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+    organization: Mapped["Organization"] = relationship()
+    execution: Mapped["ScrapingExecution"] = relationship(back_populates="source_retrieval_attempts")
+    source_candidate: Mapped["ScrapingSourceCandidate"] = relationship(
+        back_populates="retrieval_attempts"
+    )
+    coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship()
+    task: Mapped["ScrapingTask | None"] = relationship()
+    source_documents: Mapped[list["ScrapingSourceDocument"]] = relationship(
+        back_populates="retrieval_attempt",
+        order_by="ScrapingSourceDocument.retrieval_timestamp",
+    )
+
+
+class ScrapingSourceDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_source_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "source_candidate_id",
+            "content_sha256",
+            name="uq_source_document_candidate_hash",
+        ),
+        UniqueConstraint("retrieval_attempt_id", name="uq_source_document_retrieval_attempt"),
+        CheckConstraint("byte_size >= 0", name="ck_source_document_byte_size"),
+        Index("ix_source_documents_org", "organization_id"),
+        Index("ix_source_documents_execution", "execution_id"),
+        Index("ix_source_documents_candidate", "source_candidate_id"),
+        Index("ix_source_documents_attempt", "retrieval_attempt_id"),
+        Index("ix_source_documents_hash", "content_sha256"),
+        Index("ix_source_documents_retrieved", "retrieval_timestamp"),
+        Index(
+            "ix_source_documents_context",
+            "organization_id",
+            "execution_id",
+            "source_candidate_id",
+            "retrieval_timestamp",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    source_candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    retrieval_attempt_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scraping_source_retrieval_attempts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    final_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    charset: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    retrieval_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+    organization: Mapped["Organization"] = relationship()
+    execution: Mapped["ScrapingExecution"] = relationship(back_populates="source_documents")
+    source_candidate: Mapped["ScrapingSourceCandidate"] = relationship(
+        back_populates="source_documents"
+    )
+    retrieval_attempt: Mapped["ScrapingSourceRetrievalAttempt"] = relationship(
+        back_populates="source_documents"
     )
 
 

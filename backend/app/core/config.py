@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     serper_search_results_per_query: int = 5
     serper_search_max_queries_per_discovery: int = 2
 
+    # Secure source retrieval
+    source_retrieval_user_agent: str = "MultiMindSourceRetrieval/1.0 (+https://multimind.local/source-retrieval)"
+    source_retrieval_timeout_seconds: float = 15.0
+    source_retrieval_connect_timeout_seconds: float = 5.0
+    source_retrieval_max_redirects: int = 5
+    source_retrieval_max_bytes: int = 2_097_152
+    source_retrieval_allowed_ports: Annotated[list[int], NoDecode] = Field(default=[80, 443])
+    source_retrieval_robots_policy: Literal["respect"] = "respect"
+
     # Optional source discovery provider — Brave Search
     brave_search_api_key: str | None = None
     brave_search_base_url: str = "https://api.search.brave.com/res/v1/web/search"
@@ -81,6 +90,13 @@ class Settings(BaseSettings):
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+
+    @field_validator("source_retrieval_allowed_ports", mode="before")
+    @classmethod
+    def parse_source_retrieval_allowed_ports(cls, v: str | list[int]) -> list[int]:
+        if isinstance(v, str):
+            return [int(port.strip()) for port in v.split(",") if port.strip()]
         return v
 
     @property

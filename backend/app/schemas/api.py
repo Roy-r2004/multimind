@@ -716,6 +716,47 @@ class SourceDiscoverySummary(BaseModel):
     rejected_result_count: int
 
 
+class SourceRetrievalAttemptResponse(BaseModel):
+    id: str
+    organization_id: str
+    execution_id: str
+    source_candidate_id: str
+    coverage_cell_id: str | None = None
+    task_id: str | None = None
+    status: str
+    requested_url: str
+    final_url: str | None = None
+    redirect_count: int
+    http_status: int | None = None
+    content_type: str | None = None
+    declared_content_length: int | None = None
+    bytes_received: int | None = None
+    robots_status: str | None = None
+    failure_classification: str | None = None
+    safe_error_message: str | None = None
+    started_at: datetime
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceDocumentResponse(BaseModel):
+    id: str
+    organization_id: str
+    execution_id: str
+    source_candidate_id: str
+    retrieval_attempt_id: str
+    final_url: str
+    content_type: str
+    charset: str | None = None
+    content_sha256: str
+    byte_size: int
+    retrieval_timestamp: datetime
+    metadata_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
 # --- Chats ---
 
 

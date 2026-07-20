@@ -21,10 +21,13 @@ from app.schemas.api import (
     ScrapingTaskResponse,
     SourceCandidateResponse,
     SourceDiscoveryQueryResponse,
+    SourceDocumentResponse,
+    SourceRetrievalAttemptResponse,
 )
 from app.services.scraping.execution_export_service import MIME_XLSX, execution_export_service
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.source_discovery_service import source_discovery_service
+from app.services.scraping.source_retrieval_service import source_retrieval_service
 
 router = APIRouter()
 
@@ -189,6 +192,99 @@ async def list_source_candidates(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get(
+    "/{execution_id}/retrieval-attempts",
+    response_model=list[SourceRetrievalAttemptResponse],
+)
+async def list_source_retrieval_attempts(
+    execution_id: str,
+    source_candidate_id: str | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    attempts = await source_retrieval_service.list_attempts(
+        db,
+        auth,
+        execution_id,
+        source_candidate_id=source_candidate_id,
+        status=status_filter,
+        limit=limit,
+        offset=offset,
+    )
+    return [
+        SourceRetrievalAttemptResponse(
+            id=row.id,
+            organization_id=row.organization_id,
+            execution_id=row.execution_id,
+            source_candidate_id=row.source_candidate_id,
+            coverage_cell_id=row.coverage_cell_id,
+            task_id=row.task_id,
+            status=row.status.value,
+            requested_url=row.requested_url,
+            final_url=row.final_url,
+            redirect_count=row.redirect_count,
+            http_status=row.http_status,
+            content_type=row.content_type,
+            declared_content_length=row.declared_content_length,
+            bytes_received=row.bytes_received,
+            robots_status=row.robots_status.value if row.robots_status else None,
+            failure_classification=row.failure_classification,
+            safe_error_message=row.safe_error_message,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in attempts
+    ]
+
+
+@router.get(
+    "/{execution_id}/source-documents",
+    response_model=list[SourceDocumentResponse],
+)
+async def list_source_documents(
+    execution_id: str,
+    source_candidate_id: str | None = None,
+    content_sha256: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    documents = await source_retrieval_service.list_documents(
+        db,
+        auth,
+        execution_id,
+        source_candidate_id=source_candidate_id,
+        content_sha256=content_sha256,
+        limit=limit,
+        offset=offset,
+    )
+    return [
+        SourceDocumentResponse(
+            id=row.id,
+            organization_id=row.organization_id,
+            execution_id=row.execution_id,
+            source_candidate_id=row.source_candidate_id,
+            retrieval_attempt_id=row.retrieval_attempt_id,
+            final_url=row.final_url,
+            content_type=row.content_type,
+            charset=row.charset,
+            content_sha256=row.content_sha256,
+            byte_size=row.byte_size,
+            retrieval_timestamp=row.retrieval_timestamp,
+            metadata_json=row.metadata_json,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in documents
+    ]
 
 
 @router.get("/{execution_id}/export.xlsx")
