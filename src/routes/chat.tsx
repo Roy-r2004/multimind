@@ -54,6 +54,7 @@ import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
+import { deriveTurnAnswerCards } from "@/lib/turnCards";
 import {
   DEFAULT_COMPANY_ASSESSMENT_CRITERIA,
   extractAssessmentCriteria,
@@ -879,8 +880,10 @@ function AiTurn({
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
   const scrolledToVerdictRef = useRef(false);
+  const answerCards = deriveTurnAnswerCards(turn, set.models);
+  const cardModelIds = answerCards.map((card) => card.modelId);
 
-  const topModelId = turn.verdict ? inferTopModelId(turn, set.models, modelById) : null;
+  const topModelId = turn.verdict ? inferTopModelId(turn, cardModelIds, modelById) : null;
   const judgeModel = turn.verdict ? modelById(turn.verdict.model_id) : null;
   const canCollapseAnswers = Boolean(turn.verdict);
   const criteriaLines = parseCriteriaLines(assessmentCriteria);
@@ -917,7 +920,7 @@ function AiTurn({
           </button>
           {answersCollapsed && (
             <span className="text-xs text-muted-foreground">
-              {set.models.length} answers hidden
+              {answerCards.length} answers hidden
             </span>
           )}
         </div>
@@ -951,10 +954,9 @@ function AiTurn({
             </div>
           )}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            {set.models.map((id) => {
-              const m = modelById(id);
-              const a = (turn.model_answers ?? []).find((x) => x.model_id === id);
-              const status = a?.status ?? "pending";
+            {answerCards.map(({ modelId: id, answer: a, status }) => {
+              const baseModel = modelById(id);
+              const m = a?.model_name ? { ...baseModel, name: a.model_name } : baseModel;
               const failed = status === "failed";
               const inProgress = status === "pending" || status === "running";
               const isTopPick = topModelId === id;
