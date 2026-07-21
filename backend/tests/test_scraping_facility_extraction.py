@@ -17,9 +17,13 @@ from app.core.dependencies import get_auth_context
 from app.db.models import (
     RehabilitationFieldEvidence,
     RehabilitationFacility,
+    RehabilitationFacilityAlias,
+    RehabilitationFacilityContact,
+    RehabilitationFacilityLocation,
     RehabilitationSource,
     ScrapingBlueprint,
     ScrapingBlueprintStatus,
+    ScrapingEvent,
     ScrapingExecution,
     ScrapingExecutionStatus,
     ScrapingFacilityCandidate,
@@ -57,10 +61,13 @@ from app.services.scraping.facility_extraction_service import (
     FacilityExtractionContext,
     FacilityExtractionService,
 )
+from app.services.scraping.execution_orchestrator import SourceDiscoveryExecutionOrchestrator
 from app.services.scraping.openrouter_facility_extraction_provider import (
+    FacilityProviderError,
     OpenRouterFacilityExtractionProvider,
     _parse_validate,
 )
+import app.services.scraping.execution_orchestrator as execution_orchestrator_module
 from app.llm.providers import LLMResponse
 from conftest import create_model_set, create_other_auth, valid_blueprint
 
@@ -205,9 +212,13 @@ class FakeProvider(FacilityExtractionProvider):
     def __init__(self, output: FacilityExtractionOutput) -> None:
         self.output = output
         self.seen_chunk = ""
+        self.call_count = 0
 
-    async def extract(self, *, chunk_text: str, language_hint: str | None = None) -> FacilityExtractionOutput:
+    async def extract(
+        self, *, chunk_text: str, language_hint: str | None = None
+    ) -> FacilityExtractionOutput:
         self.seen_chunk = chunk_text
+        self.call_count += 1
         return self.output
 
 
@@ -566,7 +577,9 @@ async def test_valid_extraction_persists_verified_staging_only(db: AsyncSession,
             document_relevant=True,
             facilities=[
                 ExtractedFacility(
-                    name=ExtractedEvidenceValue(value="Centre Alpha", evidence_quote="Centre Alpha"),
+                    name=ExtractedEvidenceValue(
+                        value="Centre Alpha", evidence_quote="Centre Alpha"
+                    ),
                     facility_type=ExtractedEvidenceValue(
                         value="addiction treatment facility",
                         evidence_quote="addiction treatment facility",
@@ -601,6 +614,9 @@ async def test_valid_extraction_persists_verified_staging_only(db: AsyncSession,
     assert await db.scalar(select(func.count()).select_from(RehabilitationFacility)) == 0
     assert await db.scalar(select(func.count()).select_from(RehabilitationSource)) == 0
     assert await db.scalar(select(func.count()).select_from(RehabilitationFieldEvidence)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacilityAlias)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacilityLocation)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacilityContact)) == 0
 
 
 @pytest.mark.asyncio
@@ -830,3 +846,301 @@ async def test_audit_api_is_org_isolated_and_does_not_return_full_bodies(db: Asy
         response = await client.get(f"/api/v1/scraping/executions/{execution.id}/facility-candidates")
     app.dependency_overrides.clear()
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_worker_extraction_phase_disabled_preserves_retrieval_only_behavior(
+    db: AsyncSession, auth, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", False)
+    execution = await create_execution(db, auth)
+    await create_document(db, auth, execution, content_type="text/plain", body="Centre Alpha")
+
+    await SourceDiscoveryExecutionOrchestrator(db)._run_facility_extraction_phase(execution)
+
+    assert await db.scalar(select(func.count()).select_from(ScrapingSourceDocumentText)) == 0
+    assert await db.scalar(select(func.count()).select_from(ScrapingSourceDocumentChunk)) == 0
+    assert await db.scalar(select(func.count()).select_from(ScrapingFacilityExtractionAttempt)) == 0
+    event = await db.scalar(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "facility_extraction_phase_disabled",
+        )
+    )
+    assert event is not None
+
+
+@pytest.mark.asyncio
+async def test_worker_extraction_phase_prepares_extracts_and_keeps_final_tables_empty(
+    db: AsyncSession, auth, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", True)
+    execution = await create_execution(db, auth)
+    await create_document(
+        db,
+        auth,
+        execution,
+        content_type="text/plain",
+        body="Centre Alpha is an addiction treatment facility.",
+    )
+    provider = FakeProvider(
+        FacilityExtractionOutput(
+            document_relevant=True,
+            facilities=[
+                ExtractedFacility(
+                    name=ExtractedEvidenceValue(value="Centre Alpha", evidence_quote="Centre Alpha"),
+                )
+            ],
+        )
+    )
+    monkeypatch.setattr(
+        execution_orchestrator_module,
+        "facility_extraction_service",
+        FacilityExtractionService(provider),
+    )
+
+    await SourceDiscoveryExecutionOrchestrator(db)._run_facility_extraction_phase(execution)
+
+    assert await db.scalar(select(func.count()).select_from(ScrapingSourceDocumentText)) == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingSourceDocumentChunk)) == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingFacilityCandidate)) == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingFacilityCandidateEvidence)) == 1
+    assert provider.call_count == 1
+    event = await db.scalar(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "facility_extraction_phase_completed",
+        )
+    )
+    assert event is not None
+    assert event.metadata_json["staging_candidate_total_count"] == 1
+    assert event.metadata_json["accepted_evidence_total_count"] == 1
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacility)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationSource)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFieldEvidence)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacilityAlias)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacilityLocation)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacilityContact)) == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_extraction_phase_skips_unsupported_document(
+    db: AsyncSession, auth, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", True)
+    execution = await create_execution(db, auth)
+    await create_document(db, auth, execution, content_type="application/pdf", body="pdf")
+    provider = FakeProvider(FacilityExtractionOutput(document_relevant=False, facilities=[]))
+    monkeypatch.setattr(
+        execution_orchestrator_module,
+        "facility_extraction_service",
+        FacilityExtractionService(provider),
+    )
+
+    await SourceDiscoveryExecutionOrchestrator(db)._run_facility_extraction_phase(execution)
+
+    assert provider.call_count == 0
+    skipped = await db.scalar(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "facility_extraction_document_skipped",
+        )
+    )
+    assert skipped is not None
+    assert skipped.metadata_json["failure_classification"] == "unsupported_content_type"
+
+
+@pytest.mark.asyncio
+async def test_worker_extraction_phase_document_and_chunk_limits(
+    db: AsyncSession, auth, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", True)
+    monkeypatch.setattr(get_settings(), "facility_extraction_max_documents_per_execution", 1)
+    monkeypatch.setattr(get_settings(), "facility_extraction_max_chunks_per_execution", 1)
+    monkeypatch.setattr(get_settings(), "facility_extraction_chunk_characters", 20)
+    monkeypatch.setattr(get_settings(), "facility_extraction_chunk_overlap_characters", 0)
+    execution = await create_execution(db, auth)
+    await create_document(
+        db,
+        auth,
+        execution,
+        content_type="text/plain",
+        body="Centre Alpha is an addiction treatment facility. More text for another chunk.",
+    )
+    await create_document(db, auth, execution, content_type="text/plain", body="Centre Beta")
+    provider = FakeProvider(
+        FacilityExtractionOutput(
+            document_relevant=True,
+            facilities=[
+                ExtractedFacility(
+                    name=ExtractedEvidenceValue(
+                        value="Centre Alpha", evidence_quote="Centre Alpha"
+                    ),
+                )
+            ],
+        )
+    )
+    monkeypatch.setattr(
+        execution_orchestrator_module,
+        "facility_extraction_service",
+        FacilityExtractionService(provider),
+    )
+
+    await SourceDiscoveryExecutionOrchestrator(db)._run_facility_extraction_phase(execution)
+
+    assert provider.call_count == 1
+    event = await db.scalar(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "facility_extraction_phase_completed",
+        )
+    )
+    assert event is not None
+    assert event.metadata_json["document_limit_reached"] is True
+    assert event.metadata_json["chunk_limit_reached"] is True
+    assert event.metadata_json["chunks_considered"] == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_extraction_phase_retry_is_idempotent(db: AsyncSession, auth, monkeypatch):
+    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", True)
+    execution = await create_execution(db, auth)
+    await create_document(
+        db,
+        auth,
+        execution,
+        content_type="text/plain",
+        body="Centre Alpha is an addiction treatment facility.",
+    )
+    provider = FakeProvider(
+        FacilityExtractionOutput(
+            document_relevant=True,
+            facilities=[
+                ExtractedFacility(
+                    name=ExtractedEvidenceValue(
+                        value="Centre Alpha", evidence_quote="Centre Alpha"
+                    ),
+                )
+            ],
+        )
+    )
+    monkeypatch.setattr(
+        execution_orchestrator_module,
+        "facility_extraction_service",
+        FacilityExtractionService(provider),
+    )
+    orchestrator = SourceDiscoveryExecutionOrchestrator(db)
+
+    await orchestrator._run_facility_extraction_phase(execution)
+    await orchestrator._run_facility_extraction_phase(execution)
+
+    assert provider.call_count == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingSourceDocumentText)) == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingSourceDocumentChunk)) == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingFacilityExtractionAttempt)) == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingFacilityCandidate)) == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingFacilityCandidateEvidence)) == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_extraction_phase_partial_failure_continues_and_zero_candidates_succeed(
+    db: AsyncSession, auth, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", True)
+    execution = await create_execution(db, auth)
+    await create_document(db, auth, execution, content_type="text/plain", body="First page.")
+    await create_document(db, auth, execution, content_type="text/plain", body="Second page.")
+
+    class FailingThenEmptyProvider(FakeProvider):
+        async def extract(self, *, chunk_text: str, language_hint: str | None = None):
+            self.call_count += 1
+            if self.call_count == 1:
+                raise FacilityProviderError(
+                    "temporary_provider_error",
+                    "Temporary provider error",
+                    retryable=True,
+                )
+            return FacilityExtractionOutput(document_relevant=False, facilities=[])
+
+    provider = FailingThenEmptyProvider(
+        FacilityExtractionOutput(document_relevant=False, facilities=[])
+    )
+    monkeypatch.setattr(
+        execution_orchestrator_module,
+        "facility_extraction_service",
+        FacilityExtractionService(provider),
+    )
+
+    await SourceDiscoveryExecutionOrchestrator(db)._run_facility_extraction_phase(execution)
+
+    assert provider.call_count == 2
+    event = await db.scalar(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "facility_extraction_phase_completed",
+        )
+    )
+    assert event is not None
+    assert event.metadata_json["chunks_failed"] == 1
+    assert event.metadata_json["chunks_succeeded"] == 1
+    assert await db.scalar(select(func.count()).select_from(ScrapingFacilityCandidate)) == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_extraction_phase_respects_cancellation_before_provider_call(
+    db: AsyncSession, auth, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", True)
+    execution = await create_execution(db, auth)
+    execution.status = ScrapingExecutionStatus.CANCEL_REQUESTED
+    await create_document(db, auth, execution, content_type="text/plain", body="Centre Alpha")
+    provider = FakeProvider(FacilityExtractionOutput(document_relevant=False, facilities=[]))
+    monkeypatch.setattr(
+        execution_orchestrator_module,
+        "facility_extraction_service",
+        FacilityExtractionService(provider),
+    )
+
+    with pytest.raises(Exception):
+        await SourceDiscoveryExecutionOrchestrator(db)._run_facility_extraction_phase(execution)
+    assert provider.call_count == 0
+    assert await db.scalar(select(func.count()).select_from(ScrapingFacilityExtractionAttempt)) == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_extraction_phase_uses_execution_org_documents_only(
+    db: AsyncSession, auth, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", True)
+    execution = await create_execution(db, auth)
+    await create_document(db, auth, execution, content_type="text/plain", body="Centre Alpha")
+    other = await create_other_auth(db)
+    other_execution = await create_execution(db, other)
+    await create_document(db, other, other_execution, content_type="text/plain", body="Centre Beta")
+    provider = FakeProvider(
+        FacilityExtractionOutput(
+            document_relevant=True,
+            facilities=[
+                ExtractedFacility(
+                    name=ExtractedEvidenceValue(
+                        value="Centre Alpha", evidence_quote="Centre Alpha"
+                    ),
+                )
+            ],
+        )
+    )
+    monkeypatch.setattr(
+        execution_orchestrator_module,
+        "facility_extraction_service",
+        FacilityExtractionService(provider),
+    )
+
+    await SourceDiscoveryExecutionOrchestrator(db)._run_facility_extraction_phase(execution)
+
+    assert provider.call_count == 1
+    prepared_org_ids = set(
+        (
+            await db.execute(select(ScrapingSourceDocumentText.organization_id))
+        ).scalars().all()
+    )
+    assert prepared_org_ids == {auth.org_id}

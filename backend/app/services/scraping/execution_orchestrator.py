@@ -15,6 +15,9 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.db.models import (
+    ScrapingFacilityCandidate,
+    ScrapingFacilityCandidateEvidence,
+    ScrapingFacilityExtractionAttempt,
     ScrapingCoverageCell,
     ScrapingCoverageStatus,
     ScrapingEvent,
@@ -25,6 +28,8 @@ from app.db.models import (
     ScrapingRun,
     ScrapingSourceCandidate,
     ScrapingSourceDocument,
+    ScrapingSourceDocumentChunk,
+    ScrapingSourceDocumentText,
     ScrapingSourceDiscoveryQuery,
     ScrapingSourceRetrievalAttempt,
     ScrapingTask,
@@ -35,8 +40,16 @@ from app.db.models import (
 )
 from app.db.session import AsyncSessionLocal
 from app.schemas.api import SourceDiscoveryContext, SourceDiscoverySummary
+from app.services.scraping.document_text_preparation_service import (
+    SourceDocumentPreparationContext,
+    document_text_preparation_service,
+)
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.execution_outcome import GAP_COVERAGE_STATUSES
+from app.services.scraping.facility_extraction_service import (
+    FacilityExtractionContext,
+    facility_extraction_service,
+)
 from app.services.scraping.source_discovery_service import source_discovery_service
 from app.services.scraping.source_retrieval_service import (
     SourceRetrievalContext,
@@ -267,6 +280,8 @@ class SourceDiscoveryExecutionOrchestrator:
             await self._ensure_profile_matrix_and_tasks(execution, execution_agents)
             await self._process_tasks(execution)
             await self._check_cancelled(execution)
+            await self._run_facility_extraction_phase(execution)
+            await self._check_cancelled(execution)
             await self._refresh_metrics(execution)
             if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
                 await self._finish_cancelled(execution)
@@ -278,7 +293,15 @@ class SourceDiscoveryExecutionOrchestrator:
                 self.db,
                 execution.id,
                 "execution_completed",
-                "Real source discovery and bounded secure retrieval completed. Facility extraction is not enabled yet.",
+                (
+                    "Real source discovery, secure retrieval, and bounded facility "
+                    "extraction completed."
+                    if get_settings().facility_extraction_enabled
+                    else (
+                        "Real source discovery and bounded secure retrieval completed. "
+                        "Facility extraction is not enabled yet."
+                    )
+                ),
             )
             await self.db.commit()
             self._log(
@@ -501,6 +524,182 @@ class SourceDiscoveryExecutionOrchestrator:
         await self._refresh_metrics(execution)
         await self.db.commit()
         await self._create_gap_audit_task(execution)
+
+    async def _run_facility_extraction_phase(self, execution: ScrapingExecution) -> None:
+        self.current_stage = "facility_extraction"
+        settings = get_settings()
+        if not settings.facility_extraction_enabled:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_extraction_phase_disabled",
+                "Facility extraction phase skipped because it is disabled.",
+                metadata={"enabled": False},
+            )
+            await self.db.commit()
+            self._log(
+                "facility_extraction_phase_disabled",
+                execution_id=execution.id,
+                enabled=False,
+            )
+            return
+
+        documents = await self._source_documents_for_extraction(execution)
+        document_limit = max(settings.facility_extraction_max_documents_per_execution, 1)
+        chunk_limit = max(settings.facility_extraction_max_chunks_per_execution, 1)
+        selected_documents = documents[:document_limit]
+        summary: dict[str, Any] = {
+            "documents_considered": len(documents),
+            "documents_prepared": 0,
+            "documents_skipped": max(len(documents) - len(selected_documents), 0),
+            "documents_failed": 0,
+            "chunks_considered": 0,
+            "chunks_succeeded": 0,
+            "chunks_failed": 0,
+            "staging_candidates_created": 0,
+            "accepted_evidence_count": 0,
+            "rejected_evidence_count": 0,
+            "document_limit_reached": len(documents) > document_limit,
+            "chunk_limit_reached": False,
+        }
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "facility_extraction_phase_started",
+            "Facility extraction phase started for retrieved source documents.",
+            metadata={
+                "documents_considered": summary["documents_considered"],
+                "document_limit": document_limit,
+                "chunk_limit": chunk_limit,
+                "document_limit_reached": summary["document_limit_reached"],
+            },
+        )
+        await self.db.commit()
+
+        for document in selected_documents:
+            await self._check_cancelled(execution)
+            if summary["chunks_considered"] >= chunk_limit:
+                summary["chunk_limit_reached"] = True
+                summary["documents_skipped"] += 1
+                continue
+            prepared = await document_text_preparation_service.prepare(
+                self.db,
+                SourceDocumentPreparationContext(
+                    organization_id=execution.organization_id,
+                    execution_id=execution.id,
+                    source_document_id=document.id,
+                ),
+            )
+            if prepared.preparation_status != "prepared" or not prepared.id:
+                summary["documents_skipped"] += 1
+                await execution_service.emit_event(
+                    self.db,
+                    execution.id,
+                    "facility_extraction_document_skipped",
+                    "Source document was skipped before extraction.",
+                    metadata={
+                        "source_document_id": document.id,
+                        "source_hostname": _hostname(document.final_url),
+                        "preparation_status": prepared.preparation_status,
+                        "failure_classification": prepared.failure_classification,
+                    },
+                )
+                await self.db.commit()
+                continue
+            summary["documents_prepared"] += 1
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_extraction_document_prepared",
+                "Source document prepared for facility extraction.",
+                metadata={
+                    "source_document_id": document.id,
+                    "source_hostname": _hostname(document.final_url),
+                    "prepared_character_count": prepared.character_count,
+                    "chunk_count": prepared.chunk_count,
+                    "truncated": prepared.truncated,
+                    "prepared_text_hash_prefix": (prepared.prepared_text_hash or "")[:12],
+                },
+            )
+            await self.db.commit()
+            chunks = await self._chunks_for_prepared_text(prepared.id)
+            document_had_failure = False
+            document_candidate_count = 0
+            document_evidence_count = 0
+            for chunk in chunks:
+                await self._check_cancelled(execution)
+                if summary["chunks_considered"] >= chunk_limit:
+                    summary["chunk_limit_reached"] = True
+                    break
+                summary["chunks_considered"] += 1
+                extraction_summary = await facility_extraction_service.extract_one_chunk(
+                    self.db,
+                    FacilityExtractionContext(
+                        organization_id=execution.organization_id,
+                        execution_id=execution.id,
+                        source_document_id=document.id,
+                        prepared_text_id=prepared.id,
+                        chunk_id=chunk.id,
+                        coverage_cell_id=chunk.coverage_cell_id,
+                        idempotency_key=self._facility_extraction_attempt_key(
+                            execution.id, document.id, chunk.id
+                        ),
+                    ),
+                )
+                if extraction_summary.status == "succeeded":
+                    summary["chunks_succeeded"] += 1
+                    summary["staging_candidates_created"] += (
+                        extraction_summary.extracted_candidate_count
+                    )
+                    summary["accepted_evidence_count"] += (
+                        extraction_summary.accepted_evidence_count
+                    )
+                    summary["rejected_evidence_count"] += (
+                        extraction_summary.rejected_evidence_count
+                    )
+                    document_candidate_count += extraction_summary.extracted_candidate_count
+                    document_evidence_count += extraction_summary.accepted_evidence_count
+                else:
+                    summary["chunks_failed"] += 1
+                    document_had_failure = True
+                    self._log(
+                        "facility_extraction_chunk_failed",
+                        execution_id=execution.id,
+                        source_document_id=document.id,
+                        chunk_id=chunk.id,
+                        failure_classification=extraction_summary.failure_classification,
+                    )
+            if document_had_failure:
+                summary["documents_failed"] += 1
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_extraction_document_completed",
+                "Source document facility extraction completed.",
+                metadata={
+                    "source_document_id": document.id,
+                    "source_hostname": _hostname(document.final_url),
+                    "candidate_count": document_candidate_count,
+                    "accepted_evidence_count": document_evidence_count,
+                    "had_failure": document_had_failure,
+                },
+            )
+            await self.db.commit()
+
+        summary.update(await self._facility_extraction_metric_metadata(execution.id))
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "facility_extraction_phase_completed",
+            "Facility extraction phase completed with staging output only.",
+            metadata=summary,
+        )
+        await self.db.commit()
+        self._log(
+            "facility_extraction_phase_completed",
+            execution_id=execution.id,
+            **summary,
+        )
 
     async def _process_discovery_task(
         self, execution: ScrapingExecution, task: ScrapingTask
@@ -1083,6 +1282,45 @@ class SourceDiscoveryExecutionOrchestrator:
         ).hexdigest()
         return f"retrieve_source_attempt:{digest}"
 
+    def _facility_extraction_attempt_key(
+        self,
+        execution_id: str,
+        source_document_id: str,
+        chunk_id: str,
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{execution_id}:{source_document_id}:{chunk_id}".encode("utf-8")
+        ).hexdigest()
+        return f"facility_extract:{digest}"
+
+    async def _source_documents_for_extraction(
+        self, execution: ScrapingExecution
+    ) -> list[ScrapingSourceDocument]:
+        result = await self.db.execute(
+            select(ScrapingSourceDocument).where(
+                ScrapingSourceDocument.organization_id == execution.organization_id,
+                ScrapingSourceDocument.execution_id == execution.id,
+            )
+        )
+        return sorted(
+            result.scalars().all(),
+            key=lambda document: (
+                document.retrieval_timestamp,
+                document.source_candidate_id,
+                document.id,
+            ),
+        )
+
+    async def _chunks_for_prepared_text(
+        self, prepared_text_id: str
+    ) -> list[ScrapingSourceDocumentChunk]:
+        result = await self.db.execute(
+            select(ScrapingSourceDocumentChunk)
+            .where(ScrapingSourceDocumentChunk.prepared_text_id == prepared_text_id)
+            .order_by(ScrapingSourceDocumentChunk.chunk_index)
+        )
+        return list(result.scalars().all())
+
     async def _reconcile_coverage_after_retrieval(self, execution: ScrapingExecution) -> None:
         cells = await self._coverage_cells(execution.id)
         for cell in cells:
@@ -1094,12 +1332,22 @@ class SourceDiscoveryExecutionOrchestrator:
             cell.result_count = candidate_count
             cell.completed_at = datetime.now(UTC)
             if document_count > 0:
-                failed_count = len([attempt for attempt in attempts if attempt.status != SourceRetrievalAttemptStatus.SUCCEEDED])
+                failed_count = len(
+                    [
+                        attempt
+                        for attempt in attempts
+                        if attempt.status != SourceRetrievalAttemptStatus.SUCCEEDED
+                    ]
+                )
                 cell.status = ScrapingCoverageStatus.PARTIALLY_COVERED
                 cell.reason = (
-                    "Real source pages were retrieved and stored. Facility extraction and verification are not enabled yet."
+                    "Real source pages were retrieved and stored. "
+                    "Facility extraction and verification are not enabled yet."
                     if failed_count == 0
-                    else "Some real source pages were retrieved and stored; remaining candidates have retrieval debt. Facility extraction is not enabled yet."
+                    else (
+                        "Some real source pages were retrieved and stored; remaining candidates "
+                        "have retrieval debt. Facility extraction is not enabled yet."
+                    )
                 )
             elif attempts and all(
                 attempt.status == SourceRetrievalAttemptStatus.BLOCKED_BY_ROBOTS
@@ -1112,7 +1360,10 @@ class SourceDiscoveryExecutionOrchestrator:
                 cell.reason = "Selected real source candidates did not produce retrievable source documents."
             elif cell.status != ScrapingCoverageStatus.COVERED_NO_RESULTS:
                 cell.status = ScrapingCoverageStatus.FAILED
-                cell.reason = "Real source candidates were discovered but none were selected for retrieval within configured limits."
+                cell.reason = (
+                    "Real source candidates were discovered but none were selected for retrieval "
+                    "within configured limits."
+                )
         await execution_service.emit_event(
             self.db,
             execution.id,
@@ -1271,6 +1522,60 @@ class SourceDiscoveryExecutionOrchestrator:
             "source_document_count": len(documents),
             "unique_retrieved_domains": len(unique_domains),
             "total_downloaded_bytes": sum(document.byte_size or 0 for document in documents),
+        }
+
+    async def _facility_extraction_metric_metadata(self, execution_id: str) -> dict[str, Any]:
+        prepared_count = len(
+            (
+                await self.db.execute(
+                    select(ScrapingSourceDocumentText.id).where(
+                        ScrapingSourceDocumentText.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        chunk_count = len(
+            (
+                await self.db.execute(
+                    select(ScrapingSourceDocumentChunk.id).where(
+                        ScrapingSourceDocumentChunk.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        attempt_count = len(
+            (
+                await self.db.execute(
+                    select(ScrapingFacilityExtractionAttempt.id).where(
+                        ScrapingFacilityExtractionAttempt.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        candidate_count = len(
+            (
+                await self.db.execute(
+                    select(ScrapingFacilityCandidate.id).where(
+                        ScrapingFacilityCandidate.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        evidence_count = len(
+            (
+                await self.db.execute(
+                    select(ScrapingFacilityCandidateEvidence.id).where(
+                        ScrapingFacilityCandidateEvidence.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        return {
+            "prepared_text_total_count": prepared_count,
+            "chunk_total_count": chunk_count,
+            "extraction_attempt_total_count": attempt_count,
+            "staging_candidate_total_count": candidate_count,
+            "accepted_evidence_total_count": evidence_count,
         }
 
     async def _finish_cancelled(self, execution: ScrapingExecution) -> None:

@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     facility_extraction_max_chunks_per_document: int = 20
     facility_extraction_max_candidates_per_chunk: int = 25
     facility_extraction_max_candidates_per_document: int = 100
+    facility_extraction_max_documents_per_execution: int = 3
+    facility_extraction_max_chunks_per_execution: int = 10
     facility_extraction_timeout_seconds: float = 60.0
     facility_extraction_max_attempts: int = 2
     facility_extraction_max_evidence_quote_characters: int = 1000
@@ -118,6 +120,8 @@ class Settings(BaseSettings):
         "facility_extraction_max_document_characters",
         "facility_extraction_chunk_characters",
         "facility_extraction_max_chunks_per_document",
+        "facility_extraction_max_documents_per_execution",
+        "facility_extraction_max_chunks_per_execution",
         "facility_extraction_max_candidates_per_chunk",
         "facility_extraction_max_candidates_per_document",
         "facility_extraction_max_evidence_quote_characters",
