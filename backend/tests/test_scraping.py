@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from io import BytesIO
 from decimal import Decimal
 from pathlib import Path
@@ -10,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.models import (
     RehabilitationFacility,
@@ -35,10 +37,13 @@ from app.db.models import (
     ScrapingRunStatus,
     ScrapingSourceCandidate,
     ScrapingSourceDiscoveryQuery,
+    ScrapingSourceDocument,
+    ScrapingSourceRetrievalAttempt,
     ScrapingTask,
     ScrapingTaskStatus,
     SourceCandidateStatus,
     SourceDiscoveryQueryStatus,
+    SourceRetrievalAttemptStatus,
 )
 from app.llm.providers import LLMResponse
 from app.main import create_app
@@ -47,11 +52,14 @@ from app.schemas.api import (
     ScrapingBlueprintContent,
     ScrapingBlueprintRejectRequest,
     ScrapingBlueprintRenameRequest,
+    ScrapingExecutionCreate,
     ScrapingMissionCreate,
     ScrapingMissionUpdate,
-    ScrapingExecutionCreate,
-    SourceDiscoverySummary,
     ScrapingTeamPlanOutput,
+)
+from app.services.scraping.source_discovery_service import SourceDiscoverySummary
+from app.services.scraping.source_retrieval_service import (
+    SourceRetrievalSummary,
 )
 from app.scraping.worker import WorkerSettings, run_scraping_execution
 from app.scraping.blueprint_orchestrator import BlueprintOrchestrator
@@ -1145,6 +1153,63 @@ def mock_source_discovery(monkeypatch, candidate_count: int = 1) -> None:
         fake_discover,
     )
 
+    async def fake_retrieve(service_db, context):
+        content = b"real public health source"
+        content_hash = hashlib.sha256(content).hexdigest()
+        attempt = ScrapingSourceRetrievalAttempt(
+            organization_id=context.organization_id,
+            execution_id=context.execution_id,
+            source_candidate_id=context.source_candidate_id,
+            coverage_cell_id=context.coverage_cell_id,
+            task_id=context.task_id,
+            status=SourceRetrievalAttemptStatus.SUCCEEDED,
+            requested_url="https://sante.gouv.fr/source",
+            final_url="https://sante.gouv.fr/source",
+            redirect_count=0,
+            http_status=200,
+            content_type="text/html",
+            bytes_received=len(content),
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            idempotency_key=context.idempotency_key,
+            metadata_json={"content_sha256": content_hash},
+        )
+        service_db.add(attempt)
+        await service_db.flush()
+        document = ScrapingSourceDocument(
+            organization_id=context.organization_id,
+            execution_id=context.execution_id,
+            source_candidate_id=context.source_candidate_id,
+            retrieval_attempt_id=attempt.id,
+            final_url="https://sante.gouv.fr/source",
+            content_type="text/html",
+            content_sha256=content_hash,
+            content_text=content.decode(),
+            byte_size=len(content),
+            retrieval_timestamp=datetime.now(UTC),
+            metadata_json={"test": "orchestrator"},
+        )
+        service_db.add(document)
+        await service_db.flush()
+        return SourceRetrievalSummary(
+            attempt_id=attempt.id,
+            status="succeeded",
+            requested_url=attempt.requested_url,
+            final_url=attempt.final_url,
+            redirect_count=0,
+            http_status=200,
+            content_type="text/html",
+            bytes_received=len(content),
+            robots_status=None,
+            document_id=document.id,
+            content_sha256=content_hash,
+        )
+
+    monkeypatch.setattr(
+        "app.services.scraping.execution_orchestrator.source_retrieval_service.retrieve",
+        fake_retrieve,
+    )
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("count", [3, 7])
@@ -1940,6 +2005,7 @@ async def test_source_discovery_worker_persists_candidates_without_facilities(
     assert detail.recent_events[0].sequence_number == 1
     assert detail.execution.mode == "real"
     assert detail.execution.sources_discovered > 0
+    assert detail.execution.documents_found > 0
     assert detail.execution.records_extracted == 0
     assert await _execution_facility_count(db, execution.id) == 0
     assert await _execution_source_count(db, execution.id) == 0
@@ -1950,6 +2016,19 @@ async def test_source_discovery_worker_persists_candidates_without_facilities(
         )
     ).scalars().all()
     assert all(cell.status == ScrapingCoverageStatus.PARTIALLY_COVERED for cell in cells)
+    retrieval_tasks = (
+        await db.execute(
+            select(ScrapingTask).where(
+                ScrapingTask.execution_id == execution.id,
+                ScrapingTask.task_type == "retrieve_source",
+            )
+        )
+    ).scalars().all()
+    assert retrieval_tasks
+    assert all("source_candidate_id" in task.input_json for task in retrieval_tasks)
+    assert all("url" not in task.input_json for task in retrieval_tasks)
+    assert await _count_rows(db, ScrapingSourceRetrievalAttempt) == len(retrieval_tasks)
+    assert await _count_rows(db, ScrapingSourceDocument) == len(retrieval_tasks)
     events = await db.execute(
         select(ScrapingEvent).where(ScrapingEvent.execution_id == execution.id)
     )
@@ -1957,6 +2036,256 @@ async def test_source_discovery_worker_persists_candidates_without_facilities(
     assert sequences == sorted(set(sequences))
     assert "scraping_execution_execution_claim_succeeded" in caplog.text
     assert "scraping_execution_orchestrator_completed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_retrieval_task_per_cell_candidate_limit_is_enforced(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr(get_settings(), "source_retrieval_max_candidates_per_coverage_cell", 2)
+    monkeypatch.setattr(get_settings(), "source_retrieval_max_candidates_per_execution", 25)
+    mock_source_discovery(monkeypatch, candidate_count=5)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
+    retrieval_tasks = (
+        await db.execute(
+            select(ScrapingTask).where(
+                ScrapingTask.execution_id == execution.id,
+                ScrapingTask.task_type == "retrieve_source",
+            )
+        )
+    ).scalars().all()
+    assert len(retrieval_tasks) == 2
+    per_cell: dict[str, int] = {}
+    for task in retrieval_tasks:
+        assert set(task.input_json).issuperset({"source_candidate_id", "idempotency_key", "phase"})
+        assert "url" not in task.input_json
+        per_cell[task.coverage_cell_id] = per_cell.get(task.coverage_cell_id, 0) + 1
+    assert len(per_cell) == 1
+    assert max(per_cell.values()) <= 2
+
+
+@pytest.mark.asyncio
+async def test_retrieval_task_per_execution_candidate_limit_is_enforced(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    blueprint = await create_active_approved_blueprint(db, auth)
+    blueprint.blueprint_json = {
+        **valid_blueprint(),
+        "scope": {
+            "included": ["public listings"],
+            "excluded": ["private data"],
+            "countries": ["France"],
+            "regions": ["Region A", "Region B", "Region C"],
+        },
+        "languages": ["French"],
+        "source_strategy": [
+            {"source_type": "official directory", "priority": 1},
+        ],
+    }
+    mock_planner(monkeypatch, 3)
+    run = await run_service.plan_team(db, auth, blueprint.mission_id)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr(get_settings(), "source_retrieval_max_candidates_per_coverage_cell", 2)
+    monkeypatch.setattr(get_settings(), "source_retrieval_max_candidates_per_execution", 5)
+    mock_source_discovery(monkeypatch, candidate_count=5)
+    execution = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    await SourceDiscoveryExecutionOrchestrator(db).run(execution.id)
+    retrieval_tasks = (
+        await db.execute(
+            select(ScrapingTask)
+            .where(
+                ScrapingTask.execution_id == execution.id,
+                ScrapingTask.task_type == "retrieve_source",
+            )
+            .order_by(ScrapingTask.priority, ScrapingTask.created_at)
+        )
+    ).scalars().all()
+    assert len(retrieval_tasks) == 5
+    per_cell: dict[str, int] = {}
+    for task in retrieval_tasks:
+        assert set(task.input_json).issuperset({"source_candidate_id", "idempotency_key", "phase"})
+        assert "url" not in task.input_json
+        per_cell[task.coverage_cell_id] = per_cell.get(task.coverage_cell_id, 0) + 1
+    assert len(per_cell) == 3
+    assert max(per_cell.values()) <= 2
+    assert sorted(per_cell.values()) == [1, 2, 2]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_candidate_selection_is_deterministic_deduped_and_diverse(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    run = await create_planned_team_plan(db, auth, monkeypatch)
+
+    async def fake_enqueue(execution_id):
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", fake_enqueue)
+    monkeypatch.setattr(get_settings(), "source_retrieval_max_candidates_per_coverage_cell", 3)
+    monkeypatch.setattr(get_settings(), "source_retrieval_max_candidates_per_execution", 25)
+    summary = await execution_service.create_execution(
+        db, auth, run.id, ScrapingExecutionCreate(execution_type="initial_full_country")
+    )
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    agents = (
+        await db.execute(
+            select(ScrapingExecutionAgent).where(
+                ScrapingExecutionAgent.execution_id == execution.id
+            )
+        )
+    ).scalars().all()
+    await SourceDiscoveryExecutionOrchestrator(db)._ensure_profile_matrix_and_tasks(
+        execution, list(agents)
+    )
+    cell = (
+        await db.execute(
+            select(ScrapingCoverageCell).where(
+                ScrapingCoverageCell.execution_id == execution.id
+            )
+        )
+    ).scalars().first()
+    assert cell is not None
+    query = ScrapingSourceDiscoveryQuery(
+        organization_id=auth.org_id,
+        execution_id=execution.id,
+        coverage_cell_id=cell.id,
+        country_code=execution.country_code,
+        country_name=execution.country_name,
+        region_code=cell.region_code,
+        region_name=cell.region_name,
+        language_code=cell.language_code or "en",
+        language_name=cell.language_name,
+        source_category=cell.source_category,
+        query_text="selection query",
+        provider="serper",
+        status=SourceDiscoveryQueryStatus.SUCCEEDED,
+        requested_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+    )
+    db.add(query)
+    await db.flush()
+    duplicate_query = ScrapingSourceDiscoveryQuery(
+        organization_id=auth.org_id,
+        execution_id=execution.id,
+        coverage_cell_id=cell.id,
+        country_code=execution.country_code,
+        country_name=execution.country_name,
+        region_code=cell.region_code,
+        region_name=cell.region_name,
+        language_code=cell.language_code or "en",
+        language_name=cell.language_name,
+        source_category=cell.source_category,
+        query_text="selection duplicate query",
+        provider="serper",
+        status=SourceDiscoveryQueryStatus.SUCCEEDED,
+        requested_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+    )
+    db.add(duplicate_query)
+    await db.flush()
+
+    rows = [
+        ("https://b.example.org/page", "b.example.org", "high", 1, "directory", query.id),
+        (
+            "https://b.example.org/page",
+            "b.example.org",
+            "high",
+            2,
+            "directory duplicate",
+            duplicate_query.id,
+        ),
+        ("https://a.gov.fr/page", "a.gov.fr", "medium", 1, "official registry", query.id),
+        ("https://c.example.org/page", "c.example.org", "high", 3, "directory", query.id),
+        ("https://d.example.org/page", "d.example.org", "low", 1, "directory", query.id),
+    ]
+    for index, (url, domain, trust, rank, category, discovery_query_id) in enumerate(rows, start=1):
+        db.add(
+            ScrapingSourceCandidate(
+                organization_id=auth.org_id,
+                execution_id=execution.id,
+                coverage_cell_id=cell.id,
+                discovery_query_id=discovery_query_id,
+                provider="serper",
+                provider_result_id=f"result-{index}",
+                rank=rank,
+                url=url,
+                canonical_url=url,
+                domain=domain,
+                title=f"Candidate {index}",
+                snippet="Snippet",
+                country_code=execution.country_code,
+                country_name=execution.country_name,
+                region_code=cell.region_code,
+                region_name=cell.region_name,
+                language_code=cell.language_code or "en",
+                language_name=cell.language_name,
+                source_category=category,
+                initial_relevance_score=Decimal("1.0"),
+                initial_trust_tier=trust,
+                status=SourceCandidateStatus.DISCOVERED,
+                discovered_at=datetime.now(UTC),
+            )
+        )
+    await db.flush()
+    orchestrator = SourceDiscoveryExecutionOrchestrator(db)
+    first = await orchestrator._select_retrieval_candidates(execution.id, cell.id)
+    second = await orchestrator._select_retrieval_candidates(execution.id, cell.id)
+    assert [candidate.id for candidate in first] == [candidate.id for candidate in second]
+    assert len(first) == 3
+    assert len({candidate.canonical_url for candidate in first}) == 3
+    assert len({candidate.domain for candidate in first}) == 3
+    assert [candidate.domain for candidate in first] == [
+        "b.example.org",
+        "c.example.org",
+        "a.gov.fr",
+    ]
+    discovery_task = (
+        await db.execute(
+            select(ScrapingTask).where(
+                ScrapingTask.execution_id == execution.id,
+                ScrapingTask.coverage_cell_id == cell.id,
+                ScrapingTask.task_type == "discover_sources",
+            )
+        )
+    ).scalars().one()
+    created = await orchestrator._create_retrieval_tasks(execution, discovery_task)
+    assert created == 3
+    retrieval_tasks = (
+        await db.execute(
+            select(ScrapingTask).where(
+                ScrapingTask.execution_id == execution.id,
+                ScrapingTask.coverage_cell_id == cell.id,
+                ScrapingTask.task_type == "retrieve_source",
+            )
+        )
+    ).scalars().all()
+    selected_ids = {
+        task.input_json["source_candidate_id"]
+        for task in retrieval_tasks
+    }
+    selected_candidates = [
+        candidate for candidate in first if candidate.id in selected_ids
+    ]
+    assert len(selected_candidates) == 3
+    assert [
+        candidate.canonical_url for candidate in selected_candidates
+    ].count("https://b.example.org/page") == 1
 
 
 @pytest.mark.asyncio

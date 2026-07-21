@@ -16,6 +16,8 @@ import {
   listScrapingExecutionEvents,
   listScrapingSourceCandidates,
   listScrapingSourceDiscoveryQueries,
+  listScrapingSourceDocuments,
+  listScrapingSourceRetrievalAttempts,
   listScrapingExecutionTasks,
   scrapingExecutionStreamUrl,
 } from "@/lib/scraping/api";
@@ -27,6 +29,8 @@ import type {
   ScrapingTask,
   SourceCandidate,
   SourceDiscoveryQuery,
+  SourceDocument,
+  SourceRetrievalAttempt,
 } from "@/lib/scraping/types";
 
 export const Route = createFileRoute("/scraping/$missionId/executions/$executionId")({
@@ -45,6 +49,8 @@ function ScrapingExecutionPage() {
   const [facilities, setFacilities] = useState<ScrapingFacilitySummary[]>([]);
   const [sourceCandidates, setSourceCandidates] = useState<SourceCandidate[]>([]);
   const [discoveryQueries, setDiscoveryQueries] = useState<SourceDiscoveryQuery[]>([]);
+  const [retrievalAttempts, setRetrievalAttempts] = useState<SourceRetrievalAttempt[]>([]);
+  const [sourceDocuments, setSourceDocuments] = useState<SourceDocument[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<"Live" | "Reconnecting" | "Disconnected">(
     "Disconnected",
@@ -71,6 +77,8 @@ function ScrapingExecutionPage() {
       loadedFacilities,
       loadedCandidates,
       loadedQueries,
+      loadedRetrievalAttempts,
+      loadedSourceDocuments,
     ] = await Promise.all([
       getScrapingExecution(auth, executionId),
       listScrapingExecutionTasks(auth, executionId),
@@ -79,6 +87,8 @@ function ScrapingExecutionPage() {
       listScrapingExecutionFacilities(auth, executionId),
       listScrapingSourceCandidates(auth, executionId),
       listScrapingSourceDiscoveryQueries(auth, executionId),
+      listScrapingSourceRetrievalAttempts(auth, executionId),
+      listScrapingSourceDocuments(auth, executionId),
     ]);
     setDetail(loadedDetail);
     setTasks(loadedTasks);
@@ -87,6 +97,8 @@ function ScrapingExecutionPage() {
     setFacilities(loadedFacilities);
     setSourceCandidates(loadedCandidates);
     setDiscoveryQueries(loadedQueries);
+    setRetrievalAttempts(loadedRetrievalAttempts);
+    setSourceDocuments(loadedSourceDocuments);
     lastSequenceRef.current = Math.max(0, ...loadedEvents.map((event) => event.sequence_number));
   }, [authHeaders, executionId, navigate]);
 
@@ -203,6 +215,20 @@ function ScrapingExecutionPage() {
     [sourceCandidates],
   );
   const failedQueryCount = discoveryQueries.filter((query) => query.status === "failed").length;
+  const selectedRetrievalCount = tasks.filter((task) => task.task_type === "retrieve_source").length;
+  const successfulRetrievalCount = retrievalAttempts.filter((attempt) => attempt.status === "succeeded").length;
+  const blockedRetrievalCount = retrievalAttempts.filter((attempt) => attempt.status === "blocked_by_robots").length;
+  const unsupportedRetrievalCount = retrievalAttempts.filter(
+    (attempt) => attempt.status === "unsupported_content_type",
+  ).length;
+  const failedRetrievalCount = retrievalAttempts.filter(
+    (attempt) => !["succeeded", "blocked_by_robots", "unsupported_content_type"].includes(attempt.status),
+  ).length;
+  const downloadedBytes = sourceDocuments.reduce((total, document) => total + document.byte_size, 0);
+  const candidatesById = useMemo(
+    () => new Map(sourceCandidates.map((candidate) => [candidate.id, candidate])),
+    [sourceCandidates],
+  );
   const summaryCounts = useMemo(() => {
     const count = (status: string) => tasks.filter((task) => task.status === status).length;
     return {
@@ -271,8 +297,8 @@ function ScrapingExecutionPage() {
       <div className="mx-auto max-w-7xl px-6 py-10">
         <PageHeader
           eyebrow="Execution Campaigns"
-          title="Real Source Discovery Campaign"
-          description="This phase discovers and stores real candidate sources. Website retrieval and facility extraction are not yet enabled."
+          title="Real Source Retrieval Campaign"
+          description="This phase discovers real candidate sources and retrieves a bounded set of secure source pages. Facility extraction is not yet enabled."
           action={
             <Link
               to="/scraping/$missionId/runs/$runId"
@@ -290,9 +316,9 @@ function ScrapingExecutionPage() {
             <GlassCard className="border-emerald-500/40 bg-emerald-500/10 p-5">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <p className="font-semibold">Real source discovery only</p>
+                  <p className="font-semibold">Real source pages have been retrieved and stored</p>
                   <p className="text-sm text-muted-foreground">
-                    Candidate source URLs are persisted. Retrieval, extraction, facilities, and Excel export wait for the next phase.
+                    Facility extraction and verification are not yet enabled.
                   </p>
                 </div>
                 <Badge variant="secondary">{connectionState}</Badge>
@@ -346,11 +372,18 @@ function ScrapingExecutionPage() {
                 <Metric label="Coverage cells" value={`${completedCoverage}/${coverage.length}`} />
                 <Metric label="Coverage debt" value={execution.coverage_debt} />
                 <Metric label="Source candidates" value={sourceCandidates.length} />
+                <Metric label="Selected retrievals" value={selectedRetrievalCount} />
+                <Metric label="Retrieval attempts" value={retrievalAttempts.length} />
+                <Metric label="Successful retrievals" value={successfulRetrievalCount} />
+                <Metric label="Successful documents" value={sourceDocuments.length} />
+                <Metric label="Blocked retrievals" value={blockedRetrievalCount} />
+                <Metric label="Unsupported types" value={unsupportedRetrievalCount} />
+                <Metric label="Failed retrievals" value={failedRetrievalCount} />
+                <Metric label="Downloaded bytes" value={downloadedBytes.toLocaleString()} />
                 <Metric label="Unique domains" value={uniqueDomainCount} />
                 <Metric label="Discovery queries" value={discoveryQueries.length} />
                 <Metric label="Query failures" value={failedQueryCount} />
                 <Metric label="Facilities extracted" value={facilities.length} />
-                <Metric label="Blocked cells" value={execution.blocked_sources} />
               </div>
               {!isTerminal && facilities.length > 0 && (
                 <p className="mt-4 text-sm text-muted-foreground">
@@ -452,6 +485,14 @@ function ScrapingExecutionPage() {
             <GridSection title="Coverage" rows={filteredCoverage.map(formatCoverageRow)} />
             <GridSection title="Tasks" rows={filteredTasks.map(formatTaskRow)} />
             <GridSection title="Discovery Queries" rows={discoveryQueries.map(formatQueryRow)} />
+            <GridSection
+              title="Retrieval Attempts"
+              rows={retrievalAttempts.map((attempt) => formatAttemptRow(attempt, candidatesById))}
+            />
+            <GridSection
+              title="Source Documents"
+              rows={sourceDocuments.map((document) => formatDocumentRow(document))}
+            />
             <GlassCard className="p-6">
               <h2 className="text-lg font-semibold">Live Activity</h2>
               <div className="mt-4 max-h-[520px] space-y-3 overflow-auto">
@@ -561,4 +602,42 @@ function formatQueryRow(query: SourceDiscoveryQuery) {
     query.source_category,
     query.error_code ?? "",
   ];
+}
+
+function formatAttemptRow(
+  attempt: SourceRetrievalAttempt,
+  candidatesById: Map<string, SourceCandidate>,
+) {
+  const candidate = candidatesById.get(attempt.source_candidate_id);
+  return [
+    candidate?.title || candidate?.canonical_url || attempt.source_candidate_id,
+    safeHostname(attempt.final_url ?? attempt.requested_url),
+    attempt.status,
+    attempt.http_status == null ? "" : String(attempt.http_status),
+    attempt.content_type ?? "",
+    attempt.bytes_received == null ? "" : attempt.bytes_received.toLocaleString(),
+    String(attempt.redirect_count),
+    attempt.robots_status ?? "",
+    attempt.failure_classification ?? "",
+  ];
+}
+
+function formatDocumentRow(document: SourceDocument) {
+  return [
+    safeHostname(document.final_url),
+    document.final_url,
+    document.content_type,
+    document.byte_size.toLocaleString(),
+    new Date(document.retrieval_timestamp).toLocaleString(),
+    document.content_sha256.slice(0, 12),
+  ];
+}
+
+function safeHostname(value?: string | null) {
+  if (!value) return "";
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return "";
+  }
 }

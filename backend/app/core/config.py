@@ -64,6 +64,21 @@ class Settings(BaseSettings):
     source_retrieval_max_bytes: int = 2_097_152
     source_retrieval_allowed_ports: Annotated[list[int], NoDecode] = Field(default=[80, 443])
     source_retrieval_robots_policy: Literal["respect"] = "respect"
+    source_retrieval_max_candidates_per_coverage_cell: int = 3
+    source_retrieval_max_candidates_per_execution: int = 25
+
+    # Real facility extraction foundation (disabled until worker integration is added)
+    facility_extraction_enabled: bool = False
+    facility_extraction_model: str = "gpt-4.1"
+    facility_extraction_max_document_characters: int = 200_000
+    facility_extraction_chunk_characters: int = 12_000
+    facility_extraction_chunk_overlap_characters: int = 500
+    facility_extraction_max_chunks_per_document: int = 20
+    facility_extraction_max_candidates_per_chunk: int = 25
+    facility_extraction_max_candidates_per_document: int = 100
+    facility_extraction_timeout_seconds: float = 60.0
+    facility_extraction_max_attempts: int = 2
+    facility_extraction_max_evidence_quote_characters: int = 1000
 
     # Optional source discovery provider — Brave Search
     brave_search_api_key: str | None = None
@@ -98,6 +113,51 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [int(port.strip()) for port in v.split(",") if port.strip()]
         return v
+
+    @field_validator(
+        "facility_extraction_max_document_characters",
+        "facility_extraction_chunk_characters",
+        "facility_extraction_max_chunks_per_document",
+        "facility_extraction_max_candidates_per_chunk",
+        "facility_extraction_max_candidates_per_document",
+        "facility_extraction_max_evidence_quote_characters",
+    )
+    @classmethod
+    def validate_positive_bounded_extraction_limits(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("facility extraction limits must be positive")
+        if value > 1_000_000:
+            raise ValueError("facility extraction limits must be bounded")
+        return value
+
+    @field_validator("facility_extraction_chunk_overlap_characters")
+    @classmethod
+    def validate_non_negative_overlap(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("facility extraction chunk overlap must be non-negative")
+        return value
+
+    @field_validator("facility_extraction_max_attempts")
+    @classmethod
+    def validate_bounded_extraction_attempts(cls, value: int) -> int:
+        if value <= 0 or value > 5:
+            raise ValueError("facility extraction attempts must be between 1 and 5")
+        return value
+
+    @field_validator("facility_extraction_timeout_seconds")
+    @classmethod
+    def validate_bounded_extraction_timeout(cls, value: float) -> float:
+        if value <= 0 or value > 300:
+            raise ValueError("facility extraction timeout must be between 0 and 300 seconds")
+        return value
+
+    @field_validator("facility_extraction_chunk_overlap_characters")
+    @classmethod
+    def validate_overlap_smaller_than_chunk(cls, value: int, info) -> int:
+        chunk = info.data.get("facility_extraction_chunk_characters")
+        if chunk is not None and value >= chunk:
+            raise ValueError("facility extraction chunk overlap must be smaller than chunk size")
+        return value
 
     @property
     def is_production(self) -> bool:

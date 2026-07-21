@@ -15,6 +15,8 @@ import type {
   ScrapingTask,
   SourceCandidate,
   SourceDiscoveryQuery,
+  SourceDocument,
+  SourceRetrievalAttempt,
 } from "@/lib/scraping/types";
 
 type Auth = { token: string; orgId: string };
@@ -248,6 +250,23 @@ export function listScrapingSourceDiscoveryQueries(auth: Auth, executionId: stri
       orgId: auth.orgId,
     },
   );
+}
+
+export function listScrapingSourceRetrievalAttempts(auth: Auth, executionId: string) {
+  return apiRequest<SourceRetrievalAttempt[]>(
+    `/scraping/executions/${executionId}/retrieval-attempts`,
+    {
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
+}
+
+export function listScrapingSourceDocuments(auth: Auth, executionId: string) {
+  return apiRequest<SourceDocument[]>(`/scraping/executions/${executionId}/source-documents`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
 }
 
 export async function downloadScrapingExecutionWorkbook(auth: Auth, executionId: string) {

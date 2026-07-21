@@ -19,17 +19,30 @@ from app.schemas.api import (
     ScrapingExecutionSummary,
     ScrapingFacilitySummary,
     ScrapingTaskResponse,
+    FacilityCandidateAuditResponse,
+    FacilityCandidateEvidenceAuditResponse,
+    FacilityExtractionAttemptAuditResponse,
+    PreparedSourceTextAuditResponse,
     SourceCandidateResponse,
     SourceDiscoveryQueryResponse,
     SourceDocumentResponse,
+    SourceDocumentChunkAuditResponse,
     SourceRetrievalAttemptResponse,
 )
 from app.services.scraping.execution_export_service import MIME_XLSX, execution_export_service
 from app.services.scraping.execution_service import execution_service
+from app.services.scraping.facility_extraction_service import facility_extraction_service
 from app.services.scraping.source_discovery_service import source_discovery_service
 from app.services.scraping.source_retrieval_service import source_retrieval_service
 
 router = APIRouter()
+
+
+def _preview(value: str, limit: int) -> str:
+    compact = " ".join((value or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 3)].rstrip() + "..."
 
 
 @router.get("/{execution_id}", response_model=ScrapingExecutionDetail)
@@ -284,6 +297,166 @@ async def list_source_documents(
             updated_at=row.updated_at,
         )
         for row in documents
+    ]
+
+
+@router.get(
+    "/{execution_id}/prepared-source-texts",
+    response_model=list[PreparedSourceTextAuditResponse],
+)
+async def list_prepared_source_texts(
+    execution_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await facility_extraction_service.list_prepared_texts(
+        db, auth, execution_id, limit=limit, offset=offset
+    )
+    return [
+        PreparedSourceTextAuditResponse(
+            id=row.id,
+            source_document_id=row.source_document_id,
+            source_candidate_id=row.source_candidate_id,
+            coverage_cell_id=row.coverage_cell_id,
+            parser_version=row.parser_version,
+            title=row.title,
+            status=row.preparation_status.value,
+            failure_classification=row.failure_classification,
+            character_count=row.character_count,
+            original_character_count=row.original_character_count,
+            truncated=row.truncated,
+            prepared_text_hash_prefix=row.prepared_text_hash[:12],
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/{execution_id}/source-document-chunks",
+    response_model=list[SourceDocumentChunkAuditResponse],
+)
+async def list_source_document_chunks(
+    execution_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await facility_extraction_service.list_chunks(db, auth, execution_id, limit=limit, offset=offset)
+    return [
+        SourceDocumentChunkAuditResponse(
+            id=row.id,
+            source_document_id=row.source_document_id,
+            prepared_text_id=row.prepared_text_id,
+            coverage_cell_id=row.coverage_cell_id,
+            chunk_index=row.chunk_index,
+            character_start=row.character_start,
+            character_end=row.character_end,
+            character_count=len(row.chunk_text),
+            chunk_hash_prefix=row.chunk_hash[:12],
+            preview=_preview(row.chunk_text, 240),
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/{execution_id}/facility-extraction-attempts",
+    response_model=list[FacilityExtractionAttemptAuditResponse],
+)
+async def list_facility_extraction_attempts(
+    execution_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await facility_extraction_service.list_attempts(db, auth, execution_id, limit=limit, offset=offset)
+    return [
+        FacilityExtractionAttemptAuditResponse(
+            id=row.id,
+            source_document_id=row.source_document_id,
+            prepared_text_id=row.prepared_text_id,
+            chunk_id=row.chunk_id,
+            coverage_cell_id=row.coverage_cell_id,
+            provider=row.provider,
+            model=row.model,
+            prompt_version=row.prompt_version,
+            status=row.status.value,
+            attempt_number=row.attempt_number,
+            requested_at=row.requested_at,
+            completed_at=row.completed_at,
+            input_character_count=row.input_character_count,
+            output_candidate_count=row.output_candidate_count,
+            failure_classification=row.failure_classification,
+            safe_error_message=row.safe_error_message,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/{execution_id}/facility-candidates", response_model=list[FacilityCandidateAuditResponse])
+async def list_facility_candidates(
+    execution_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await facility_extraction_service.list_candidates(db, auth, execution_id, limit=limit, offset=offset)
+    return [
+        FacilityCandidateAuditResponse(
+            id=row.id,
+            coverage_cell_id=row.coverage_cell_id,
+            source_document_id=row.source_document_id,
+            prepared_text_id=row.prepared_text_id,
+            chunk_id=row.chunk_id,
+            extraction_attempt_id=row.extraction_attempt_id,
+            raw_name=row.raw_name,
+            model_confidence=float(row.model_confidence) if row.model_confidence is not None else None,
+            staging_status=row.staging_status.value,
+            candidate_fingerprint_prefix=row.candidate_fingerprint[:12],
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/{execution_id}/facility-candidate-evidence",
+    response_model=list[FacilityCandidateEvidenceAuditResponse],
+)
+async def list_facility_candidate_evidence(
+    execution_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await facility_extraction_service.list_evidence(db, auth, execution_id, limit=limit, offset=offset)
+    return [
+        FacilityCandidateEvidenceAuditResponse(
+            id=row.id,
+            facility_candidate_id=row.facility_candidate_id,
+            source_document_id=row.source_document_id,
+            prepared_text_id=row.prepared_text_id,
+            chunk_id=row.chunk_id,
+            field_name=row.field_name,
+            raw_value_preview=_preview(str(row.raw_value), 240) if row.raw_value is not None else None,
+            evidence_quote=_preview(row.evidence_quote, 1000),
+            quote_start=row.quote_start,
+            quote_end=row.quote_end,
+            evidence_hash_prefix=row.evidence_hash[:12],
+            verification_status=row.verification_status.value,
+            created_at=row.created_at,
+        )
+        for row in rows
     ]
 
 

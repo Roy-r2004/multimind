@@ -757,6 +757,87 @@ class SourceDocumentResponse(BaseModel):
     updated_at: datetime
 
 
+class PreparedSourceTextAuditResponse(BaseModel):
+    id: str
+    source_document_id: str
+    source_candidate_id: str | None = None
+    coverage_cell_id: str | None = None
+    parser_version: str
+    title: str | None = None
+    status: str
+    failure_classification: str | None = None
+    character_count: int
+    original_character_count: int
+    truncated: bool
+    prepared_text_hash_prefix: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceDocumentChunkAuditResponse(BaseModel):
+    id: str
+    source_document_id: str
+    prepared_text_id: str
+    coverage_cell_id: str | None = None
+    chunk_index: int
+    character_start: int
+    character_end: int
+    character_count: int
+    chunk_hash_prefix: str
+    preview: str
+    created_at: datetime
+
+
+class FacilityExtractionAttemptAuditResponse(BaseModel):
+    id: str
+    source_document_id: str
+    prepared_text_id: str
+    chunk_id: str
+    coverage_cell_id: str | None = None
+    provider: str
+    model: str
+    prompt_version: str
+    status: str
+    attempt_number: int
+    requested_at: datetime
+    completed_at: datetime | None = None
+    input_character_count: int
+    output_candidate_count: int
+    failure_classification: str | None = None
+    safe_error_message: str | None = None
+
+
+class FacilityCandidateAuditResponse(BaseModel):
+    id: str
+    coverage_cell_id: str | None = None
+    source_document_id: str
+    prepared_text_id: str
+    chunk_id: str
+    extraction_attempt_id: str
+    raw_name: str
+    model_confidence: float | None = None
+    staging_status: str
+    candidate_fingerprint_prefix: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class FacilityCandidateEvidenceAuditResponse(BaseModel):
+    id: str
+    facility_candidate_id: str
+    source_document_id: str
+    prepared_text_id: str
+    chunk_id: str
+    field_name: str
+    raw_value_preview: str | None = None
+    evidence_quote: str
+    quote_start: int
+    quote_end: int
+    evidence_hash_prefix: str
+    verification_status: str
+    created_at: datetime
+
+
 # --- Chats ---
 
 

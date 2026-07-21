@@ -3,9 +3,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import AuthContext, get_auth_context
 from app.db.session import get_db
-from app.schemas.api import ShareLinkResponse, SharedChatResponse
+from app.schemas.api import SharedChatResponse
 from app.services.share_service import share_service
 
 router = APIRouter()

@@ -313,6 +313,47 @@ export type SourceDiscoveryQuery = {
   updated_at: string;
 };
 
+export type SourceRetrievalAttempt = {
+  id: string;
+  organization_id: string;
+  execution_id: string;
+  source_candidate_id: string;
+  coverage_cell_id?: string | null;
+  task_id?: string | null;
+  status: string;
+  requested_url: string;
+  final_url?: string | null;
+  redirect_count: number;
+  http_status?: number | null;
+  content_type?: string | null;
+  declared_content_length?: number | null;
+  bytes_received?: number | null;
+  robots_status?: string | null;
+  failure_classification?: string | null;
+  safe_error_message?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SourceDocument = {
+  id: string;
+  organization_id: string;
+  execution_id: string;
+  source_candidate_id: string;
+  retrieval_attempt_id: string;
+  final_url: string;
+  content_type: string;
+  charset?: string | null;
+  content_sha256: string;
+  byte_size: number;
+  retrieval_timestamp: string;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ScrapingExecutionAgent = {
   id: string;
   execution_id: string;

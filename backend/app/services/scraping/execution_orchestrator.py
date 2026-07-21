@@ -7,6 +7,7 @@ import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,22 +24,56 @@ from app.db.models import (
     ScrapingExecutionStatus,
     ScrapingRun,
     ScrapingSourceCandidate,
+    ScrapingSourceDocument,
     ScrapingSourceDiscoveryQuery,
+    ScrapingSourceRetrievalAttempt,
     ScrapingTask,
     ScrapingTaskStatus,
+    SourceCandidateStatus,
     SourceDiscoveryQueryStatus,
+    SourceRetrievalAttemptStatus,
 )
 from app.db.session import AsyncSessionLocal
 from app.schemas.api import SourceDiscoveryContext, SourceDiscoverySummary
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.execution_outcome import GAP_COVERAGE_STATUSES
 from app.services.scraping.source_discovery_service import source_discovery_service
+from app.services.scraping.source_retrieval_service import (
+    SourceRetrievalContext,
+    SourceRetrievalSummary,
+    source_retrieval_service,
+)
 
 logger = logging.getLogger(__name__)
 
-TASK_TYPES = ["create_coverage_matrix", "discover_sources", "audit_coverage"]
+TASK_TYPES = ["create_coverage_matrix", "discover_sources", "retrieve_source", "audit_coverage"]
 
 METRIC_REFRESH_TASK_INTERVAL = 25
+
+NON_RETRYABLE_RETRIEVAL_STATUSES = {
+    SourceRetrievalAttemptStatus.UNSAFE_URL.value,
+    SourceRetrievalAttemptStatus.PRIVATE_OR_RESERVED_ADDRESS.value,
+    SourceRetrievalAttemptStatus.BLOCKED_BY_ROBOTS.value,
+    SourceRetrievalAttemptStatus.UNSUPPORTED_CONTENT_TYPE.value,
+    SourceRetrievalAttemptStatus.MALFORMED_CONTENT.value,
+    SourceRetrievalAttemptStatus.UNSAFE_REDIRECT.value,
+    SourceRetrievalAttemptStatus.REDIRECT_LIMIT_EXCEEDED.value,
+}
+
+RETRYABLE_RETRIEVAL_STATUSES = {
+    SourceRetrievalAttemptStatus.TIMEOUT.value,
+    SourceRetrievalAttemptStatus.CONNECTION_FAILED.value,
+    SourceRetrievalAttemptStatus.PROVIDER_HTTP_ERROR.value,
+}
+
+OFFICIAL_SOURCE_CATEGORY_TERMS = (
+    "official",
+    "government",
+    "gov",
+    "public health",
+    "public-health",
+    "ministry",
+)
 
 LANGUAGE_CODE_BY_NAME = {
     "arabic": "ar",
@@ -243,7 +278,7 @@ class SourceDiscoveryExecutionOrchestrator:
                 self.db,
                 execution.id,
                 "execution_completed",
-                "Real source discovery completed. Retrieval and extraction are not enabled yet.",
+                "Real source discovery and bounded secure retrieval completed. Facility extraction is not enabled yet.",
             )
             await self.db.commit()
             self._log(
@@ -437,73 +472,201 @@ class SourceDiscoveryExecutionOrchestrator:
             )
 
     async def _process_tasks(self, execution: ScrapingExecution) -> None:
-        tasks = await self._queued_tasks(execution.id)
-        for processed_count, task in enumerate(tasks, start=1):
-            execution = await self._load_execution(execution.id)
-            await self._check_cancelled(execution)
-            agent = task.execution_agent
-            agent.status = ScrapingExecutionAgentStatus.RUNNING
-            agent.current_task_id = task.id
-            agent.current_action = "Running real source discovery"
-            agent.started_at = agent.started_at or datetime.now(UTC)
-            task.status = ScrapingTaskStatus.RUNNING
-            task.started_at = datetime.now(UTC)
-            task.current_action = "Planning and searching real source candidates"
-            if task.coverage_cell:
-                task.coverage_cell.status = ScrapingCoverageStatus.IN_PROGRESS
-                task.coverage_cell.started_at = datetime.now(UTC)
-            await execution_service.emit_event(
-                self.db,
-                execution.id,
-                "task_started",
-                f"{agent.team_agent.name} started {task.title}.",
-                execution_agent_id=agent.id,
-                task_id=task.id,
-                coverage_cell_id=task.coverage_cell_id,
-            )
-            await self.db.commit()
-            await execution_service.emit_event(
-                self.db,
-                execution.id,
-                "discovery_started",
-                "Real source discovery started for this coverage cell.",
-                execution_agent_id=agent.id,
-                task_id=task.id,
-                coverage_cell_id=task.coverage_cell_id,
-            )
+        processed_count = 0
+        while True:
+            tasks = await self._queued_tasks(execution.id)
+            if not tasks:
+                break
+            for task in tasks:
+                processed_count += 1
+                execution = await self._load_execution(execution.id)
+                await self._check_cancelled(execution)
+                if task.task_type == "discover_sources":
+                    await self._process_discovery_task(execution, task)
+                elif task.task_type == "retrieve_source":
+                    await self._process_retrieval_task(execution, task)
+                elif task.task_type == "audit_coverage":
+                    await self._process_audit_task(execution, task)
+                else:
+                    task.status = ScrapingTaskStatus.FAILED
+                    task.completed_at = datetime.now(UTC)
+                    task.error_message = f"Unsupported scraping task type: {task.task_type}"
+                    await self.db.commit()
+                execution.heartbeat_at = datetime.now(UTC)
+                if processed_count % METRIC_REFRESH_TASK_INTERVAL == 0:
+                    await self._refresh_metrics(execution)
+                    await self.db.commit()
 
-            context = self._source_discovery_context(execution, task)
-            summary = await source_discovery_service.discover(self.db, context)
-            output = await self._task_output(task, summary)
-            task.output_json = output
-            await self._emit_discovery_outcome_events(execution, task, agent, output)
-
-            task.status = ScrapingTaskStatus.COMPLETED
-            task.completed_at = datetime.now(UTC)
-            task.current_action = None
-            if task.coverage_cell:
-                self._complete_cell(task.coverage_cell, task)
-            agent.status = ScrapingExecutionAgentStatus.COMPLETED
-            agent.current_task_id = None
-            agent.current_action = None
-            agent.completed_at = datetime.now(UTC)
-            execution.heartbeat_at = datetime.now(UTC)
-            if processed_count % METRIC_REFRESH_TASK_INTERVAL == 0:
-                await self._refresh_metrics(execution)
-            await execution_service.emit_event(
-                self.db,
-                execution.id,
-                "task_completed",
-                f"{task.title} completed with real source discovery output.",
-                execution_agent_id=agent.id,
-                task_id=task.id,
-                coverage_cell_id=task.coverage_cell_id,
-            )
-            await self.db.commit()
-
+        await self._reconcile_coverage_after_retrieval(execution)
         await self._refresh_metrics(execution)
         await self.db.commit()
         await self._create_gap_audit_task(execution)
+
+    async def _process_discovery_task(
+        self, execution: ScrapingExecution, task: ScrapingTask
+    ) -> None:
+        agent = task.execution_agent
+        await self._start_task(
+            execution,
+            task,
+            agent,
+            agent_action="Running real source discovery",
+            task_action="Planning and searching real source candidates",
+        )
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "discovery_started",
+            "Real source discovery started for this coverage cell.",
+            execution_agent_id=agent.id,
+            task_id=task.id,
+            coverage_cell_id=task.coverage_cell_id,
+        )
+
+        context = self._source_discovery_context(execution, task)
+        summary = await source_discovery_service.discover(self.db, context)
+        output = await self._task_output(task, summary)
+        selected_count = await self._create_retrieval_tasks(execution, task)
+        output["selected_retrieval_candidate_count"] = selected_count
+        output["max_retrieval_estimate"] = await self._max_retrieval_estimate(execution.id)
+        task.output_json = output
+        await self._emit_discovery_outcome_events(execution, task, agent, output)
+
+        task.status = ScrapingTaskStatus.COMPLETED
+        task.completed_at = datetime.now(UTC)
+        task.current_action = None
+        if task.coverage_cell:
+            self._complete_discovery_cell(task.coverage_cell, task)
+        self._complete_agent(agent)
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "task_completed",
+            f"{task.title} completed with real source discovery output.",
+            execution_agent_id=agent.id,
+            task_id=task.id,
+            coverage_cell_id=task.coverage_cell_id,
+            metadata={
+                "task_type": task.task_type,
+                "selected_retrieval_candidate_count": selected_count,
+                "max_retrieval_estimate": output["max_retrieval_estimate"],
+            },
+        )
+        await self.db.commit()
+
+    async def _process_retrieval_task(
+        self, execution: ScrapingExecution, task: ScrapingTask
+    ) -> None:
+        agent = task.execution_agent
+        source_candidate_id = (task.input_json or {}).get("source_candidate_id")
+        if not isinstance(source_candidate_id, str) or not source_candidate_id:
+            task.status = ScrapingTaskStatus.FAILED
+            task.completed_at = datetime.now(UTC)
+            task.error_message = "Retrieval task is missing a persisted source candidate ID."
+            await self.db.commit()
+            return
+        await self._check_cancelled(execution)
+        await self._start_task(
+            execution,
+            task,
+            agent,
+            agent_action="Retrieving a persisted source candidate",
+            task_action="Securely retrieving persisted source candidate",
+        )
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "source_retrieval_started",
+            "Secure retrieval started for a persisted source candidate.",
+            execution_agent_id=agent.id,
+            task_id=task.id,
+            coverage_cell_id=task.coverage_cell_id,
+            metadata={"candidate_id": source_candidate_id},
+        )
+        max_attempts = max(1, min(task.max_attempts or 1, 3))
+        summary: SourceRetrievalSummary | None = None
+        for attempt_number in range(1, max_attempts + 1):
+            await self._check_cancelled(execution)
+            task.attempt_count = attempt_number
+            summary = await source_retrieval_service.retrieve(
+                self.db,
+                SourceRetrievalContext(
+                    organization_id=execution.organization_id,
+                    execution_id=execution.id,
+                    source_candidate_id=source_candidate_id,
+                    coverage_cell_id=task.coverage_cell_id,
+                    task_id=task.id,
+                    idempotency_key=self._retrieval_attempt_key(
+                        execution.id, task.id, source_candidate_id, attempt_number
+                    ),
+                ),
+            )
+            task.output_json = self._safe_retrieval_task_output(summary, source_candidate_id)
+            await self._emit_retrieval_outcome_event(execution, task, agent, summary)
+            retryable = self._is_retryable_retrieval_summary(summary)
+            if summary.status == SourceRetrievalAttemptStatus.SUCCEEDED.value or not retryable:
+                break
+
+        task.status = ScrapingTaskStatus.COMPLETED
+        task.completed_at = datetime.now(UTC)
+        task.current_action = None
+        self._complete_agent(agent)
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "task_completed",
+            f"{task.title} completed with secure retrieval output.",
+            execution_agent_id=agent.id,
+            task_id=task.id,
+            coverage_cell_id=task.coverage_cell_id,
+            metadata={"task_type": task.task_type, **(task.output_json or {})},
+        )
+        await self.db.commit()
+
+    async def _process_audit_task(
+        self, execution: ScrapingExecution, task: ScrapingTask
+    ) -> None:
+        task.status = ScrapingTaskStatus.COMPLETED
+        task.started_at = task.started_at or datetime.now(UTC)
+        task.completed_at = task.completed_at or datetime.now(UTC)
+        await self.db.commit()
+
+    async def _start_task(
+        self,
+        execution: ScrapingExecution,
+        task: ScrapingTask,
+        agent: ScrapingExecutionAgent,
+        *,
+        agent_action: str,
+        task_action: str,
+    ) -> None:
+        agent.status = ScrapingExecutionAgentStatus.RUNNING
+        agent.current_task_id = task.id
+        agent.current_action = agent_action
+        agent.started_at = agent.started_at or datetime.now(UTC)
+        task.status = ScrapingTaskStatus.RUNNING
+        task.started_at = task.started_at or datetime.now(UTC)
+        task.current_action = task_action
+        if task.coverage_cell and task.coverage_cell.status == ScrapingCoverageStatus.NOT_STARTED:
+            task.coverage_cell.status = ScrapingCoverageStatus.IN_PROGRESS
+            task.coverage_cell.started_at = datetime.now(UTC)
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "task_started",
+            f"{agent.team_agent.name} started {task.title}.",
+            execution_agent_id=agent.id,
+            task_id=task.id,
+            coverage_cell_id=task.coverage_cell_id,
+            metadata={"task_type": task.task_type},
+        )
+        await self.db.commit()
+
+    def _complete_agent(self, agent: ScrapingExecutionAgent) -> None:
+        agent.status = ScrapingExecutionAgentStatus.COMPLETED
+        agent.current_task_id = None
+        agent.current_action = None
+        agent.completed_at = datetime.now(UTC)
 
     def _source_discovery_context(
         self, execution: ScrapingExecution, task: ScrapingTask
@@ -571,6 +734,146 @@ class SourceDiscoveryExecutionOrchestrator:
             "rejected_result_count": summary.rejected_result_count,
             "duplicate_candidate_count": summary.duplicate_candidate_count,
         }
+
+    async def _create_retrieval_tasks(
+        self, execution: ScrapingExecution, discovery_task: ScrapingTask
+    ) -> int:
+        if discovery_task.coverage_cell_id is None:
+            return 0
+        selected = await self._select_retrieval_candidates(
+            execution.id, discovery_task.coverage_cell_id
+        )
+        if not selected:
+            return 0
+        existing_result = await self.db.execute(
+            select(ScrapingTask).where(
+                ScrapingTask.execution_id == execution.id,
+                ScrapingTask.task_type == "retrieve_source",
+                ScrapingTask.coverage_cell_id == discovery_task.coverage_cell_id,
+            )
+        )
+        existing_candidate_ids = {
+            (task.input_json or {}).get("source_candidate_id")
+            for task in existing_result.scalars().all()
+        }
+        created = 0
+        for index, candidate in enumerate(selected, start=1):
+            if candidate.id in existing_candidate_ids:
+                continue
+            idempotency_key = self._retrieval_task_key(
+                execution.id, discovery_task.coverage_cell_id, candidate.id
+            )
+            self.db.add(
+                ScrapingTask(
+                    execution_id=execution.id,
+                    execution_agent_id=discovery_task.execution_agent_id,
+                    coverage_cell_id=discovery_task.coverage_cell_id,
+                    parent_task_id=discovery_task.id,
+                    task_type="retrieve_source",
+                    title=f"Retrieve source candidate {candidate.title[:120] or candidate.domain}",
+                    status=ScrapingTaskStatus.QUEUED,
+                    priority=discovery_task.priority + 10 + index,
+                    max_attempts=3,
+                    input_json={
+                        "source_candidate_id": candidate.id,
+                        "idempotency_key": idempotency_key,
+                        "phase": "source_retrieval",
+                    },
+                    output_json={},
+                    dependency_task_ids_json=[discovery_task.id],
+                )
+            )
+            existing_candidate_ids.add(candidate.id)
+            created += 1
+        if created:
+            await self.db.flush()
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "task_queued",
+                f"{created} secure source retrieval tasks queued.",
+                execution_agent_id=discovery_task.execution_agent_id,
+                task_id=discovery_task.id,
+                coverage_cell_id=discovery_task.coverage_cell_id,
+                metadata={
+                    "task_type": "retrieve_source",
+                    "selected_retrieval_candidate_count": created,
+                    "max_retrieval_estimate": await self._max_retrieval_estimate(execution.id),
+                },
+            )
+            await self.db.commit()
+        return created
+
+    async def _select_retrieval_candidates(
+        self, execution_id: str, coverage_cell_id: str
+    ) -> list[ScrapingSourceCandidate]:
+        settings = get_settings()
+        per_cell_limit = max(settings.source_retrieval_max_candidates_per_coverage_cell, 0)
+        per_execution_limit = max(settings.source_retrieval_max_candidates_per_execution, 0)
+        if per_cell_limit == 0 or per_execution_limit == 0:
+            return []
+        existing_execution_tasks = await self._retrieval_task_count(execution_id)
+        remaining = max(per_execution_limit - existing_execution_tasks, 0)
+        if remaining == 0:
+            return []
+        result = await self.db.execute(
+            select(ScrapingSourceCandidate).where(
+                ScrapingSourceCandidate.execution_id == execution_id,
+                ScrapingSourceCandidate.coverage_cell_id == coverage_cell_id,
+                ScrapingSourceCandidate.status.in_(
+                    [SourceCandidateStatus.DISCOVERED, SourceCandidateStatus.ACCEPTED]
+                ),
+            )
+        )
+        candidates = list(result.scalars().all())
+        unique_by_url: dict[str, ScrapingSourceCandidate] = {}
+        for candidate in sorted(candidates, key=self._candidate_sort_key):
+            unique_by_url.setdefault(candidate.canonical_url, candidate)
+        sorted_candidates = list(unique_by_url.values())
+        limit = min(per_cell_limit, remaining)
+        selected: list[ScrapingSourceCandidate] = []
+        seen_domains: set[str] = set()
+        for candidate in sorted_candidates:
+            if candidate.domain in seen_domains:
+                continue
+            selected.append(candidate)
+            seen_domains.add(candidate.domain)
+            if len(selected) >= limit:
+                return selected
+        selected_ids = {candidate.id for candidate in selected}
+        for candidate in sorted_candidates:
+            if candidate.id in selected_ids:
+                continue
+            selected.append(candidate)
+            if len(selected) >= limit:
+                break
+        return selected
+
+    def _candidate_sort_key(self, candidate: ScrapingSourceCandidate) -> tuple[int, int, int, str, str]:
+        return (
+            _trust_tier_rank(candidate.initial_trust_tier),
+            candidate.rank,
+            0 if _is_official_source_category(candidate.source_category) else 1,
+            candidate.canonical_url,
+            candidate.id,
+        )
+
+    async def _retrieval_task_count(self, execution_id: str) -> int:
+        result = await self.db.execute(
+            select(ScrapingTask.id).where(
+                ScrapingTask.execution_id == execution_id,
+                ScrapingTask.task_type == "retrieve_source",
+            )
+        )
+        return len(result.scalars().all())
+
+    async def _max_retrieval_estimate(self, execution_id: str) -> int:
+        cell_count = await self._coverage_count(execution_id)
+        settings = get_settings()
+        return min(
+            cell_count * max(settings.source_retrieval_max_candidates_per_coverage_cell, 0),
+            max(settings.source_retrieval_max_candidates_per_execution, 0),
+        )
 
     async def _emit_discovery_outcome_events(
         self,
@@ -684,7 +987,142 @@ class SourceDiscoveryExecutionOrchestrator:
         )
         await self.db.commit()
 
-    def _complete_cell(self, cell: ScrapingCoverageCell, task: ScrapingTask) -> None:
+    def _safe_retrieval_task_output(
+        self, summary: SourceRetrievalSummary, source_candidate_id: str
+    ) -> dict[str, Any]:
+        return {
+            "phase": "source_retrieval",
+            "source_candidate_id": source_candidate_id,
+            "status": summary.status,
+            "final_hostname": _hostname(summary.final_url),
+            "http_status": summary.http_status,
+            "content_type": summary.content_type,
+            "bytes_received": summary.bytes_received,
+            "redirect_count": summary.redirect_count,
+            "robots_status": summary.robots_status,
+            "failure_classification": summary.failure_classification,
+            "document_id": summary.document_id,
+            "content_hash_prefix": (
+                summary.content_sha256[:12] if summary.content_sha256 else None
+            ),
+        }
+
+    async def _emit_retrieval_outcome_event(
+        self,
+        execution: ScrapingExecution,
+        task: ScrapingTask,
+        agent: ScrapingExecutionAgent,
+        summary: SourceRetrievalSummary,
+    ) -> None:
+        metadata = self._safe_retrieval_task_output(
+            summary, str((task.input_json or {}).get("source_candidate_id") or "")
+        )
+        if summary.status == SourceRetrievalAttemptStatus.SUCCEEDED.value:
+            event_type = "source_retrieval_succeeded"
+            message = "Secure source retrieval succeeded."
+        elif summary.status == SourceRetrievalAttemptStatus.BLOCKED_BY_ROBOTS.value:
+            event_type = "source_retrieval_blocked"
+            message = "Secure source retrieval was blocked by robots policy."
+        elif summary.status == SourceRetrievalAttemptStatus.UNSUPPORTED_CONTENT_TYPE.value:
+            event_type = "source_retrieval_unsupported"
+            message = "Secure source retrieval found an unsupported content type."
+        else:
+            event_type = "source_retrieval_failed"
+            message = "Secure source retrieval did not produce a source document."
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            event_type,
+            message,
+            execution_agent_id=agent.id,
+            task_id=task.id,
+            coverage_cell_id=task.coverage_cell_id,
+            metadata=metadata,
+        )
+        if summary.document_id:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "source_document_persisted",
+                "Retrieved source document persisted for later extraction.",
+                execution_agent_id=agent.id,
+                task_id=task.id,
+                coverage_cell_id=task.coverage_cell_id,
+                metadata=metadata,
+            )
+
+    def _is_retryable_retrieval_summary(self, summary: SourceRetrievalSummary) -> bool:
+        if (
+            summary.status == SourceRetrievalAttemptStatus.BLOCKED_BY_ROBOTS.value
+            and summary.robots_status == "unavailable"
+        ):
+            return True
+        if summary.status in RETRYABLE_RETRIEVAL_STATUSES:
+            return True
+        if summary.status in NON_RETRYABLE_RETRIEVAL_STATUSES:
+            return False
+        return False
+
+    def _retrieval_task_key(
+        self, execution_id: str, coverage_cell_id: str, source_candidate_id: str
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{execution_id}:{coverage_cell_id}:{source_candidate_id}".encode("utf-8")
+        ).hexdigest()
+        return f"retrieve_source:{digest}"
+
+    def _retrieval_attempt_key(
+        self,
+        execution_id: str,
+        task_id: str,
+        source_candidate_id: str,
+        attempt_number: int,
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{execution_id}:{task_id}:{source_candidate_id}:{attempt_number}".encode("utf-8")
+        ).hexdigest()
+        return f"retrieve_source_attempt:{digest}"
+
+    async def _reconcile_coverage_after_retrieval(self, execution: ScrapingExecution) -> None:
+        cells = await self._coverage_cells(execution.id)
+        for cell in cells:
+            candidate_count = await self._candidate_count_for_cell(execution.id, cell.id)
+            if candidate_count == 0:
+                continue
+            attempts = await self._retrieval_attempts_for_cell(execution.id, cell.id)
+            document_count = await self._document_count_for_cell(execution.id, cell.id)
+            cell.result_count = candidate_count
+            cell.completed_at = datetime.now(UTC)
+            if document_count > 0:
+                failed_count = len([attempt for attempt in attempts if attempt.status != SourceRetrievalAttemptStatus.SUCCEEDED])
+                cell.status = ScrapingCoverageStatus.PARTIALLY_COVERED
+                cell.reason = (
+                    "Real source pages were retrieved and stored. Facility extraction and verification are not enabled yet."
+                    if failed_count == 0
+                    else "Some real source pages were retrieved and stored; remaining candidates have retrieval debt. Facility extraction is not enabled yet."
+                )
+            elif attempts and all(
+                attempt.status == SourceRetrievalAttemptStatus.BLOCKED_BY_ROBOTS
+                for attempt in attempts
+            ):
+                cell.status = ScrapingCoverageStatus.BLOCKED
+                cell.reason = "All selected real source candidates were blocked by robots policy."
+            elif attempts:
+                cell.status = ScrapingCoverageStatus.FAILED
+                cell.reason = "Selected real source candidates did not produce retrievable source documents."
+            elif cell.status != ScrapingCoverageStatus.COVERED_NO_RESULTS:
+                cell.status = ScrapingCoverageStatus.FAILED
+                cell.reason = "Real source candidates were discovered but none were selected for retrieval within configured limits."
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "retrieval_phase_completed",
+            "Bounded secure retrieval phase completed and coverage was reconciled.",
+            metadata=await self._retrieval_metric_metadata(execution.id),
+        )
+        await self.db.commit()
+
+    def _complete_discovery_cell(self, cell: ScrapingCoverageCell, task: ScrapingTask) -> None:
         output = task.output_json or {}
         candidate_count = int(output.get("candidate_count") or 0)
         query_count = int(output.get("query_count") or 0)
@@ -695,9 +1133,9 @@ class SourceDiscoveryExecutionOrchestrator:
         cell.result_count = result_count
         cell.completed_at = datetime.now(UTC)
         if candidate_count > 0:
-            cell.status = ScrapingCoverageStatus.PARTIALLY_COVERED
+            cell.status = ScrapingCoverageStatus.IN_PROGRESS
             cell.reason = (
-                "Real source candidates were discovered. Retrieval and extraction are not enabled yet."
+                "Real source candidates were discovered and queued for bounded secure retrieval."
             )
         elif query_count > 0 and successful_query_count == query_count:
             cell.status = ScrapingCoverageStatus.COVERED_NO_RESULTS
@@ -713,6 +1151,40 @@ class SourceDiscoveryExecutionOrchestrator:
             cell.status = ScrapingCoverageStatus.FAILED
             cell.reason = "Source discovery ended without a clear successful outcome."
 
+    async def _candidate_count_for_cell(self, execution_id: str, coverage_cell_id: str) -> int:
+        result = await self.db.execute(
+            select(ScrapingSourceCandidate.id).where(
+                ScrapingSourceCandidate.execution_id == execution_id,
+                ScrapingSourceCandidate.coverage_cell_id == coverage_cell_id,
+            )
+        )
+        return len(result.scalars().all())
+
+    async def _retrieval_attempts_for_cell(
+        self, execution_id: str, coverage_cell_id: str
+    ) -> list[ScrapingSourceRetrievalAttempt]:
+        result = await self.db.execute(
+            select(ScrapingSourceRetrievalAttempt).where(
+                ScrapingSourceRetrievalAttempt.execution_id == execution_id,
+                ScrapingSourceRetrievalAttempt.coverage_cell_id == coverage_cell_id,
+            )
+        )
+        return list(result.scalars().all())
+
+    async def _document_count_for_cell(self, execution_id: str, coverage_cell_id: str) -> int:
+        result = await self.db.execute(
+            select(ScrapingSourceDocument.id)
+            .join(
+                ScrapingSourceCandidate,
+                ScrapingSourceCandidate.id == ScrapingSourceDocument.source_candidate_id,
+            )
+            .where(
+                ScrapingSourceDocument.execution_id == execution_id,
+                ScrapingSourceCandidate.coverage_cell_id == coverage_cell_id,
+            )
+        )
+        return len(result.scalars().all())
+
     async def _refresh_metrics(self, execution: ScrapingExecution) -> None:
         candidate_count = len(
             (
@@ -723,15 +1195,83 @@ class SourceDiscoveryExecutionOrchestrator:
                 )
             ).scalars().all()
         )
+        retrieval_metadata = await self._retrieval_metric_metadata(execution.id)
         execution.sources_discovered = candidate_count
-        execution.documents_found = 0
+        execution.documents_found = int(retrieval_metadata["source_document_count"])
         execution.records_extracted = 0
         execution.records_verified = 0
         execution.duplicates_detected = 0
-        execution.blocked_sources = await self._cell_status_count(
-            execution.id, ScrapingCoverageStatus.BLOCKED
-        )
+        execution.blocked_sources = int(retrieval_metadata["blocked_retrieval_count"])
         execution.coverage_debt = await self._coverage_debt(execution.id)
+
+    async def _retrieval_metric_metadata(self, execution_id: str) -> dict[str, Any]:
+        attempts = (
+            await self.db.execute(
+                select(ScrapingSourceRetrievalAttempt).where(
+                    ScrapingSourceRetrievalAttempt.execution_id == execution_id
+                )
+            )
+        ).scalars().all()
+        documents = (
+            await self.db.execute(
+                select(ScrapingSourceDocument).where(
+                    ScrapingSourceDocument.execution_id == execution_id
+                )
+            )
+        ).scalars().all()
+        retrieval_tasks = (
+            await self.db.execute(
+                select(ScrapingTask).where(
+                    ScrapingTask.execution_id == execution_id,
+                    ScrapingTask.task_type == "retrieve_source",
+                )
+            )
+        ).scalars().all()
+        unique_domains = {
+            hostname
+            for hostname in (_hostname(document.final_url) for document in documents)
+            if hostname
+        }
+        return {
+            "selected_retrieval_candidate_count": len(retrieval_tasks),
+            "retrieval_attempt_count": len(attempts),
+            "successful_retrieval_count": len(
+                [
+                    attempt
+                    for attempt in attempts
+                    if attempt.status == SourceRetrievalAttemptStatus.SUCCEEDED
+                ]
+            ),
+            "blocked_retrieval_count": len(
+                [
+                    attempt
+                    for attempt in attempts
+                    if attempt.status == SourceRetrievalAttemptStatus.BLOCKED_BY_ROBOTS
+                ]
+            ),
+            "unsupported_retrieval_count": len(
+                [
+                    attempt
+                    for attempt in attempts
+                    if attempt.status == SourceRetrievalAttemptStatus.UNSUPPORTED_CONTENT_TYPE
+                ]
+            ),
+            "failed_retrieval_count": len(
+                [
+                    attempt
+                    for attempt in attempts
+                    if attempt.status
+                    not in {
+                        SourceRetrievalAttemptStatus.SUCCEEDED,
+                        SourceRetrievalAttemptStatus.BLOCKED_BY_ROBOTS,
+                        SourceRetrievalAttemptStatus.UNSUPPORTED_CONTENT_TYPE,
+                    }
+                ]
+            ),
+            "source_document_count": len(documents),
+            "unique_retrieved_domains": len(unique_domains),
+            "total_downloaded_bytes": sum(document.byte_size or 0 for document in documents),
+        }
 
     async def _finish_cancelled(self, execution: ScrapingExecution) -> None:
         await execution_service._cancel_pending_children(self.db, execution.id)
@@ -1124,3 +1664,30 @@ class SourceDiscoveryExecutionOrchestrator:
             event,
             extra={"scraping_execution_event": event, **fields},
         )
+
+
+def _trust_tier_rank(value: str | None) -> int:
+    normalized = (value or "").strip().lower()
+    ranks = {
+        "high": 0,
+        "trusted": 0,
+        "official": 0,
+        "medium": 1,
+        "moderate": 1,
+        "low": 2,
+    }
+    return ranks.get(normalized, 3)
+
+
+def _is_official_source_category(value: str | None) -> bool:
+    normalized = (value or "").replace("_", " ").lower()
+    return any(term in normalized for term in OFFICIAL_SOURCE_CATEGORY_TERMS)
+
+
+def _hostname(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return urlsplit(value).hostname
+    except ValueError:
+        return None

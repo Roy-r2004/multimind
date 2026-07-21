@@ -194,6 +194,31 @@ class SourceRetrievalRobotsStatus(str, enum.Enum):
     UNAVAILABLE = "unavailable"
 
 
+class SourceDocumentTextPreparationStatus(str, enum.Enum):
+    PREPARED = "prepared"
+    FAILED = "failed"
+
+
+class FacilityExtractionAttemptStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class FacilityCandidateStagingStatus(str, enum.Enum):
+    EXTRACTED = "extracted"
+    EVIDENCE_REJECTED = "evidence_rejected"
+    REVIEW_REQUIRED = "review_required"
+    SUPERSEDED = "superseded"
+
+
+class FacilityCandidateEvidenceVerificationStatus(str, enum.Enum):
+    VERIFIED = "verified"
+    REJECTED_QUOTE_NOT_FOUND = "rejected_quote_not_found"
+    REJECTED_QUOTE_TOO_LONG = "rejected_quote_too_long"
+
+
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
 
@@ -1114,6 +1139,288 @@ class ScrapingSourceDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
 
+class ScrapingSourceDocumentText(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_source_document_texts"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "source_document_id",
+            "parser_version",
+            "source_content_hash",
+            name="uq_source_document_text_version",
+        ),
+        CheckConstraint("character_count >= 0", name="ck_source_document_text_character_count"),
+        CheckConstraint(
+            "original_character_count >= 0",
+            name="ck_source_document_text_original_character_count",
+        ),
+        Index("ix_source_document_texts_org", "organization_id"),
+        Index("ix_source_document_texts_execution", "execution_id"),
+        Index("ix_source_document_texts_document", "source_document_id"),
+        Index("ix_source_document_texts_candidate", "source_candidate_id"),
+        Index("ix_source_document_texts_coverage", "coverage_cell_id"),
+        Index("ix_source_document_texts_hash", "prepared_text_hash"),
+        Index("ix_source_document_texts_status", "preparation_status"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    source_document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    source_candidate_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_source_candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    parser_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prepared_text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    detected_language: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    prepared_text: Mapped[str] = mapped_column(Text, nullable=False)
+    character_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    original_character_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    preparation_status: Mapped[SourceDocumentTextPreparationStatus] = mapped_column(
+        Enum(
+            SourceDocumentTextPreparationStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        nullable=False,
+    )
+    failure_classification: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    organization: Mapped["Organization"] = relationship()
+    execution: Mapped["ScrapingExecution"] = relationship()
+    source_document: Mapped["ScrapingSourceDocument"] = relationship()
+    source_candidate: Mapped["ScrapingSourceCandidate | None"] = relationship()
+    coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship()
+
+
+class ScrapingSourceDocumentChunk(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "scraping_source_document_chunks"
+    __table_args__ = (
+        UniqueConstraint("prepared_text_id", "chunk_index", name="uq_source_document_chunk_index"),
+        UniqueConstraint("prepared_text_id", "chunk_hash", name="uq_source_document_chunk_hash"),
+        CheckConstraint("chunk_index >= 0", name="ck_source_document_chunk_index"),
+        CheckConstraint("character_start >= 0", name="ck_source_document_chunk_start"),
+        CheckConstraint("character_end > character_start", name="ck_source_document_chunk_end"),
+        Index("ix_source_document_chunks_org", "organization_id"),
+        Index("ix_source_document_chunks_execution", "execution_id"),
+        Index("ix_source_document_chunks_document", "source_document_id"),
+        Index("ix_source_document_chunks_prepared", "prepared_text_id"),
+        Index("ix_source_document_chunks_coverage", "coverage_cell_id"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    source_document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    prepared_text_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_document_texts.id", ondelete="CASCADE"), nullable=False
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    character_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    character_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    organization: Mapped["Organization"] = relationship()
+    execution: Mapped["ScrapingExecution"] = relationship()
+    source_document: Mapped["ScrapingSourceDocument"] = relationship()
+    prepared_text: Mapped["ScrapingSourceDocumentText"] = relationship()
+    coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship()
+
+
+class ScrapingFacilityExtractionAttempt(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "scraping_facility_extraction_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "idempotency_key",
+            name="uq_facility_extraction_attempt_idempotency",
+        ),
+        CheckConstraint("attempt_number >= 1", name="ck_facility_extraction_attempt_number"),
+        CheckConstraint(
+            "input_character_count >= 0",
+            name="ck_facility_extraction_attempt_input_character_count",
+        ),
+        CheckConstraint(
+            "output_candidate_count >= 0",
+            name="ck_facility_extraction_attempt_output_candidate_count",
+        ),
+        Index("ix_facility_extraction_attempts_org", "organization_id"),
+        Index("ix_facility_extraction_attempts_execution", "execution_id"),
+        Index("ix_facility_extraction_attempts_document", "source_document_id"),
+        Index("ix_facility_extraction_attempts_chunk", "chunk_id"),
+        Index("ix_facility_extraction_attempts_coverage", "coverage_cell_id"),
+        Index("ix_facility_extraction_attempts_status", "status"),
+        Index("ix_facility_extraction_attempts_context", "organization_id", "execution_id", "chunk_id", "status"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    source_document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    prepared_text_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_document_texts.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_document_chunks.id", ondelete="CASCADE"), nullable=False
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(256), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[FacilityExtractionAttemptStatus] = mapped_column(
+        Enum(
+            FacilityExtractionAttemptStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        nullable=False,
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    input_character_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_candidate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failure_classification: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    safe_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ScrapingFacilityCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_facility_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "extraction_attempt_id",
+            "candidate_fingerprint",
+            name="uq_facility_candidate_attempt_fingerprint",
+        ),
+        CheckConstraint("length(trim(raw_name)) > 0", name="ck_facility_candidate_raw_name"),
+        CheckConstraint(
+            "model_confidence IS NULL OR (model_confidence >= 0 AND model_confidence <= 1)",
+            name="ck_facility_candidate_model_confidence",
+        ),
+        Index("ix_facility_candidates_org", "organization_id"),
+        Index("ix_facility_candidates_execution", "execution_id"),
+        Index("ix_facility_candidates_coverage", "coverage_cell_id"),
+        Index("ix_facility_candidates_document", "source_document_id"),
+        Index("ix_facility_candidates_chunk", "chunk_id"),
+        Index("ix_facility_candidates_attempt", "extraction_attempt_id"),
+        Index("ix_facility_candidates_status", "staging_status"),
+        Index("ix_facility_candidates_fingerprint", "candidate_fingerprint"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    coverage_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    source_document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    prepared_text_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_document_texts.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_document_chunks.id", ondelete="CASCADE"), nullable=False
+    )
+    extraction_attempt_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_facility_extraction_attempts.id", ondelete="CASCADE"), nullable=False
+    )
+    raw_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    model_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    staging_status: Mapped[FacilityCandidateStagingStatus] = mapped_column(
+        Enum(
+            FacilityCandidateStagingStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=FacilityCandidateStagingStatus.EXTRACTED,
+        nullable=False,
+    )
+    candidate_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ScrapingFacilityCandidateEvidence(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "scraping_facility_candidate_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "facility_candidate_id",
+            "field_name",
+            "evidence_hash",
+            name="uq_facility_candidate_evidence_field_hash",
+        ),
+        CheckConstraint("quote_start >= 0", name="ck_facility_candidate_evidence_quote_start"),
+        CheckConstraint("quote_end > quote_start", name="ck_facility_candidate_evidence_quote_end"),
+        CheckConstraint("length(evidence_quote) <= 1000", name="ck_facility_candidate_evidence_quote_length"),
+        Index("ix_facility_candidate_evidence_org", "organization_id"),
+        Index("ix_facility_candidate_evidence_execution", "execution_id"),
+        Index("ix_facility_candidate_evidence_candidate", "facility_candidate_id"),
+        Index("ix_facility_candidate_evidence_document", "source_document_id"),
+        Index("ix_facility_candidate_evidence_chunk", "chunk_id"),
+        Index("ix_facility_candidate_evidence_field", "field_name"),
+        Index("ix_facility_candidate_evidence_status", "verification_status"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    facility_candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_facility_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    source_document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    prepared_text_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_document_texts.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_source_document_chunks.id", ondelete="CASCADE"), nullable=False
+    )
+    field_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    raw_value: Mapped[Any] = mapped_column(JSON, nullable=True)
+    evidence_quote: Mapped[str] = mapped_column(String(1000), nullable=False)
+    quote_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    quote_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    verification_status: Mapped[FacilityCandidateEvidenceVerificationStatus] = mapped_column(
+        Enum(
+            FacilityCandidateEvidenceVerificationStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 CONFIDENCE_CHECK = "confidence_score >= 0 AND confidence_score <= 1"
 
 
@@ -1177,7 +1484,9 @@ class RehabilitationFacility(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityLicense.created_at"
     )
     operating_hours: Mapped[list["RehabilitationFacilityOperatingHours"]] = relationship(
-        back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilityOperatingHours.day_of_week"
+        back_populates="facility",
+        cascade="all, delete-orphan",
+        order_by="RehabilitationFacilityOperatingHours.day_of_week",
     )
     source_links: Mapped[list["RehabilitationFacilitySourceLink"]] = relationship(
         back_populates="facility", cascade="all, delete-orphan", order_by="RehabilitationFacilitySourceLink.created_at"
