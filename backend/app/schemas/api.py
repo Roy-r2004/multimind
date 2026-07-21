@@ -838,6 +838,21 @@ class FacilityCandidateEvidenceAuditResponse(BaseModel):
     created_at: datetime
 
 
+class FacilityCandidatePublicationAuditResponse(BaseModel):
+    id: str
+    facility_candidate_id: str
+    final_facility_id: str | None = None
+    status: str
+    reason_code: str | None = None
+    normalization_version: str
+    metadata_json: dict[str, Any]
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    published_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 # --- Chats ---
 
 

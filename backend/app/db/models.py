@@ -219,6 +219,13 @@ class FacilityCandidateEvidenceVerificationStatus(str, enum.Enum):
     REJECTED_QUOTE_TOO_LONG = "rejected_quote_too_long"
 
 
+class FacilityCandidatePublicationStatus(str, enum.Enum):
+    PENDING = "pending"
+    PUBLISHED = "published"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
 
@@ -1419,6 +1426,69 @@ class ScrapingFacilityCandidateEvidence(Base, UUIDPrimaryKeyMixin):
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ScrapingFacilityCandidatePublication(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_facility_candidate_publications"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "facility_candidate_id",
+            name="uq_facility_candidate_publication_candidate",
+        ),
+        CheckConstraint(
+            "status != 'published' OR final_facility_id IS NOT NULL",
+            name="ck_facility_candidate_publication_published_facility",
+        ),
+        Index("ix_facility_candidate_publications_org", "organization_id"),
+        Index("ix_facility_candidate_publications_execution", "execution_id"),
+        Index("ix_facility_candidate_publications_candidate", "facility_candidate_id"),
+        Index("ix_facility_candidate_publications_facility", "final_facility_id"),
+        Index("ix_facility_candidate_publications_status", "status"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    facility_candidate_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scraping_facility_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    final_facility_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rehabilitation_facilities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    normalization_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[FacilityCandidatePublicationStatus] = mapped_column(
+        Enum(
+            FacilityCandidatePublicationStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=FacilityCandidatePublicationStatus.PENDING,
+        nullable=False,
+    )
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    organization: Mapped["Organization"] = relationship()
+    execution: Mapped["ScrapingExecution"] = relationship()
+    facility_candidate: Mapped["ScrapingFacilityCandidate"] = relationship()
+    final_facility: Mapped["RehabilitationFacility | None"] = relationship()
 
 
 CONFIDENCE_CHECK = "confidence_score >= 0 AND confidence_score <= 1"

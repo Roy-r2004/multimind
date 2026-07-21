@@ -21,6 +21,7 @@ from app.schemas.api import (
     ScrapingTaskResponse,
     FacilityCandidateAuditResponse,
     FacilityCandidateEvidenceAuditResponse,
+    FacilityCandidatePublicationAuditResponse,
     FacilityExtractionAttemptAuditResponse,
     PreparedSourceTextAuditResponse,
     SourceCandidateResponse,
@@ -31,6 +32,9 @@ from app.schemas.api import (
 )
 from app.services.scraping.execution_export_service import MIME_XLSX, execution_export_service
 from app.services.scraping.execution_service import execution_service
+from app.services.scraping.facility_candidate_publication_service import (
+    facility_candidate_publication_service,
+)
 from app.services.scraping.facility_extraction_service import facility_extraction_service
 from app.services.scraping.source_discovery_service import source_discovery_service
 from app.services.scraping.source_retrieval_service import source_retrieval_service
@@ -455,6 +459,39 @@ async def list_facility_candidate_evidence(
             evidence_hash_prefix=row.evidence_hash[:12],
             verification_status=row.verification_status.value,
             created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/{execution_id}/facility-candidate-publications",
+    response_model=list[FacilityCandidatePublicationAuditResponse],
+)
+async def list_facility_candidate_publications(
+    execution_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await facility_candidate_publication_service.list_publications(
+        db, auth, execution_id, limit=limit, offset=offset
+    )
+    return [
+        FacilityCandidatePublicationAuditResponse(
+            id=row.id,
+            facility_candidate_id=row.facility_candidate_id,
+            final_facility_id=row.final_facility_id,
+            status=row.status.value,
+            reason_code=row.reason_code,
+            normalization_version=row.normalization_version,
+            metadata_json=row.metadata_json,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+            published_at=row.published_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
         )
         for row in rows
     ]

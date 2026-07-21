@@ -1046,7 +1046,18 @@ async def test_worker_extraction_phase_retry_is_idempotent(db: AsyncSession, aut
 async def test_worker_extraction_phase_partial_failure_continues_and_zero_candidates_succeed(
     db: AsyncSession, auth, monkeypatch
 ):
-    monkeypatch.setattr(get_settings(), "facility_extraction_enabled", True)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "facility_extraction_enabled", True)
+    monkeypatch.setattr(
+    settings,
+    "facility_extraction_max_documents_per_execution",
+    2,
+    )
+    monkeypatch.setattr(
+    settings,   
+    "facility_extraction_max_chunks_per_execution",
+    2,
+        )
     execution = await create_execution(db, auth)
     await create_document(db, auth, execution, content_type="text/plain", body="First page.")
     await create_document(db, auth, execution, content_type="text/plain", body="Second page.")
