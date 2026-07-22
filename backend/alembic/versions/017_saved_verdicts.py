@@ -1,20 +1,28 @@
 """Add saved verdict snapshots
 
-Revision ID: 008
-Revises: 007
+Revision ID: 017
+Revises: 016
 Create Date: 2026-07-22
 """
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
-revision = "008"
-down_revision = "007"
+revision = "017"
+down_revision = "016"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    # Compatibility guard for databases that previously applied the old
+    # conflicting 008_saved_verdicts migration before Saved Verdicts moved to 017.
+    if "saved_verdicts" in inspector.get_table_names():
+        return
+
     op.create_table(
         "saved_verdicts",
         sa.Column("id", sa.String(36), nullable=False),
@@ -50,5 +58,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_saved_verdicts_org_user_saved_at", table_name="saved_verdicts")
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if "saved_verdicts" not in inspector.get_table_names():
+        return
+
+    indexes = {index["name"] for index in inspector.get_indexes("saved_verdicts")}
+    if "ix_saved_verdicts_org_user_saved_at" in indexes:
+        op.drop_index("ix_saved_verdicts_org_user_saved_at", table_name="saved_verdicts")
     op.drop_table("saved_verdicts")

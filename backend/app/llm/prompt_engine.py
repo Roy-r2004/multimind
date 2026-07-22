@@ -5,7 +5,7 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
-from app.core.config import get_settings
+
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -31,7 +31,6 @@ class PromptEngine:
     """Renders LLM prompts from version-controlled Jinja2 templates."""
 
     def __init__(self, prompts_dir: Path | None = None) -> None:
-        settings = get_settings()
         base = prompts_dir or Path(__file__).resolve().parent.parent / "prompts"
         self._env = Environment(
             loader=FileSystemLoader(str(base)),

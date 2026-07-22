@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError
-from app.db.models import Chat, ModelSet, ShareLink, Turn, User
+from app.db.models import ModelSet, ShareLink, Turn, User
 from app.schemas.api import ShareLinkResponse, SharedChatResponse
 from app.services.chat_service import CHALLENGE_TURN_MARKER, chat_service
 

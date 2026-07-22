@@ -9,6 +9,13 @@ if [ -n "$DATABASE_URL" ]; then
   esac
 fi
 
+# Worker containers receive their own command from Docker Compose.
+# Execute it directly instead of starting the API.
+if [ "$#" -gt 0 ]; then
+  echo "Starting container command: $*"
+  exec "$@"
+fi
+
 port="${PORT:-8000}"
 
 echo "Waiting for database..."
@@ -16,7 +23,6 @@ python - <<'PY'
 import asyncio
 import os
 import sys
-import time
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -37,20 +43,22 @@ async def wait() -> None:
         except Exception as exc:
             await engine.dispose()
             print(f"db not ready ({attempt + 1}/30): {exc}")
-            time.sleep(2)
-    print("Database not ready after 60s — starting API anyway", file=sys.stderr)
+            await asyncio.sleep(2)
+
+    raise RuntimeError("Database was not ready after 60 seconds")
 
 
 asyncio.run(wait())
 PY
 
 echo "Running migrations..."
-if ! alembic upgrade head; then
-  echo "Migration failed — starting API anyway so health checks can recover" >&2
-fi
+alembic upgrade head
 
 echo "Seeding reference data (best-effort)..."
 python -m scripts.seed || echo "Seed failed — continuing" >&2
 
 echo "Starting API on port ${port}..."
-exec uvicorn app.main:app --host 0.0.0.0 --port "$port" --timeout-keep-alive 5
+exec uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port "$port" \
+  --timeout-keep-alive 5

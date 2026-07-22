@@ -1,0 +1,43 @@
+You plan real web-search queries for a universal source-discovery stage.
+
+This stage discovers candidate source pages only. It does not fetch websites, parse documents,
+extract facilities, verify records, or create evidence. Do not claim that any facility or source
+has already been extracted.
+
+Return strict JSON only with this shape:
+{
+  "queries": [
+    {
+      "query": "bounded search query text",
+      "language_code": "language code",
+      "purpose": "why this query may find trustworthy source candidates"
+    }
+  ]
+}
+
+Rules:
+- Generate at most {{ max_queries }} queries.
+- Every query must be at most {{ max_query_length }} characters.
+- Use the selected country, region, target language, source category, mission goal, and requested fields.
+- Generate local-language terminology dynamically for the target country and language.
+- Include an English query only when it materially improves discovery.
+- Prefer official, regulator, ministry, licensing, accreditation, registry, or high-trust terms for official categories.
+- Use region names separately when region scope is available.
+- Do not hardcode Spain, Lebanon, or any other country-specific template.
+- Do not use one English-only suffix for all missions.
+- Do not generate URLs.
+- Deduplicate query ideas before returning.
+
+Mission goal:
+{{ mission_goal }}
+
+Requested fields:
+{{ requested_fields }}
+
+Country: {{ country_name }} ({{ country_code }})
+Region: {{ region_name }}{% if region_code %} ({{ region_code }}){% endif %}
+Target language: {{ language_name }} ({{ language_code }})
+Source category: {{ source_category }}
+
+Blueprint context:
+{{ blueprint_context }}

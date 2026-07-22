@@ -2,8 +2,9 @@
 
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class StrategyEnum(str, Enum):
@@ -158,6 +159,700 @@ class ProjectUpdateRequest(BaseModel):
     description: str | None = None
 
 
+class ProjectScrapingMissionResponse(BaseModel):
+    id: str
+    title: str
+    status: str
+    project_id: str | None = None
+    country_code: str | None = None
+    country_name: str | None = None
+    active_blueprint_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# --- Scraping Council ---
+
+
+class ScrapingMissionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    country_code: str
+    original_prompt: str
+    model_set_id: str
+    project_id: str | None = None
+
+
+class ScrapingMissionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=512)
+    country_code: str | None = None
+    project_id: str | None = None
+
+
+class ScrapingBlueprintGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pass
+
+
+class ScrapingBlueprintApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pass
+
+
+class ScrapingBlueprintRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
+
+
+class ScrapingBlueprintChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    change_instructions: str
+
+
+class ScrapingBlueprintRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("Blueprint name is required")
+        return value
+
+
+class ScrapingMissionSummary(BaseModel):
+    id: str
+    title: str
+    original_prompt: str
+    status: str
+    country_code: str | None = None
+    country_name: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
+    active_blueprint_id: str | None = None
+    active_blueprint_version: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingMissionDetail(ScrapingMissionSummary):
+    created_by: str
+    project_id: str | None = None
+    project_name: str | None = None
+    model_set_id: str
+    model_set_name: str | None = None
+
+
+class BlueprintMissionSummary(BaseModel):
+    goal: str
+    target_entities: list[str]
+    deliverables: list[str]
+
+    @field_validator("goal")
+    @classmethod
+    def goal_required(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mission goal cannot be empty")
+        return value
+
+    @field_validator("target_entities")
+    @classmethod
+    def target_entities_required(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("target_entities cannot be empty")
+        return value
+
+
+class BlueprintScope(BaseModel):
+    included: list[str]
+    excluded: list[str]
+    countries: list[str]
+    regions: list[str]
+
+
+class BlueprintSearchTerm(BaseModel):
+    language: str
+    term: str
+    purpose: str
+
+
+class BlueprintSourceStrategyItem(BaseModel):
+    source_type: str
+    priority: int = Field(ge=1)
+    trust_tier: str
+    purpose: str
+    required: bool
+
+
+class BlueprintDataSchemaItem(BaseModel):
+    field_name: str
+    description: str
+    required: bool
+
+
+class BlueprintTaskPlanItem(BaseModel):
+    order: int = Field(ge=1)
+    task: str
+    assigned_role: str
+
+
+class BlueprintEstimatedWorkload(BaseModel):
+    expected_queries: int | None = Field(default=None, ge=0)
+    expected_pages: int | None = Field(default=None, ge=0)
+    expected_ai_calls: int | None = Field(default=None, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+    notes: list[str]
+
+
+class BlueprintAgentAssignment(BaseModel):
+    role: str
+    responsibility: str
+    model_id: str
+
+
+class ScrapingBlueprintContent(BaseModel):
+    mission_summary: BlueprintMissionSummary
+    scope: BlueprintScope
+    languages: list[str]
+    search_terms: list[BlueprintSearchTerm]
+    source_strategy: list[BlueprintSourceStrategyItem]
+    data_schema: list[BlueprintDataSchemaItem]
+    classification_rules: list[str]
+    verification_rules: list[str]
+    deduplication_rules: list[str]
+    compliance_rules: list[str]
+    task_plan: list[BlueprintTaskPlanItem]
+    stop_conditions: list[str]
+    estimated_workload: BlueprintEstimatedWorkload
+    agent_assignments: list[BlueprintAgentAssignment]
+
+    @field_validator("task_plan")
+    @classmethod
+    def task_plan_required(cls, value: list[BlueprintTaskPlanItem]) -> list[BlueprintTaskPlanItem]:
+        if not value:
+            raise ValueError("task_plan cannot be empty")
+        return value
+
+
+class ScrapingBlueprintResponse(BaseModel):
+    id: str
+    mission_id: str
+    version: int
+    display_name: str | None = None
+    status: str
+    blueprint_json: ScrapingBlueprintContent | None = None
+    model_set_id: str
+    judge_model_id: str | None = None
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    rejected_by: str | None = None
+    rejected_at: datetime | None = None
+    rejection_reason: str | None = None
+    change_instructions: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingRunAgentPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=160)
+    role: str = Field(min_length=1, max_length=120)
+    purpose: str = Field(min_length=1)
+    instructions: str = Field(min_length=1)
+    assigned_scope: dict[str, Any] = Field(default_factory=dict)
+    model_id: str = Field(min_length=1, max_length=64)
+    depends_on: list[int] = Field(default_factory=list)
+
+    @field_validator("name", "role", "purpose", "instructions", "model_id", mode="before")
+    @classmethod
+    def trim_required_string(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+        return value
+
+
+class ScrapingTeamPlanOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recommended_agent_count: int
+    rationale: str = Field(min_length=1)
+    agents: list[ScrapingRunAgentPlan] = Field(min_length=1)
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def trim_rationale(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+        return value
+
+    @model_validator(mode="after")
+    def validate_agent_count(self) -> "ScrapingTeamPlanOutput":
+        if self.recommended_agent_count != len(self.agents):
+            raise ValueError("recommended_agent_count must equal the number of agents")
+        return self
+
+
+class ScrapingRunAgentResponse(BaseModel):
+    id: str
+    run_id: str
+    parent_agent_id: str | None = None
+    sequence: int
+    name: str
+    role: str
+    purpose: str
+    instructions: str
+    assigned_scope: dict[str, Any]
+    model_id: str
+    status: str
+    dependency_agent_ids: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingRunSummary(BaseModel):
+    id: str
+    mission_id: str
+    blueprint_id: str
+    blueprint_version: int | None = None
+    status: str
+    recommended_agent_count: int | None = None
+    planner_model_id: str | None = None
+    planner_rationale: str | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingRunDetail(ScrapingRunSummary):
+    model_set_id: str
+    mission_title: str
+    plan_json: ScrapingTeamPlanOutput | None = None
+    agents: list[ScrapingRunAgentResponse] = []
+
+
+class ScrapingExecutionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_type: str = "initial_full_country"
+    mode: str = "real"
+
+
+class ScrapingExecutionAgentResponse(BaseModel):
+    id: str
+    execution_id: str
+    team_agent_id: str
+    planned_agent_name: str
+    planned_agent_role: str
+    model_id: str
+    status: str
+    current_task_id: str | None = None
+    current_task_title: str | None = None
+    current_action: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingExecutionSummary(BaseModel):
+    id: str
+    organization_id: str
+    mission_id: str
+    blueprint_id: str
+    team_plan_id: str
+    execution_type: str
+    mode: str
+    status: str
+    status_label: str
+    country_code: str
+    country_name: str
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    error_message: str | None = None
+    sources_discovered: int
+    documents_found: int
+    records_extracted: int
+    records_verified: int
+    duplicates_detected: int
+    blocked_sources: int
+    coverage_debt: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingFacilitySummary(BaseModel):
+    id: str
+    execution_id: str
+    stable_key: str
+    canonical_name: str
+    country_code: str
+    country_name: str
+    primary_region: str | None = None
+    primary_city: str | None = None
+    facility_type: str
+    primary_website: str | None = None
+    primary_contact: str | None = None
+    verification_status: str
+    confidence_score: float
+    human_review_status: str
+    is_mock: bool
+    source_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingCoverageCellResponse(BaseModel):
+    id: str
+    execution_id: str
+    region_code: str | None = None
+    region_name: str
+    language_code: str | None = None
+    language_name: str
+    source_category: str
+    status: str
+    assigned_execution_agent_id: str | None = None
+    assigned_agent_name: str | None = None
+    result_count: int
+    reason: str | None = None
+    metadata_json: dict[str, Any]
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingTaskResponse(BaseModel):
+    id: str
+    execution_id: str
+    execution_agent_id: str
+    agent_name: str | None = None
+    coverage_cell_id: str | None = None
+    coverage_label: str | None = None
+    parent_task_id: str | None = None
+    task_type: str
+    title: str
+    status: str
+    priority: int
+    attempt_count: int
+    max_attempts: int
+    current_action: str | None = None
+    input_json: dict[str, Any]
+    output_json: dict[str, Any]
+    dependency_task_ids_json: list[str]
+    claimed_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScrapingEventResponse(BaseModel):
+    id: str
+    execution_id: str
+    execution_agent_id: str | None = None
+    task_id: str | None = None
+    coverage_cell_id: str | None = None
+    sequence_number: int
+    event_type: str
+    message: str
+    metadata_json: dict[str, Any]
+    created_at: datetime
+
+
+class ScrapingExecutionDetail(BaseModel):
+    execution: ScrapingExecutionSummary
+    country_profile: dict[str, Any] | None = None
+    agents: list[ScrapingExecutionAgentResponse]
+    task_summary_counts: dict[str, int]
+    coverage_summary_counts: dict[str, int]
+    recent_tasks: list[ScrapingTaskResponse]
+    recent_events: list[ScrapingEventResponse]
+    can_cancel: bool
+    can_delete: bool
+    mock: bool = False
+
+
+class SourceDiscoveryContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: str
+    execution_id: str | None = None
+    coverage_cell_id: str | None = None
+    task_id: str | None = None
+    country_code: str = Field(min_length=2, max_length=2)
+    country_name: str = Field(min_length=1, max_length=120)
+    region_code: str | None = Field(default=None, max_length=32)
+    region_name: str = Field(min_length=1, max_length=160)
+    language_code: str = Field(min_length=1, max_length=16)
+    language_name: str = Field(min_length=1, max_length=120)
+    source_category: str = Field(min_length=1, max_length=120)
+    mission_goal: str = Field(min_length=1, max_length=2000)
+    requested_fields: list[str] = Field(default_factory=list, max_length=50)
+    blueprint_context: dict[str, Any] = Field(default_factory=dict)
+    provider: str = Field(default="serper", min_length=1, max_length=64)
+
+    @field_validator("requested_fields")
+    @classmethod
+    def bound_requested_fields(cls, value: list[str]) -> list[str]:
+        return [item.strip()[:120] for item in value if item.strip()]
+
+
+class SourceDiscoveryPlannedQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=240)
+    language_code: str = Field(min_length=1, max_length=16)
+    purpose: str = Field(min_length=1, max_length=300)
+
+    @field_validator("query", "language_code", "purpose", mode="before")
+    @classmethod
+    def trim_required_string(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class SourceDiscoveryQueryPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queries: list[SourceDiscoveryPlannedQuery] = Field(min_length=1, max_length=8)
+
+
+class SourceDiscoveryProviderResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_result_id: str | None = Field(default=None, max_length=255)
+    rank: int = Field(ge=1)
+    url: str = Field(min_length=1, max_length=2048)
+    title: str = Field(default="", max_length=300)
+    snippet: str = Field(default="", max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceDiscoveryQueryResponse(BaseModel):
+    id: str
+    organization_id: str
+    execution_id: str | None = None
+    coverage_cell_id: str | None = None
+    task_id: str | None = None
+    country_code: str
+    country_name: str
+    region_code: str | None = None
+    region_name: str
+    language_code: str
+    language_name: str
+    source_category: str
+    query_text: str
+    provider: str
+    status: str
+    requested_at: datetime
+    completed_at: datetime | None = None
+    result_count: int
+    error_code: str | None = None
+    error_message: str | None = None
+    metadata_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceCandidateResponse(BaseModel):
+    id: str
+    organization_id: str
+    execution_id: str | None = None
+    coverage_cell_id: str | None = None
+    discovery_query_id: str
+    provider: str
+    provider_result_id: str | None = None
+    rank: int
+    url: str
+    canonical_url: str
+    domain: str
+    title: str
+    snippet: str
+    country_code: str
+    country_name: str
+    region_code: str | None = None
+    region_name: str
+    language_code: str
+    language_name: str
+    source_category: str
+    initial_relevance_score: float
+    initial_trust_tier: str
+    status: str
+    discovered_at: datetime
+    metadata_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceDiscoverySummary(BaseModel):
+    provider: str
+    planned_query_count: int
+    query_count: int
+    succeeded_query_count: int
+    failed_query_count: int
+    candidate_count: int
+    duplicate_candidate_count: int
+    rejected_result_count: int
+
+
+class SourceRetrievalAttemptResponse(BaseModel):
+    id: str
+    organization_id: str
+    execution_id: str
+    source_candidate_id: str
+    coverage_cell_id: str | None = None
+    task_id: str | None = None
+    status: str
+    requested_url: str
+    final_url: str | None = None
+    redirect_count: int
+    http_status: int | None = None
+    content_type: str | None = None
+    declared_content_length: int | None = None
+    bytes_received: int | None = None
+    robots_status: str | None = None
+    failure_classification: str | None = None
+    safe_error_message: str | None = None
+    started_at: datetime
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceDocumentResponse(BaseModel):
+    id: str
+    organization_id: str
+    execution_id: str
+    source_candidate_id: str
+    retrieval_attempt_id: str
+    final_url: str
+    content_type: str
+    charset: str | None = None
+    content_sha256: str
+    byte_size: int
+    retrieval_timestamp: datetime
+    metadata_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class PreparedSourceTextAuditResponse(BaseModel):
+    id: str
+    source_document_id: str
+    source_candidate_id: str | None = None
+    coverage_cell_id: str | None = None
+    parser_version: str
+    title: str | None = None
+    status: str
+    failure_classification: str | None = None
+    character_count: int
+    original_character_count: int
+    truncated: bool
+    prepared_text_hash_prefix: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceDocumentChunkAuditResponse(BaseModel):
+    id: str
+    source_document_id: str
+    prepared_text_id: str
+    coverage_cell_id: str | None = None
+    chunk_index: int
+    character_start: int
+    character_end: int
+    character_count: int
+    chunk_hash_prefix: str
+    preview: str
+    created_at: datetime
+
+
+class FacilityExtractionAttemptAuditResponse(BaseModel):
+    id: str
+    source_document_id: str
+    prepared_text_id: str
+    chunk_id: str
+    coverage_cell_id: str | None = None
+    provider: str
+    model: str
+    prompt_version: str
+    status: str
+    attempt_number: int
+    requested_at: datetime
+    completed_at: datetime | None = None
+    input_character_count: int
+    output_candidate_count: int
+    failure_classification: str | None = None
+    safe_error_message: str | None = None
+
+
+class FacilityCandidateAuditResponse(BaseModel):
+    id: str
+    coverage_cell_id: str | None = None
+    source_document_id: str
+    prepared_text_id: str
+    chunk_id: str
+    extraction_attempt_id: str
+    raw_name: str
+    model_confidence: float | None = None
+    staging_status: str
+    candidate_fingerprint_prefix: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class FacilityCandidateEvidenceAuditResponse(BaseModel):
+    id: str
+    facility_candidate_id: str
+    source_document_id: str
+    prepared_text_id: str
+    chunk_id: str
+    field_name: str
+    raw_value_preview: str | None = None
+    evidence_quote: str
+    quote_start: int
+    quote_end: int
+    evidence_hash_prefix: str
+    verification_status: str
+    created_at: datetime
+
+
+class FacilityCandidatePublicationAuditResponse(BaseModel):
+    id: str
+    facility_candidate_id: str
+    final_facility_id: str | None = None
+    status: str
+    reason_code: str | None = None
+    normalization_version: str
+    metadata_json: dict[str, Any]
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    published_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 # --- Chats ---
 
 
@@ -177,6 +872,7 @@ class ProjectDetailResponse(BaseModel):
     chat_count: int = 0
     updated_at: datetime
     chats: list[ChatResponse] = []
+    scraping_missions: list[ProjectScrapingMissionResponse] = []
 
 
 class ChatCreateRequest(BaseModel):

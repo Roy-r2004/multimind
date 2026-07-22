@@ -7,8 +7,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import ForbiddenError, NotFoundError
-from app.db.models import Chat, CostRecord, ModelSet, Project, Strategy, Template
+from app.core.exceptions import ConflictError, NotFoundError
+from app.db.models import Chat, CostRecord, ModelSet, Project, ScrapingMission, Strategy, Template
 from app.schemas.api import (
     CostSummaryResponse,
     ChatResponse,
@@ -18,6 +18,7 @@ from app.schemas.api import (
     ProjectCreateRequest,
     ProjectDetailResponse,
     ProjectResponse,
+    ProjectScrapingMissionResponse,
     ProjectUpdateRequest,
     TemplateCreateRequest,
     TemplateResponse,
@@ -81,6 +82,12 @@ class ProjectService:
             .order_by(Chat.updated_at.desc())
         )
         chats = result.scalars().all()
+        mission_result = await db.execute(
+            select(ScrapingMission)
+            .where(ScrapingMission.project_id == project.id, ScrapingMission.org_id == auth.org_id)
+            .order_by(ScrapingMission.updated_at.desc())
+        )
+        scraping_missions = mission_result.scalars().all()
         return ProjectDetailResponse(
             id=project.id,
             name=project.name,
@@ -95,6 +102,20 @@ class ProjectService:
                     updated_at=c.updated_at,
                 )
                 for c in chats
+            ],
+            scraping_missions=[
+                ProjectScrapingMissionResponse(
+                    id=mission.id,
+                    title=mission.title,
+                    status=mission.status.value,
+                    project_id=mission.project_id,
+                    country_code=mission.country_code,
+                    country_name=mission.country_name,
+                    active_blueprint_id=mission.active_blueprint_id,
+                    created_at=mission.created_at,
+                    updated_at=mission.updated_at,
+                )
+                for mission in scraping_missions
             ],
         )
 
@@ -119,6 +140,11 @@ class ProjectService:
         await db.execute(
             update(Chat)
             .where(Chat.project_id == project.id, Chat.org_id == auth.org_id)
+            .values(project_id=None)
+        )
+        await db.execute(
+            update(ScrapingMission)
+            .where(ScrapingMission.project_id == project.id, ScrapingMission.org_id == auth.org_id)
             .values(project_id=None)
         )
         await db.delete(project)
@@ -179,6 +205,14 @@ class ModelSetService:
 
     async def delete(self, db: AsyncSession, auth: AuthContext, slug: str) -> None:
         model_set = await self._get_editable(db, auth, slug)
+        in_use = await db.execute(
+            select(ScrapingMission.id).where(
+                ScrapingMission.org_id == auth.org_id,
+                ScrapingMission.model_set_id == model_set.slug,
+            )
+        )
+        if in_use.scalar_one_or_none() is not None:
+            raise ConflictError("Model set is used by a scraping mission")
         await db.delete(model_set)
 
     async def _get_editable(self, db: AsyncSession, auth: AuthContext, slug: str) -> ModelSet:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
 from app.core.exceptions import AppError
@@ -31,7 +31,15 @@ class LLMResponse:
 
 class LLMProvider(ABC):
     @abstractmethod
-    async def complete(self, *, system: str, user: str, model: str) -> LLMResponse:
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str,
+        max_tokens: int = 4096,
+        response_format: dict[str, Any] | None = None,
+    ) -> LLMResponse:
         pass
 
     @staticmethod
@@ -81,24 +89,28 @@ class OpenRouterProvider(LLMProvider):
         user: str,
         model: str,
         max_tokens: int = 4096,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
+            payload: dict[str, Any] = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0.7,
+                "max_tokens": max_tokens,
+                "usage": {"include": True},
+            }
+            if response_format is not None:
+                payload["response_format"] = response_format
             resp = await client.post(
                 OPENROUTER_CHAT_URL,
                 headers=self._headers(),
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": max_tokens,
-                    "usage": {"include": True},
-                },
+                json=payload,
             )
             if resp.status_code >= 400:
                 detail = resp.text
@@ -109,7 +121,7 @@ class OpenRouterProvider(LLMProvider):
                 raise RuntimeError(f"OpenRouter error ({resp.status_code}): {detail}")
             data = resp.json()
 
-        content = data["choices"][0]["message"]["content"]
+        content = _content_to_text(data["choices"][0]["message"].get("content", ""))
         usage = data.get("usage", {})
         reported_cost = usage.get("cost")
         cost_usd = float(reported_cost) if reported_cost is not None else None
@@ -122,6 +134,22 @@ class OpenRouterProvider(LLMProvider):
             confidence=confidence,
             raw=data,
         )
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(parts)
+    return str(content)
 
 
 class ProviderRegistry:

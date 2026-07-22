@@ -1,0 +1,109 @@
+"""Scraping mission endpoints."""
+
+from fastapi import APIRouter, Depends, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.dependencies import AuthContext, get_auth_context
+from app.db.session import get_db
+from app.schemas.api import (
+    ScrapingBlueprintGenerateRequest,
+    ScrapingBlueprintResponse,
+    ScrapingMissionCreate,
+    ScrapingMissionDetail,
+    ScrapingMissionSummary,
+    ScrapingMissionUpdate,
+    ScrapingRunDetail,
+    ScrapingRunSummary,
+)
+from app.services.scraping.blueprint_service import blueprint_service
+from app.services.scraping.mission_service import mission_service
+from app.services.scraping.run_service import run_service
+
+router = APIRouter()
+
+
+@router.post("", response_model=ScrapingMissionDetail, status_code=status.HTTP_201_CREATED)
+async def create_mission(
+    data: ScrapingMissionCreate,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_service.create_mission(db, auth, data)
+
+
+@router.get("", response_model=list[ScrapingMissionSummary])
+async def list_missions(
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_service.list_missions(db, auth)
+
+
+@router.get("/{mission_id}", response_model=ScrapingMissionDetail)
+async def get_mission(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_service.get_mission(db, auth, mission_id)
+
+
+@router.patch("/{mission_id}", response_model=ScrapingMissionDetail)
+async def update_mission(
+    mission_id: str,
+    data: ScrapingMissionUpdate,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_service.update_mission(db, auth, mission_id, data)
+
+
+@router.delete("/{mission_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_mission(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    await mission_service.delete_mission(db, auth, mission_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{mission_id}/blueprints",
+    response_model=ScrapingBlueprintResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def generate_blueprint(
+    mission_id: str,
+    _data: ScrapingBlueprintGenerateRequest | None = None,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await blueprint_service.generate_blueprint(db, auth, mission_id)
+
+
+@router.get("/{mission_id}/blueprints", response_model=list[ScrapingBlueprintResponse])
+async def list_blueprints(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await blueprint_service.list_blueprints(db, auth, mission_id)
+
+
+@router.post("/{mission_id}/runs/plan", response_model=ScrapingRunDetail)
+async def plan_scraping_team(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await run_service.plan_team(db, auth, mission_id)
+
+
+@router.get("/{mission_id}/runs", response_model=list[ScrapingRunSummary])
+async def list_scraping_runs(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await run_service.list_runs(db, auth, mission_id)
