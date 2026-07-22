@@ -25,3 +25,9 @@ npm run dev
 ```
 
 See `.env.example` for configuration.
+
+## Local voice transcription
+
+Voice transcription runs locally with Faster-Whisper. Defaults use `medium` on CPU with `int8`, concurrency `1`, beam size `1`, and the persistent `/models/whisper` cache when using Docker Compose. English and French are supported; auto-detect is limited to English/French output.
+
+For a GPU deployment, explicitly set `TRANSCRIPTION_DEVICE=cuda`, `TRANSCRIPTION_MODEL=large-v3-turbo`, and `TRANSCRIPTION_COMPUTE_TYPE=float16`. If strict device mode is false and CUDA initialization fails, the service falls back to CPU `medium` with `int8`.

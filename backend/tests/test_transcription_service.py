@@ -7,6 +7,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.exceptions import (
+    InvalidAudioError,
     SilentAudioError,
     TranscriptionBusyError,
     TranscriptionDisabledError,
@@ -22,7 +23,7 @@ def make_settings(tmp_path, **overrides):
         "transcription_model": "large-v3-turbo",
         "transcription_device": "cpu",
         "transcription_compute_type": "float16",
-        "transcription_cpu_model": "small",
+        "transcription_cpu_model": "medium",
         "transcription_cpu_compute_type": "int8",
         "transcription_strict_device": False,
         "transcription_max_duration_seconds": 600,
@@ -31,7 +32,7 @@ def make_settings(tmp_path, **overrides):
         "transcription_tmp_dir": str(tmp_path / "transcriptions"),
         "transcription_concurrency": 1,
         "transcription_model_cache_dir": str(tmp_path / "models"),
-        "transcription_beam_size": 5,
+        "transcription_beam_size": 1,
         "transcription_vad_filter": True,
         "transcription_initial_prompt": "MultiMind, OpenRouter",
     }
@@ -56,6 +57,7 @@ class FakeWhisperModel:
     init_sleep = 0.0
     transcribe_sleep = 0.0
     fail_cuda = False
+    detected_language = "en"
     texts = [" Hello", "  world "]
     active_calls = 0
     max_active_calls = 0
@@ -89,7 +91,7 @@ class FakeWhisperModel:
                 time.sleep(self.transcribe_sleep)
             segments = (FakeSegment(text) for text in self.texts)
             info = SimpleNamespace(
-                language=kwargs.get("language") or "en",
+                language=kwargs.get("language") or self.detected_language,
                 language_probability=0.91,
                 duration=3.5,
             )
@@ -106,6 +108,7 @@ def reset_fake_model():
     FakeWhisperModel.init_sleep = 0.0
     FakeWhisperModel.transcribe_sleep = 0.0
     FakeWhisperModel.fail_cuda = False
+    FakeWhisperModel.detected_language = "en"
     FakeWhisperModel.texts = [" Hello", "  world "]
     FakeWhisperModel.active_calls = 0
     FakeWhisperModel.max_active_calls = 0
@@ -148,12 +151,109 @@ async def test_explicit_english_passes_language(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_explicit_french_passes_language(tmp_path):
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+
+    await service.transcribe(audio_file(tmp_path), language="fr")
+
+    assert FakeWhisperModel.transcribe_calls[0]["language"] == "fr"
+
+
+@pytest.mark.asyncio
+async def test_arabic_language_is_rejected(tmp_path):
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+
+    with pytest.raises(InvalidAudioError):
+        await service.transcribe(audio_file(tmp_path), language="ar")
+
+
+@pytest.mark.asyncio
+async def test_unsupported_language_is_rejected(tmp_path):
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+
+    with pytest.raises(InvalidAudioError):
+        await service.transcribe(audio_file(tmp_path), language="de")
+
+
+@pytest.mark.asyncio
 async def test_auto_detection_passes_language_none(tmp_path):
     service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
 
     await service.transcribe(audio_file(tmp_path))
 
     assert FakeWhisperModel.transcribe_calls[0]["language"] is None
+
+
+@pytest.mark.asyncio
+async def test_auto_detection_accepts_french(tmp_path):
+    FakeWhisperModel.detected_language = "fr"
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+
+    result = await service.transcribe(audio_file(tmp_path))
+
+    assert result.language == "fr"
+    assert FakeWhisperModel.transcribe_calls[0]["language"] is None
+
+
+@pytest.mark.asyncio
+async def test_auto_detection_rejects_unsupported_language(tmp_path):
+    FakeWhisperModel.detected_language = "de"
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+
+    with pytest.raises(InvalidAudioError):
+        await service.transcribe(audio_file(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_cpu_configuration_selects_medium_int8(tmp_path):
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+
+    await service.transcribe(audio_file(tmp_path))
+
+    assert len(FakeWhisperModel.instances) == 1
+    model = FakeWhisperModel.instances[0]
+    assert model.model_name == "medium"
+    assert model.device == "cpu"
+    assert model.compute_type == "int8"
+
+
+@pytest.mark.asyncio
+async def test_cuda_configuration_selects_large_v3_turbo_float16(tmp_path):
+    service = TranscriptionService(
+        settings=make_settings(tmp_path, transcription_device="cuda"),
+        model_cls=FakeWhisperModel,
+    )
+
+    await service.transcribe(audio_file(tmp_path))
+
+    assert len(FakeWhisperModel.instances) == 1
+    model = FakeWhisperModel.instances[0]
+    assert model.model_name == "large-v3-turbo"
+    assert model.device == "cuda"
+    assert model.compute_type == "float16"
+
+
+@pytest.mark.asyncio
+async def test_model_uses_configured_cache_directory(tmp_path):
+    cache_dir = tmp_path / "persistent-model-cache"
+    service = TranscriptionService(
+        settings=make_settings(tmp_path, transcription_model_cache_dir=str(cache_dir)),
+        model_cls=FakeWhisperModel,
+    )
+
+    await service.initialize()
+
+    assert FakeWhisperModel.instances[0].download_root == str(cache_dir)
+
+
+@pytest.mark.asyncio
+async def test_transcription_uses_performance_focused_defaults(tmp_path):
+    service = TranscriptionService(settings=make_settings(tmp_path), model_cls=FakeWhisperModel)
+
+    await service.transcribe(audio_file(tmp_path))
+
+    assert FakeWhisperModel.transcribe_calls[0]["beam_size"] == 1
+    assert FakeWhisperModel.transcribe_calls[0]["vad_filter"] is True
 
 
 @pytest.mark.asyncio
@@ -187,7 +287,8 @@ async def test_cuda_initialization_failure_falls_back_to_cpu(tmp_path):
 
     assert result.text == "Hello world"
     assert [model.device for model in FakeWhisperModel.instances] == ["cpu"]
-    assert [model.model_name for model in FakeWhisperModel.instances] == ["small"]
+    assert [model.model_name for model in FakeWhisperModel.instances] == ["medium"]
+    assert [model.compute_type for model in FakeWhisperModel.instances] == ["int8"]
 
 
 @pytest.mark.asyncio

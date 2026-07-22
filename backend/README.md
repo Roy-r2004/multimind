@@ -67,6 +67,15 @@ Copy `.env.example` to `.env`:
 | `OPENROUTER_SITE_URL`                  | Optional HTTP-Referer for OpenRouter rankings         |
 | `OPENROUTER_PRICING_CACHE_TTL_SECONDS` | How often to refresh model list prices (default 3600) |
 | `PUBLIC_APP_URL`                       | Base URL for share links                              |
+| `TRANSCRIPTION_DEVICE`                 | `cpu`, `cuda`, or `auto`; default `cpu`               |
+| `TRANSCRIPTION_MODEL`                  | Faster-Whisper GPU model; default `large-v3-turbo`    |
+| `TRANSCRIPTION_CPU_MODEL`              | Faster-Whisper CPU fallback; default `medium`         |
+| `TRANSCRIPTION_CPU_COMPUTE_TYPE`       | CPU compute type; default `int8`                      |
+| `TRANSCRIPTION_BEAM_SIZE`              | Whisper beam size; default `1`                        |
+
+Voice transcription is local/free via Faster-Whisper. The supported transcription languages are English and French. `auto` language detection is accepted, but detected output outside English/French is rejected. Docker Compose mounts `/models/whisper` as a persistent model cache so container recreation does not redownload the model when the volume is retained.
+
+CPU servers should use `TRANSCRIPTION_DEVICE=cpu`, `TRANSCRIPTION_CPU_MODEL=medium`, `TRANSCRIPTION_CPU_COMPUTE_TYPE=int8`, `TRANSCRIPTION_BEAM_SIZE=1`, and `TRANSCRIPTION_CONCURRENCY=1`. GPU servers can opt in with `TRANSCRIPTION_DEVICE=cuda`, `TRANSCRIPTION_MODEL=large-v3-turbo`, and `TRANSCRIPTION_COMPUTE_TYPE=float16`.
 
 ## API Endpoints
 

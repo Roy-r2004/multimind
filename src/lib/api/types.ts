@@ -445,7 +445,7 @@ export type ApiError = {
   details?: unknown;
 };
 
-export type TranscriptionLanguage = "auto" | "en" | "fr" | "ar";
+export type TranscriptionLanguage = "auto" | "en" | "fr";
 
 export type ApiTranscriptionResponse = {
   text: string;

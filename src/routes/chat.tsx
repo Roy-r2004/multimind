@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Send,
   Gavel,
@@ -26,6 +26,7 @@ import {
   Square,
   Bookmark,
   MoreHorizontal,
+  ArrowDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -76,6 +77,7 @@ import {
   mergeAssessmentIntoInstructions,
   parseCriteriaLines,
 } from "@/lib/assessmentCriteria";
+import { isChatNearBottom, shouldShowScrollToLatest } from "@/lib/chatScroll";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -210,8 +212,71 @@ export function ChatPage() {
   const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
   const [showCriteria, setShowCriteria] = useState(false);
   const [savingCriteria, setSavingCriteria] = useState(false);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const threadEndRef = useRef<HTMLDivElement | null>(null);
+  const shouldPinToBottomRef = useRef(true);
+  const showScrollToLatestRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeChat = chats.find((c) => c.id === activeChatId);
+
+  const updateThreadScrollState = useCallback(() => {
+    const thread = threadRef.current;
+    if (!thread) return;
+    const metrics = {
+      scrollTop: thread.scrollTop,
+      scrollHeight: thread.scrollHeight,
+      clientHeight: thread.clientHeight,
+    };
+    const nearBottom = isChatNearBottom(metrics);
+    const nextShowButton = shouldShowScrollToLatest(metrics);
+
+    shouldPinToBottomRef.current = nearBottom;
+    if (showScrollToLatestRef.current !== nextShowButton) {
+      showScrollToLatestRef.current = nextShowButton;
+      setShowScrollToLatest(nextShowButton);
+    }
+  }, []);
+
+  const scrollThreadToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+    shouldPinToBottomRef.current = true;
+    threadEndRef.current?.scrollIntoView({ behavior, block: "end" });
+  }, []);
+
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (!thread) return;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        updateThreadScrollState();
+      });
+    };
+
+    updateThreadScrollState();
+    thread.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      thread.removeEventListener("scroll", onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [updateThreadScrollState]);
+
+  useEffect(() => {
+    shouldPinToBottomRef.current = true;
+    showScrollToLatestRef.current = false;
+    setShowScrollToLatest(false);
+    window.requestAnimationFrame(() => scrollThreadToLatest("auto"));
+  }, [activeChatId, scrollThreadToLatest]);
+
+  useEffect(() => {
+    if (!shouldPinToBottomRef.current) return;
+    window.requestAnimationFrame(() => {
+      scrollThreadToLatest("auto");
+      updateThreadScrollState();
+    });
+  }, [apiTurns, loading, scrollThreadToLatest, updateThreadScrollState]);
 
   useEffect(() => {
     if (!set) return;
@@ -349,6 +414,7 @@ export function ChatPage() {
         model_set_id: set.id,
         custom_instructions: customInstructions,
       });
+      scrollThreadToLatest("smooth");
       setRefChat(null);
       setFiles([]);
       void runTurnInBackground(auth, chatId, pending).catch((error) => {
@@ -420,7 +486,7 @@ export function ChatPage() {
 
   return (
     <AppShell>
-      <div className="flex h-[calc(100vh-3.5rem)] flex-col md:h-screen">
+      <div className="relative flex h-[calc(100vh-3.5rem)] flex-col md:h-screen">
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-border bg-background px-4 py-3 md:px-6">
           {set ? (
@@ -494,7 +560,7 @@ export function ChatPage() {
         </div>
 
         {/* Thread */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 xl:px-8">
+        <div ref={threadRef} className="flex-1 overflow-y-auto px-4 pt-6 pb-16 md:px-6 xl:px-8">
           <div className="mx-auto max-w-6xl space-y-10">
             {!isAuthenticated && (
               <GlassCard glow className="p-10 text-center animate-fade-up">
@@ -625,7 +691,21 @@ export function ChatPage() {
               !apiTurns.some((t) => t.status === "pending" || t.status === "running") && (
                 <LoadingTurn set={set} modelById={modelById} />
               )}
+            <div ref={threadEndRef} aria-hidden className="h-px" />
           </div>
+        </div>
+
+        <div className="pointer-events-none relative z-30">
+          {showScrollToLatest && (
+            <button
+              type="button"
+              aria-label="Scroll to latest message"
+              onClick={() => scrollThreadToLatest("smooth")}
+              className="pointer-events-auto absolute bottom-3 left-1/2 grid size-9 -translate-x-1/2 place-items-center rounded-full border border-border/80 bg-card/90 text-foreground shadow-lg shadow-primary/10 backdrop-blur transition hover:border-primary/40 hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
+            >
+              <ArrowDown className="size-4" />
+            </button>
+          )}
         </div>
 
         {/* Composer */}
@@ -1078,7 +1158,6 @@ function AiTurn({
   const [showDisagree, setShowDisagree] = useState(false);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
-  const scrolledToVerdictRef = useRef(false);
   const answerCards = deriveTurnAnswerCards(turn, set.models);
   const cardModelIds = answerCards.map((card) => card.modelId);
 
@@ -1088,15 +1167,6 @@ function AiTurn({
   const criteriaLines = parseCriteriaLines(assessmentCriteria);
   const turnStrategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
   const bookmarkState = getVerdictBookmarkState(turn, pendingSavedVerdicts);
-
-  useEffect(() => {
-    if (!turn.verdict || scrolledToVerdictRef.current) return;
-    scrolledToVerdictRef.current = true;
-    const timer = window.setTimeout(() => {
-      verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 120);
-    return () => window.clearTimeout(timer);
-  }, [turn.verdict]);
 
   function openDisagree() {
     verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });

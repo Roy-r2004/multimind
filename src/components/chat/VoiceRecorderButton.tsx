@@ -15,6 +15,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { api } from "@/lib/api";
 import { ApiClientError } from "@/lib/api/types";
 import type { ApiTranscriptionResponse, TranscriptionLanguage } from "@/lib/api/types";
+import { TRANSCRIPTION_LANGUAGE_OPTIONS } from "@/lib/transcriptionLanguages";
 import { cn } from "@/lib/utils";
 import {
   formatElapsedSeconds,
@@ -49,13 +50,6 @@ export interface VoiceRecorderButtonProps {
   onTranscript: (result: ApiTranscriptionResponse) => void;
   onRecordingStateChange?: (active: boolean) => void;
 }
-
-const LANGUAGE_OPTIONS: Array<{ value: TranscriptionLanguage; label: string }> = [
-  { value: "auto", label: "Auto" },
-  { value: "en", label: "English" },
-  { value: "fr", label: "Français" },
-  { value: "ar", label: "العربية" },
-];
 
 function supportMessage(
   reason: "unsupported_browser" | "insecure_context" | "media_devices_unavailable",
@@ -581,13 +575,13 @@ export function VoiceRecorderButton({
       disabled={state.status === "uploading" || state.status === "transcribing"}
     >
       <SelectTrigger
-        className="h-8 w-[112px] rounded-md text-xs"
+        className="h-8 w-[168px] rounded-md text-xs"
         aria-label="Transcription language"
       >
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {LANGUAGE_OPTIONS.map((option) => (
+        {TRANSCRIPTION_LANGUAGE_OPTIONS.map((option) => (
           <SelectItem key={option.value} value={option.value}>
             {option.label}
           </SelectItem>

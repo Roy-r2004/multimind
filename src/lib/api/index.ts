@@ -99,6 +99,13 @@ function transcriptionFilename(options: CreateTranscriptionOptions): string {
   return fallback;
 }
 
+export function buildTranscriptionFormData(options: CreateTranscriptionOptions): FormData {
+  const formData = new FormData();
+  formData.append("file", options.file, transcriptionFilename(options));
+  formData.append("language", options.language ?? "auto");
+  return formData;
+}
+
 export const api = {
   auth: {
     signIn: (data: { email: string; password: string }) =>
@@ -330,9 +337,7 @@ export const api = {
 
   transcriptions: {
     create: (auth: Auth, options: CreateTranscriptionOptions) => {
-      const formData = new FormData();
-      formData.append("file", options.file, transcriptionFilename(options));
-      formData.append("language", options.language ?? "auto");
+      const formData = buildTranscriptionFormData(options);
 
       return apiFormRequest<ApiTranscriptionResponse>("/transcriptions", {
         formData,
