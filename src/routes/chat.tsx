@@ -23,6 +23,7 @@ import {
   BookOpen,
   Trophy,
   Scale,
+  Square,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
@@ -47,6 +48,8 @@ import {
   resumeRunningTurns,
   runTurnInBackground,
   seedChatTurns,
+  stopActiveTurn,
+  subscribeActiveTurn,
   subscribeChatRunning,
   subscribeChatTurns,
 } from "@/lib/turnRunner";
@@ -178,6 +181,8 @@ export function ChatPage() {
   const [showPlus, setShowPlus] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [stoppingTurnId, setStoppingTurnId] = useState<string | null>(null);
   const [showDeleteChat, setShowDeleteChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
   const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
@@ -224,6 +229,7 @@ export function ChatPage() {
 
     const unsubTurns = subscribeChatTurns(activeChatId, setApiTurns);
     const unsubRunning = subscribeChatRunning(activeChatId, setLoading);
+    const unsubActiveTurn = subscribeActiveTurn(activeChatId, setActiveTurnId);
 
     void api.chats.listTurns(auth, activeChatId).then((turns) => {
       const merged = mergeWithCachedTurns(activeChatId, turns);
@@ -235,6 +241,7 @@ export function ChatPage() {
     return () => {
       unsubTurns();
       unsubRunning();
+      unsubActiveTurn();
     };
   }, [isApiMode, activeChatId, authHeaders]);
 
@@ -298,6 +305,22 @@ export function ChatPage() {
       alert(error instanceof Error ? error.message : "Failed to run turn");
     } finally {
       setSending(false);
+    }
+  }
+
+  async function stopGenerating() {
+    const auth = authHeaders();
+    if (!auth || !activeChatId || !activeTurnId || stoppingTurnId === activeTurnId) return;
+    setStoppingTurnId(activeTurnId);
+    setLoading(false);
+    setSending(false);
+    try {
+      await stopActiveTurn(auth, activeChatId);
+    } catch (error) {
+      console.error(error);
+      alert(error instanceof Error ? error.message : "Failed to stop generating");
+    } finally {
+      setStoppingTurnId(null);
     }
   }
 
@@ -624,26 +647,39 @@ export function ChatPage() {
                     onTranscript={handleVoiceTranscript}
                     onRecordingStateChange={setIsVoiceActive}
                   />
-                  <button
-                    type="button"
-                    onClick={() => void send()}
-                    disabled={
-                      !input.trim() ||
-                      sending ||
-                      loading ||
-                      !isAuthenticated ||
-                      !set ||
-                      isVoiceActive
-                    }
-                    className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
-                  >
-                    {loading ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
+                  {loading && activeTurnId ? (
+                    <button
+                      type="button"
+                      onClick={() => void stopGenerating()}
+                      disabled={stoppingTurnId === activeTurnId}
+                      aria-label="Stop generating"
+                      className="inline-flex items-center gap-2 rounded-xl bg-destructive px-3.5 py-2 text-sm font-medium text-destructive-foreground shadow-sm hover:bg-destructive/90 disabled:opacity-40"
+                    >
+                      {stoppingTurnId === activeTurnId ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Square className="size-3.5 fill-current" />
+                      )}
+                      {stoppingTurnId === activeTurnId ? "Stopping..." : "Stop generating"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void send()}
+                      disabled={
+                        !input.trim() ||
+                        sending ||
+                        loading ||
+                        !isAuthenticated ||
+                        !set ||
+                        isVoiceActive
+                      }
+                      className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
+                    >
                       <Send className="size-3.5" />
-                    )}
-                    Send
-                  </button>
+                      Send
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

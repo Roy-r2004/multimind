@@ -1,6 +1,6 @@
 /** SSE stream client for turn orchestration. */
 
-import { apiRequest, getApiBase } from "@/lib/api/client";
+import { apiRequest, getApiBase, isAbortError } from "@/lib/api/client";
 import type { ApiTurn } from "@/lib/api/types";
 
 type Auth = { token: string; orgId?: string | null };
@@ -9,22 +9,43 @@ export type TurnStreamHandler = (event: string, data: unknown) => void;
 
 function streamErrorMessage(event: string, data: unknown): string {
   if (typeof data === "object" && data) {
-    if (event === "error" && "message" in data) return String((data as { message: string }).message);
-    if (event === "turn_failed" && "error" in data) return String((data as { error: string }).error);
+    if (event === "error" && "message" in data)
+      return String((data as { message: string }).message);
+    if (event === "turn_failed" && "error" in data)
+      return String((data as { error: string }).error);
   }
   if (typeof data === "string" && data.trim()) return data;
   return "Turn failed — the council may still be working. Please wait a moment.";
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Request was cancelled.", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException("Request was cancelled.", "AbortError"));
+      },
+      { once: true },
+    );
+  });
 }
 
 export async function pollTurnUntilComplete(
   auth: Auth,
   turnId: string,
   onEvent: TurnStreamHandler,
-  options?: { maxAttempts?: number; intervalMs?: number; emitProgress?: boolean },
+  options?: {
+    maxAttempts?: number;
+    intervalMs?: number;
+    emitProgress?: boolean;
+    signal?: AbortSignal;
+  },
 ): Promise<ApiTurn> {
   const maxAttempts = options?.maxAttempts ?? 120;
   const intervalMs = options?.intervalMs ?? 2000;
@@ -34,6 +55,7 @@ export async function pollTurnUntilComplete(
     const turn = await apiRequest<ApiTurn>(`/chats/turns/${turnId}`, {
       token: auth.token,
       orgId: auth.orgId,
+      signal: options?.signal,
     });
 
     if (emitProgress) onEvent("turn_progress", turn);
@@ -43,11 +65,12 @@ export async function pollTurnUntilComplete(
       return turn;
     }
     if (turn.status === "failed") {
-      const message = turn.model_answers.find((a) => a.error_message)?.error_message ?? "Turn failed";
+      const message =
+        turn.model_answers.find((a) => a.error_message)?.error_message ?? "Turn failed";
       throw new Error(message);
     }
 
-    await sleep(intervalMs);
+    await sleep(intervalMs, options?.signal);
   }
 
   throw new Error(
@@ -59,6 +82,7 @@ export async function streamTurn(
   auth: Auth,
   turnId: string,
   onEvent: TurnStreamHandler,
+  options?: { signal?: AbortSignal },
 ): Promise<void> {
   const headers: Record<string, string> = {
     Accept: "text/event-stream",
@@ -68,6 +92,7 @@ export async function streamTurn(
 
   let completed = false;
   let streamError: Error | null = null;
+  const signal = options?.signal;
 
   const dispatch = (event: string, data: unknown) => {
     if (event === "ping") return;
@@ -84,7 +109,7 @@ export async function streamTurn(
   };
 
   try {
-    const res = await fetch(`${getApiBase()}/chats/turns/${turnId}/stream`, { headers });
+    const res = await fetch(`${getApiBase()}/chats/turns/${turnId}/stream`, { headers, signal });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || res.statusText);
@@ -122,9 +147,12 @@ export async function streamTurn(
       }
     }
   } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      throw new DOMException("Request was cancelled.", "AbortError");
+    }
     if (!completed) {
       try {
-        await pollTurnUntilComplete(auth, turnId, onEvent, { emitProgress: false });
+        await pollTurnUntilComplete(auth, turnId, onEvent, { emitProgress: false, signal });
         return;
       } catch {
         // fall through to original error
@@ -139,7 +167,7 @@ export async function streamTurn(
 
   if (streamError) {
     try {
-      await pollTurnUntilComplete(auth, turnId, onEvent, pollOpts);
+      await pollTurnUntilComplete(auth, turnId, onEvent, { ...pollOpts, signal });
       return;
     } catch {
       throw streamError;
@@ -147,7 +175,7 @@ export async function streamTurn(
   }
 
   try {
-    await pollTurnUntilComplete(auth, turnId, onEvent, pollOpts);
+    await pollTurnUntilComplete(auth, turnId, onEvent, { ...pollOpts, signal });
   } catch (error) {
     throw error instanceof Error ? error : new Error(String(error));
   }

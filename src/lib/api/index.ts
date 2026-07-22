@@ -43,7 +43,7 @@ import type {
 
 export { streamTurn } from "@/lib/api/stream";
 
-type Auth = { token: string; orgId: string };
+type Auth = { token: string; orgId?: string | null };
 
 const TRANSCRIPTION_TIMEOUT_MS = 360_000;
 
@@ -175,6 +175,13 @@ export const api = {
     ) =>
       apiRequest<ApiTurn>(`/chats/${chatId}/turns`, {
         body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    deleteTurn: (auth: Auth, chatId: string, turnId: string) =>
+      apiRequest<{ turn_id: string; deleted: boolean }>(`/chats/${chatId}/turns/${turnId}`, {
+        method: "DELETE",
         token: auth.token,
         orgId: auth.orgId,
       }),

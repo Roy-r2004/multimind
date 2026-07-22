@@ -256,6 +256,11 @@ class TurnResponse(BaseModel):
     created_at: datetime
 
 
+class TurnDeleteResponse(BaseModel):
+    turn_id: str
+    deleted: bool
+
+
 class VerdictDisagreeRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=8000)
     user_position: str = Field(min_length=10, max_length=8000)

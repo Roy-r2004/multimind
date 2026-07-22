@@ -101,6 +101,10 @@ export function upsertTurn(list: ApiTurn[], turn: ApiTurn): ApiTurn[] {
   return list.map((t, i) => (i === idx ? mergeTurnFromApi(t, turn) : t));
 }
 
+export function removeTurnFromList(list: ApiTurn[], turnId: string): ApiTurn[] {
+  return list.filter((turn) => turn.id !== turnId);
+}
+
 export function mergeTurnLists(apiTurns: ApiTurn[], cachedTurns: ApiTurn[]): ApiTurn[] {
   let merged = [...apiTurns];
   for (const cached of cachedTurns) {

@@ -37,6 +37,7 @@ from app.schemas.api import (
     ChatUpdateRequest,
     DecisionInsuranceResponse,
     ModelAnswerResponse,
+    TurnDeleteResponse,
     TurnCreateRequest,
     TurnResponse,
     VerdictResponse,
@@ -44,6 +45,7 @@ from app.schemas.api import (
 
 logger = get_logger(__name__)
 CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
+_orchestration_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 class ChatService:
@@ -99,6 +101,32 @@ class ChatService:
         await db.execute(delete(ShareLink).where(ShareLink.chat_id == chat_id))
         await db.execute(delete(Turn).where(Turn.chat_id == chat_id))
         await db.delete(chat)
+
+    async def delete_turn(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, turn_id: str
+    ) -> TurnDeleteResponse:
+        await self.get_chat(db, auth, chat_id)
+
+        result = await db.execute(select(Turn.id).where(Turn.id == turn_id, Turn.chat_id == chat_id))
+        existing_turn_id = result.scalar_one_or_none()
+        if existing_turn_id is None:
+            any_turn = await db.execute(select(Turn.id).where(Turn.id == turn_id))
+            if any_turn.scalar_one_or_none() is not None:
+                raise NotFoundError("Turn", str(turn_id))
+            return TurnDeleteResponse(turn_id=turn_id, deleted=True)
+
+        task = _orchestration_tasks.pop(turn_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        await db.execute(delete(CostRecord).where(CostRecord.turn_id == turn_id))
+        await db.execute(delete(DecisionInsurance).where(DecisionInsurance.turn_id == turn_id))
+        await db.execute(delete(Verdict).where(Verdict.turn_id == turn_id))
+        await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id == turn_id))
+        await db.execute(delete(Turn).where(Turn.id == turn_id, Turn.chat_id == chat_id))
+        await db.flush()
+        return TurnDeleteResponse(turn_id=turn_id, deleted=True)
 
     async def _resolve_model_set(
         self, db: AsyncSession, auth: AuthContext, model_set_id: str
@@ -276,14 +304,24 @@ class ChatService:
                     await get_orchestrator().run(run_db, ctx, on_event=on_event)
                     await run_db.commit()
                 async with AsyncSessionLocal() as read_db:
-                    final = await self.get_turn(read_db, auth, turn_id)
-                    await queue.put({"type": "turn_completed", "data": final.model_dump(mode="json")})
+                    try:
+                        final = await self.get_turn(read_db, auth, turn_id)
+                    except NotFoundError:
+                        await queue.put({"type": "turn_deleted", "data": {"turn_id": turn_id}})
+                        return
+                    await queue.put(
+                        {"type": "turn_completed", "data": final.model_dump(mode="json")}
+                    )
+            except asyncio.CancelledError:
+                await queue.put({"type": "turn_deleted", "data": {"turn_id": turn_id}})
             except Exception as exc:
                 await queue.put({"type": "error", "data": {"message": str(exc)}})
             finally:
                 await queue.put(None)
 
-        asyncio.create_task(orchestrate())
+        task = asyncio.create_task(orchestrate())
+        _orchestration_tasks[turn_id] = task
+        task.add_done_callback(lambda _task: _orchestration_tasks.pop(turn_id, None))
 
         while True:
             try:

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import exists, select, update
 from tenacity import RetryError
 
 from app.core.logging import get_logger
@@ -52,6 +53,14 @@ class OrchestratorResult:
     cost_records: list[CostRecord] = field(default_factory=list)
 
 
+@dataclass
+class ModelCallResult:
+    model_id: str
+    model_name: str
+    response: Any | None = None
+    error: Exception | None = None
+
+
 def format_llm_error(exc: Exception) -> str:
     """Surface the underlying OpenRouter message instead of opaque RetryError text."""
     if isinstance(exc, RetryError) and exc.last_attempt.failed:
@@ -68,57 +77,87 @@ class TurnOrchestrator:
         self._prompts = get_prompt_engine()
         self._providers = get_provider_registry()
 
+    async def _turn_exists(self, db: AsyncSession, turn_id: str) -> bool:
+        result = await db.execute(select(Turn.id).where(Turn.id == turn_id))
+        return result.scalar_one_or_none() is not None
+
+    async def _get_answer(
+        self, db: AsyncSession, turn_id: str, model_id: str
+    ) -> ModelAnswer | None:
+        result = await db.execute(
+            select(ModelAnswer).where(
+                ModelAnswer.turn_id == turn_id,
+                ModelAnswer.model_id == model_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def _get_answer_id(self, db: AsyncSession, turn_id: str, model_id: str) -> str | None:
+        result = await db.execute(
+            select(ModelAnswer.id).where(
+                ModelAnswer.turn_id == turn_id,
+                ModelAnswer.model_id == model_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def run(
         self,
         db: AsyncSession,
         ctx: TurnContext,
         on_event: EventCallback | None = None,
     ) -> OrchestratorResult:
-        turn = await db.get(Turn, ctx.turn_id)
-        if turn is None:
-            raise ValueError(f"Turn {ctx.turn_id} not found")
-
-        turn.status = TurnStatus.RUNNING
-        await db.flush()
-
-        result = OrchestratorResult()
-        answer_rows: dict[str, ModelAnswer] = {}
-        db_lock = asyncio.Lock()
-
-        if ctx.skip_answer_seed:
-            from sqlalchemy import select
-
-            existing = await db.execute(
-                select(ModelAnswer).where(ModelAnswer.turn_id == ctx.turn_id)
-            )
-            for row in existing.scalars().all():
-                answer_rows[row.model_id] = row
-        else:
-            for model_id in ctx.model_ids:
-                row = ModelAnswer(
-                    turn_id=ctx.turn_id,
-                    model_id=model_id,
-                    status=ModelAnswerStatus.PENDING,
-                )
-                db.add(row)
-                answer_rows[model_id] = row
-            await db.flush()
-
         async def emit(event: str, data: dict[str, Any]) -> None:
             if on_event:
                 await on_event(event, data)
 
-        # Phase 1: parallel model answers
-        await emit("turn_started", {"turn_id": str(ctx.turn_id), "models": ctx.model_ids})
+        async def rollback_quietly() -> None:
+            try:
+                await db.rollback()
+            except Exception:
+                logger.warning("orchestrator_rollback_failed", turn_id=ctx.turn_id)
 
-        async def call_model(model_id: str) -> None:
-            model = get_model(model_id)
-            row = answer_rows[model_id]
-            async with db_lock:
-                row.status = ModelAnswerStatus.RUNNING
-                await db.flush()
+        result = OrchestratorResult()
+
+        # Short transaction: mark the turn and answer rows running, then release DB locks before
+        # any external provider call.
+        turn = await db.get(Turn, ctx.turn_id)
+        if turn is None:
+            await rollback_quietly()
+            return result
+
+        turn.status = TurnStatus.RUNNING
+
+        if ctx.skip_answer_seed:
+            existing = await db.execute(
+                select(ModelAnswer).where(ModelAnswer.turn_id == ctx.turn_id)
+            )
+            for row in existing.scalars().all():
+                if row.model_id in ctx.model_ids:
+                    row.status = ModelAnswerStatus.RUNNING
+        else:
+            for model_id in ctx.model_ids:
+                db.add(
+                    ModelAnswer(
+                        turn_id=ctx.turn_id,
+                        model_id=model_id,
+                        status=ModelAnswerStatus.RUNNING,
+                    )
+                )
+        await db.commit()
+
+        # Phase 1: parallel model answers
+        if not await self._turn_exists(db, ctx.turn_id):
+            await rollback_quietly()
+            return result
+        await db.commit()
+
+        await emit("turn_started", {"turn_id": str(ctx.turn_id), "models": ctx.model_ids})
+        for model_id in ctx.model_ids:
             await emit("model_answer_started", {"model_id": model_id})
 
+        async def call_model(model_id: str) -> ModelCallResult:
+            model = get_model(model_id)
             system = self._prompts.model_answer_prompt(
                 user_message=ctx.user_message,
                 model_id=model.id,
@@ -139,64 +178,129 @@ class TurnOrchestrator:
                     model=model.provider_model,
                     max_tokens=4096,
                 )
-                row.text = response.text
-                row.confidence = response.confidence or 85
-                row.tokens_input = response.tokens_input
-                row.tokens_output = response.tokens_output
-                row.cost_usd = resolve_llm_cost(
-                    model_id,
-                    response.tokens_input,
-                    response.tokens_output,
-                    response.cost_usd,
-                )
-                row.status = ModelAnswerStatus.COMPLETED
-
-                cost = CostRecord(
-                    org_id=ctx.org_id,
-                    chat_id=ctx.chat_id,
-                    project_id=ctx.project_id,
-                    turn_id=ctx.turn_id,
-                    model_id=model_id,
-                    kind=UsageKind.ANSWER,
-                    tokens_input=response.tokens_input,
-                    tokens_output=response.tokens_output,
-                    cost_usd=row.cost_usd,
-                )
-                async with db_lock:
-                    db.add(cost)
-                    result.cost_records.append(cost)
-                    result.model_answers.append(row)
-                    await db.flush()
-                await emit(
-                    "model_answer_completed",
-                    {
-                        "model_id": model_id,
-                        "model_name": model.name,
-                        "text": row.text,
-                        "confidence": row.confidence,
-                        "tokens_input": row.tokens_input,
-                        "tokens_output": row.tokens_output,
-                        "cost_usd": row.cost_usd,
-                    },
-                )
+                return ModelCallResult(model_id=model_id, model_name=model.name, response=response)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                message = format_llm_error(exc)
-                logger.warning("model_answer_failed", model_id=model_id, error=message)
-                row.status = ModelAnswerStatus.FAILED
-                row.error_message = message
-                async with db_lock:
-                    await db.flush()
+                return ModelCallResult(model_id=model_id, model_name=model.name, error=exc)
+
+        async def persist_model_result(call_result: ModelCallResult) -> None:
+            answer_id = await self._get_answer_id(db, ctx.turn_id, call_result.model_id)
+            if answer_id is None:
+                await rollback_quietly()
+                return
+
+            if call_result.error is not None:
+                message = format_llm_error(call_result.error)
+                logger.warning(
+                    "model_answer_failed", model_id=call_result.model_id, error=message
+                )
+                updated = await db.execute(
+                    update(ModelAnswer)
+                    .where(
+                        ModelAnswer.id == answer_id,
+                        ModelAnswer.turn_id == ctx.turn_id,
+                        exists().where(Turn.id == ctx.turn_id),
+                    )
+                    .values(status=ModelAnswerStatus.FAILED, error_message=message)
+                )
+                if updated.rowcount != 1:
+                    await rollback_quietly()
+                    return
+                await db.commit()
                 await emit(
                     "model_answer_failed",
-                    {"model_id": model_id, "error": message},
+                    {"model_id": call_result.model_id, "error": message},
                 )
+                return
 
-        await asyncio.gather(*(call_model(mid) for mid in ctx.model_ids))
+            response = call_result.response
+            if response is None:
+                await rollback_quietly()
+                return
+
+            cost_usd = resolve_llm_cost(
+                call_result.model_id,
+                response.tokens_input,
+                response.tokens_output,
+                response.cost_usd,
+            )
+            updated = await db.execute(
+                update(ModelAnswer)
+                .where(
+                    ModelAnswer.id == answer_id,
+                    ModelAnswer.turn_id == ctx.turn_id,
+                    exists().where(Turn.id == ctx.turn_id),
+                )
+                .values(
+                    text=response.text,
+                    confidence=response.confidence or 85,
+                    tokens_input=response.tokens_input,
+                    tokens_output=response.tokens_output,
+                    cost_usd=cost_usd,
+                    status=ModelAnswerStatus.COMPLETED,
+                    error_message=None,
+                )
+            )
+            if updated.rowcount != 1:
+                await rollback_quietly()
+                return
+
+            cost = CostRecord(
+                org_id=ctx.org_id,
+                chat_id=ctx.chat_id,
+                project_id=ctx.project_id,
+                turn_id=ctx.turn_id,
+                model_id=call_result.model_id,
+                kind=UsageKind.ANSWER,
+                tokens_input=response.tokens_input,
+                tokens_output=response.tokens_output,
+                cost_usd=cost_usd,
+            )
+            db.add(cost)
+            result.cost_records.append(cost)
+            await db.commit()
+            await emit(
+                "model_answer_completed",
+                {
+                    "model_id": call_result.model_id,
+                    "model_name": call_result.model_name,
+                    "text": response.text,
+                    "confidence": response.confidence or 85,
+                    "tokens_input": response.tokens_input,
+                    "tokens_output": response.tokens_output,
+                    "cost_usd": cost_usd,
+                },
+            )
+
+        tasks = [asyncio.create_task(call_model(mid)) for mid in ctx.model_ids]
+        try:
+            for task in asyncio.as_completed(tasks):
+                call_result = await task
+                await persist_model_result(call_result)
+        except asyncio.CancelledError:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        if not await self._turn_exists(db, ctx.turn_id):
+            await rollback_quietly()
+            return result
+
+        fresh_answers = await db.execute(
+            select(ModelAnswer).where(ModelAnswer.turn_id == ctx.turn_id)
+        )
+        answer_rows = {row.model_id: row for row in fresh_answers.scalars().all()}
+        await db.commit()
 
         # Build answer context for verdict
         answer_context = []
         for model_id in ctx.model_ids:
-            row = answer_rows[model_id]
+            row = answer_rows.get(model_id)
+            if row is None:
+                return result
             model = get_model(model_id)
             answer_context.append(
                 {
@@ -204,20 +308,34 @@ class TurnOrchestrator:
                     "model_name": model.name,
                     "text": row.text or "",
                     "confidence": row.confidence or 0,
-                    "failed": row.status == ModelAnswerStatus.FAILED,
+                    "failed": row.status != ModelAnswerStatus.COMPLETED,
                     "error_message": row.error_message,
                 }
             )
 
         successful = [a for a in answer_context if not a["failed"]]
         if not successful:
-            turn.status = TurnStatus.FAILED
-            turn.error_message = "All models failed to respond"
-            await db.flush()
-            await emit("turn_failed", {"error": turn.error_message})
+            failed_update = await db.execute(
+                update(Turn)
+                .where(Turn.id == ctx.turn_id)
+                .values(
+                    status=TurnStatus.FAILED,
+                    error_message="All models failed to respond",
+                )
+            )
+            if failed_update.rowcount != 1:
+                await rollback_quietly()
+                return result
+            await db.commit()
+            await emit("turn_failed", {"error": "All models failed to respond"})
             return result
 
         # Phase 2: Verdict
+        if not await self._turn_exists(db, ctx.turn_id):
+            await rollback_quietly()
+            return result
+        await db.commit()
+
         await emit("verdict_started", {"model_id": ctx.verdict_model_id})
 
         verdict_system = self._prompts.verdict_prompt(
@@ -241,6 +359,17 @@ class TurnOrchestrator:
                 max_tokens=2048,
             )
             parsed = provider.parse_json_response(verdict_response.text)
+
+            failed_count = sum(1 for a in answer_context if a["failed"])
+            final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
+            turn_updated = await db.execute(
+                update(Turn)
+                .where(Turn.id == ctx.turn_id)
+                .values(status=final_status, error_message=None)
+            )
+            if turn_updated.rowcount != 1:
+                await rollback_quietly()
+                return result
 
             verdict_row = Verdict(
                 turn_id=ctx.turn_id,
@@ -273,6 +402,7 @@ class TurnOrchestrator:
             )
             db.add(cost)
             result.cost_records.append(cost)
+            await db.commit()
 
             await emit(
                 "verdict_completed",
@@ -286,22 +416,35 @@ class TurnOrchestrator:
                     "cost_usd": verdict_row.cost_usd,
                 },
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
+            if not await self._turn_exists(db, ctx.turn_id):
+                await rollback_quietly()
+                return result
             message = format_llm_error(exc)
             logger.error("verdict_failed", error=message)
-            turn.status = TurnStatus.FAILED
-            turn.error_message = f"Verdict generation failed: {message}"
-            await db.flush()
-            await emit("turn_failed", {"error": turn.error_message})
+            failed_update = await db.execute(
+                update(Turn)
+                .where(Turn.id == ctx.turn_id)
+                .values(
+                    status=TurnStatus.FAILED,
+                    error_message=f"Verdict generation failed: {message}",
+                )
+            )
+            if failed_update.rowcount != 1:
+                await rollback_quietly()
+                return result
+            await db.commit()
+            await emit("turn_failed", {"error": f"Verdict generation failed: {message}"})
             return result
-
-        failed_count = sum(1 for a in answer_context if a["failed"])
-        turn.status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
-        await db.flush()
 
         await emit(
             "turn_completed",
-            {"turn_id": str(ctx.turn_id), "status": turn.status.value},
+            {
+                "turn_id": str(ctx.turn_id),
+                "status": (TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED).value,
+            },
         )
         return result
 

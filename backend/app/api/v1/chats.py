@@ -13,6 +13,7 @@ from app.schemas.api import (
     ChatUpdateRequest,
     MessageResponse,
     ShareLinkResponse,
+    TurnDeleteResponse,
     TurnCreateRequest,
     TurnResponse,
 )
@@ -85,6 +86,16 @@ async def start_turn(
     db: AsyncSession = Depends(get_db),
 ):
     return await chat_service.start_turn(db, auth, str(chat_id), data)
+
+
+@router.delete("/{chat_id}/turns/{turn_id}", response_model=TurnDeleteResponse)
+async def delete_turn(
+    chat_id: UUID,
+    turn_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.delete_turn(db, auth, str(chat_id), str(turn_id))
 
 
 @router.get("/turns/{turn_id}", response_model=TurnResponse)
