@@ -6,6 +6,7 @@ from typing import Any, Callable, Awaitable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import exists, select, update
+from sqlalchemy.exc import IntegrityError
 from tenacity import RetryError
 
 from app.core.logging import get_logger
@@ -28,6 +29,10 @@ logger = get_logger(__name__)
 EventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 ACTIVE_TURN_STATUSES = (TurnStatus.PENDING, TurnStatus.RUNNING)
 CANCELLATION_POLL_INTERVAL_SECONDS = 0.5
+MODEL_ANSWER_FAILED_CODE = "MODEL_ANSWER_FAILED"
+MODEL_ANSWER_FAILED_MESSAGE = "A model failed to respond."
+TURN_FAILED_CODE = "TURN_FAILED"
+TURN_FAILED_MESSAGE = "Turn failed."
 
 
 class TurnCancellationDetected(Exception):
@@ -158,14 +163,12 @@ class TurnOrchestrator:
         )
         return result.scalar_one_or_none()
 
-    async def _get_answer_id(self, db: AsyncSession, turn_id: str, model_id: str) -> str | None:
-        result = await db.execute(
-            select(ModelAnswer.id).where(
-                ModelAnswer.turn_id == turn_id,
-                ModelAnswer.model_id == model_id,
-            )
-        )
-        return result.scalar_one_or_none()
+    async def _turn_deleted_or_cancelled_after_rollback(
+        self,
+        db: AsyncSession,
+        turn_id: str,
+    ) -> bool:
+        return await is_turn_cancel_requested_or_deleted(db, turn_id)
 
     async def run(
         self,
@@ -185,20 +188,32 @@ class TurnOrchestrator:
 
         result = OrchestratorResult()
 
-        # Short transaction: mark the turn and answer rows running, then release DB locks before
-        # any external provider call.
-        started = await db.execute(
-            update(Turn)
-            .where(
-                Turn.id == ctx.turn_id,
-                Turn.cancel_requested_at.is_(None),
-                Turn.status == TurnStatus.PENDING,
+        # Streaming calls arrive with a service-owned RUNNING claim. Direct unseeded calls
+        # atomically claim their freshly-created pending turn here before provider work.
+        if ctx.skip_answer_seed:
+            active = await db.execute(
+                select(Turn.id).where(
+                    Turn.id == ctx.turn_id,
+                    Turn.cancel_requested_at.is_(None),
+                    Turn.status == TurnStatus.RUNNING,
+                )
             )
-            .values(status=TurnStatus.RUNNING)
-        )
-        if started.rowcount != 1:
-            await rollback_quietly()
-            return result
+            if active.scalar_one_or_none() is None:
+                await rollback_quietly()
+                return result
+        else:
+            claimed = await db.execute(
+                update(Turn)
+                .where(
+                    Turn.id == ctx.turn_id,
+                    Turn.cancel_requested_at.is_(None),
+                    Turn.status == TurnStatus.PENDING,
+                )
+                .values(status=TurnStatus.RUNNING)
+            )
+            if claimed.rowcount != 1:
+                await rollback_quietly()
+                return result
 
         if ctx.skip_answer_seed:
             await db.execute(
@@ -290,7 +305,11 @@ class TurnOrchestrator:
                 await db.commit()
                 await emit(
                     "model_answer_failed",
-                    {"model_id": call_result.model_id, "error": message},
+                    {
+                        "model_id": call_result.model_id,
+                        "code": MODEL_ANSWER_FAILED_CODE,
+                        "error": MODEL_ANSWER_FAILED_MESSAGE,
+                    },
                 )
                 return
 
@@ -338,8 +357,17 @@ class TurnOrchestrator:
                 cost_usd=cost_usd,
             )
             db.add(cost)
+            try:
+                await db.commit()
+            except IntegrityError:
+                await db.rollback()
+                if await self._turn_deleted_or_cancelled_after_rollback(
+                    db,
+                    ctx.turn_id,
+                ):
+                    raise TurnCancellationDetected
+                raise
             result.cost_records.append(cost)
-            await db.commit()
             await emit(
                 "model_answer_completed",
                 {
@@ -421,7 +449,7 @@ class TurnOrchestrator:
                 await rollback_quietly()
                 return result
             await db.commit()
-            await emit("turn_failed", {"error": "All models failed to respond"})
+            await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
             return result
 
         # Phase 2: Verdict
@@ -550,7 +578,7 @@ class TurnOrchestrator:
                 await rollback_quietly()
                 return result
             await db.commit()
-            await emit("turn_failed", {"error": f"Verdict generation failed: {message}"})
+            await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
             return result
 
         if await is_turn_cancel_requested_or_deleted(db, ctx.turn_id):

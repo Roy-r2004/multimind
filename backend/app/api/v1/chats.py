@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext, get_auth_context
+from app.core.logging import get_logger
 from app.db.session import AsyncSessionLocal, get_db
 from app.schemas.api import (
     ChatCreateRequest,
@@ -17,10 +18,11 @@ from app.schemas.api import (
     TurnCreateRequest,
     TurnResponse,
 )
-from app.services.chat_service import chat_service
+from app.services.chat_service import chat_service, turn_stream_internal_error_event
 from app.services.share_service import share_service
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 @router.get("", response_model=list[ChatResponse])
@@ -122,9 +124,11 @@ async def stream_turn(
                     data = json.dumps(payload["data"], default=str)
                     yield f"event: {event_type}\ndata: {data}\n\n"
                 await db.commit()
-            except Exception as exc:
+            except Exception:
                 await db.rollback()
-                yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+                logger.exception("turn_stream_response_failed", turn_id=str(turn_id))
+                payload = turn_stream_internal_error_event()
+                yield f"event: error\ndata: {json.dumps(payload['data'])}\n\n"
 
     return StreamingResponse(
         event_generator(),

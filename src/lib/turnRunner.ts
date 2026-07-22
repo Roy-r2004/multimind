@@ -74,6 +74,10 @@ export function removeTurn(chatId: string, turnId: string) {
   emitChat(chatId);
 }
 
+export function isTurnDeletedLocally(turnId: string): boolean {
+  return deletedTurns.has(turnId);
+}
+
 export function seedChatTurns(chatId: string, turns: ApiTurn[]) {
   const map = getChatTurnMap(chatId);
   for (const turn of turns) {
@@ -158,8 +162,13 @@ export function runTurnInBackground(auth: Auth, chatId: string, pending: ApiTurn
       }
       updateTurn(chatId, next);
     },
-    { signal: controller.signal },
+    { signal: controller.signal, isTurnDeleted: isTurnDeletedLocally },
   )
+    .then((result) => {
+      if (result?.reason === "turn_deleted") {
+        removeTurn(chatId, pending.id);
+      }
+    })
     .catch((error) => {
       if (isRequestCancelled(error) || deletedTurns.has(pending.id)) return;
       console.error("Turn stream failed:", error);
@@ -182,18 +191,25 @@ export async function stopActiveTurn(auth: Auth, chatId: string): Promise<void> 
   if (!job || job.stopping) return;
 
   job.stopping = true;
-  const deletion = api.chats.deleteTurn(auth, chatId, turnId);
-  removeTurn(chatId, turnId);
   try {
-    await deletion;
-  } catch (error) {
-    if (!isRequestCancelled(error)) throw error;
+    await api.chats.deleteTurn(auth, chatId, turnId);
+    removeTurn(chatId, turnId);
+  } finally {
+    const currentJob = activeJobs.get(turnId);
+    if (currentJob === job) {
+      currentJob.stopping = false;
+      emitChat(chatId);
+    }
   }
 }
 
 export async function resumeRunningTurns(auth: Auth, chatId: string, turns: ApiTurn[]) {
   for (const turn of turns) {
-    if ((turn.status === "pending" || turn.status === "running") && !activeJobs.has(turn.id)) {
+    if (
+      (turn.status === "pending" || turn.status === "running") &&
+      !activeJobs.has(turn.id) &&
+      !deletedTurns.has(turn.id)
+    ) {
       updateTurn(chatId, turn);
       void runTurnInBackground(auth, chatId, turn).catch(() => undefined);
     }

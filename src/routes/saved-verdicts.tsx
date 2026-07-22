@@ -62,7 +62,7 @@ function SavedVerdictsPage() {
     setItems((prev) => removeSavedVerdictBySourceId(prev, item.source_verdict_id));
     setVerdictSavedState(item.source_verdict_id, false);
     try {
-      await api.verdicts.unsave(auth, item.source_verdict_id);
+      await api.savedVerdicts.delete(auth, item.id);
       toast.success("Verdict removed from saved items");
     } catch (e) {
       setItems((prev) => restoreSavedVerdictItem(prev, item));

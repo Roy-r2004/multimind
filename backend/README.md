@@ -91,6 +91,22 @@ CPU servers should use `TRANSCRIPTION_DEVICE=cpu`, `TRANSCRIPTION_CPU_MODEL=medi
 | GET      | `/api/v1/costs/summary`    | Usage analytics                          |
 | GET      | `/api/v1/costs/pricing`    | Live OpenRouter rates for catalog models |
 
+## Saved Verdict Retention
+
+Saved Verdicts are durable user-owned snapshots. Saving a verdict copies the source chat
+title, user message, verdict text, verdict reason, model metadata, strategy, source
+identifiers, and saved timestamp into `saved_verdicts`. These snapshots intentionally
+survive deletion of the original chat, turn, or verdict source rows.
+
+There is no automatic expiration for Saved Verdict snapshots. They remain in the
+application database until the owning user permanently deletes the saved verdict, an
+organization OWNER or ADMIN purges saved verdicts for the authenticated organization.
+Deleting a saved verdict hard-deletes the snapshot row and does not delete the original
+chat, turn, verdict, or another user's snapshot of the same source verdict.
+
+The application does not claim immediate deletion from external backups or operational logs;
+those systems follow the deployment's separate operational retention policy.
+
 ## Prompt System (Jinja2)
 
 All LLM prompts are rendered from templates in `app/prompts/`:

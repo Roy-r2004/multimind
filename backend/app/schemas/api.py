@@ -935,6 +935,15 @@ class SavedVerdictUnsaveResponse(BaseModel):
     saved: bool = False
 
 
+class SavedVerdictDeleteResponse(BaseModel):
+    id: str
+    deleted: bool = True
+
+
+class SavedVerdictPurgeResponse(BaseModel):
+    deleted_count: int
+
+
 class SavedVerdictListItemResponse(BaseModel):
     id: str
     source_verdict_id: str

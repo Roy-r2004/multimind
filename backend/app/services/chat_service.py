@@ -6,12 +6,12 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ForbiddenError, NotFoundError
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
@@ -20,6 +20,7 @@ from app.db.models import (
     ModelAnswer,
     ModelAnswerStatus,
     ModelSet,
+    OrgRole,
     ShareLink,
     Turn,
     TurnStatus,
@@ -49,6 +50,15 @@ from app.schemas.api import (
 
 logger = get_logger(__name__)
 CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
+TURN_ALREADY_RUNNING_CODE = "TURN_ALREADY_RUNNING"
+TURN_ALREADY_RUNNING_MESSAGE = "Turn orchestration is already running."
+TURN_START_FAILED_CODE = "TURN_START_FAILED"
+TURN_START_FAILED_MESSAGE = "Turn orchestration could not be started."
+TURN_STREAM_INTERNAL_ERROR_CODE = "TURN_STREAM_INTERNAL_ERROR"
+TURN_STREAM_INTERNAL_ERROR_MESSAGE = "An unexpected error occurred while processing the turn."
+TURN_FAILED_CODE = "TURN_FAILED"
+TURN_FAILED_MESSAGE = "Turn failed."
+TURN_DELETE_FORBIDDEN_MESSAGE = "You do not have permission to delete this turn."
 _orchestration_tasks: dict[str, asyncio.Task[None]] = {}
 
 
@@ -112,6 +122,54 @@ async def _commit_or_rollback(db: AsyncSession) -> None:
         raise
 
 
+async def _mark_claimed_turn_failed(db: AsyncSession, turn_id: str) -> None:
+    try:
+        await db.execute(
+            update(Turn)
+            .where(
+                Turn.id == turn_id,
+                Turn.status == TurnStatus.RUNNING,
+                Turn.cancel_requested_at.is_(None),
+            )
+            .values(status=TurnStatus.FAILED, error_message=TURN_START_FAILED_MESSAGE)
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+
+def turn_stream_internal_error_event() -> dict[str, Any]:
+    return {
+        "type": "error",
+        "data": {
+            "code": TURN_STREAM_INTERNAL_ERROR_CODE,
+            "message": TURN_STREAM_INTERNAL_ERROR_MESSAGE,
+        },
+    }
+
+
+def turn_failed_event() -> dict[str, Any]:
+    return {
+        "type": "turn_failed",
+        "data": {
+            "code": TURN_FAILED_CODE,
+            "error": TURN_FAILED_MESSAGE,
+        },
+    }
+
+
+async def _recover_unowned_claimed_turn(db: AsyncSession, turn_id: str) -> None:
+    try:
+        await _mark_claimed_turn_failed(db, turn_id)
+    except Exception as exc:
+        logger.warning(
+            "turn_claim_recovery_failed",
+            turn_id=turn_id,
+            error=str(exc),
+        )
+
+
 class ChatService:
     async def list_chats(self, db: AsyncSession, auth: AuthContext) -> list[ChatResponse]:
         result = await db.execute(
@@ -143,6 +201,13 @@ class ChatService:
             raise NotFoundError("Chat", str(chat_id))
         return chat
 
+    def _authorize_turn_delete(self, chat: Chat, auth: AuthContext) -> None:
+        if auth.role in (OrgRole.OWNER, OrgRole.ADMIN):
+            return
+        if auth.role == OrgRole.MEMBER and chat.created_by == auth.user.id:
+            return
+        raise ForbiddenError(TURN_DELETE_FORBIDDEN_MESSAGE)
+
     async def update_chat(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, data: ChatUpdateRequest
     ) -> ChatResponse:
@@ -155,48 +220,52 @@ class ChatService:
         return self._chat_response(chat)
 
     async def delete_chat(self, db: AsyncSession, auth: AuthContext, chat_id: str) -> None:
-        chat = await self.get_chat(db, auth, chat_id)
+        await self.get_chat(db, auth, chat_id)
         turn_rows = (
             await db.execute(select(Turn.id, Turn.status).where(Turn.chat_id == chat_id))
         ).all()
-        turn_ids_list = [row.id for row in turn_rows]
-        active_turn_ids = [
-            row.id for row in turn_rows if row.status in ACTIVE_TURN_STATUSES
-        ]
+        captured_tasks = {
+            row.id: _orchestration_tasks.get(row.id)
+            for row in turn_rows
+            if row.status in ACTIVE_TURN_STATUSES
+        }
 
-        if turn_ids_list:
-            await db.execute(
-                update(Turn)
-                .where(
-                    Turn.id.in_(turn_ids_list),
-                    Turn.status.in_(ACTIVE_TURN_STATUSES),
-                    Turn.cancel_requested_at.is_(None),
+        try:
+            locked_chat = (
+                await db.execute(
+                    select(Chat)
+                    .where(Chat.id == chat_id, Chat.org_id == auth.org_id)
+                    .with_for_update()
                 )
-                .values(cancel_requested_at=func.now())
+            ).scalar_one_or_none()
+            if locked_chat is None:
+                raise NotFoundError("Chat", str(chat_id))
+
+            turn_ids = select(Turn.id).where(Turn.chat_id == chat_id)
+
+            await db.execute(delete(CostRecord).where(CostRecord.chat_id == chat_id))
+            await db.execute(
+                delete(DecisionInsurance).where(DecisionInsurance.turn_id.in_(turn_ids))
             )
-            await _commit_or_rollback(db)
+            await db.execute(delete(Verdict).where(Verdict.turn_id.in_(turn_ids)))
+            await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id.in_(turn_ids)))
+            await db.execute(delete(ShareLink).where(ShareLink.chat_id == chat_id))
+            await db.execute(delete(Turn).where(Turn.chat_id == chat_id))
+            await db.delete(locked_chat)
+            await db.flush()
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
-        for turn_id in active_turn_ids:
-            task = _orchestration_tasks.get(turn_id)
-            if task is not None and not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            _discard_orchestration_task(turn_id, task)
-
-        turn_ids = select(Turn.id).where(Turn.chat_id == chat_id)
-
-        await db.execute(delete(CostRecord).where(CostRecord.chat_id == chat_id))
-        await db.execute(delete(DecisionInsurance).where(DecisionInsurance.turn_id.in_(turn_ids)))
-        await db.execute(delete(Verdict).where(Verdict.turn_id.in_(turn_ids)))
-        await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id.in_(turn_ids)))
-        await db.execute(delete(ShareLink).where(ShareLink.chat_id == chat_id))
-        await db.execute(delete(Turn).where(Turn.chat_id == chat_id))
-        await db.delete(chat)
+        for turn_id, task in captured_tasks.items():
+            await _cancel_orchestration_task_after_commit(turn_id, task)
 
     async def delete_turn(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, turn_id: str
     ) -> TurnDeleteResponse:
-        await self.get_chat(db, auth, chat_id)
+        chat = await self.get_chat(db, auth, chat_id)
+        self._authorize_turn_delete(chat, auth)
         captured_task = _orchestration_tasks.get(turn_id)
 
         result = await db.execute(
@@ -337,8 +406,7 @@ class ChatService:
                 yield {"type": "turn_completed", "data": turn.model_dump(mode="json")}
                 return
             if status == "failed":
-                err = next((a.error_message for a in turn.model_answers if a.error_message), None)
-                yield {"type": "turn_failed", "data": {"error": err or "Turn failed"}}
+                yield turn_failed_event()
                 yield {"type": "turn_completed", "data": turn.model_dump(mode="json")}
                 return
             yield {"type": "ping", "data": {}}
@@ -361,7 +429,8 @@ class ChatService:
         )
         turn = result.scalar_one_or_none()
         if turn is None:
-            raise NotFoundError("Turn", turn_id)
+            yield {"type": "turn_deleted", "data": {"turn_id": turn_id}}
+            return
 
         if turn.cancel_requested_at is not None:
             yield {"type": "turn_deleted", "data": {"turn_id": turn_id}}
@@ -376,16 +445,17 @@ class ChatService:
             return
 
         if turn.status == TurnStatus.RUNNING:
-            async for event in self._poll_turn_until_done(auth, turn_id):
-                yield event
+            yield {
+                "type": "error",
+                "data": {
+                    "code": TURN_ALREADY_RUNNING_CODE,
+                    "message": TURN_ALREADY_RUNNING_MESSAGE,
+                },
+            }
             return
 
         if turn.status == TurnStatus.FAILED:
-            err = (
-                next((a.error_message for a in turn.model_answers if a.error_message), None)
-                or turn.error_message
-            )
-            yield {"type": "turn_failed", "data": {"error": err or "Turn failed"}}
+            yield turn_failed_event()
             saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [turn])
             yield {
                 "type": "turn_completed",
@@ -418,6 +488,78 @@ class ChatService:
             skip_answer_seed=True,
         )
 
+        claimed = await db.execute(
+            update(Turn)
+            .where(
+                Turn.id == turn_id,
+                Turn.status == TurnStatus.PENDING,
+                Turn.cancel_requested_at.is_(None),
+            )
+            .values(status=TurnStatus.RUNNING, error_message=None)
+        )
+        if claimed.rowcount != 1:
+            await db.rollback()
+            fresh_result = await db.execute(
+                select(Turn)
+                .join(Chat, Chat.id == Turn.chat_id)
+                .where(Turn.id == turn_id, Chat.org_id == auth.org_id)
+                .options(
+                    selectinload(Turn.model_answers),
+                    selectinload(Turn.verdict),
+                    selectinload(Turn.decision_insurance),
+                    selectinload(Turn.lesson),
+                )
+                .execution_options(populate_existing=True)
+            )
+            fresh_turn = fresh_result.scalar_one_or_none()
+            if fresh_turn is None or fresh_turn.cancel_requested_at is not None:
+                yield {"type": "turn_deleted", "data": {"turn_id": turn_id}}
+                return
+            if fresh_turn.status == TurnStatus.RUNNING:
+                yield {
+                    "type": "error",
+                    "data": {
+                        "code": TURN_ALREADY_RUNNING_CODE,
+                        "message": TURN_ALREADY_RUNNING_MESSAGE,
+                    },
+                }
+                return
+            if fresh_turn.status in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
+                saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [fresh_turn])
+                yield {
+                    "type": "turn_completed",
+                    "data": self._turn_response(
+                        fresh_turn, saved_verdict_ids
+                    ).model_dump(mode="json"),
+                }
+                return
+            if fresh_turn.status == TurnStatus.FAILED:
+                yield turn_failed_event()
+                saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [fresh_turn])
+                yield {
+                    "type": "turn_completed",
+                    "data": self._turn_response(
+                        fresh_turn, saved_verdict_ids
+                    ).model_dump(mode="json"),
+                }
+                return
+            yield {
+                "type": "error",
+                "data": {
+                    "code": TURN_ALREADY_RUNNING_CODE,
+                    "message": TURN_ALREADY_RUNNING_MESSAGE,
+                },
+            }
+            return
+        try:
+            await db.commit()
+        except asyncio.CancelledError:
+            await _recover_unowned_claimed_turn(db, turn_id)
+            raise
+        except Exception:
+            await db.rollback()
+            raise
+
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
         async def on_event(event: str, data: dict[str, Any]) -> None:
@@ -442,15 +584,74 @@ class ChatService:
                     )
             except asyncio.CancelledError:
                 await queue.put({"type": "turn_deleted", "data": {"turn_id": turn_id}})
-            except Exception as exc:
-                await queue.put({"type": "error", "data": {"message": str(exc)}})
+            except Exception:
+                logger.exception(
+                    "turn_stream_orchestration_failed",
+                    turn_id=turn_id,
+                    chat_id=ctx.chat_id,
+                )
+                async with AsyncSessionLocal() as failure_db:
+                    await _mark_claimed_turn_failed(failure_db, turn_id)
+                await queue.put(turn_stream_internal_error_event())
             finally:
                 _discard_orchestration_task(turn_id, asyncio.current_task())
                 await queue.put(None)
 
-        task = asyncio.create_task(orchestrate())
-        _orchestration_tasks[turn_id] = task
-        task.add_done_callback(lambda done_task: _discard_orchestration_task(turn_id, done_task))
+        task_registered = False
+        live_existing_owner = False
+        coroutine = None
+        task: asyncio.Task[None] | None = None
+        try:
+            existing_task = _orchestration_tasks.get(turn_id)
+            if existing_task is not None:
+                if existing_task.done():
+                    _consume_orchestration_task_result(turn_id, existing_task)
+                else:
+                    logger.error(
+                        "orchestration_task_registry_live_after_claim",
+                        turn_id=turn_id,
+                    )
+                    live_existing_owner = True
+                    yield {
+                        "type": "error",
+                        "data": {
+                            "code": TURN_ALREADY_RUNNING_CODE,
+                            "message": TURN_ALREADY_RUNNING_MESSAGE,
+                        },
+                    }
+                    return
+
+            coroutine = orchestrate()
+            task = asyncio.create_task(coroutine)
+            _orchestration_tasks[turn_id] = task
+            task_registered = True
+            task.add_done_callback(
+                lambda done_task: _consume_orchestration_task_result(turn_id, done_task)
+            )
+        except asyncio.CancelledError:
+            if coroutine is not None and task is None:
+                coroutine.close()
+            if task is not None:
+                _discard_orchestration_task(turn_id, task)
+            if not task_registered and not live_existing_owner:
+                await _recover_unowned_claimed_turn(db, turn_id)
+            raise
+        except Exception:
+            if coroutine is not None and task is None:
+                coroutine.close()
+            if task is not None:
+                _discard_orchestration_task(turn_id, task)
+            if not task_registered and not live_existing_owner:
+                await _recover_unowned_claimed_turn(db, turn_id)
+                yield {
+                    "type": "error",
+                    "data": {
+                        "code": TURN_START_FAILED_CODE,
+                        "message": TURN_START_FAILED_MESSAGE,
+                    },
+                }
+                return
+            raise
 
         while True:
             try:

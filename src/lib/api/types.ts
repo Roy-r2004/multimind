@@ -131,6 +131,15 @@ export type ApiSavedVerdictState = {
   saved: boolean;
 };
 
+export type ApiSavedVerdictDelete = {
+  id: string;
+  deleted: boolean;
+};
+
+export type ApiSavedVerdictPurge = {
+  deleted_count: number;
+};
+
 export type ApiSavedVerdict = {
   id: string;
   source_verdict_id: string;

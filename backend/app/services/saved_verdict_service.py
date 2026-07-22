@@ -1,15 +1,25 @@
 """Personal saved verdict snapshot service."""
 
 from sqlalchemy import String, cast, delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import NotFoundError
-from app.db.models import Chat, SavedVerdict, Turn, TurnStatus, Verdict
+from app.core.exceptions import ForbiddenError, NotFoundError
+from app.db.models import Chat, OrgRole, SavedVerdict, Turn, TurnStatus, Verdict
 from app.schemas.api import (
+    SavedVerdictDeleteResponse,
     SavedVerdictListItemResponse,
+    SavedVerdictPurgeResponse,
     SavedVerdictSaveResponse,
     SavedVerdictUnsaveResponse,
+)
+
+SAVED_VERDICT_UNIQUE_CONSTRAINT = "uq_saved_verdict_user_source"
+SAVED_VERDICT_UNIQUE_COLUMNS = (
+    "saved_verdicts.org_id",
+    "saved_verdicts.user_id",
+    "saved_verdicts.source_verdict_id",
 )
 
 
@@ -57,8 +67,17 @@ class SavedVerdictService:
             verdict_model_id=verdict.model_id,
             strategy=verdict.strategy,
         )
-        db.add(saved)
-        await db.flush()
+        try:
+            async with db.begin_nested():
+                db.add(saved)
+                await db.flush()
+        except IntegrityError as exc:
+            existing = await self._existing_after_unique_race(db, auth, verdict_id, exc)
+            if existing is None:
+                raise
+            return self._save_response(
+                existing, original_chat_exists=await self._original_chat_exists(db, existing)
+            )
         return self._save_response(saved, original_chat_exists=True)
 
     async def unsave_verdict(
@@ -73,6 +92,30 @@ class SavedVerdictService:
         )
         await db.flush()
         return SavedVerdictUnsaveResponse(verdict_id=verdict_id, saved=False)
+
+    async def delete_saved_verdict(
+        self, db: AsyncSession, auth: AuthContext, saved_verdict_id: str
+    ) -> SavedVerdictDeleteResponse:
+        deleted = await db.execute(
+            delete(SavedVerdict).where(
+                SavedVerdict.id == saved_verdict_id,
+                SavedVerdict.org_id == auth.org_id,
+                SavedVerdict.user_id == auth.user.id,
+            )
+        )
+        if deleted.rowcount != 1:
+            raise NotFoundError("SavedVerdict", saved_verdict_id)
+        await db.flush()
+        return SavedVerdictDeleteResponse(id=saved_verdict_id, deleted=True)
+
+    async def purge_organization_saved_verdicts(
+        self, db: AsyncSession, auth: AuthContext
+    ) -> SavedVerdictPurgeResponse:
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            raise ForbiddenError("Organization admin access required")
+        deleted = await db.execute(delete(SavedVerdict).where(SavedVerdict.org_id == auth.org_id))
+        await db.flush()
+        return SavedVerdictPurgeResponse(deleted_count=deleted.rowcount or 0)
 
     async def list_saved_verdicts(
         self, db: AsyncSession, auth: AuthContext
@@ -117,6 +160,35 @@ class SavedVerdictService:
             )
         )
         return result.scalar_one_or_none()
+
+    async def _existing_after_unique_race(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        verdict_id: str,
+        exc: IntegrityError,
+    ) -> SavedVerdict | None:
+        if not self._is_expected_unique_violation(exc):
+            return None
+        return await self._get_saved_by_source(db, auth, verdict_id)
+
+    def _is_expected_unique_violation(self, exc: IntegrityError) -> bool:
+        orig = getattr(exc, "orig", None)
+        sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+        constraint_name = getattr(orig, "constraint_name", None)
+        diag = getattr(orig, "diag", None)
+        if constraint_name is None and diag is not None:
+            constraint_name = getattr(diag, "constraint_name", None)
+        cause = getattr(orig, "__cause__", None)
+        if constraint_name is None and cause is not None:
+            constraint_name = getattr(cause, "constraint_name", None)
+        if sqlstate == "23505" and constraint_name == SAVED_VERDICT_UNIQUE_CONSTRAINT:
+            return True
+
+        message = str(orig or exc).lower()
+        if SAVED_VERDICT_UNIQUE_CONSTRAINT in message:
+            return True
+        return all(column in message for column in SAVED_VERDICT_UNIQUE_COLUMNS)
 
     async def _original_chat_exists(self, db: AsyncSession, saved: SavedVerdict) -> bool:
         if not saved.source_chat_id:

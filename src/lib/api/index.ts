@@ -35,6 +35,8 @@ import type {
   ApiPromptBuilderImproveRequest,
   ApiPromptBuilderImproveResponse,
   ApiShareLink,
+  ApiSavedVerdictDelete,
+  ApiSavedVerdictPurge,
   ApiSharedChat,
   ApiTemplate,
   ApiTranscriptionResponse,
@@ -229,6 +231,20 @@ export const api = {
   savedVerdicts: {
     list: (auth: Auth) =>
       apiRequest<ApiSavedVerdict[]>("/saved-verdicts", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    delete: (auth: Auth, savedVerdictId: string) =>
+      apiRequest<ApiSavedVerdictDelete>(`/saved-verdicts/${savedVerdictId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    purgeOrganization: (auth: Auth) =>
+      apiRequest<ApiSavedVerdictPurge>("/saved-verdicts", {
+        method: "DELETE",
         token: auth.token,
         orgId: auth.orgId,
       }),
