@@ -184,52 +184,143 @@ function ScrapingRunDetailPage() {
       <div className="mx-auto max-w-6xl px-6 py-10">
         <PageHeader
           eyebrow="Scraping Council"
-          title={run ? `AI Team Plan for ${run.mission_title}` : "AI Team Plan"}
-          description="Saved AI team plan and real source discovery campaigns."
+          title={run ? `Scrape: ${run.mission_title}` : "Scrape"}
+          description="Start a scrape or open finished results. Agents are optional detail."
           action={
             <Link
-              to="/scraping/$missionId/runs"
+              to="/scraping/$missionId"
               params={{ missionId }}
               className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
             >
-              AI Team Plans
+              Mission
             </Link>
           }
         />
         {loading && (
-          <GlassCard className="mt-8 p-8 text-sm text-muted-foreground">Loading run...</GlassCard>
+          <GlassCard className="mt-8 p-8 text-sm text-muted-foreground">Loading...</GlassCard>
         )}
         {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
         {run && (
           <div className="mt-8 space-y-5">
-            <GlassCard className="p-6">
-              <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">{run.status}</Badge>
-                    <span className="text-sm text-muted-foreground">
-                      Blueprint v{run.blueprint_version ?? "unknown"}
-                    </span>
-                  </div>
+            <GlassCard className="border-primary/30 bg-primary/5 p-6">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
                   <h2 className="text-xl font-semibold">
-                    Orchestrator selected {run.recommended_agent_count ?? run.agents.length} AI
-                    agents
+                    {activeExecution
+                      ? "Scrape in progress"
+                      : executions.some((item) => item.status === "completed")
+                        ? "Scrape results"
+                        : "Start your scrape"}
                   </h2>
-                  {run.planner_rationale && (
-                    <p className="max-w-3xl text-sm text-muted-foreground">
-                      {run.planner_rationale}
-                    </p>
-                  )}
-                  {run.error_message && (
-                    <p className="text-sm text-destructive">{run.error_message}</p>
-                  )}
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Search the web → download pages → extract facilities → Excel export.
+                  </p>
                 </div>
-                <div className="grid gap-2 text-sm text-muted-foreground md:text-right">
-                  <span>Planner: {run.planner_model_id ?? "Pending"}</span>
-                  <span>Created: {new Date(run.created_at).toLocaleString()}</span>
-                  {run.completed_at && (
-                    <span>Planned: {new Date(run.completed_at).toLocaleString()}</span>
-                  )}
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={startingExecution || (run.status !== "planned" && !activeExecution)}
+                  onClick={() => void handleStartExecution()}
+                >
+                  {startingExecution
+                    ? "Starting…"
+                    : activeExecution
+                      ? "Watch progress"
+                      : executions.some((item) => item.status === "completed")
+                        ? "Run again"
+                        : "Start scrape"}
+                </Button>
+              </div>
+            </GlassCard>
+
+            <GlassCard className="p-6">
+              <h2 className="text-lg font-semibold">Results</h2>
+              {executions.length === 0 ? (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  No scrape yet. Click <strong>Start scrape</strong> above.
+                </p>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {executions.map((execution) => {
+                    const isDone = ["completed", "failed", "cancelled"].includes(execution.status);
+                    const isLive = ["queued", "running", "cancel_requested"].includes(
+                      execution.status,
+                    );
+                    return (
+                      <div
+                        key={execution.id}
+                        className="flex flex-col gap-3 rounded-xl border border-border p-4 md:flex-row md:items-center md:justify-between"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="secondary">{execution.status_label}</Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {execution.country_name}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            {execution.records_verified} facilities · {execution.documents_found}{" "}
+                            pages · {execution.sources_discovered} sources
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {new Date(execution.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            onClick={() =>
+                              void navigate({
+                                to: "/scraping/$missionId/executions/$executionId",
+                                params: { missionId, executionId: execution.id },
+                              })
+                            }
+                          >
+                            {isLive
+                              ? "Watch progress"
+                              : isDone
+                                ? "View results"
+                                : "Open"}
+                          </Button>
+                          {isDone && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={deletingExecutionId === execution.id}
+                              onClick={() => setExecutionToDelete(execution)}
+                            >
+                              {deletingExecutionId === execution.id ? "Deleting..." : "Delete"}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </GlassCard>
+
+            <details className="rounded-xl border border-border bg-card/40 p-4">
+              <summary className="cursor-pointer text-sm font-medium">
+                AI agents ({run.agents.length}) — optional detail
+              </summary>
+              <div className="mt-4 space-y-3">
+                {run.error_message && (
+                  <p className="text-sm text-destructive">{run.error_message}</p>
+                )}
+                {run.planner_rationale && (
+                  <p className="text-sm text-muted-foreground">{run.planner_rationale}</p>
+                )}
+                {run.agents.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No agents saved.</p>
+                ) : (
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {run.agents.map((agent) => (
+                      <AgentCard key={agent.id} agent={agent} agentNameById={agentNameById} />
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2 pt-2">
                   {run.status === "planned" && (
                     <Button
                       type="button"
@@ -237,7 +328,7 @@ function ScrapingRunDetailPage() {
                       disabled={cancelling}
                       onClick={() => void handleCancel()}
                     >
-                      {cancelling ? "Cancelling..." : "Cancel Plan"}
+                      {cancelling ? "Cancelling..." : "Cancel plan"}
                     </Button>
                   )}
                   <Button
@@ -246,88 +337,11 @@ function ScrapingRunDetailPage() {
                     disabled={!canDelete || deleting}
                     onClick={() => setShowDelete(true)}
                   >
-                    {deleting ? "Deleting..." : "Delete AI Team Plan"}
+                    {deleting ? "Deleting..." : "Delete plan"}
                   </Button>
                 </div>
               </div>
-            </GlassCard>
-            <GlassCard className="p-6">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold">Execution Campaigns</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Starts a real campaign: search discovery → secure page retrieval → AI facility extraction → published facilities + Excel export.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  disabled={startingExecution || run.status !== "planned"}
-                  onClick={() => void handleStartExecution()}
-                >
-                  {startingExecution
-                    ? "Starting Source Discovery..."
-                    : activeExecution
-                      ? "View Active Source Discovery"
-                      : "Start Source Discovery"}
-                </Button>
-              </div>
-              {executions.length === 0 ? (
-                <p className="mt-5 text-sm text-muted-foreground">
-                  No execution campaigns have been started for this AI team plan.
-                </p>
-              ) : (
-                <div className="mt-5 divide-y divide-border rounded-lg border border-border">
-                  {executions.map((execution) => (
-                    <div
-                      key={execution.id}
-                      className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between"
-                    >
-                      <Link
-                        to="/scraping/$missionId/executions/$executionId"
-                        params={{ missionId, executionId: execution.id }}
-                        className="min-w-0 flex-1"
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant="secondary">{execution.status}</Badge>
-                          <span className="font-medium">{execution.execution_type}</span>
-                          <span className="text-sm text-muted-foreground">
-                            {execution.country_name} ({execution.country_code})
-                          </span>
-                        </div>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          {execution.mode} · {execution.sources_discovered} candidate sources ·{" "}
-                          {execution.coverage_debt} coverage debt ·{" "}
-                          {new Date(execution.created_at).toLocaleString()}
-                        </p>
-                      </Link>
-                      {["completed", "failed", "cancelled"].includes(execution.status) && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={deletingExecutionId === execution.id}
-                          onClick={() => setExecutionToDelete(execution)}
-                        >
-                          {deletingExecutionId === execution.id
-                            ? "Deleting..."
-                            : "Delete Execution"}
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </GlassCard>
-            {run.agents.length === 0 ? (
-              <GlassCard className="p-8 text-sm text-muted-foreground">
-                No agents were saved for this AI team plan.
-              </GlassCard>
-            ) : (
-              <div className="grid gap-4 lg:grid-cols-2">
-                {run.agents.map((agent) => (
-                  <AgentCard key={agent.id} agent={agent} agentNameById={agentNameById} />
-                ))}
-              </div>
-            )}
+            </details>
           </div>
         )}
       </div>

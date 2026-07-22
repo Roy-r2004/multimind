@@ -296,123 +296,68 @@ function ScrapingExecutionPage() {
     <AppShell>
       <div className="mx-auto max-w-7xl px-6 py-10">
         <PageHeader
-          eyebrow="Execution Campaigns"
-          title="Live Scraping Campaign"
-          description="Discovers real sources, retrieves pages, extracts facilities with evidence, and publishes verified records you can export."
+          eyebrow="Scrape results"
+          title={
+            facilities.length > 0
+              ? `${facilities.length} facilities found`
+              : isTerminal
+                ? "Scrape finished"
+                : "Scrape in progress"
+          }
+          description={`${execution?.country_name ?? "Country"} · ${sourceDocuments.length} pages downloaded · ${sourceCandidates.length} sources`}
           action={
             <Link
-              to="/scraping/$missionId/runs/$runId"
-              params={{ missionId, runId: execution?.team_plan_id ?? "" }}
+              to="/scraping/$missionId"
+              params={{ missionId }}
               className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
             >
-              AI Team Plan
+              Back to mission
             </Link>
           }
         />
-        {loading && <GlassCard className="mt-8 p-8 text-sm">Loading execution...</GlassCard>}
+        {loading && <GlassCard className="mt-8 p-8 text-sm">Loading results...</GlassCard>}
         {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
         {detail && execution && (
           <div className="mt-8 space-y-5">
-            <GlassCard className="border-emerald-500/40 bg-emerald-500/10 p-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="font-semibold">
-                    {isTerminal
-                      ? facilities.length > 0
-                        ? `${facilities.length} facilities published from real sources`
-                        : "Campaign finished — check sources below (extraction may have found none)"
-                      : "Campaign running — discovery → retrieval → extraction → publication"}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Metrics: {execution.records_extracted} staged · {execution.records_verified}{" "}
-                    verified · {execution.duplicates_detected} possible duplicates
-                  </p>
-                </div>
-                <Badge variant="secondary">{connectionState}</Badge>
-              </div>
-            </GlassCard>
-            <GlassCard className="p-6">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">{execution.status_label}</Badge>
-                    <Badge variant="outline">{execution.mode}</Badge>
-                    <span className="text-sm text-muted-foreground">
-                      {execution.country_name} ({execution.country_code})
-                    </span>
-                  </div>
-                  <h2 className="mt-3 text-xl font-semibold">{execution.execution_type}</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Started {execution.started_at ? new Date(execution.started_at).toLocaleString() : "not yet"} ·
-                    Completed {execution.completed_at ? new Date(execution.completed_at).toLocaleString() : "not yet"}
-                  </p>
+            <GlassCard className="p-5">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">{execution.status_label}</Badge>
+                  <span className="text-sm text-muted-foreground">{connectionState}</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
-                    variant="outline"
                     disabled={!isTerminal || downloadingExcel || facilities.length === 0}
                     onClick={() => void handleDownloadExcel()}
                   >
-                    {downloadingExcel ? "Preparing Excel…" : "Download Excel Report"}
+                    {downloadingExcel ? "Preparing Excel…" : "Download Excel"}
                   </Button>
                   {detail.can_cancel && (
-                    <Button type="button" disabled={acting} onClick={() => void handleCancel()}>
-                      {acting ? "Cancelling..." : "Cancel Execution"}
-                    </Button>
-                  )}
-                  {detail.can_delete && (
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      disabled={acting}
-                      onClick={() => setShowDelete(true)}
-                    >
-                      Delete Execution
+                    <Button type="button" variant="outline" disabled={acting} onClick={() => void handleCancel()}>
+                      {acting ? "Cancelling..." : "Cancel"}
                     </Button>
                   )}
                 </div>
               </div>
-              <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Metric label="Active agents" value={activeAgents} />
-                <Metric label="Tasks queued/running/completed/failed" value={`${summaryCounts.queued}/${summaryCounts.running}/${summaryCounts.completed}/${summaryCounts.failed}`} />
-                <Metric label="Coverage cells" value={`${completedCoverage}/${coverage.length}`} />
-                <Metric label="Coverage debt" value={execution.coverage_debt} />
-                <Metric label="Source candidates" value={sourceCandidates.length} />
-                <Metric label="Selected retrievals" value={selectedRetrievalCount} />
-                <Metric label="Retrieval attempts" value={retrievalAttempts.length} />
-                <Metric label="Successful retrievals" value={successfulRetrievalCount} />
-                <Metric label="Successful documents" value={sourceDocuments.length} />
-                <Metric label="Blocked retrievals" value={blockedRetrievalCount} />
-                <Metric label="Unsupported types" value={unsupportedRetrievalCount} />
-                <Metric label="Failed retrievals" value={failedRetrievalCount} />
-                <Metric label="Downloaded bytes" value={downloadedBytes.toLocaleString()} />
-                <Metric label="Unique domains" value={uniqueDomainCount} />
-                <Metric label="Discovery queries" value={discoveryQueries.length} />
-                <Metric label="Query failures" value={failedQueryCount} />
-                <Metric label="Facilities published" value={facilities.length} />
-                <Metric label="Staged candidates" value={execution.records_extracted} />
-                <Metric label="Duplicates flagged" value={execution.duplicates_detected} />
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Metric label="Facilities" value={facilities.length} />
+                <Metric label="Pages" value={sourceDocuments.length} />
+                <Metric label="Sources" value={sourceCandidates.length} />
+                <Metric label="Duplicates" value={execution.duplicates_detected} />
               </div>
-              {!isTerminal && facilities.length > 0 && (
-                <p className="mt-4 text-sm text-muted-foreground">
-                  Excel report available after execution finishes.
-                </p>
-              )}
             </GlassCard>
+
             <GlassCard className="p-6">
-              <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold">Published Facilities</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Verified facilities written from extracted staging candidates.
-                  </p>
-                </div>
-                <Badge variant="secondary">{facilities.length} facilities</Badge>
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-xl font-semibold">Facilities</h2>
+                <Badge variant="secondary">{facilities.length}</Badge>
               </div>
               {facilities.length === 0 ? (
-                <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
-                  No facilities published yet. They appear after retrieval + AI extraction complete.
+                <div className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
+                  {isTerminal
+                    ? "No facilities were published from the pages we retrieved."
+                    : "Still running… facilities show up here when extraction finishes."}
                 </div>
               ) : (
                 <div className="overflow-auto rounded-lg border border-border">
@@ -420,12 +365,9 @@ function ScrapingExecutionPage() {
                     <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
                       <tr>
                         <th className="px-3 py-2">Name</th>
-                        <th className="px-3 py-2">Country</th>
                         <th className="px-3 py-2">Type</th>
                         <th className="px-3 py-2">Website</th>
                         <th className="px-3 py-2">Confidence</th>
-                        <th className="px-3 py-2">Review</th>
-                        <th className="px-3 py-2">Sources</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -441,9 +383,6 @@ function ScrapingExecutionPage() {
                               </p>
                             ) : null}
                           </td>
-                          <td className="px-3 py-2 align-top">
-                            {facility.country_name} ({facility.country_code})
-                          </td>
                           <td className="px-3 py-2 align-top">{facility.facility_type}</td>
                           <td className="px-3 py-2 align-top">
                             {facility.primary_website ? (
@@ -453,7 +392,7 @@ function ScrapingExecutionPage() {
                                 rel="noreferrer"
                                 className="text-primary underline-offset-2 hover:underline"
                               >
-                                {facility.primary_website}
+                                Open site
                               </a>
                             ) : (
                               "—"
@@ -462,8 +401,6 @@ function ScrapingExecutionPage() {
                           <td className="px-3 py-2 align-top">
                             {(facility.confidence_score * 100).toFixed(0)}%
                           </td>
-                          <td className="px-3 py-2 align-top">{facility.human_review_status}</td>
-                          <td className="px-3 py-2 align-top">{facility.source_count}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -471,37 +408,23 @@ function ScrapingExecutionPage() {
                 </div>
               )}
             </GlassCard>
-            <GlassCard className="p-6">
-              <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold">Candidate Sources</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Real HTTP/HTTPS candidates discovered by the configured search provider.
-                  </p>
-                </div>
-                <Badge variant="secondary">{sourceCandidates.length} candidates</Badge>
-              </div>
-              {sourceCandidates.length === 0 ? (
-                <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
-                  No source candidates have been persisted for this execution yet.
-                </div>
-              ) : (
+
+            <details className="rounded-xl border border-border bg-card/40 p-4">
+              <summary className="cursor-pointer text-sm font-medium">
+                Sources & pages ({sourceCandidates.length} sources · {sourceDocuments.length} pages)
+              </summary>
+              <div className="mt-4 space-y-4">
                 <div className="overflow-auto rounded-lg border border-border">
-                  <table className="w-full min-w-[980px] text-left text-sm">
+                  <table className="w-full min-w-[720px] text-left text-sm">
                     <thead className="bg-muted/50">
                       <tr>
                         <th className="px-3 py-2 font-medium">Source</th>
                         <th className="px-3 py-2 font-medium">Domain</th>
-                        <th className="px-3 py-2 font-medium">Category</th>
-                        <th className="px-3 py-2 font-medium">Region</th>
-                        <th className="px-3 py-2 font-medium">Language</th>
-                        <th className="px-3 py-2 font-medium">Provider</th>
-                        <th className="px-3 py-2 font-medium">Rank</th>
                         <th className="px-3 py-2 font-medium">Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {sourceCandidates.map((candidate) => (
+                      {sourceCandidates.slice(0, 40).map((candidate) => (
                         <tr key={candidate.id} className="border-t border-border">
                           <td className="px-3 py-2 align-top">
                             <a
@@ -512,81 +435,94 @@ function ScrapingExecutionPage() {
                             >
                               {candidate.title || candidate.canonical_url}
                             </a>
-                            <div className="mt-1 max-w-xl truncate text-xs text-muted-foreground">
-                              {candidate.canonical_url}
-                            </div>
                           </td>
                           <td className="px-3 py-2 align-top">{candidate.domain}</td>
-                          <td className="px-3 py-2 align-top">{candidate.source_category}</td>
-                          <td className="px-3 py-2 align-top">{candidate.region_name}</td>
-                          <td className="px-3 py-2 align-top">{candidate.language_name}</td>
-                          <td className="px-3 py-2 align-top">{candidate.provider}</td>
-                          <td className="px-3 py-2 align-top">{candidate.rank}</td>
                           <td className="px-3 py-2 align-top">{candidate.status}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              )}
-            </GlassCard>
-            <GlassCard className="p-6">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Agents</h2>
-                {selectedAgentId && (
-                  <Button type="button" variant="outline" onClick={() => setSelectedAgentId(null)}>
-                    Clear filter
+                {sourceCandidates.length > 40 && (
+                  <p className="text-xs text-muted-foreground">
+                    Showing first 40 of {sourceCandidates.length} sources.
+                  </p>
+                )}
+              </div>
+            </details>
+
+            <details className="rounded-xl border border-border bg-card/40 p-4">
+              <summary className="cursor-pointer text-sm font-medium">
+                Technical details (agents, tasks, logs)
+              </summary>
+              <div className="mt-4 space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <Metric label="Active agents" value={activeAgents} />
+                  <Metric
+                    label="Tasks done"
+                    value={`${summaryCounts.completed}/${summaryCounts.queued + summaryCounts.running + summaryCounts.completed + summaryCounts.failed}`}
+                  />
+                  <Metric label="Coverage" value={`${completedCoverage}/${coverage.length}`} />
+                  <Metric label="Blocked" value={blockedRetrievalCount} />
+                </div>
+                <GlassCard className="p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="font-medium">Agents</h3>
+                    {selectedAgentId && (
+                      <Button type="button" variant="outline" size="sm" onClick={() => setSelectedAgentId(null)}>
+                        Clear filter
+                      </Button>
+                    )}
+                  </div>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {detail.agents.map((agent) => (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        onClick={() => setSelectedAgentId(agent.id)}
+                        className="rounded-lg border border-border p-3 text-left text-sm hover:bg-muted/40"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="secondary">{agent.status}</Badge>
+                          <span className="font-medium">{agent.planned_agent_name}</span>
+                        </div>
+                        <p className="mt-1 text-muted-foreground">{agent.current_action ?? "Idle"}</p>
+                      </button>
+                    ))}
+                  </div>
+                </GlassCard>
+                <GridSection title="Tasks" rows={filteredTasks.map(formatTaskRow)} />
+                <GridSection title="Coverage" rows={filteredCoverage.map(formatCoverageRow)} />
+                <GridSection title="Discovery Queries" rows={discoveryQueries.map(formatQueryRow)} />
+                <GridSection
+                  title="Retrieval Attempts"
+                  rows={retrievalAttempts.map((attempt) => formatAttemptRow(attempt, candidatesById))}
+                />
+                <GridSection
+                  title="Source Documents"
+                  rows={sourceDocuments.map((document) => formatDocumentRow(document))}
+                />
+                <GlassCard className="p-4">
+                  <h3 className="font-medium">Live activity</h3>
+                  <div className="mt-3 max-h-[360px] space-y-2 overflow-auto">
+                    {filteredEvents.map((event) => (
+                      <div key={event.id} className="rounded-lg border border-border p-2 text-sm">
+                        <span className="text-muted-foreground">
+                          {new Date(event.created_at).toLocaleTimeString()}
+                        </span>{" "}
+                        <span className="font-medium">{event.event_type}</span>
+                        <p className="text-muted-foreground">{event.message}</p>
+                      </div>
+                    ))}
+                  </div>
+                </GlassCard>
+                {detail.can_delete && (
+                  <Button type="button" variant="destructive" disabled={acting} onClick={() => setShowDelete(true)}>
+                    Delete scrape
                   </Button>
                 )}
               </div>
-              <div className="grid gap-4 lg:grid-cols-2">
-                {detail.agents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    onClick={() => setSelectedAgentId(agent.id)}
-                    className="rounded-lg border border-border p-4 text-left hover:bg-muted/40"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant="secondary">{agent.status}</Badge>
-                      <span className="font-medium">{agent.planned_agent_name}</span>
-                    </div>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {agent.planned_agent_role} · {agent.model_id}
-                    </p>
-                    <p className="mt-2 text-sm">{agent.current_action ?? "No current action"}</p>
-                    {agent.error_message && (
-                      <p className="mt-2 text-sm text-destructive">{agent.error_message}</p>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </GlassCard>
-            <GridSection title="Coverage" rows={filteredCoverage.map(formatCoverageRow)} />
-            <GridSection title="Tasks" rows={filteredTasks.map(formatTaskRow)} />
-            <GridSection title="Discovery Queries" rows={discoveryQueries.map(formatQueryRow)} />
-            <GridSection
-              title="Retrieval Attempts"
-              rows={retrievalAttempts.map((attempt) => formatAttemptRow(attempt, candidatesById))}
-            />
-            <GridSection
-              title="Source Documents"
-              rows={sourceDocuments.map((document) => formatDocumentRow(document))}
-            />
-            <GlassCard className="p-6">
-              <h2 className="text-lg font-semibold">Live Activity</h2>
-              <div className="mt-4 max-h-[520px] space-y-3 overflow-auto">
-                {filteredEvents.map((event) => (
-                  <div key={event.id} className="rounded-lg border border-border p-3 text-sm">
-                    <span className="text-muted-foreground">
-                      {new Date(event.created_at).toLocaleTimeString()} -
-                    </span>{" "}
-                    <span className="font-medium">{event.event_type}</span>
-                    <p className="mt-1 text-muted-foreground">{event.message}</p>
-                  </div>
-                ))}
-              </div>
-            </GlassCard>
+            </details>
           </div>
         )}
       </div>
