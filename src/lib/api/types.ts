@@ -435,6 +435,23 @@ export type ApiError = {
   details?: unknown;
 };
 
+export type TranscriptionLanguage = "auto" | "en" | "fr" | "ar";
+
+export type ApiTranscriptionResponse = {
+  text: string;
+  language: string | null;
+  language_probability: number | null;
+  duration_seconds: number | null;
+  processing_seconds: number;
+};
+
+export type CreateTranscriptionOptions = {
+  file: Blob;
+  filename?: string;
+  language?: TranscriptionLanguage;
+  signal?: AbortSignal;
+};
+
 export type ApiBrainMemory = {
   id: string;
   source: string;
@@ -462,6 +479,7 @@ export class ApiClientError extends Error {
     message: string,
     public status: number,
     public body?: ApiError,
+    public retryAfter?: string | null,
   ) {
     super(message);
     this.name = "ApiClientError";

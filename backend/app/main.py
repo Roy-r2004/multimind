@@ -103,11 +103,23 @@ def create_app() -> FastAPI:
             "FORBIDDEN": 403,
             "VALIDATION_ERROR": 422,
             "CONFLICT": 409,
+            "INTERNAL_ERROR": 500,
             "LLM_NOT_CONFIGURED": 503,
+            "TRANSCRIPTION_DISABLED": 503,
+            "TRANSCRIPTION_MODEL_UNAVAILABLE": 503,
+            "TRANSCRIPTION_BUSY": 429,
+            "TRANSCRIPTION_TIMEOUT": 504,
+            "UNSUPPORTED_AUDIO_TYPE": 415,
+            "AUDIO_TOO_LARGE": 413,
+            "INVALID_AUDIO": 422,
+            "AUDIO_TOO_LONG": 422,
+            "SILENT_AUDIO": 422,
         }
+        headers = {"Retry-After": "5"} if exc.code == "TRANSCRIPTION_BUSY" else None
         return ORJSONResponse(
             status_code=status_map.get(exc.code, 400),
             content={"error": exc.code, "message": exc.message, "details": exc.details},
+            headers=headers,
         )
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)

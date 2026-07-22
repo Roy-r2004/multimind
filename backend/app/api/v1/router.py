@@ -18,6 +18,7 @@ from app.api.v1 import (
     scraping,
     share,
     templates,
+    transcriptions,
 )
 
 api_router = APIRouter()
@@ -36,3 +37,4 @@ api_router.include_router(costs.router, prefix="/costs", tags=["costs"])
 api_router.include_router(lessons.router, prefix="/lessons", tags=["lessons"])
 api_router.include_router(brain.router, prefix="/brain", tags=["brain"])
 api_router.include_router(scraping.router, prefix="/scraping", tags=["scraping"])
+api_router.include_router(transcriptions.router, prefix="/transcriptions", tags=["transcriptions"])

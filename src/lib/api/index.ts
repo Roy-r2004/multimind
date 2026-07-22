@@ -1,6 +1,6 @@
 /** Typed API methods — one function per backend endpoint */
 
-import { apiRequest } from "@/lib/api/client";
+import { apiFormRequest, apiRequest } from "@/lib/api/client";
 import type {
   ApiChat,
   ApiCostSummary,
@@ -35,13 +35,67 @@ import type {
   ApiShareLink,
   ApiSharedChat,
   ApiTemplate,
+  ApiTranscriptionResponse,
   ApiTurn,
+  CreateTranscriptionOptions,
   Strategy,
 } from "@/lib/api/types";
 
 export { streamTurn } from "@/lib/api/stream";
 
 type Auth = { token: string; orgId: string };
+
+const TRANSCRIPTION_TIMEOUT_MS = 360_000;
+
+function normalizedMimeType(type: string | undefined): string {
+  return (type ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+function genericRecordingFilename(type: string | undefined): string {
+  switch (normalizedMimeType(type)) {
+    case "audio/webm":
+      return "recording.webm";
+    case "audio/ogg":
+      return "recording.ogg";
+    case "audio/mp4":
+      return "recording.mp4";
+    case "audio/mpeg":
+      return "recording.mp3";
+    case "audio/wav":
+    case "audio/x-wav":
+      return "recording.wav";
+    default:
+      return "recording.audio";
+  }
+}
+
+function safeFilename(name: string | undefined, fallback: string): string {
+  const basename = name?.split(/[/\\]/).pop()?.trim();
+  if (!basename) {
+    return fallback;
+  }
+
+  const cleaned = basename.replace(/[^A-Za-z0-9._-]/g, "_");
+  if (!cleaned || cleaned === "." || cleaned === "..") {
+    return fallback;
+  }
+  return cleaned;
+}
+
+function isBrowserFile(file: Blob): file is File {
+  return typeof File !== "undefined" && file instanceof File;
+}
+
+function transcriptionFilename(options: CreateTranscriptionOptions): string {
+  const fallback = genericRecordingFilename(options.file.type);
+  if (options.filename) {
+    return safeFilename(options.filename, fallback);
+  }
+  if (isBrowserFile(options.file)) {
+    return safeFilename(options.file.name, fallback);
+  }
+  return fallback;
+}
 
 export const api = {
   auth: {
@@ -239,6 +293,22 @@ export const api = {
         token: auth.token,
         orgId: auth.orgId,
       }),
+  },
+
+  transcriptions: {
+    create: (auth: Auth, options: CreateTranscriptionOptions) => {
+      const formData = new FormData();
+      formData.append("file", options.file, transcriptionFilename(options));
+      formData.append("language", options.language ?? "auto");
+
+      return apiFormRequest<ApiTranscriptionResponse>("/transcriptions", {
+        formData,
+        token: auth.token,
+        orgId: auth.orgId,
+        timeoutMs: TRANSCRIPTION_TIMEOUT_MS,
+        signal: options.signal,
+      });
+    },
   },
 
   costs: {
