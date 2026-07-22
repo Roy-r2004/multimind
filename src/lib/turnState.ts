@@ -2,6 +2,26 @@
 
 import type { ApiTurn } from "@/lib/api/types";
 
+const GENERATING_STATUSES = new Set(["pending", "running"]);
+
+export function isTurnGenerating(turn: Pick<ApiTurn, "status">): boolean {
+  return GENERATING_STATUSES.has(String(turn.status).toLowerCase());
+}
+
+export function isAnyTurnGenerating(turns: Array<Pick<ApiTurn, "status">>): boolean {
+  return turns.some(isTurnGenerating);
+}
+
+export function canShowHistoricalTurnDelete(
+  turn: Pick<ApiTurn, "status">,
+): boolean {
+  return !isTurnGenerating(turn);
+}
+
+export function isHistoricalTurnDeleteDisabled(anyTurnGenerating: boolean): boolean {
+  return anyTurnGenerating;
+}
+
 export function applyStreamEvent(
   turn: ApiTurn,
   event: string,

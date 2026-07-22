@@ -11,12 +11,14 @@ from app.db.base import Base
 from app.db.models import (
     Chat,
     CostRecord,
+    DecisionInsurance,
     ModelAnswer,
     ModelAnswerStatus,
     ModelSet,
     OrgMembership,
     OrgRole,
     Organization,
+    SavedVerdict,
     Strategy,
     Turn,
     TurnStatus,
@@ -160,6 +162,148 @@ async def count_rows(Session, model, **filters):
         for field, value in filters.items():
             statement = statement.where(getattr(model, field) == value)
         return len((await db.execute(statement)).scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_deleting_completed_middle_turn_removes_only_selected_related_rows(db_setup):
+    async with db_setup.Session() as db:
+        turns: list[Turn] = []
+        verdicts: list[Verdict] = []
+        for index in range(1, 4):
+            turn = Turn(
+                chat_id=db_setup.chat_id,
+                user_message=f"Prompt {index}",
+                model_set_id="test-set",
+                strategy=Strategy.SYNTHESIZE,
+                verdict_model="gemini",
+                status=TurnStatus.COMPLETED,
+            )
+            db.add(turn)
+            await db.flush()
+            db.add_all(
+                [
+                    ModelAnswer(
+                        turn_id=turn.id,
+                        model_id="gpt-4.1",
+                        text=f"Answer {index}A",
+                        status=ModelAnswerStatus.COMPLETED,
+                    ),
+                    ModelAnswer(
+                        turn_id=turn.id,
+                        model_id="claude",
+                        text=f"Answer {index}B",
+                        status=ModelAnswerStatus.COMPLETED,
+                    ),
+                ]
+            )
+            verdict = Verdict(
+                turn_id=turn.id,
+                model_id="gemini",
+                strategy=Strategy.SYNTHESIZE,
+                text=f"Verdict {index}",
+                reason=f"Reason {index}",
+            )
+            db.add(verdict)
+            db.add(
+                CostRecord(
+                    org_id=db_setup.auth.org_id,
+                    chat_id=db_setup.chat_id,
+                    turn_id=turn.id,
+                    model_id="gemini",
+                    kind=UsageKind.VERDICT,
+                )
+            )
+            turns.append(turn)
+            verdicts.append(verdict)
+
+        middle = turns[1]
+        middle_verdict = verdicts[1]
+        db.add(
+            DecisionInsurance(
+                turn_id=middle.id,
+                best_case="Best",
+                worst_case="Worst",
+                risk_level="medium",
+                potential_loss="Loss",
+                mitigation_plan="Plan",
+            )
+        )
+        await db.flush()
+        db.add(
+            SavedVerdict(
+                org_id=db_setup.auth.org_id,
+                user_id=db_setup.auth.user.id,
+                source_verdict_id=middle_verdict.id,
+                source_turn_id=middle.id,
+                source_chat_id=db_setup.chat_id,
+                source_chat_title="Snapshot chat",
+                source_user_message=middle.user_message,
+                verdict_text=middle_verdict.text,
+                verdict_reason=middle_verdict.reason,
+                verdict_model_id=middle_verdict.model_id,
+                strategy=middle_verdict.strategy,
+            )
+        )
+        await db.commit()
+
+    async with db_setup.Session() as db:
+        response = await chat_service.delete_turn(
+            db, db_setup.auth, db_setup.chat_id, middle.id
+        )
+        context = await chat_service._latest_previous_verdict_context(
+            db, db_setup.chat_id, turns[2].id, None
+        )
+        await db.commit()
+
+    assert response.deleted is True
+    assert await count_rows(db_setup.Session, Turn, id=turns[0].id) == 1
+    assert await count_rows(db_setup.Session, Turn, id=middle.id) == 0
+    assert await count_rows(db_setup.Session, Turn, id=turns[2].id) == 1
+    assert await count_rows(db_setup.Session, ModelAnswer, turn_id=middle.id) == 0
+    assert await count_rows(db_setup.Session, Verdict, turn_id=middle.id) == 0
+    assert await count_rows(db_setup.Session, CostRecord, turn_id=middle.id) == 0
+    assert await count_rows(db_setup.Session, DecisionInsurance, turn_id=middle.id) == 0
+    assert await count_rows(db_setup.Session, SavedVerdict, source_turn_id=middle.id) == 1
+    assert context is not None
+    assert "Prompt 2" not in context
+    assert "Verdict 2" not in context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [TurnStatus.PARTIAL, TurnStatus.FAILED])
+async def test_deleting_historical_partial_or_failed_turn(db_setup, status):
+    async with db_setup.Session() as db:
+        turn = Turn(
+            chat_id=db_setup.chat_id,
+            user_message=f"Historical {status.value}",
+            model_set_id="test-set",
+            strategy=Strategy.SYNTHESIZE,
+            verdict_model="gemini",
+            status=status,
+        )
+        db.add(turn)
+        await db.flush()
+        db.add(
+            ModelAnswer(
+                turn_id=turn.id,
+                model_id="gpt-4.1",
+                text="Partial answer" if status is TurnStatus.PARTIAL else "",
+                status=(
+                    ModelAnswerStatus.COMPLETED
+                    if status is TurnStatus.PARTIAL
+                    else ModelAnswerStatus.FAILED
+                ),
+            )
+        )
+        await db.commit()
+
+    async with db_setup.Session() as db:
+        response = await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    assert response.deleted is True
+    assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
+    assert await count_rows(db_setup.Session, ModelAnswer, turn_id=turn.id) == 0
 
 
 @pytest.mark.asyncio

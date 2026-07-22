@@ -25,6 +25,7 @@ import {
   Scale,
   Square,
   Bookmark,
+  MoreHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -47,6 +48,7 @@ import { api } from "@/lib/api";
 import type { ApiTranscriptionResponse, ApiTurn } from "@/lib/api/types";
 import {
   mergeWithCachedTurns,
+  removeTurn,
   resumeRunningTurns,
   runTurnInBackground,
   seedChatTurns,
@@ -60,6 +62,12 @@ import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
 import { getVerdictBookmarkState, updateVerdictSavedInTurns } from "@/lib/savedVerdicts";
+import {
+  canShowHistoricalTurnDelete,
+  isAnyTurnGenerating,
+  isHistoricalTurnDeleteDisabled,
+  removeTurnFromList,
+} from "@/lib/turnState";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
 import {
@@ -68,6 +76,12 @@ import {
   mergeAssessmentIntoInstructions,
   parseCriteriaLines,
 } from "@/lib/assessmentCriteria";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export const Route = createFileRoute("/chat")({
   head: () => ({ meta: [{ title: "Chat — MultiAI" }] }),
@@ -190,6 +204,9 @@ export function ChatPage() {
   const [pendingSavedVerdicts, setPendingSavedVerdicts] = useState<Set<string>>(() => new Set());
   const [showDeleteChat, setShowDeleteChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
+  const [deleteTurnTarget, setDeleteTurnTarget] = useState<ApiTurn | null>(null);
+  const [deletingTurn, setDeletingTurn] = useState(false);
+  const [deleteTurnError, setDeleteTurnError] = useState<string | null>(null);
   const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
   const [showCriteria, setShowCriteria] = useState(false);
   const [savingCriteria, setSavingCriteria] = useState(false);
@@ -362,6 +379,31 @@ export function ChatPage() {
     }
   }
 
+  async function confirmDeleteTurn() {
+    const auth = authHeaders();
+    if (!auth || !activeChatId || !deleteTurnTarget || deletingTurn) return;
+    if (anyTurnGenerating || !canShowHistoricalTurnDelete(deleteTurnTarget)) {
+      setDeleteTurnError("Wait for generation to finish or stop it before deleting a turn.");
+      return;
+    }
+    const target = deleteTurnTarget;
+    setDeletingTurn(true);
+    setDeleteTurnError(null);
+    try {
+      await api.chats.deleteTurn(auth, activeChatId, target.id);
+      removeTurn(activeChatId, target.id);
+      setApiTurns((prev) => removeTurnFromList(prev, target.id));
+      setDeleteTurnTarget(null);
+      toast.success("Turn deleted.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete turn";
+      setDeleteTurnError(message);
+      toast.error(message);
+    } finally {
+      setDeletingTurn(false);
+    }
+  }
+
   async function handleShare() {
     const auth = authHeaders();
     if (!auth || !activeChatId) return;
@@ -373,6 +415,8 @@ export function ChatPage() {
   const empty = isAuthenticated && apiTurns.length === 0 && !loading;
   const voiceAuth = authHeaders();
   const voiceDisabled = !voiceAuth || !set || sending || loading;
+  const anyTurnGenerating = isAnyTurnGenerating(apiTurns) || loading;
+  const turnDeleteDisabled = isHistoricalTurnDeleteDisabled(anyTurnGenerating);
 
   return (
     <AppShell>
@@ -511,39 +555,70 @@ export function ChatPage() {
             )}
 
             {set &&
-              apiTurns.map((turn) => (
-                <div key={turn.id} className="space-y-6 animate-fade-up">
-                  <div className="flex justify-end">
-                    <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
-                      <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
+              apiTurns.map((turn) => {
+                const showTurnDelete = canShowHistoricalTurnDelete(turn);
+                return (
+                  <div key={turn.id} className="space-y-6 animate-fade-up">
+                    <div className="flex items-start justify-end gap-2">
+                      {showTurnDelete && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="Turn options"
+                              className="mt-1 rounded-lg border border-border bg-card/70 p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                            >
+                              <MoreHorizontal className="size-4" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem
+                              disabled={turnDeleteDisabled}
+                              className="text-destructive focus:text-destructive"
+                              onSelect={() => {
+                                if (turnDeleteDisabled) return;
+                                setDeleteTurnError(null);
+                                setDeleteTurnTarget(turn);
+                              }}
+                            >
+                              <Trash2 className="size-3.5" /> Delete turn
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
+                        <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
+                      </div>
                     </div>
-                  </div>
-                  <AiTurn
-                    set={set}
-                    turn={turn}
-                    modelById={modelById}
-                    assessmentCriteria={assessmentCriteria}
-                    onEditCriteria={() => setShowCriteria(true)}
-                    pendingSavedVerdicts={pendingSavedVerdicts}
-                    onToggleSavedVerdict={(verdictId, saved) =>
-                      toggleSavedVerdict(verdictId, saved).catch((error) => {
-                        toast.error(
-                          error instanceof Error ? error.message : "Failed to update saved verdict",
+                    <AiTurn
+                      set={set}
+                      turn={turn}
+                      modelById={modelById}
+                      assessmentCriteria={assessmentCriteria}
+                      onEditCriteria={() => setShowCriteria(true)}
+                      pendingSavedVerdicts={pendingSavedVerdicts}
+                      onToggleSavedVerdict={(verdictId, saved) =>
+                        toggleSavedVerdict(verdictId, saved).catch((error) => {
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Failed to update saved verdict",
+                          );
+                        })
+                      }
+                      onLessonUpdate={(lessonId, lessonStatus) => {
+                        setApiTurns((prev) =>
+                          prev.map((t) =>
+                            t.id === turn.id
+                              ? { ...t, lesson_id: lessonId, lesson_status: lessonStatus }
+                              : t,
+                          ),
                         );
-                      })
-                    }
-                    onLessonUpdate={(lessonId, lessonStatus) => {
-                      setApiTurns((prev) =>
-                        prev.map((t) =>
-                          t.id === turn.id
-                            ? { ...t, lesson_id: lessonId, lesson_status: lessonStatus }
-                            : t,
-                        ),
-                      );
-                    }}
-                  />
-                </div>
-              ))}
+                      }}
+                    />
+                  </div>
+                );
+              })}
 
             {loading &&
               set &&
@@ -821,6 +896,44 @@ export function ChatPage() {
         onSave={saveAssessmentCriteria}
         saving={savingCriteria}
       />
+
+      <Modal
+        open={!!deleteTurnTarget}
+        onClose={() => {
+          if (deletingTurn) return;
+          setDeleteTurnTarget(null);
+          setDeleteTurnError(null);
+        }}
+        title="Delete this turn?"
+        size="sm"
+      >
+        <p className="text-sm text-muted-foreground">
+          This permanently deletes this question, all AI answers, the final Verdict, and related
+          usage data. Later turns will remain unchanged.
+        </p>
+        {deleteTurnError && <p className="mt-3 text-sm text-destructive">{deleteTurnError}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setDeleteTurnTarget(null);
+              setDeleteTurnError(null);
+            }}
+            disabled={deletingTurn}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={deletingTurn || !deleteTurnTarget}
+            onClick={() => void confirmDeleteTurn()}
+            className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
+          >
+            {deletingTurn ? "Deleting..." : "Delete turn"}
+          </button>
+        </div>
+      </Modal>
 
       <Modal
         open={showDeleteChat}
