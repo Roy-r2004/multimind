@@ -17,6 +17,7 @@ import {
   LogOut,
   Brain,
   BookOpen,
+  Bookmark,
 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { CinematicBackdrop } from "@/components/cinematic/PageChrome";
@@ -38,6 +39,7 @@ const NAV = [
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/brain", label: "Brain", icon: Brain },
   { to: "/lessons", label: "Lessons", icon: BookOpen },
+  { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

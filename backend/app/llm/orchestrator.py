@@ -388,6 +388,7 @@ class TurnOrchestrator:
             )
             db.add(verdict_row)
             result.verdict = verdict_row
+            await db.flush()
 
             cost = CostRecord(
                 org_id=ctx.org_id,
@@ -407,6 +408,7 @@ class TurnOrchestrator:
             await emit(
                 "verdict_completed",
                 {
+                    "id": str(verdict_row.id),
                     "model_id": ctx.verdict_model_id,
                     "strategy": ctx.strategy.value,
                     "text": verdict_row.text,

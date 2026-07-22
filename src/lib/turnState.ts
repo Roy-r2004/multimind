@@ -48,10 +48,12 @@ export function applyStreamEvent(
     return {
       ...turn,
       verdict: {
+        id: String(data.id ?? ""),
         model_id: String(data.model_id ?? turn.verdict_model),
         strategy: turn.strategy,
         text: String(data.text ?? ""),
         reason: String(data.reason ?? ""),
+        saved: Boolean(data.saved ?? false),
         tokens_input: Number(data.tokens_input ?? 0),
         tokens_output: Number(data.tokens_output ?? 0),
         cost_usd: Number(data.cost_usd ?? 0),

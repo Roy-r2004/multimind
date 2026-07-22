@@ -24,7 +24,9 @@ import {
   Trophy,
   Scale,
   Square,
+  Bookmark,
 } from "lucide-react";
+import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
 import { GlassCard, ModelPill, CinematicBackdrop } from "@/components/cinematic/PageChrome";
@@ -48,6 +50,7 @@ import {
   resumeRunningTurns,
   runTurnInBackground,
   seedChatTurns,
+  setVerdictSavedState as setCachedVerdictSavedState,
   stopActiveTurn,
   subscribeActiveTurn,
   subscribeChatRunning,
@@ -56,6 +59,7 @@ import {
 import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
+import { getVerdictBookmarkState, updateVerdictSavedInTurns } from "@/lib/savedVerdicts";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
 import {
@@ -183,6 +187,7 @@ export function ChatPage() {
   const [sending, setSending] = useState(false);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [stoppingTurnId, setStoppingTurnId] = useState<string | null>(null);
+  const [pendingSavedVerdicts, setPendingSavedVerdicts] = useState<Set<string>>(() => new Set());
   const [showDeleteChat, setShowDeleteChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
   const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
@@ -266,6 +271,39 @@ export function ChatPage() {
         if (!currentTextarea || cursorPosition === null) return;
         currentTextarea.focus();
         currentTextarea.setSelectionRange(cursorPosition, cursorPosition);
+      });
+    }
+  }
+
+  function setVerdictSavedState(verdictId: string, saved: boolean) {
+    if (!activeChatId) return;
+    setApiTurns((prev) => updateVerdictSavedInTurns(prev, verdictId, saved));
+    setCachedVerdictSavedState(verdictId, saved);
+  }
+
+  async function toggleSavedVerdict(verdictId: string, saved: boolean) {
+    const auth = authHeaders();
+    if (!auth || pendingSavedVerdicts.has(verdictId)) return;
+
+    const nextSaved = !saved;
+    setPendingSavedVerdicts((prev) => new Set(prev).add(verdictId));
+    setVerdictSavedState(verdictId, nextSaved);
+    try {
+      if (nextSaved) {
+        await api.verdicts.save(auth, verdictId);
+        toast.success("Verdict saved");
+      } else {
+        await api.verdicts.unsave(auth, verdictId);
+        toast.success("Verdict removed from saved items");
+      }
+    } catch (error) {
+      setVerdictSavedState(verdictId, saved);
+      throw error;
+    } finally {
+      setPendingSavedVerdicts((prev) => {
+        const next = new Set(prev);
+        next.delete(verdictId);
+        return next;
       });
     }
   }
@@ -486,6 +524,14 @@ export function ChatPage() {
                     modelById={modelById}
                     assessmentCriteria={assessmentCriteria}
                     onEditCriteria={() => setShowCriteria(true)}
+                    pendingSavedVerdicts={pendingSavedVerdicts}
+                    onToggleSavedVerdict={(verdictId, saved) =>
+                      toggleSavedVerdict(verdictId, saved).catch((error) => {
+                        toast.error(
+                          error instanceof Error ? error.message : "Failed to update saved verdict",
+                        );
+                      })
+                    }
                     onLessonUpdate={(lessonId, lessonStatus) => {
                       setApiTurns((prev) =>
                         prev.map((t) =>
@@ -902,6 +948,8 @@ function AiTurn({
   modelById,
   assessmentCriteria,
   onEditCriteria,
+  pendingSavedVerdicts,
+  onToggleSavedVerdict,
   onLessonUpdate,
 }: {
   set: ModelSet;
@@ -909,6 +957,8 @@ function AiTurn({
   modelById: (id: string) => { name: string; color: string };
   assessmentCriteria: string;
   onEditCriteria: () => void;
+  pendingSavedVerdicts: Set<string>;
+  onToggleSavedVerdict: (verdictId: string, saved: boolean) => void;
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
 }) {
   const { session } = useAuth();
@@ -924,6 +974,7 @@ function AiTurn({
   const canCollapseAnswers = Boolean(turn.verdict);
   const criteriaLines = parseCriteriaLines(assessmentCriteria);
   const turnStrategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
+  const bookmarkState = getVerdictBookmarkState(turn, pendingSavedVerdicts);
 
   useEffect(() => {
     if (!turn.verdict || scrolledToVerdictRef.current) return;
@@ -1075,6 +1126,32 @@ function AiTurn({
                 </span>
               )}
               <div className="ml-auto flex flex-wrap items-center gap-2">
+                {bookmarkState.visible && bookmarkState.verdictId && (
+                  <button
+                    type="button"
+                    aria-label={bookmarkState.label}
+                    title={bookmarkState.title}
+                    disabled={bookmarkState.disabled}
+                    onClick={() =>
+                      onToggleSavedVerdict(bookmarkState.verdictId!, bookmarkState.saved)
+                    }
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
+                      bookmarkState.saved
+                        ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                        : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                    )}
+                  >
+                    <Bookmark
+                      className={cn("size-3.5", bookmarkState.filled && "fill-current")}
+                    />
+                    {bookmarkState.disabled
+                      ? "Saving"
+                      : bookmarkState.saved
+                        ? "Saved"
+                        : "Save"}
+                  </button>
+                )}
                 {turn.lesson_id && turn.lesson_status === "completed" ? (
                   <Link
                     to="/lessons/$id"

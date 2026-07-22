@@ -15,9 +15,11 @@ from app.api.v1 import (
     models,
     projects,
     prompt_builder,
+    saved_verdicts,
     share,
     templates,
     transcriptions,
+    verdicts,
 )
 
 api_router = APIRouter()
@@ -28,6 +30,8 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(models.router, prefix="/models", tags=["models"])
 api_router.include_router(projects.router, prefix="/projects", tags=["projects"])
 api_router.include_router(chats.router, prefix="/chats", tags=["chats"])
+api_router.include_router(verdicts.router, prefix="/verdicts", tags=["verdicts"])
+api_router.include_router(saved_verdicts.router, prefix="/saved-verdicts", tags=["saved-verdicts"])
 api_router.include_router(share.router, prefix="/share", tags=["share"])
 api_router.include_router(model_sets.router, prefix="/model-sets", tags=["model-sets"])
 api_router.include_router(templates.router, prefix="/templates", tags=["templates"])

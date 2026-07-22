@@ -29,6 +29,8 @@ import type {
   ApiPricingCatalog,
   ApiProject,
   ApiProjectDetail,
+  ApiSavedVerdict,
+  ApiSavedVerdictState,
   ApiSession,
   ApiPromptBuilderImproveRequest,
   ApiPromptBuilderImproveResponse,
@@ -199,6 +201,30 @@ export const api = {
 
   share: {
     get: (token: string) => apiRequest<ApiSharedChat>(`/share/${token}`),
+  },
+
+  verdicts: {
+    save: (auth: Auth, verdictId: string) =>
+      apiRequest<ApiSavedVerdictState>(`/verdicts/${verdictId}/save`, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    unsave: (auth: Auth, verdictId: string) =>
+      apiRequest<ApiSavedVerdictState>(`/verdicts/${verdictId}/save`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  savedVerdicts: {
+    list: (auth: Auth) =>
+      apiRequest<ApiSavedVerdict[]>("/saved-verdicts", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
   },
 
   projects: {

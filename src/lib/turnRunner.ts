@@ -84,6 +84,19 @@ export function seedChatTurns(chatId: string, turns: ApiTurn[]) {
   emitChat(chatId);
 }
 
+export function setVerdictSavedState(verdictId: string, saved: boolean) {
+  const changedChatIds = new Set<string>();
+  for (const [chatId, map] of turnsByChat.entries()) {
+    for (const [turnId, turn] of map.entries()) {
+      if (turn.verdict?.id === verdictId) {
+        map.set(turnId, { ...turn, verdict: { ...turn.verdict, saved } });
+        changedChatIds.add(chatId);
+      }
+    }
+  }
+  changedChatIds.forEach(emitChat);
+}
+
 export function subscribeChatTurns(chatId: string, listener: (turns: ApiTurn[]) => void) {
   if (!chatListeners.has(chatId)) chatListeners.set(chatId, new Set());
   chatListeners.get(chatId)!.add(listener);

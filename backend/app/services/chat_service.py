@@ -31,6 +31,7 @@ from app.db.session import AsyncSessionLocal
 from app.llm.catalog import get_model
 from app.services.brain_service import brain_service
 from app.llm.orchestrator import TurnContext, get_orchestrator
+from app.services.saved_verdict_service import saved_verdict_service
 from app.schemas.api import (
     ChatCreateRequest,
     ChatResponse,
@@ -247,14 +248,23 @@ class ChatService:
             select(Turn)
             .join(Chat, Chat.id == Turn.chat_id)
             .where(Turn.id == turn_id, Chat.org_id == auth.org_id)
-            .options(selectinload(Turn.model_answers))
+            .options(
+                selectinload(Turn.model_answers),
+                selectinload(Turn.verdict),
+                selectinload(Turn.decision_insurance),
+                selectinload(Turn.lesson),
+            )
         )
         turn = result.scalar_one_or_none()
         if turn is None:
             raise NotFoundError("Turn", turn_id)
 
         if turn.status in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
-            yield {"type": "turn_completed", "data": self._turn_response(turn).model_dump(mode="json")}
+            saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [turn])
+            yield {
+                "type": "turn_completed",
+                "data": self._turn_response(turn, saved_verdict_ids).model_dump(mode="json"),
+            }
             return
 
         if turn.status == TurnStatus.RUNNING:
@@ -265,7 +275,11 @@ class ChatService:
         if turn.status == TurnStatus.FAILED:
             err = next((a.error_message for a in turn.model_answers if a.error_message), None) or turn.error_message
             yield {"type": "turn_failed", "data": {"error": err or "Turn failed"}}
-            yield {"type": "turn_completed", "data": self._turn_response(turn).model_dump(mode="json")}
+            saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [turn])
+            yield {
+                "type": "turn_completed",
+                "data": self._turn_response(turn, saved_verdict_ids).model_dump(mode="json"),
+            }
             return
 
         model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
@@ -350,7 +364,8 @@ class ChatService:
         turn = result.scalar_one_or_none()
         if turn is None:
             raise NotFoundError("Turn", str(turn_id))
-        return self._turn_response(turn)
+        saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [turn])
+        return self._turn_response(turn, saved_verdict_ids)
 
     async def list_turns(
         self, db: AsyncSession, auth: AuthContext, chat_id: str
@@ -370,7 +385,15 @@ class ChatService:
             )
             .order_by(Turn.created_at.asc())
         )
-        return [self._turn_response(t) for t in result.scalars().all()]
+        turns = list(result.scalars().all())
+        saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, turns)
+        return [self._turn_response(t, saved_verdict_ids) for t in turns]
+
+    async def _saved_verdict_ids_for_turns(
+        self, db: AsyncSession, auth: AuthContext, turns: list[Turn]
+    ) -> set[str]:
+        verdict_ids = [str(turn.verdict.id) for turn in turns if turn.verdict]
+        return await saved_verdict_service.saved_source_verdict_ids(db, auth, verdict_ids)
 
     async def _latest_previous_verdict_context(
         self,
@@ -434,7 +457,9 @@ class ChatService:
             updated_at=chat.updated_at,
         )
 
-    def _turn_response(self, turn: Turn) -> TurnResponse:
+    def _turn_response(
+        self, turn: Turn, saved_verdict_ids: set[str] | None = None
+    ) -> TurnResponse:
         answers = []
         for a in turn.model_answers:
             model = get_model(a.model_id)
@@ -455,10 +480,12 @@ class ChatService:
         verdict = None
         if turn.verdict:
             verdict = VerdictResponse(
+                id=str(turn.verdict.id),
                 model_id=turn.verdict.model_id,
                 strategy=turn.verdict.strategy,
                 text=turn.verdict.text,
                 reason=turn.verdict.reason,
+                saved=str(turn.verdict.id) in (saved_verdict_ids or set()),
                 tokens_input=turn.verdict.tokens_input,
                 tokens_output=turn.verdict.tokens_output,
                 cost_usd=turn.verdict.cost_usd,

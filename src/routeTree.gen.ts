@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TemplatesRouteImport } from './routes/templates'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as SavedVerdictsRouteImport } from './routes/saved-verdicts'
 import { Route as ModelSetsRouteImport } from './routes/model-sets'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ChatRouteImport } from './routes/chat'
@@ -46,6 +47,11 @@ const TemplatesRoute = TemplatesRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SavedVerdictsRoute = SavedVerdictsRouteImport.update({
+  id: '/saved-verdicts',
+  path: '/saved-verdicts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ModelSetsRoute = ModelSetsRouteImport.update({
@@ -188,6 +194,7 @@ export interface FileRoutesByFullPath {
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
+  '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -215,6 +222,7 @@ export interface FileRoutesByTo {
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
+  '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -246,6 +254,7 @@ export interface FileRoutesById {
   '/chat': typeof ChatRoute
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
+  '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -278,6 +287,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/login'
     | '/model-sets'
+    | '/saved-verdicts'
     | '/settings'
     | '/templates'
     | '/admin/audit'
@@ -305,6 +315,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/login'
     | '/model-sets'
+    | '/saved-verdicts'
     | '/settings'
     | '/templates'
     | '/admin/audit'
@@ -335,6 +346,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/login'
     | '/model-sets'
+    | '/saved-verdicts'
     | '/settings'
     | '/templates'
     | '/admin/audit'
@@ -366,6 +378,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRoute
   LoginRoute: typeof LoginRoute
   ModelSetsRoute: typeof ModelSetsRoute
+  SavedVerdictsRoute: typeof SavedVerdictsRoute
   SettingsRoute: typeof SettingsRoute
   TemplatesRoute: typeof TemplatesRoute
   SharedTokenRoute: typeof SharedTokenRoute
@@ -385,6 +398,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/saved-verdicts': {
+      id: '/saved-verdicts'
+      path: '/saved-verdicts'
+      fullPath: '/saved-verdicts'
+      preLoaderRoute: typeof SavedVerdictsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/model-sets': {
@@ -665,6 +685,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRoute,
   LoginRoute: LoginRoute,
   ModelSetsRoute: ModelSetsRoute,
+  SavedVerdictsRoute: SavedVerdictsRoute,
   SettingsRoute: SettingsRoute,
   TemplatesRoute: TemplatesRoute,
   SharedTokenRoute: SharedTokenRoute,

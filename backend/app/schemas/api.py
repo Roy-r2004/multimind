@@ -205,13 +205,54 @@ class ModelAnswerResponse(BaseModel):
 
 
 class VerdictResponse(BaseModel):
+    id: str
     model_id: str
     strategy: StrategyEnum
     text: str
     reason: str
+    saved: bool = False
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
+
+
+class SavedVerdictSaveResponse(BaseModel):
+    verdict_id: str
+    saved: bool = True
+    id: str
+    source_verdict_id: str
+    source_turn_id: str | None = None
+    source_chat_id: str | None = None
+    source_chat_title: str
+    source_user_message: str
+    verdict_text: str
+    verdict_reason: str
+    verdict_model_id: str
+    strategy: StrategyEnum
+    saved_at: datetime
+    original_chat_exists: bool = True
+    original_chat_route: str | None = None
+
+
+class SavedVerdictUnsaveResponse(BaseModel):
+    verdict_id: str
+    saved: bool = False
+
+
+class SavedVerdictListItemResponse(BaseModel):
+    id: str
+    source_verdict_id: str
+    source_turn_id: str | None = None
+    source_chat_id: str | None = None
+    source_chat_title: str
+    source_user_message: str
+    verdict_text: str
+    verdict_reason: str
+    verdict_model_id: str
+    strategy: StrategyEnum
+    saved_at: datetime
+    original_chat_exists: bool
+    original_chat_route: str | None = None
 
 
 class DecisionInsuranceResponse(BaseModel):
