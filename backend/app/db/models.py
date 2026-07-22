@@ -1935,6 +1935,9 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     custom_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision_insurance_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     chat: Mapped["Chat"] = relationship(back_populates="turns")
     model_answers: Mapped[list["ModelAnswer"]] = relationship(back_populates="turn")
