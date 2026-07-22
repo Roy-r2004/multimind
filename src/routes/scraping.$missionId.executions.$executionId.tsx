@@ -297,8 +297,8 @@ function ScrapingExecutionPage() {
       <div className="mx-auto max-w-7xl px-6 py-10">
         <PageHeader
           eyebrow="Execution Campaigns"
-          title="Real Source Retrieval Campaign"
-          description="This phase discovers real candidate sources and retrieves a bounded set of secure source pages. Facility extraction is not yet enabled."
+          title="Live Scraping Campaign"
+          description="Discovers real sources, retrieves pages, extracts facilities with evidence, and publishes verified records you can export."
           action={
             <Link
               to="/scraping/$missionId/runs/$runId"
@@ -316,9 +316,16 @@ function ScrapingExecutionPage() {
             <GlassCard className="border-emerald-500/40 bg-emerald-500/10 p-5">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <p className="font-semibold">Real source pages have been retrieved and stored</p>
+                  <p className="font-semibold">
+                    {isTerminal
+                      ? facilities.length > 0
+                        ? `${facilities.length} facilities published from real sources`
+                        : "Campaign finished — check sources below (extraction may have found none)"
+                      : "Campaign running — discovery → retrieval → extraction → publication"}
+                  </p>
                   <p className="text-sm text-muted-foreground">
-                    Facility extraction and verification are not yet enabled.
+                    Metrics: {execution.records_extracted} staged · {execution.records_verified}{" "}
+                    verified · {execution.duplicates_detected} possible duplicates
                   </p>
                 </div>
                 <Badge variant="secondary">{connectionState}</Badge>
@@ -383,12 +390,85 @@ function ScrapingExecutionPage() {
                 <Metric label="Unique domains" value={uniqueDomainCount} />
                 <Metric label="Discovery queries" value={discoveryQueries.length} />
                 <Metric label="Query failures" value={failedQueryCount} />
-                <Metric label="Facilities extracted" value={facilities.length} />
+                <Metric label="Facilities published" value={facilities.length} />
+                <Metric label="Staged candidates" value={execution.records_extracted} />
+                <Metric label="Duplicates flagged" value={execution.duplicates_detected} />
               </div>
               {!isTerminal && facilities.length > 0 && (
                 <p className="mt-4 text-sm text-muted-foreground">
                   Excel report available after execution finishes.
                 </p>
+              )}
+            </GlassCard>
+            <GlassCard className="p-6">
+              <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Published Facilities</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Verified facilities written from extracted staging candidates.
+                  </p>
+                </div>
+                <Badge variant="secondary">{facilities.length} facilities</Badge>
+              </div>
+              {facilities.length === 0 ? (
+                <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
+                  No facilities published yet. They appear after retrieval + AI extraction complete.
+                </div>
+              ) : (
+                <div className="overflow-auto rounded-lg border border-border">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2">Name</th>
+                        <th className="px-3 py-2">Country</th>
+                        <th className="px-3 py-2">Type</th>
+                        <th className="px-3 py-2">Website</th>
+                        <th className="px-3 py-2">Confidence</th>
+                        <th className="px-3 py-2">Review</th>
+                        <th className="px-3 py-2">Sources</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {facilities.map((facility) => (
+                        <tr key={facility.id} className="border-t border-border">
+                          <td className="px-3 py-2 align-top font-medium">
+                            {facility.canonical_name}
+                            {facility.primary_city || facility.primary_region ? (
+                              <p className="text-xs text-muted-foreground">
+                                {[facility.primary_city, facility.primary_region]
+                                  .filter(Boolean)
+                                  .join(", ")}
+                              </p>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            {facility.country_name} ({facility.country_code})
+                          </td>
+                          <td className="px-3 py-2 align-top">{facility.facility_type}</td>
+                          <td className="px-3 py-2 align-top">
+                            {facility.primary_website ? (
+                              <a
+                                href={facility.primary_website}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-primary underline-offset-2 hover:underline"
+                              >
+                                {facility.primary_website}
+                              </a>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            {(facility.confidence_score * 100).toFixed(0)}%
+                          </td>
+                          <td className="px-3 py-2 align-top">{facility.human_review_status}</td>
+                          <td className="px-3 py-2 align-top">{facility.source_count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </GlassCard>
             <GlassCard className="p-6">

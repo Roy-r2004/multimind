@@ -15,8 +15,12 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.db.models import (
+    FacilityCandidatePublicationStatus,
+    RehabilitationFacility,
+    RehabilitationPossibleDuplicate,
     ScrapingFacilityCandidate,
     ScrapingFacilityCandidateEvidence,
+    ScrapingFacilityCandidatePublication,
     ScrapingFacilityExtractionAttempt,
     ScrapingCoverageCell,
     ScrapingCoverageStatus,
@@ -46,6 +50,9 @@ from app.services.scraping.document_text_preparation_service import (
 )
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.execution_outcome import GAP_COVERAGE_STATUSES
+from app.services.scraping.facility_candidate_publication_service import (
+    facility_candidate_publication_service,
+)
 from app.services.scraping.facility_extraction_service import (
     FacilityExtractionContext,
     facility_extraction_service,
@@ -282,6 +289,8 @@ class SourceDiscoveryExecutionOrchestrator:
             await self._check_cancelled(execution)
             await self._run_facility_extraction_phase(execution)
             await self._check_cancelled(execution)
+            await self._run_facility_publication_phase(execution)
+            await self._check_cancelled(execution)
             await self._refresh_metrics(execution)
             if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
                 await self._finish_cancelled(execution)
@@ -289,19 +298,27 @@ class SourceDiscoveryExecutionOrchestrator:
             self.current_stage = "complete_execution"
             execution.status = ScrapingExecutionStatus.COMPLETED
             execution.completed_at = datetime.now(UTC)
+            settings = get_settings()
+            if settings.facility_publication_enabled and settings.facility_extraction_enabled:
+                completion_message = (
+                    "Real source discovery, retrieval, facility extraction, and "
+                    "publication completed."
+                )
+            elif settings.facility_extraction_enabled:
+                completion_message = (
+                    "Real source discovery, secure retrieval, and bounded facility "
+                    "extraction completed."
+                )
+            else:
+                completion_message = (
+                    "Real source discovery and bounded secure retrieval completed. "
+                    "Facility extraction is disabled."
+                )
             await execution_service.emit_event(
                 self.db,
                 execution.id,
                 "execution_completed",
-                (
-                    "Real source discovery, secure retrieval, and bounded facility "
-                    "extraction completed."
-                    if get_settings().facility_extraction_enabled
-                    else (
-                        "Real source discovery and bounded secure retrieval completed. "
-                        "Facility extraction is not enabled yet."
-                    )
-                ),
+                completion_message,
             )
             await self.db.commit()
             self._log(
@@ -691,12 +708,73 @@ class SourceDiscoveryExecutionOrchestrator:
             self.db,
             execution.id,
             "facility_extraction_phase_completed",
-            "Facility extraction phase completed with staging output only.",
+            "Facility extraction phase completed; staging candidates are ready for publication.",
             metadata=summary,
         )
         await self.db.commit()
         self._log(
             "facility_extraction_phase_completed",
+            execution_id=execution.id,
+            **summary,
+        )
+
+    async def _run_facility_publication_phase(self, execution: ScrapingExecution) -> None:
+        self.current_stage = "facility_publication"
+        settings = get_settings()
+        if not settings.facility_extraction_enabled:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_publication_phase_disabled",
+                "Facility publication skipped because extraction is disabled.",
+                metadata={"enabled": False, "reason": "extraction_disabled"},
+            )
+            await self.db.commit()
+            return
+        if not settings.facility_publication_enabled:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_publication_phase_disabled",
+                "Facility publication phase skipped because it is disabled.",
+                metadata={"enabled": False},
+            )
+            await self.db.commit()
+            self._log(
+                "facility_publication_phase_disabled",
+                execution_id=execution.id,
+                enabled=False,
+            )
+            return
+
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "facility_publication_phase_started",
+            "Facility publication phase started for verified staging candidates.",
+            metadata={
+                "max_candidates": settings.facility_publication_max_candidates_per_execution,
+                "min_confidence": settings.facility_publication_min_confidence,
+            },
+        )
+        await self.db.commit()
+
+        summary = await facility_candidate_publication_service.publish_execution_candidates(
+            self.db,
+            organization_id=execution.organization_id,
+            execution_id=execution.id,
+            max_candidates=settings.facility_publication_max_candidates_per_execution,
+        )
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "facility_publication_phase_completed",
+            "Facility publication phase completed.",
+            metadata=summary,
+        )
+        await self.db.commit()
+        self._log(
+            "facility_publication_phase_completed",
             execution_id=execution.id,
             **summary,
         )
@@ -1341,12 +1419,11 @@ class SourceDiscoveryExecutionOrchestrator:
                 )
                 cell.status = ScrapingCoverageStatus.PARTIALLY_COVERED
                 cell.reason = (
-                    "Real source pages were retrieved and stored. "
-                    "Facility extraction and verification are not enabled yet."
+                    "Real source pages were retrieved and stored for facility extraction."
                     if failed_count == 0
                     else (
                         "Some real source pages were retrieved and stored; remaining candidates "
-                        "have retrieval debt. Facility extraction is not enabled yet."
+                        "have retrieval debt before extraction."
                     )
                 )
             elif attempts and all(
@@ -1447,11 +1524,51 @@ class SourceDiscoveryExecutionOrchestrator:
             ).scalars().all()
         )
         retrieval_metadata = await self._retrieval_metric_metadata(execution.id)
+        staging_candidates = len(
+            (
+                await self.db.execute(
+                    select(ScrapingFacilityCandidate.id).where(
+                        ScrapingFacilityCandidate.execution_id == execution.id
+                    )
+                )
+            ).scalars().all()
+        )
+        published_facilities = len(
+            (
+                await self.db.execute(
+                    select(RehabilitationFacility.id).where(
+                        RehabilitationFacility.execution_id == execution.id,
+                        RehabilitationFacility.is_mock.is_(False),
+                    )
+                )
+            ).scalars().all()
+        )
+        published_rows = len(
+            (
+                await self.db.execute(
+                    select(ScrapingFacilityCandidatePublication.id).where(
+                        ScrapingFacilityCandidatePublication.execution_id == execution.id,
+                        ScrapingFacilityCandidatePublication.status
+                        == FacilityCandidatePublicationStatus.PUBLISHED,
+                    )
+                )
+            ).scalars().all()
+        )
+        duplicates = len(
+            (
+                await self.db.execute(
+                    select(RehabilitationPossibleDuplicate.id).where(
+                        RehabilitationPossibleDuplicate.execution_id == execution.id,
+                        RehabilitationPossibleDuplicate.is_mock.is_(False),
+                    )
+                )
+            ).scalars().all()
+        )
         execution.sources_discovered = candidate_count
         execution.documents_found = int(retrieval_metadata["source_document_count"])
-        execution.records_extracted = 0
-        execution.records_verified = 0
-        execution.duplicates_detected = 0
+        execution.records_extracted = staging_candidates
+        execution.records_verified = published_facilities or published_rows
+        execution.duplicates_detected = duplicates
         execution.blocked_sources = int(retrieval_metadata["blocked_retrieval_count"])
         execution.coverage_debt = await self._coverage_debt(execution.id)
 

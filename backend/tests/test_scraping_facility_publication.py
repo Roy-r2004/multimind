@@ -626,7 +626,7 @@ async def test_transaction_rollback_leaves_no_partial_final_rows(db: AsyncSessio
 
 
 @pytest.mark.asyncio
-async def test_exact_evidence_metadata_and_source_reuse_without_candidate_merging(
+async def test_exact_evidence_metadata_source_reuse_and_possible_duplicate_flagging(
     db: AsyncSession, auth
 ):
     execution = await create_execution(db, auth)
@@ -643,7 +643,7 @@ async def test_exact_evidence_metadata_and_source_reuse_without_candidate_mergin
     assert first_summary.final_facility_id != second_summary.final_facility_id
     assert await db.scalar(select(func.count()).select_from(RehabilitationSource)) == 1
     assert await db.scalar(select(func.count()).select_from(RehabilitationFacility)) == 2
-    assert await db.scalar(select(func.count()).select_from(RehabilitationPossibleDuplicate)) == 0
+    assert await db.scalar(select(func.count()).select_from(RehabilitationPossibleDuplicate)) == 1
     publication = await db.get(ScrapingFacilityCandidatePublication, first_summary.publication_id)
     mapping = publication.metadata_json["evidence_mappings"][0]
     staging_evidence = await db.get(
@@ -653,9 +653,56 @@ async def test_exact_evidence_metadata_and_source_reuse_without_candidate_mergin
     assert mapping["quote_start"] == staging_evidence.quote_start
     assert mapping["quote_end"] == staging_evidence.quote_end
     assert mapping["evidence_hash_prefix"] == staging_evidence.evidence_hash[:12]
+    assert publication.metadata_json["publication_confidence"] is not None
 
 
-def test_publication_is_not_connected_to_worker_or_excel():
+@pytest.mark.asyncio
+async def test_exact_name_candidates_merge_into_one_facility(db: AsyncSession, auth):
+    execution = await create_execution(db, auth)
+    first = await create_staged_candidate(db, auth, execution, name="Centre Alpha")
+    second = await create_staged_candidate(db, auth, execution, name="  Centre   Alpha  ")
+    await db.flush()
+
+    first_summary = await publish(db, auth, execution, first)
+    second_summary = await publish(db, auth, execution, second)
+
+    assert first_summary.final_facility_id == second_summary.final_facility_id
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacility)) == 1
+    second_publication = await db.get(
+        ScrapingFacilityCandidatePublication, second_summary.publication_id
+    )
+    assert second_publication.metadata_json["merged_into_existing"] is True
+
+
+@pytest.mark.asyncio
+async def test_worker_auto_publishes_staged_candidates(db: AsyncSession, auth, monkeypatch):
+    from app.core.config import get_settings
+    from app.services.scraping.execution_orchestrator import SourceDiscoveryExecutionOrchestrator
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "facility_extraction_enabled", True)
+    monkeypatch.setattr(settings, "facility_publication_enabled", True)
+    monkeypatch.setattr(settings, "facility_publication_max_candidates_per_execution", 10)
+
+    execution = await create_execution(db, auth)
+    candidate = await create_staged_candidate(db, auth, execution, name="Centre Auto Publish")
+    await db.commit()
+
+    orchestrator = SourceDiscoveryExecutionOrchestrator(db)
+    await orchestrator._run_facility_publication_phase(execution)
+    await orchestrator._refresh_metrics(execution)
+    await db.commit()
+
+    assert await db.scalar(select(func.count()).select_from(RehabilitationFacility)) == 1
+    assert await db.scalar(
+        select(func.count()).select_from(ScrapingFacilityCandidatePublication)
+    ) == 1
+    assert execution.records_extracted >= 1
+    assert execution.records_verified >= 1
+    assert candidate.id  # keep fixture referenced
+
+
+def test_publication_is_connected_to_worker_but_not_excel_export():
     backend_root = Path(__file__).resolve().parents[1]
 
     orchestrator_text = (
@@ -666,9 +713,8 @@ def test_publication_is_not_connected_to_worker_or_excel():
         backend_root / "app/services/scraping/execution_export_service.py"
     ).read_text(encoding="utf-8")
 
-    # Step 3C must remain manual-service only.
-    assert "FacilityCandidatePublicationService" not in orchestrator_text
-    assert "facility_candidate_publication_service" not in orchestrator_text
+    assert "facility_candidate_publication_service" in orchestrator_text
+    assert "_run_facility_publication_phase" in orchestrator_text
 
     # Publishing must not automatically enable or modify Excel export.
     assert "FacilityCandidatePublicationService" not in export_text

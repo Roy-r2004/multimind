@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     scraping_worker_concurrency: int = 4
     scraping_execution_stale_seconds: int = 120
     scraping_worker_job_timeout_seconds: int = 1800
+    # When true (default in development), run scrapes inside the API process if Redis/worker is down
+    scraping_inline_execution: bool | None = None
 
     # LLM — OpenRouter (single key for all models)
     openrouter_api_key: str | None = None
@@ -67,8 +69,8 @@ class Settings(BaseSettings):
     source_retrieval_max_candidates_per_coverage_cell: int = 3
     source_retrieval_max_candidates_per_execution: int = 25
 
-    # Real facility extraction foundation (disabled until worker integration is added)
-    facility_extraction_enabled: bool = False
+    # Real facility extraction (worker-connected)
+    facility_extraction_enabled: bool = True
     facility_extraction_model: str = "gpt-4.1"
     facility_extraction_max_document_characters: int = 200_000
     facility_extraction_chunk_characters: int = 12_000
@@ -81,6 +83,12 @@ class Settings(BaseSettings):
     facility_extraction_timeout_seconds: float = 60.0
     facility_extraction_max_attempts: int = 2
     facility_extraction_max_evidence_quote_characters: int = 1000
+
+    # Auto-publish verified staging candidates into final rehab tables
+    facility_publication_enabled: bool = True
+    facility_publication_min_confidence: float = 0.55
+    facility_publication_max_candidates_per_execution: int = 50
+    facility_publication_duplicate_match_threshold: float = 0.82
 
     # Optional source discovery provider — Brave Search
     brave_search_api_key: str | None = None

@@ -8,6 +8,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError, ValidationError
 from app.db.models import (
@@ -28,6 +30,7 @@ from app.db.models import (
     RehabilitationFacilityLocation,
     RehabilitationFacilitySourceLink,
     RehabilitationFieldEvidence,
+    RehabilitationPossibleDuplicate,
     RehabilitationSource,
     RehabilitationUnresolvedField,
     ScrapingExecution,
@@ -46,7 +49,6 @@ from app.services.scraping.countries import resolve_country
 
 NORMALIZATION_VERSION = "facility-publication-v1"
 VERIFICATION_STATUS = "verified_from_staging"
-CONFIDENCE_WITH_EXACT_EVIDENCE = Decimal("0.8000")
 MAX_METADATA_EVIDENCE_ITEMS = 100
 
 
@@ -156,16 +158,36 @@ class FacilityCandidatePublicationService:
             if isinstance(plan, str):
                 return await self._mark_skipped(db, existing, plan)
 
+            confidence = _score_confidence(loaded.candidate, plan)
+            min_confidence = Decimal(str(get_settings().facility_publication_min_confidence))
+            if confidence < min_confidence:
+                return await self._mark_skipped(db, existing, "below_min_confidence")
+
             source = await self._get_or_create_source(db, loaded)
-            facility = await self._create_facility(db, loaded, plan)
+            merge_target = await self._find_exact_name_match(
+                db,
+                execution_id=loaded.execution.id,
+                normalized_name=plan.normalized_name,
+                country_code=plan.country_code,
+            )
+            merged_into_existing = merge_target is not None
+            if merge_target is not None:
+                facility = merge_target
+                if confidence > Decimal(str(facility.confidence_score)):
+                    facility.confidence_score = confidence
+                facility.duplicate_status = "merged"
+                facility.human_review_status = "required"
+                facility.last_verified_at = datetime.now(UTC)
+            else:
+                facility = await self._create_facility(db, loaded, plan, confidence=confidence)
             existing.final_facility_id = facility.id
             await self._after_facility_created(db, facility)
             aliases = await self._add_aliases(db, facility, plan)
-            locations = await self._add_locations(db, facility, plan)
-            contacts = await self._add_contacts(db, facility, plan)
+            locations = await self._add_locations(db, facility, plan, confidence=confidence)
+            contacts = await self._add_contacts(db, facility, plan, confidence=confidence)
             source_links = await self._link_source(db, facility, source)
             evidence, evidence_metadata = await self._add_field_evidence(
-                db, facility, source, loaded, plan
+                db, facility, source, loaded, plan, confidence=confidence
             )
             unresolved = await self._add_unresolved_fields(db, facility, source, plan)
 
@@ -187,6 +209,8 @@ class FacilityCandidatePublicationService:
                         if loaded.candidate.model_confidence is not None
                         else None
                     ),
+                    "publication_confidence": float(confidence),
+                    "merged_into_existing": merged_into_existing,
                     "evidence_mappings": evidence_metadata[:MAX_METADATA_EVIDENCE_ITEMS],
                     "counts": {
                         "aliases_created": aliases,
@@ -205,6 +229,80 @@ class FacilityCandidatePublicationService:
             await db.rollback()
             failed = await self._record_failed_publication(db, context, _safe_reason(exc))
             return await self._summary_for_publication(db, failed, reused=False)
+
+    async def publish_execution_candidates(
+        self,
+        db: AsyncSession,
+        *,
+        organization_id: str,
+        execution_id: str,
+        max_candidates: int | None = None,
+    ) -> dict[str, int]:
+        """Publish staged EXTRACTED candidates for an execution (worker auto-publish)."""
+        settings = get_settings()
+        limit = max(
+            1,
+            max_candidates
+            if max_candidates is not None
+            else settings.facility_publication_max_candidates_per_execution,
+        )
+        published_ids = (
+            await db.execute(
+                select(ScrapingFacilityCandidatePublication.facility_candidate_id).where(
+                    ScrapingFacilityCandidatePublication.organization_id == organization_id,
+                    ScrapingFacilityCandidatePublication.execution_id == execution_id,
+                    ScrapingFacilityCandidatePublication.status.in_(
+                        [
+                            FacilityCandidatePublicationStatus.PUBLISHED,
+                            FacilityCandidatePublicationStatus.SKIPPED,
+                        ]
+                    ),
+                )
+            )
+        ).scalars().all()
+        published_set = set(published_ids)
+        candidates = (
+            await db.execute(
+                select(ScrapingFacilityCandidate)
+                .where(
+                    ScrapingFacilityCandidate.organization_id == organization_id,
+                    ScrapingFacilityCandidate.execution_id == execution_id,
+                    ScrapingFacilityCandidate.staging_status
+                    == FacilityCandidateStagingStatus.EXTRACTED,
+                )
+                .order_by(ScrapingFacilityCandidate.created_at.asc())
+            )
+        ).scalars().all()
+        summary = {
+            "candidates_considered": 0,
+            "published": 0,
+            "skipped": 0,
+            "failed": 0,
+            "reused": 0,
+        }
+        for candidate in candidates:
+            if candidate.id in published_set:
+                continue
+            if summary["candidates_considered"] >= limit:
+                break
+            summary["candidates_considered"] += 1
+            result = await self.publish_one_candidate(
+                db,
+                FacilityCandidatePublicationContext(
+                    organization_id=organization_id,
+                    execution_id=execution_id,
+                    facility_candidate_id=candidate.id,
+                ),
+            )
+            if result.reused_existing_publication:
+                summary["reused"] += 1
+            elif result.status == FacilityCandidatePublicationStatus.PUBLISHED.value:
+                summary["published"] += 1
+            elif result.status == FacilityCandidatePublicationStatus.SKIPPED.value:
+                summary["skipped"] += 1
+            else:
+                summary["failed"] += 1
+        return summary
 
     async def list_publications(
         self,
@@ -398,7 +496,12 @@ class FacilityCandidatePublicationService:
         return source
 
     async def _create_facility(
-        self, db: AsyncSession, loaded: _LoadedCandidate, plan: _PublicationPlan
+        self,
+        db: AsyncSession,
+        loaded: _LoadedCandidate,
+        plan: _PublicationPlan,
+        *,
+        confidence: Decimal,
     ) -> RehabilitationFacility:
         facility = RehabilitationFacility(
             execution_id=loaded.execution.id,
@@ -419,9 +522,9 @@ class FacilityCandidatePublicationService:
             longitude=None,
             primary_website=plan.primary_website,
             verification_status=VERIFICATION_STATUS,
-            confidence_score=CONFIDENCE_WITH_EXACT_EVIDENCE,
-            duplicate_status="not_evaluated",
-            human_review_status="required",
+            confidence_score=confidence,
+            duplicate_status="unique",
+            human_review_status="required" if confidence < Decimal("0.85") else "not_required",
             is_mock=False,
             last_verified_at=datetime.now(UTC),
         )
@@ -429,10 +532,85 @@ class FacilityCandidatePublicationService:
         await db.flush()
         return facility
 
+    async def _find_exact_name_match(
+        self,
+        db: AsyncSession,
+        *,
+        execution_id: str,
+        normalized_name: str,
+        country_code: str,
+    ) -> RehabilitationFacility | None:
+        result = await db.execute(
+            select(RehabilitationFacility).where(
+                RehabilitationFacility.execution_id == execution_id,
+                RehabilitationFacility.country_code == country_code,
+                RehabilitationFacility.is_mock.is_(False),
+            )
+        )
+        target = normalized_name.casefold()
+        for facility in result.scalars().all():
+            if (facility.canonical_name or "").casefold() == target:
+                return facility
+        return None
+
     async def _after_facility_created(
         self, db: AsyncSession, facility: RehabilitationFacility
     ) -> None:
-        return None
+        await self._link_possible_duplicates(db, facility)
+
+    async def _link_possible_duplicates(
+        self, db: AsyncSession, facility: RehabilitationFacility
+    ) -> None:
+        threshold = float(get_settings().facility_publication_duplicate_match_threshold)
+        peers = (
+            await db.execute(
+                select(RehabilitationFacility).where(
+                    RehabilitationFacility.execution_id == facility.execution_id,
+                    RehabilitationFacility.id != facility.id,
+                    RehabilitationFacility.country_code == facility.country_code,
+                    RehabilitationFacility.is_mock.is_(False),
+                )
+            )
+        ).scalars().all()
+        for peer in peers:
+            score = SequenceMatcher(
+                None,
+                (facility.canonical_name or "").casefold(),
+                (peer.canonical_name or "").casefold(),
+            ).ratio()
+            if score < threshold or score >= 1.0:
+                continue
+            left_id, right_id = sorted([facility.id, peer.id])
+            existing = await db.scalar(
+                select(RehabilitationPossibleDuplicate.id).where(
+                    RehabilitationPossibleDuplicate.execution_id == facility.execution_id,
+                    RehabilitationPossibleDuplicate.left_facility_id == left_id,
+                    RehabilitationPossibleDuplicate.right_facility_id == right_id,
+                )
+            )
+            if existing is not None:
+                continue
+            db.add(
+                RehabilitationPossibleDuplicate(
+                    execution_id=facility.execution_id,
+                    left_facility_id=left_id,
+                    right_facility_id=right_id,
+                    match_score=Decimal(str(round(score, 4))),
+                    matching_reasons=(
+                        "Similar canonical names within the same country execution; "
+                        "human review required."
+                    ),
+                    resolution_status="possible",
+                    is_mock=False,
+                )
+            )
+            if facility.duplicate_status == "unique":
+                facility.duplicate_status = "possible_duplicate"
+                facility.human_review_status = "required"
+            if peer.duplicate_status == "unique":
+                peer.duplicate_status = "possible_duplicate"
+                peer.human_review_status = "required"
+        await db.flush()
 
     async def _add_aliases(
         self, db: AsyncSession, facility: RehabilitationFacility, plan: _PublicationPlan
@@ -462,7 +640,12 @@ class FacilityCandidatePublicationService:
         return count
 
     async def _add_locations(
-        self, db: AsyncSession, facility: RehabilitationFacility, plan: _PublicationPlan
+        self,
+        db: AsyncSession,
+        facility: RehabilitationFacility,
+        plan: _PublicationPlan,
+        *,
+        confidence: Decimal,
     ) -> int:
         count = 0
         seen: set[str] = set()
@@ -481,7 +664,7 @@ class FacilityCandidatePublicationService:
                     full_address=address,
                     is_primary=count == 0,
                     verification_status=VERIFICATION_STATUS,
-                    confidence_score=CONFIDENCE_WITH_EXACT_EVIDENCE,
+                    confidence_score=confidence,
                     is_mock=False,
                 )
             )
@@ -490,7 +673,12 @@ class FacilityCandidatePublicationService:
         return count
 
     async def _add_contacts(
-        self, db: AsyncSession, facility: RehabilitationFacility, plan: _PublicationPlan
+        self,
+        db: AsyncSession,
+        facility: RehabilitationFacility,
+        plan: _PublicationPlan,
+        *,
+        confidence: Decimal,
     ) -> int:
         count = 0
         seen: set[tuple[str, str]] = set()
@@ -512,7 +700,7 @@ class FacilityCandidatePublicationService:
                     is_primary=is_primary,
                     available_24_7=False,
                     verification_status=VERIFICATION_STATUS,
-                    confidence_score=CONFIDENCE_WITH_EXACT_EVIDENCE,
+                    confidence_score=confidence,
                     is_mock=False,
                 )
             )
@@ -550,6 +738,8 @@ class FacilityCandidatePublicationService:
         source: RehabilitationSource,
         loaded: _LoadedCandidate,
         plan: _PublicationPlan,
+        *,
+        confidence: Decimal,
     ) -> tuple[int, list[dict[str, Any]]]:
         count = 0
         metadata: list[dict[str, Any]] = []
@@ -578,7 +768,7 @@ class FacilityCandidatePublicationService:
                     language_code=source.language_code,
                     extraction_method="openrouter_facility_extractor_v2",
                     verification_status=VERIFICATION_STATUS,
-                    confidence_score=CONFIDENCE_WITH_EXACT_EVIDENCE,
+                    confidence_score=confidence,
                     is_mock=False,
                 )
             )
@@ -877,6 +1067,28 @@ def _stable_key(candidate_id: str, normalized_name: str, country_code: str) -> s
         f"{candidate_id}:{normalized_name.casefold()}:{country_code}".encode("utf-8")
     ).hexdigest()[:20]
     return f"real-{country_code.lower()}-{digest}"
+
+
+def _score_confidence(
+    candidate: ScrapingFacilityCandidate, plan: _PublicationPlan
+) -> Decimal:
+    model = (
+        float(candidate.model_confidence)
+        if candidate.model_confidence is not None
+        else 0.70
+    )
+    verified_count = len(plan.evidence)
+    evidence_factor = 0.55
+    if verified_count >= 4:
+        evidence_factor = 0.92
+    elif verified_count >= 2:
+        evidence_factor = 0.85
+    elif verified_count == 1:
+        evidence_factor = 0.75
+    contact_bonus = 0.04 if plan.contacts else 0.0
+    location_bonus = 0.03 if plan.locations else 0.0
+    score = min(0.99, max(0.10, model * 0.55 + evidence_factor * 0.45 + contact_bonus + location_bonus))
+    return Decimal(str(round(score, 4)))
 
 
 def _field_path(row: ScrapingFacilityCandidateEvidence, counts: dict[str, int]) -> str:

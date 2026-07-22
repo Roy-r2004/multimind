@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -17,6 +19,8 @@ from sqlalchemy.orm import selectinload
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+
+logger = logging.getLogger(__name__)
 from app.db.models import (
     RehabilitationFacility,
     RehabilitationFacilityContact,
@@ -393,17 +397,31 @@ class ScrapingExecutionService:
         return event
 
     async def enqueue_execution(self, execution_id: str) -> None:
-        try:
-            redis = await create_pool(_redis_settings())
-            await redis.enqueue_job(
-                "run_scraping_execution",
-                execution_id,
-                _job_id=f"scraping-execution:{execution_id}",
-            )
-            await redis.close()
-        except Exception:
-            # The row remains queued; worker startup recovery will enqueue it.
-            return
+        settings = get_settings()
+        inline = (
+            settings.scraping_inline_execution
+            if settings.scraping_inline_execution is not None
+            else settings.environment == "development"
+        )
+        queued_on_redis = False
+        if not inline:
+            try:
+                redis = await create_pool(_redis_settings())
+                await redis.enqueue_job(
+                    "run_scraping_execution",
+                    execution_id,
+                    _job_id=f"scraping-execution:{execution_id}",
+                )
+                await redis.close()
+                queued_on_redis = True
+            except Exception:
+                logger.warning(
+                    "scraping_enqueue_redis_failed execution_id=%s; falling back to inline",
+                    execution_id,
+                    exc_info=True,
+                )
+        if inline or not queued_on_redis:
+            asyncio.create_task(_run_execution_inline(execution_id))
 
     async def _publish_event(self, event: ScrapingEvent) -> None:
         try:
@@ -668,6 +686,16 @@ def _redis_settings() -> RedisSettings:
         database=int((parsed.path or "/0").lstrip("/") or "0"),
         password=parsed.password,
     )
+
+
+async def _run_execution_inline(execution_id: str) -> None:
+    """Run a scrape inside the API process when the ARQ worker is unavailable."""
+    from app.services.scraping.execution_orchestrator import run_scraping_execution
+
+    try:
+        await run_scraping_execution({}, execution_id)
+    except Exception:
+        logger.exception("scraping_inline_execution_failed execution_id=%s", execution_id)
 
 
 execution_service = ScrapingExecutionService()

@@ -256,7 +256,7 @@ function ScrapingRunDetailPage() {
                 <div>
                   <h2 className="text-lg font-semibold">Execution Campaigns</h2>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    This phase discovers and stores real candidate sources. Website retrieval and facility extraction are not yet enabled.
+                    Starts a real campaign: search discovery → secure page retrieval → AI facility extraction → published facilities + Excel export.
                   </p>
                 </div>
                 <Button

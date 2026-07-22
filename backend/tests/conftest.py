@@ -3,9 +3,18 @@ from collections.abc import AsyncGenerator
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.db.base import Base
 from app.db.models import ModelSet, OrgMembership, OrgRole, Organization, Project, Strategy, User
+
+
+@pytest.fixture(autouse=True)
+def disable_facility_pipeline_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep discovery/retrieval tests isolated; opt in per-test for extract/publish."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "facility_extraction_enabled", False)
+    monkeypatch.setattr(settings, "facility_publication_enabled", False)
 
 
 @pytest.fixture
