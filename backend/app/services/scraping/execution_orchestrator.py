@@ -58,6 +58,7 @@ from app.services.scraping.facility_extraction_service import (
     facility_extraction_service,
 )
 from app.services.scraping.source_discovery_service import source_discovery_service
+from app.services.scraping.scale_profile import ScaleProfile, resolve_scale_profile
 from app.services.scraping.source_retrieval_service import (
     SourceRetrievalContext,
     SourceRetrievalSummary,
@@ -189,6 +190,7 @@ class SourceDiscoveryExecutionOrchestrator:
         self.coverage_language_count = 0
         self.coverage_source_category_count = 0
         self.attempted_coverage_cell_count = 0
+        self.scale_profile: ScaleProfile = resolve_scale_profile("real", get_settings())
 
     async def run(self, execution_id: str) -> None:
         safe_execution_id = execution_id
@@ -198,11 +200,14 @@ class SourceDiscoveryExecutionOrchestrator:
         if execution is None:
             self._log("execution_skipped", execution_id=execution_id, reason="execution_not_found")
             return
+        self.scale_profile = resolve_scale_profile(execution.mode, get_settings())
         self._log(
             "execution_loaded",
             execution_id=execution.id,
             status=execution.status.value,
             country_code=execution.country_code,
+            mode=self.scale_profile.mode,
+            scale_label=self.scale_profile.label,
         )
         self.current_stage = "validate_execution"
         if execution.status in {
@@ -279,7 +284,11 @@ class SourceDiscoveryExecutionOrchestrator:
             return
         self._log("execution_claim_succeeded", execution_id=execution.id)
         await execution_service.emit_event(
-            self.db, execution.id, "execution_started", "Real source discovery campaign started."
+            self.db,
+            execution.id,
+            "execution_started",
+            f"{self.scale_profile.label} source discovery campaign started.",
+            metadata=self.scale_profile.as_metadata(),
         )
         await self.db.commit()
 
@@ -387,17 +396,29 @@ class SourceDiscoveryExecutionOrchestrator:
                 execution.country_code,
                 execution.country_name,
             )
-            max_queries = min(max(get_settings().serper_search_max_queries_per_discovery, 1), 8)
+            profile = self.scale_profile
+            max_queries = min(
+                max(profile.serper_max_queries_per_discovery, 1),
+                profile.discovery_query_hard_cap,
+            )
+            results_per_query = min(
+                max(profile.serper_results_per_query, 1),
+                profile.discovery_results_hard_cap,
+            )
             execution.country_profile_json = {
                 "phase": "source_discovery",
+                "mode": profile.mode,
                 "country_code": execution.country_code,
                 "country_name": execution.country_name,
                 "administrative_regions": regions,
                 "languages": languages,
                 "source_categories": categories,
                 "max_queries_per_discovery": max_queries,
-                "results_per_query": min(max(get_settings().serper_search_results_per_query, 1), 20),
-                "max_search_request_count": len(regions) * len(languages) * len(categories) * max_queries,
+                "results_per_query": results_per_query,
+                "max_search_request_count": len(regions)
+                * len(languages)
+                * len(categories)
+                * max_queries,
             }
             await execution_service.emit_event(
                 self.db,
@@ -573,8 +594,8 @@ class SourceDiscoveryExecutionOrchestrator:
             return
 
         documents = await self._source_documents_for_extraction(execution)
-        document_limit = max(settings.facility_extraction_max_documents_per_execution, 1)
-        chunk_limit = max(settings.facility_extraction_max_chunks_per_execution, 1)
+        document_limit = max(self.scale_profile.extraction_max_documents, 1)
+        chunk_limit = max(self.scale_profile.extraction_max_chunks, 1)
         selected_documents = documents[:document_limit]
         summary: dict[str, Any] = {
             "documents_considered": len(documents),
@@ -764,8 +785,9 @@ class SourceDiscoveryExecutionOrchestrator:
             "facility_publication_phase_started",
             "Facility publication phase started for verified staging candidates.",
             metadata={
-                "max_candidates": settings.facility_publication_max_candidates_per_execution,
+                "max_candidates": self.scale_profile.publication_max_candidates,
                 "min_confidence": settings.facility_publication_min_confidence,
+                "mode": self.scale_profile.mode,
             },
         )
         await self.db.commit()
@@ -774,7 +796,7 @@ class SourceDiscoveryExecutionOrchestrator:
             self.db,
             organization_id=execution.organization_id,
             execution_id=execution.id,
-            max_candidates=settings.facility_publication_max_candidates_per_execution,
+            max_candidates=self.scale_profile.publication_max_candidates,
         )
         await execution_service.emit_event(
             self.db,
@@ -984,6 +1006,7 @@ class SourceDiscoveryExecutionOrchestrator:
         if task.coverage_cell is None:
             raise RuntimeError("discover_sources_task_missing_coverage_cell")
         blueprint_json = execution.blueprint.blueprint_json or {}
+        profile = self.scale_profile
         return SourceDiscoveryContext(
             organization_id=execution.organization_id,
             execution_id=execution.id,
@@ -1000,6 +1023,10 @@ class SourceDiscoveryExecutionOrchestrator:
             requested_fields=self._requested_fields(blueprint_json),
             blueprint_context=blueprint_json,
             provider=get_settings().source_discovery_provider,
+            max_queries_per_discovery=profile.serper_max_queries_per_discovery,
+            results_per_query=profile.serper_results_per_query,
+            discovery_query_hard_cap=profile.discovery_query_hard_cap,
+            discovery_results_hard_cap=profile.discovery_results_hard_cap,
         )
 
     async def _task_output(
@@ -1117,9 +1144,8 @@ class SourceDiscoveryExecutionOrchestrator:
     async def _select_retrieval_candidates(
         self, execution_id: str, coverage_cell_id: str
     ) -> list[ScrapingSourceCandidate]:
-        settings = get_settings()
-        per_cell_limit = max(settings.source_retrieval_max_candidates_per_coverage_cell, 0)
-        per_execution_limit = max(settings.source_retrieval_max_candidates_per_execution, 0)
+        per_cell_limit = max(self.scale_profile.retrieval_max_per_cell, 0)
+        per_execution_limit = max(self.scale_profile.retrieval_max_per_execution, 0)
         if per_cell_limit == 0 or per_execution_limit == 0:
             return []
         existing_execution_tasks = await self._retrieval_task_count(execution_id)
@@ -1179,10 +1205,9 @@ class SourceDiscoveryExecutionOrchestrator:
 
     async def _max_retrieval_estimate(self, execution_id: str) -> int:
         cell_count = await self._coverage_count(execution_id)
-        settings = get_settings()
         return min(
-            cell_count * max(settings.source_retrieval_max_candidates_per_coverage_cell, 0),
-            max(settings.source_retrieval_max_candidates_per_execution, 0),
+            cell_count * max(self.scale_profile.retrieval_max_per_cell, 0),
+            max(self.scale_profile.retrieval_max_per_execution, 0),
         )
 
     async def _emit_discovery_outcome_events(

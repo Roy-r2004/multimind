@@ -47,6 +47,7 @@ from app.schemas.api import (
     ScrapingTaskResponse,
 )
 from app.services.scraping.execution_outcome import execution_outcome_label
+from app.services.scraping.scale_profile import MODE_FULL_CENSUS, SUPPORTED_EXECUTION_MODES
 
 ACTIVE_EXECUTION_STATUSES = {
     ScrapingExecutionStatus.QUEUED,
@@ -67,7 +68,7 @@ SUPPORTED_EXECUTION_TYPES = {
     "scheduled_refresh",
 }
 STARTABLE_EXECUTION_TYPES = {"initial_full_country"}
-SUPPORTED_MODES = {"real"}
+SUPPORTED_MODES = SUPPORTED_EXECUTION_MODES
 ACTIVE_EXECUTION_MESSAGE = "An active source discovery execution already exists for this AI team plan."
 
 
@@ -84,7 +85,9 @@ class ScrapingExecutionService:
         if data.execution_type not in STARTABLE_EXECUTION_TYPES:
             raise ValidationError("This execution type is not startable in this phase.")
         if data.mode not in SUPPORTED_MODES:
-            raise ValidationError("Only real source discovery execution mode is supported in this phase.")
+            raise ValidationError(
+                "Unsupported scrape mode. Use 'real' (standard) or 'full_census'."
+            )
 
         team_plan = await self._team_plan_row(db, auth, team_plan_id)
         if team_plan.status != ScrapingRunStatus.PLANNED:
@@ -123,11 +126,13 @@ class ScrapingExecutionService:
                     )
                 )
             await db.flush()
+            mode_label = "Full census" if data.mode == MODE_FULL_CENSUS else "Standard"
             await self.emit_event(
                 db,
                 execution.id,
                 "execution_queued",
-                "Real source discovery campaign queued.",
+                f"{mode_label} source discovery campaign queued.",
+                metadata={"mode": data.mode or "real"},
             )
             await db.commit()
         except IntegrityError as exc:

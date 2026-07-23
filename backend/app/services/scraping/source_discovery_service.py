@@ -47,7 +47,7 @@ MAX_ERROR_MESSAGE_LENGTH = 500
 class SourceDiscoveryQueryPlanner:
     async def plan_queries(self, context: SourceDiscoveryContext) -> list[SourceDiscoveryPlannedQuery]:
         settings = get_settings()
-        max_queries = _max_queries_for_provider(context.provider, settings)
+        max_queries = _max_queries_for_provider(context.provider, settings, context=context)
         model = get_model("gpt-4.1")
         provider = get_provider_registry().get_provider(model.provider)
         prompt = get_prompt_engine().render(
@@ -116,7 +116,9 @@ class SourceDiscoveryService:
                         query=planned.query,
                         country_code=context.country_code,
                         search_language=planned.language_code or context.language_code,
-                        result_limit=_result_limit_for_provider(provider.name, get_settings()),
+                        result_limit=_result_limit_for_provider(
+                            provider.name, get_settings(), context=context
+                        ),
                         metadata={
                             "source_category": context.source_category,
                             "region_code": context.region_code,
@@ -481,20 +483,40 @@ def _bounded_error(message: str) -> str:
     return str(message or "")[:MAX_ERROR_MESSAGE_LENGTH]
 
 
-def _max_queries_for_provider(provider: str, settings: Any) -> int:
-    if provider.strip().lower() == "brave":
+def _max_queries_for_provider(
+    provider: str,
+    settings: Any,
+    *,
+    context: SourceDiscoveryContext | None = None,
+) -> int:
+    hard_cap = 8
+    if context is not None and context.discovery_query_hard_cap is not None:
+        hard_cap = context.discovery_query_hard_cap
+    if context is not None and context.max_queries_per_discovery is not None:
+        configured = context.max_queries_per_discovery
+    elif provider.strip().lower() == "brave":
         configured = settings.brave_search_max_queries_per_discovery
     else:
         configured = settings.serper_search_max_queries_per_discovery
-    return min(max(configured, 1), 8)
+    return min(max(configured, 1), hard_cap)
 
 
-def _result_limit_for_provider(provider: str, settings: Any) -> int:
-    if provider.strip().lower() == "brave":
+def _result_limit_for_provider(
+    provider: str,
+    settings: Any,
+    *,
+    context: SourceDiscoveryContext | None = None,
+) -> int:
+    hard_cap = 20
+    if context is not None and context.discovery_results_hard_cap is not None:
+        hard_cap = context.discovery_results_hard_cap
+    if context is not None and context.results_per_query is not None:
+        configured = context.results_per_query
+    elif provider.strip().lower() == "brave":
         configured = settings.brave_search_results_per_query
     else:
         configured = settings.serper_search_results_per_query
-    return min(max(configured, 1), 20)
+    return min(max(configured, 1), hard_cap)
 
 
 def _safe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

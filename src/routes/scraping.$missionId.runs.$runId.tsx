@@ -120,7 +120,7 @@ function ScrapingRunDetailPage() {
     }
   }
 
-  async function handleStartExecution() {
+  async function handleStartExecution(mode: "real" | "full_census" = "real") {
     const auth = authHeaders();
     if (!auth) {
       void navigate({ to: "/login" });
@@ -136,7 +136,7 @@ function ScrapingRunDetailPage() {
     setStartingExecution(true);
     setError(null);
     try {
-      const execution = await createScrapingExecution(auth, runId);
+      const execution = await createScrapingExecution(auth, runId, mode);
       setExecutions((current) => [execution, ...current]);
       void navigate({
         to: "/scraping/$missionId/executions/$executionId",
@@ -215,21 +215,49 @@ function ScrapingRunDetailPage() {
                   <p className="mt-1 text-sm text-muted-foreground">
                     Search the web → download pages → extract facilities → Excel export.
                   </p>
+                  {!activeExecution && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      <strong>Full census</strong> uses much higher limits (hours, higher cost) for
+                      broader country coverage. <strong>Standard</strong> is faster for demos.
+                    </p>
+                  )}
                 </div>
-                <Button
-                  type="button"
-                  size="lg"
-                  disabled={startingExecution || (run.status !== "planned" && !activeExecution)}
-                  onClick={() => void handleStartExecution()}
-                >
-                  {startingExecution
-                    ? "Starting…"
-                    : activeExecution
-                      ? "Watch progress"
-                      : executions.some((item) => item.status === "completed")
-                        ? "Run again"
-                        : "Start scrape"}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  {activeExecution ? (
+                    <Button
+                      type="button"
+                      size="lg"
+                      disabled={startingExecution}
+                      onClick={() => void handleStartExecution()}
+                    >
+                      Watch progress
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        type="button"
+                        size="lg"
+                        variant="outline"
+                        disabled={startingExecution || run.status !== "planned"}
+                        onClick={() => void handleStartExecution("real")}
+                      >
+                        {startingExecution
+                          ? "Starting…"
+                          : executions.length > 0
+                            ? "Standard again"
+                            : "Standard scrape"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="lg"
+                        disabled={startingExecution || run.status !== "planned"}
+                        onClick={() => void handleStartExecution("full_census")}
+                      >
+                        {startingExecution ? "Starting…" : "Full census"}
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
             </GlassCard>
 
@@ -237,7 +265,8 @@ function ScrapingRunDetailPage() {
               <h2 className="text-lg font-semibold">Results</h2>
               {executions.length === 0 ? (
                 <p className="mt-3 text-sm text-muted-foreground">
-                  No scrape yet. Click <strong>Start scrape</strong> above.
+                  No scrape yet. Choose <strong>Standard scrape</strong> or{" "}
+                  <strong>Full census</strong> above.
                 </p>
               ) : (
                 <div className="mt-4 space-y-3">
@@ -254,6 +283,9 @@ function ScrapingRunDetailPage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge variant="secondary">{execution.status_label}</Badge>
+                            <Badge variant="outline">
+                              {execution.mode === "full_census" ? "Full census" : "Standard"}
+                            </Badge>
                             <span className="text-sm text-muted-foreground">
                               {execution.country_name}
                             </span>
