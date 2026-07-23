@@ -640,7 +640,8 @@ class SourceDiscoveryPlannedQuery(BaseModel):
 class SourceDiscoveryQueryPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    queries: list[SourceDiscoveryPlannedQuery] = Field(min_length=1, max_length=8)
+    # Keep in sync with SourceDiscoveryContext.discovery_query_hard_cap (le=32).
+    queries: list[SourceDiscoveryPlannedQuery] = Field(min_length=1, max_length=32)
 
 
 class SourceDiscoveryProviderResult(BaseModel):

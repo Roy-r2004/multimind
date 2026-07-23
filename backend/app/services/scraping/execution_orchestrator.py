@@ -346,6 +346,9 @@ class SourceDiscoveryExecutionOrchestrator:
             return
         except Exception as exc:
             failure_category = type(exc).__name__
+            failure_detail = str(exc).strip() or failure_category
+            if len(failure_detail) > 400:
+                failure_detail = failure_detail[:397] + "..."
             logger.exception(
                 (
                     "scraping_execution_failed execution_id=%s stage=%s "
@@ -364,6 +367,7 @@ class SourceDiscoveryExecutionOrchestrator:
                     "execution_id": safe_execution_id,
                     "stage": self.current_stage,
                     "failure_category": failure_category,
+                    "failure_detail": failure_detail,
                     "region_count": self.coverage_region_count,
                     "language_count": self.coverage_language_count,
                     "source_category_count": self.coverage_source_category_count,
@@ -375,11 +379,11 @@ class SourceDiscoveryExecutionOrchestrator:
                 failure_category,
                 error_message=(
                     f"Source discovery execution failed during {self.current_stage}: "
-                    f"{failure_category}"
+                    f"{failure_detail}"
                 ),
                 event_message=(
-                    f"Source discovery execution failed during {self.current_stage} "
-                    f"({failure_category})."
+                    f"Source discovery execution failed during {self.current_stage}: "
+                    f"{failure_detail}"
                 ),
             )
 
@@ -815,6 +819,7 @@ class SourceDiscoveryExecutionOrchestrator:
     async def _process_discovery_task(
         self, execution: ScrapingExecution, task: ScrapingTask
     ) -> None:
+        self.current_stage = "discover_sources"
         agent = task.execution_agent
         await self._start_task(
             execution,

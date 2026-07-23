@@ -73,7 +73,9 @@ class SourceDiscoveryQueryPlanner:
         )
         try:
             raw = LLMProvider.parse_json_response(response.text)
-            plan = SourceDiscoveryQueryPlan.model_validate(raw)
+            plan = SourceDiscoveryQueryPlan.model_validate(
+                _normalize_planned_query_payload(raw, max_queries=max_queries)
+            )
         except (PydanticValidationError, Exception) as exc:
             raise ValidationError("Source discovery query planning failed.") from exc
         return _dedupe_planned_queries(plan.queries, max_queries=max_queries)
@@ -444,6 +446,34 @@ class SourceDiscoveryService:
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
+
+
+def _normalize_planned_query_payload(raw: Any, *, max_queries: int) -> dict[str, Any]:
+    """Bound planner JSON so full-census query counts and long fields still validate."""
+    if not isinstance(raw, dict):
+        raise ValidationError("Source discovery planner returned invalid JSON.")
+    queries_raw = raw.get("queries")
+    if not isinstance(queries_raw, list):
+        raise ValidationError("Source discovery planner returned no queries list.")
+    normalized: list[dict[str, str]] = []
+    for item in queries_raw:
+        if not isinstance(item, dict):
+            continue
+        query = str(item.get("query") or "").strip()[:MAX_QUERY_LENGTH]
+        language_code = str(item.get("language_code") or "en").strip()[:16] or "en"
+        purpose = str(item.get("purpose") or "Discover source candidates.").strip()[:300]
+        if not query or not purpose:
+            continue
+        normalized.append(
+            {
+                "query": query,
+                "language_code": language_code,
+                "purpose": purpose,
+            }
+        )
+        if len(normalized) >= max(max_queries, 1):
+            break
+    return {"queries": normalized}
 
 
 def _dedupe_planned_queries(
