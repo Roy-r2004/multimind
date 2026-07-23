@@ -20,7 +20,10 @@ import type {
   ApiAdminUserDetail,
   ApiAdminUserSummary,
   ApiBrain,
+  ApiContentLabel,
   ApiDiscussResponse,
+  ApiSavedDocument,
+  ApiSavedDocumentSuggest,
   ApiLessonDetail,
   ApiLessonListItem,
   ApiModel,
@@ -171,6 +174,21 @@ export const api = {
         orgId: auth.orgId,
       }),
 
+    pinVerdict: (auth: Auth, chatId: string, verdictId: string) =>
+      apiRequest<ApiChat>(`/chats/${chatId}/pinned-verdict`, {
+        method: "PUT",
+        body: { verdict_id: verdictId },
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    unpinVerdict: (auth: Auth, chatId: string) =>
+      apiRequest<ApiChat>(`/chats/${chatId}/pinned-verdict`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
     listTurns: (auth: Auth, chatId: string) =>
       apiRequest<ApiTurn[]>(`/chats/${chatId}/turns`, { token: auth.token, orgId: auth.orgId }),
 
@@ -244,6 +262,90 @@ export const api = {
 
     purgeOrganization: (auth: Auth) =>
       apiRequest<ApiSavedVerdictPurge>("/saved-verdicts", {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  contentLabels: {
+    list: (auth: Auth) =>
+      apiRequest<ApiContentLabel[]>("/content-labels", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    create: (auth: Auth, name: string) =>
+      apiRequest<ApiContentLabel>("/content-labels", {
+        body: { name },
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    rename: (auth: Auth, labelId: string, name: string) =>
+      apiRequest<ApiContentLabel>(`/content-labels/${labelId}`, {
+        method: "PATCH",
+        body: { name },
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    delete: (auth: Auth, labelId: string) =>
+      apiRequest<{ message: string }>(`/content-labels/${labelId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  savedDocuments: {
+    list: (auth: Auth, params?: { q?: string; label_id?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.q) search.set("q", params.q);
+      if (params?.label_id) search.set("label_id", params.label_id);
+      const qs = search.toString();
+      return apiRequest<ApiSavedDocument[]>(`/saved-documents${qs ? `?${qs}` : ""}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
+
+    suggest: (auth: Auth, turnId: string) =>
+      apiRequest<ApiSavedDocumentSuggest>("/saved-documents/suggest", {
+        body: { turn_id: turnId },
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    create: (
+      auth: Auth,
+      data: {
+        turn_id: string;
+        name?: string | null;
+        label_ids?: string[];
+        label_names?: string[];
+      },
+    ) =>
+      apiRequest<ApiSavedDocument>("/saved-documents", {
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    update: (
+      auth: Auth,
+      documentId: string,
+      data: { name?: string; label_ids?: string[] },
+    ) =>
+      apiRequest<ApiSavedDocument>(`/saved-documents/${documentId}`, {
+        method: "PATCH",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    delete: (auth: Auth, documentId: string) =>
+      apiRequest<{ message: string }>(`/saved-documents/${documentId}`, {
         method: "DELETE",
         token: auth.token,
         orgId: auth.orgId,

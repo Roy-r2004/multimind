@@ -868,6 +868,8 @@ class ChatResponse(BaseModel):
     id: str
     title: str
     project_id: str | None = None
+    pinned_verdict_id: str | None = None
+    pinned_turn_id: str | None = None
     updated_at: datetime
 
 
@@ -889,6 +891,10 @@ class ChatCreateRequest(BaseModel):
 class ChatUpdateRequest(BaseModel):
     title: str | None = None
     project_id: str | None = None
+
+
+class PinVerdictRequest(BaseModel):
+    verdict_id: str
 
 
 # --- Turns ---
@@ -1414,6 +1420,16 @@ class BrainMemoryResponse(BaseModel):
     created_at: str | None = None
 
 
+class BrainKnowledgeItemResponse(BaseModel):
+    id: str
+    source_type: str
+    source_id: str
+    title: str
+    content: str
+    project_id: str | None = None
+    created_at: datetime | None = None
+
+
 class BrainResponse(BaseModel):
     user_name: str
     summary: str
@@ -1421,5 +1437,68 @@ class BrainResponse(BaseModel):
     likes: list[str] = []
     dislikes: list[str] = []
     memories: list[BrainMemoryResponse] = []
+    knowledge_items: list[BrainKnowledgeItemResponse] = []
     lesson_count: int = 0
+    knowledge_count: int = 0
     updated_at: datetime | None = None
+
+
+# --- Content labels & saved documents ---
+
+
+class ContentLabelResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    document_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContentLabelCreateRequest(BaseModel):
+    name: str
+
+
+class ContentLabelUpdateRequest(BaseModel):
+    name: str
+
+
+class SavedDocumentLabelBrief(BaseModel):
+    id: str
+    name: str
+
+
+class SavedDocumentResponse(BaseModel):
+    id: str
+    name: str
+    chat_id: str | None = None
+    turn_id: str | None = None
+    project_id: str | None = None
+    chat_title: str = ""
+    project_name: str | None = None
+    labels: list[SavedDocumentLabelBrief] = []
+    snapshot_json: dict = {}
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedDocumentCreateRequest(BaseModel):
+    turn_id: str
+    name: str | None = None
+    label_ids: list[str] = []
+    label_names: list[str] = []
+
+
+class SavedDocumentUpdateRequest(BaseModel):
+    name: str | None = None
+    label_ids: list[str] | None = None
+
+
+class SavedDocumentSuggestRequest(BaseModel):
+    turn_id: str
+
+
+class SavedDocumentSuggestResponse(BaseModel):
+    name: str
+    label_suggestions: list[str] = []

@@ -336,11 +336,19 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     project_id: Mapped[str | None] = UuidFK("projects", nullable=True)
     created_by: Mapped[str] = UuidFK("users")
     title: Mapped[str] = mapped_column(String(512), nullable=False, default="New chat")
+    pinned_verdict_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("verdicts.id", ondelete="SET NULL"), nullable=True
+    )
 
     organization: Mapped["Organization"] = relationship(back_populates="chats")
     project: Mapped["Project | None"] = relationship(back_populates="chats")
     turns: Mapped[list["Turn"]] = relationship(back_populates="chat", order_by="Turn.created_at")
     share_links: Mapped[list["ShareLink"]] = relationship(back_populates="chat")
+    pinned_verdict: Mapped["Verdict | None"] = relationship(
+        "Verdict",
+        foreign_keys=[pinned_verdict_id],
+        post_update=True,
+    )
 
 
 class ModelSet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -2005,6 +2013,98 @@ class SavedVerdict(Base, UUIDPrimaryKeyMixin):
     saved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ContentLabel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "content_labels"
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", "name", name="uq_content_label_org_user_name"),
+        Index("ix_content_labels_org_user", "org_id", "user_id"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    documents: Mapped[list["SavedDocument"]] = relationship(
+        secondary="saved_document_labels",
+        back_populates="labels",
+    )
+
+
+class SavedDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """User-managed snapshot of a full chat turn (not a Lesson)."""
+
+    __tablename__ = "saved_documents"
+    __table_args__ = (
+        Index("ix_saved_documents_org_user_updated", "org_id", "user_id", "updated_at"),
+        Index("ix_saved_documents_turn_id", "turn_id"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    chat_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="SET NULL"), nullable=True
+    )
+    turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    chat_title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    project_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+    labels: Mapped[list["ContentLabel"]] = relationship(
+        secondary="saved_document_labels",
+        back_populates="documents",
+    )
+
+
+class SavedDocumentLabel(Base):
+    __tablename__ = "saved_document_labels"
+    __table_args__ = (
+        UniqueConstraint("document_id", "label_id", name="uq_saved_document_label"),
+    )
+
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("saved_documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    label_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("content_labels.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class BrainKnowledgeItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Permissioned knowledge chunk for hybrid Brain retrieval."""
+
+    __tablename__ = "brain_knowledge_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "user_id",
+            "source_type",
+            "source_id",
+            name="uq_brain_knowledge_source",
+        ),
+        Index("ix_brain_knowledge_org_user", "org_id", "user_id"),
+        Index("ix_brain_knowledge_project", "project_id"),
+        Index("ix_brain_knowledge_source_type", "source_type"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
 
 
 class VerdictLesson(Base, UUIDPrimaryKeyMixin, TimestampMixin):

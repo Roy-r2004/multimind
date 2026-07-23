@@ -27,6 +27,8 @@ import {
   Bookmark,
   MoreHorizontal,
   ArrowDown,
+  Pin,
+  FilePlus2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -42,6 +44,7 @@ import { AssessmentCriteriaModal } from "@/components/chat/AssessmentCriteriaMod
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
+import { SaveTurnDialog } from "@/components/chat/SaveTurnDialog";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
@@ -177,9 +180,11 @@ export function ChatPage() {
     updateModelSet,
     isApiMode,
     activeChatId,
+    setActiveChatId,
     createChat,
     chats,
     deleteChat,
+    applyChatUpdate,
   } = useChatStore();
   const { authHeaders, isAuthenticated } = useAuth();
   const { modelById } = useModels();
@@ -209,6 +214,7 @@ export function ChatPage() {
   const [deleteTurnTarget, setDeleteTurnTarget] = useState<ApiTurn | null>(null);
   const [deletingTurn, setDeletingTurn] = useState(false);
   const [deleteTurnError, setDeleteTurnError] = useState<string | null>(null);
+  const [saveTurnId, setSaveTurnId] = useState<string | null>(null);
   const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
   const [showCriteria, setShowCriteria] = useState(false);
   const [savingCriteria, setSavingCriteria] = useState(false);
@@ -219,6 +225,8 @@ export function ChatPage() {
   const showScrollToLatestRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeChat = chats.find((c) => c.id === activeChatId);
+  const pinnedTurnId = activeChat?.pinnedTurnId ?? null;
+  const pinnedVerdictId = activeChat?.pinnedVerdictId ?? null;
 
   const updateThreadScrollState = useCallback(() => {
     const thread = threadRef.current;
@@ -269,6 +277,43 @@ export function ChatPage() {
     setShowScrollToLatest(false);
     window.requestAnimationFrame(() => scrollThreadToLatest("auto"));
   }, [activeChatId, scrollThreadToLatest]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const chatId = params.get("chatId");
+    if (chatId && chatId !== activeChatId) {
+      setActiveChatId(chatId);
+    }
+  }, [activeChatId, setActiveChatId]);
+
+  useEffect(() => {
+    const turnId = new URLSearchParams(window.location.search).get("turnId");
+    if (!turnId || apiTurns.length === 0) return;
+    const el = document.getElementById(`turn-${turnId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [apiTurns.length, activeChatId]);
+
+  function scrollToPinnedVerdict() {
+    if (!pinnedTurnId) return;
+    const el = document.getElementById(`turn-${pinnedTurnId}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  async function handlePinVerdict(verdictId: string, currentlyPinned: boolean) {
+    const auth = authHeaders();
+    if (!auth || !activeChatId) return;
+    try {
+      const updated = currentlyPinned
+        ? await api.chats.unpinVerdict(auth, activeChatId)
+        : await api.chats.pinVerdict(auth, activeChatId, verdictId);
+      applyChatUpdate(updated);
+      toast.success(currentlyPinned ? "Verdict unpinned" : "Verdict pinned");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update pin");
+    }
+  }
 
   useEffect(() => {
     if (!shouldPinToBottomRef.current) return;
@@ -539,6 +584,15 @@ export function ChatPage() {
             </div>
           )}
           <div className="ml-auto flex items-center gap-2">
+            {pinnedTurnId && (
+              <button
+                type="button"
+                onClick={scrollToPinnedVerdict}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
+              >
+                <Pin className="size-3.5 fill-current" /> Go to pinned verdict
+              </button>
+            )}
             {activeChatId && (
               <button
                 type="button"
@@ -624,20 +678,29 @@ export function ChatPage() {
               apiTurns.map((turn) => {
                 const showTurnDelete = canShowHistoricalTurnDelete(turn);
                 return (
-                  <div key={turn.id} className="space-y-6 animate-fade-up">
+                  <div
+                    key={turn.id}
+                    id={`turn-${turn.id}`}
+                    className="scroll-mt-28 space-y-6 animate-fade-up"
+                  >
                     <div className="flex items-start justify-end gap-2">
-                      {showTurnDelete && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              aria-label="Turn options"
-                              className="mt-1 rounded-lg border border-border bg-card/70 p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                            >
-                              <MoreHorizontal className="size-4" />
-                            </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-44">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label="Turn options"
+                            className="mt-1 rounded-lg border border-border bg-card/70 p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                          >
+                            <MoreHorizontal className="size-4" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-48">
+                          {turn.verdict && (
+                            <DropdownMenuItem onSelect={() => setSaveTurnId(turn.id)}>
+                              <FilePlus2 className="size-3.5" /> Save as document
+                            </DropdownMenuItem>
+                          )}
+                          {showTurnDelete && (
                             <DropdownMenuItem
                               disabled={turnDeleteDisabled}
                               className="text-destructive focus:text-destructive"
@@ -649,9 +712,9 @@ export function ChatPage() {
                             >
                               <Trash2 className="size-3.5" /> Delete turn
                             </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      )}
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
                         <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
                       </div>
@@ -663,6 +726,10 @@ export function ChatPage() {
                       assessmentCriteria={assessmentCriteria}
                       onEditCriteria={() => setShowCriteria(true)}
                       pendingSavedVerdicts={pendingSavedVerdicts}
+                      pinnedVerdictId={pinnedVerdictId}
+                      onTogglePin={(verdictId, currentlyPinned) =>
+                        void handlePinVerdict(verdictId, currentlyPinned)
+                      }
                       onToggleSavedVerdict={(verdictId, saved) =>
                         toggleSavedVerdict(verdictId, saved).catch((error) => {
                           toast.error(
@@ -1015,6 +1082,12 @@ export function ChatPage() {
         </div>
       </Modal>
 
+      <SaveTurnDialog
+        open={Boolean(saveTurnId)}
+        turnId={saveTurnId}
+        onClose={() => setSaveTurnId(null)}
+      />
+
       <Modal
         open={showDeleteChat}
         onClose={() => setShowDeleteChat(false)}
@@ -1142,6 +1215,8 @@ function AiTurn({
   assessmentCriteria,
   onEditCriteria,
   pendingSavedVerdicts,
+  pinnedVerdictId,
+  onTogglePin,
   onToggleSavedVerdict,
   onLessonUpdate,
 }: {
@@ -1151,6 +1226,8 @@ function AiTurn({
   assessmentCriteria: string;
   onEditCriteria: () => void;
   pendingSavedVerdicts: Set<string>;
+  pinnedVerdictId?: string | null;
+  onTogglePin: (verdictId: string, currentlyPinned: boolean) => void;
   onToggleSavedVerdict: (verdictId: string, saved: boolean) => void;
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
 }) {
@@ -1167,6 +1244,7 @@ function AiTurn({
   const criteriaLines = parseCriteriaLines(assessmentCriteria);
   const turnStrategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
   const bookmarkState = getVerdictBookmarkState(turn, pendingSavedVerdicts);
+  const isPinned = Boolean(turn.verdict && pinnedVerdictId === turn.verdict.id);
 
   function openDisagree() {
     verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1286,13 +1364,22 @@ function AiTurn({
       )}
 
       {turn.verdict && (
-        <div ref={verdictRef} className="scroll-mt-24">
+        <div
+          ref={verdictRef}
+          id={`verdict-${turn.verdict.id}`}
+          className={cn("scroll-mt-24", isPinned && "rounded-2xl ring-2 ring-amber-400/70")}
+        >
           <GlassCard glow className="p-5">
             <div className="flex flex-wrap items-center gap-2">
               <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
                 <Gavel className="size-4" />
               </span>
               <span className="font-medium">Verdict</span>
+              {isPinned && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                  <Pin className="size-3 fill-current" /> Pinned
+                </span>
+              )}
               <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
                 {turn.verdict.strategy}
               </span>
@@ -1309,6 +1396,21 @@ function AiTurn({
                 </span>
               )}
               <div className="ml-auto flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
+                  title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
+                  onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
+                    isPinned
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+                      : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  <Pin className={cn("size-3.5", isPinned && "fill-current")} />
+                  {isPinned ? "Unpin" : "Pin"}
+                </button>
                 {bookmarkState.visible && bookmarkState.verdictId && (
                   <button
                     type="button"

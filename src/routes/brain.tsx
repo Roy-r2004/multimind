@@ -55,7 +55,14 @@ function BrainPage() {
   }
 
   const firstName = brain.user_name.split(" ")[0];
-  const isEmpty = !brain.summary && !brain.thinking_style && brain.memories.length === 0;
+  const knowledgeItems = brain.knowledge_items ?? [];
+  const isEmpty =
+    !brain.summary &&
+    !brain.thinking_style &&
+    brain.memories.length === 0 &&
+    knowledgeItems.length === 0 &&
+    brain.likes.length === 0 &&
+    brain.dislikes.length === 0;
 
   return (
     <AppShell>
@@ -74,8 +81,9 @@ function BrainPage() {
                 <span className="text-gradient">living memory</span>
               </h1>
               <p className="mt-4 max-w-lg text-sm leading-relaxed text-muted-foreground">
-                Learned from every verdict you reject — fed back into the council so models match
-                your taste.
+                Learns from chats, verdicts, saved documents, pins, challenges, and scraping —
+                then retrieves only what is relevant for the next answer. Lessons stay a separate
+                feature.
               </p>
 
               <div className="mt-6 grid grid-cols-3 gap-3">
@@ -84,8 +92,23 @@ function BrainPage() {
                   label="Lessons"
                   value={String(brain.lesson_count)}
                 />
-                <StatPill icon={<Heart className="size-3.5" />} label="Prefers" value="—" />
-                <StatPill icon={<ThumbsDown className="size-3.5" />} label="Rejects" value="—" />
+                <StatPill
+                  icon={<Heart className="size-3.5" />}
+                  label="Prefers"
+                  value={String(brain.likes.length || "—")}
+                />
+                <StatPill
+                  icon={<ThumbsDown className="size-3.5" />}
+                  label="Rejects"
+                  value={String(brain.dislikes.length || "—")}
+                />
+              </div>
+              <div className="mt-3">
+                <StatPill
+                  icon={<Sparkles className="size-3.5" />}
+                  label="Knowledge"
+                  value={String(brain.knowledge_count ?? knowledgeItems.length)}
+                />
               </div>
 
               <Link
@@ -104,7 +127,8 @@ function BrainPage() {
           {isEmpty ? (
             <GlassCard className="mt-14 p-8 text-center">
               <p className="text-sm text-muted-foreground">
-                No brain profile yet. Challenge a verdict in chat to start building your memory.
+                No brain profile yet. Chat, save documents, pin verdicts, or challenge a verdict to
+                start building memory.
               </p>
               <Link
                 to="/chat"
@@ -134,7 +158,7 @@ function BrainPage() {
                 <section>
                   <div className="mb-4 flex items-center gap-2">
                     <Zap className="size-4 text-primary" />
-                    <h2 className="text-lg font-semibold">Synaptic log</h2>
+                    <h2 className="text-lg font-semibold">Lesson memories</h2>
                   </div>
                   <div className="relative space-y-3 pl-6 before:absolute before:left-[7px] before:top-2 before:h-[calc(100%-1rem)] before:w-px before:bg-gradient-to-b before:from-primary/40 before:via-primary/20 before:to-transparent">
                     {[...brain.memories].reverse().map((m, i) => (
@@ -153,7 +177,7 @@ function BrainPage() {
                                 </time>
                               )}
                             </div>
-                            {m.source_id && (
+                            {m.source === "lesson" && m.source_id && (
                               <Link
                                 to="/lessons/$id"
                                 params={{ id: m.source_id }}
@@ -169,6 +193,32 @@ function BrainPage() {
                   </div>
                 </section>
               )}
+
+              {knowledgeItems.length > 0 && (
+                <section>
+                  <div className="mb-4 flex items-center gap-2">
+                    <Zap className="size-4 text-primary" />
+                    <h2 className="text-lg font-semibold">Knowledge sources</h2>
+                  </div>
+                  <div className="space-y-3">
+                    {knowledgeItems.slice(0, 12).map((item, i) => (
+                      <SkeletonReveal key={item.id} delayMs={900 + i * 80}>
+                        <GlassCard className="p-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {item.source_type.replaceAll("_", " ")}
+                            </span>
+                            <div className="font-medium">{item.title || item.source_id}</div>
+                          </div>
+                          <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">
+                            {item.content}
+                          </p>
+                        </GlassCard>
+                      </SkeletonReveal>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           )}
 
@@ -177,12 +227,14 @@ function BrainPage() {
               <PreferencePanel
                 title="Neural prefers"
                 icon={<Heart className="size-4 text-emerald-600" />}
+                items={brain.likes}
               />
             </SkeletonReveal>
             <SkeletonReveal delayMs={700}>
               <PreferencePanel
                 title="Neural rejects"
                 icon={<ThumbsDown className="size-4 text-rose-600" />}
+                items={brain.dislikes}
               />
             </SkeletonReveal>
           </div>
@@ -192,14 +244,32 @@ function BrainPage() {
   );
 }
 
-function PreferencePanel({ title, icon }: { title: string; icon: React.ReactNode }) {
+function PreferencePanel({
+  title,
+  icon,
+  items,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  items: string[];
+}) {
   return (
     <GlassCard className="p-5">
       <div className="flex items-center gap-2 text-sm font-medium">
         {icon}
         {title}
       </div>
-      <p className="mt-4 text-sm text-muted-foreground">None yet.</p>
+      {items.length === 0 ? (
+        <p className="mt-4 text-sm text-muted-foreground">None yet.</p>
+      ) : (
+        <ul className="mt-4 space-y-2 text-sm text-muted-foreground">
+          {items.map((item) => (
+            <li key={item} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
     </GlassCard>
   );
 }

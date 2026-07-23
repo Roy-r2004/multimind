@@ -13,6 +13,7 @@ from app.schemas.api import (
     ChatResponse,
     ChatUpdateRequest,
     MessageResponse,
+    PinVerdictRequest,
     ShareLinkResponse,
     TurnDeleteResponse,
     TurnCreateRequest,
@@ -60,6 +61,25 @@ async def delete_chat(
 ):
     await chat_service.delete_chat(db, auth, str(chat_id))
     return MessageResponse(message="Chat deleted")
+
+
+@router.put("/{chat_id}/pinned-verdict", response_model=ChatResponse)
+async def pin_verdict(
+    chat_id: UUID,
+    data: PinVerdictRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.pin_verdict(db, auth, str(chat_id), data.verdict_id)
+
+
+@router.delete("/{chat_id}/pinned-verdict", response_model=ChatResponse)
+async def unpin_verdict(
+    chat_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.unpin_verdict(db, auth, str(chat_id))
 
 
 @router.post("/{chat_id}/share", response_model=ShareLinkResponse)

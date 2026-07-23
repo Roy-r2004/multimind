@@ -99,6 +99,8 @@ export type ApiChat = {
   id: string;
   title: string;
   project_id?: string | null;
+  pinned_verdict_id?: string | null;
+  pinned_turn_id?: string | null;
   updated_at: string;
 };
 
@@ -495,6 +497,16 @@ export type ApiBrainMemory = {
   created_at?: string | null;
 };
 
+export type ApiBrainKnowledgeItem = {
+  id: string;
+  source_type: string;
+  source_id: string;
+  title: string;
+  content: string;
+  project_id?: string | null;
+  created_at?: string | null;
+};
+
 export type ApiBrain = {
   user_name: string;
   summary: string;
@@ -502,8 +514,37 @@ export type ApiBrain = {
   likes: string[];
   dislikes: string[];
   memories: ApiBrainMemory[];
+  knowledge_items?: ApiBrainKnowledgeItem[];
   lesson_count: number;
+  knowledge_count?: number;
   updated_at?: string | null;
+};
+
+export type ApiContentLabel = {
+  id: string;
+  name: string;
+  document_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiSavedDocument = {
+  id: string;
+  name: string;
+  chat_id?: string | null;
+  turn_id?: string | null;
+  project_id?: string | null;
+  chat_title: string;
+  project_name?: string | null;
+  labels: { id: string; name: string }[];
+  snapshot_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiSavedDocumentSuggest = {
+  name: string;
+  label_suggestions: string[];
 };
 
 export class ApiClientError extends Error {

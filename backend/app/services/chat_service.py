@@ -180,7 +180,23 @@ class ChatService:
             .where(Chat.org_id == auth.org_id)
             .order_by(Chat.updated_at.desc())
         )
-        return [self._chat_response(c) for c in result.scalars().all()]
+        chats = list(result.scalars().all())
+        pinned_ids = [c.pinned_verdict_id for c in chats if c.pinned_verdict_id]
+        turn_by_verdict: dict[str, str] = {}
+        if pinned_ids:
+            rows = await db.execute(
+                select(Verdict.id, Verdict.turn_id).where(Verdict.id.in_(pinned_ids))
+            )
+            turn_by_verdict = {vid: tid for vid, tid in rows.all()}
+        return [
+            self._chat_response(
+                c,
+                pinned_turn_id=turn_by_verdict.get(c.pinned_verdict_id)
+                if c.pinned_verdict_id
+                else None,
+            )
+            for c in chats
+        ]
 
     async def create_chat(
         self, db: AsyncSession, auth: AuthContext, data: ChatCreateRequest
@@ -193,7 +209,7 @@ class ChatService:
         )
         db.add(chat)
         await db.flush()
-        return self._chat_response(chat)
+        return await self._chat_response_async(db, chat)
 
     async def get_chat(self, db: AsyncSession, auth: AuthContext, chat_id: str) -> Chat:
         result = await db.execute(
@@ -220,7 +236,7 @@ class ChatService:
         if data.project_id is not None:
             chat.project_id = data.project_id
         await db.flush()
-        return self._chat_response(chat)
+        return await self._chat_response_async(db, chat)
 
     async def delete_chat(self, db: AsyncSession, auth: AuthContext, chat_id: str) -> None:
         await self.get_chat(db, auth, chat_id)
@@ -465,7 +481,12 @@ class ChatService:
         model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
         chat = await self.get_chat(db, auth, turn.chat_id)
         user_brain_context = await brain_service.get_context_for_user(
-            db, auth.user.id, auth.org_id, auth.user.full_name
+            db,
+            auth.user.id,
+            auth.org_id,
+            auth.user.full_name,
+            query=turn.user_message,
+            project_id=chat.project_id,
         )
         previous_verdict_context = await self._latest_previous_verdict_context(
             db, chat.id, turn.id, turn.created_at
@@ -567,6 +588,46 @@ class ChatService:
             try:
                 async with AsyncSessionLocal() as run_db:
                     await get_orchestrator().run(run_db, ctx, on_event=on_event)
+                    try:
+                        from app.services.brain_knowledge_service import brain_knowledge_service
+
+                        turn_row = (
+                            await run_db.execute(
+                                select(Turn)
+                                .where(Turn.id == turn_id)
+                                .options(
+                                    selectinload(Turn.verdict),
+                                    selectinload(Turn.model_answers),
+                                    selectinload(Turn.chat),
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if turn_row and turn_row.status in (
+                            TurnStatus.COMPLETED,
+                            TurnStatus.PARTIAL,
+                        ):
+                            digest = "; ".join(
+                                f"{a.model_id}: {(a.text or '')[:160]}"
+                                for a in (turn_row.model_answers or [])
+                                if a.text
+                            )[:1200]
+                            await brain_knowledge_service.ingest_turn(
+                                run_db,
+                                org_id=auth.org_id,
+                                user_id=auth.user.id,
+                                project_id=ctx.project_id,
+                                turn_id=turn_row.id,
+                                chat_title=turn_row.chat.title if turn_row.chat else "Chat",
+                                user_message=turn_row.user_message,
+                                verdict_text=turn_row.verdict.text if turn_row.verdict else None,
+                                council_digest=digest or None,
+                            )
+                    except Exception as ingest_exc:  # noqa: BLE001
+                        logger.warning(
+                            "brain_turn_ingest_failed",
+                            turn_id=turn_id,
+                            error=str(ingest_exc),
+                        )
                     await run_db.commit()
                 async with AsyncSessionLocal() as read_db:
                     if await is_turn_deleted(read_db, turn_id):
@@ -763,13 +824,85 @@ class ChatService:
         )
         return context
 
-    def _chat_response(self, chat: Chat) -> ChatResponse:
+    async def pin_verdict(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, verdict_id: str
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        result = await db.execute(
+            select(Verdict)
+            .join(Turn, Turn.id == Verdict.turn_id)
+            .where(
+                Verdict.id == verdict_id,
+                Turn.chat_id == chat.id,
+            )
+        )
+        verdict = result.scalar_one_or_none()
+        if verdict is None:
+            raise NotFoundError("Verdict", verdict_id)
+        chat.pinned_verdict_id = verdict.id
+        await db.flush()
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_VERDICT,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.upsert_item(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                project_id=chat.project_id,
+                source_type=SOURCE_PINNED_VERDICT,
+                source_id=chat.id,
+                title=f"Pinned verdict — {chat.title}",
+                content=verdict.text,
+                metadata={"verdict_id": verdict.id, "turn_id": verdict.turn_id},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_pin_ingest_failed", error=str(exc))
+        return await self._chat_response_async(db, chat)
+
+    async def unpin_verdict(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        chat.pinned_verdict_id = None
+        await db.flush()
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_VERDICT,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.delete_source(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                source_type=SOURCE_PINNED_VERDICT,
+                source_id=chat.id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_unpin_cleanup_failed", error=str(exc))
+        return await self._chat_response_async(db, chat)
+
+    def _chat_response(self, chat: Chat, *, pinned_turn_id: str | None = None) -> ChatResponse:
         return ChatResponse(
             id=chat.id,  # type: ignore[arg-type]
             title=chat.title,
             project_id=chat.project_id,
+            pinned_verdict_id=chat.pinned_verdict_id,
+            pinned_turn_id=pinned_turn_id,
             updated_at=chat.updated_at,
         )
+
+    async def _chat_response_async(self, db: AsyncSession, chat: Chat) -> ChatResponse:
+        pinned_turn_id = None
+        if chat.pinned_verdict_id:
+            result = await db.execute(
+                select(Verdict.turn_id).where(Verdict.id == chat.pinned_verdict_id)
+            )
+            pinned_turn_id = result.scalar_one_or_none()
+        return self._chat_response(chat, pinned_turn_id=pinned_turn_id)
 
     def _turn_response(
         self, turn: Turn, saved_verdict_ids: set[str] | None = None

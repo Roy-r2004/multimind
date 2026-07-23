@@ -36,6 +36,7 @@ type ChatStore = {
   deleteProject: (projectId: string) => Promise<void>;
   createChat: () => Promise<string | null>;
   refreshAll: () => Promise<void>;
+  applyChatUpdate: (chat: ApiChat) => void;
   projectChatCount: (projectId: string) => number;
   projectById: (projectId: string | null | undefined) => Project | undefined;
 };
@@ -59,6 +60,8 @@ function mapChat(c: ApiChat): Chat {
     title: c.title,
     updated: formatRelativeTime(c.updated_at),
     projectId: c.project_id,
+    pinnedVerdictId: c.pinned_verdict_id ?? null,
+    pinnedTurnId: c.pinned_turn_id ?? null,
   };
 }
 
@@ -298,6 +301,15 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     return chat.id;
   }, [authHeaders]);
 
+  const applyChatUpdate = useCallback((chat: ApiChat) => {
+    const mapped = mapChat(chat);
+    setChats((prev) => {
+      const exists = prev.some((item) => item.id === mapped.id);
+      if (!exists) return [mapped, ...prev];
+      return prev.map((item) => (item.id === mapped.id ? mapped : item));
+    });
+  }, []);
+
   const projectChatCount = useCallback(
     (projectId: string) => {
       const base = projects.find((p) => p.id === projectId)?.chats ?? 0;
@@ -334,6 +346,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       deleteProject,
       createChat,
       refreshAll,
+      applyChatUpdate,
       projectChatCount,
       projectById,
     }),
@@ -356,6 +369,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       deleteProject,
       createChat,
       refreshAll,
+      applyChatUpdate,
       projectChatCount,
       projectById,
     ],

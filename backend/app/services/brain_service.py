@@ -14,6 +14,10 @@ from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
 from app.schemas.api import BrainMemoryResponse, BrainResponse
+from app.services.brain_knowledge_service import (
+    SOURCE_LESSON,
+    brain_knowledge_service,
+)
 
 logger = get_logger(__name__)
 
@@ -27,7 +31,13 @@ class BrainService:
             await self._reconcile(db, auth, brain)
         except Exception as exc:
             logger.warning("brain_reconcile_failed", user_id=auth.user.id, error=str(exc))
-        return self._response(brain)
+        knowledge_items = await brain_knowledge_service.list_recent_for_user(db, auth, limit=20)
+        knowledge_count = await brain_knowledge_service.count_for_user(db, auth)
+        return self._response(
+            brain,
+            knowledge_items=knowledge_items,
+            knowledge_count=knowledge_count,
+        )
 
     async def forget_lesson(self, db: AsyncSession, auth: AuthContext, lesson_id: str) -> None:
         brain = await self._get_or_create(db, auth)
@@ -73,7 +83,14 @@ class BrainService:
         brain.lesson_count = await self._completed_lesson_count(db, auth)
 
     async def get_context_for_user(
-        self, db: AsyncSession, user_id: str, org_id: str, user_name: str
+        self,
+        db: AsyncSession,
+        user_id: str,
+        org_id: str,
+        user_name: str,
+        *,
+        query: str | None = None,
+        project_id: str | None = None,
     ) -> str:
         result = await db.execute(select(UserBrain).where(UserBrain.user_id == user_id))
         brain = result.scalar_one_or_none()
@@ -82,7 +99,21 @@ class BrainService:
         lessons = await self._recent_lesson_briefs(db, user_id, limit=4)
         lesson_block = self._format_lesson_briefs(lessons)
 
-        parts = [p for p in (profile, lesson_block) if p]
+        retrieval_block = ""
+        if query:
+            try:
+                retrieval_block = await brain_knowledge_service.format_retrieval_block(
+                    db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    query=query,
+                    project_id=project_id,
+                    limit=6,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("brain_retrieval_failed", user_id=user_id, error=str(exc))
+
+        parts = [p for p in (profile, retrieval_block, lesson_block) if p]
         return "\n\n".join(parts)
 
     async def _recent_lesson_briefs(
@@ -205,6 +236,27 @@ class BrainService:
                 )
             )
             await db.flush()
+            try:
+                await brain_knowledge_service.upsert_item(
+                    db,
+                    org_id=auth.org_id,
+                    user_id=auth.user.id,
+                    source_type=SOURCE_LESSON,
+                    source_id=lesson.id,
+                    title=lesson.title,
+                    content=(
+                        f"{lesson.summary}\n\nUser position: {lesson.user_position}\n"
+                        f"Disagreement: {lesson.disagreement_reason}"
+                    ),
+                    project_id=None,
+                    metadata={"chat_id": lesson.chat_id, "turn_id": lesson.turn_id},
+                )
+            except Exception as ingest_exc:  # noqa: BLE001
+                logger.warning(
+                    "brain_lesson_ingest_failed",
+                    user_id=auth.user.id,
+                    error=str(ingest_exc),
+                )
             logger.info("brain_updated", user_id=auth.user.id, lesson_id=lesson.id)
         except Exception as exc:
             logger.warning("brain_update_failed", user_id=auth.user.id, error=str(exc))
@@ -273,7 +325,13 @@ class BrainService:
             return value.isoformat()
         return str(value)
 
-    def _response(self, brain: UserBrain) -> BrainResponse:
+    def _response(
+        self,
+        brain: UserBrain,
+        *,
+        knowledge_items: list | None = None,
+        knowledge_count: int = 0,
+    ) -> BrainResponse:
         memories = []
         for raw in brain.memories or []:
             if not isinstance(raw, dict):
@@ -297,7 +355,9 @@ class BrainService:
             likes=list(brain.likes or []),
             dislikes=list(brain.dislikes or []),
             memories=memories,
+            knowledge_items=list(knowledge_items or []),
             lesson_count=brain.lesson_count,
+            knowledge_count=knowledge_count,
             updated_at=brain.updated_at,
         )
 

@@ -27,6 +27,8 @@ export type Chat = {
   title: string;
   updated: string;
   projectId?: string | null;
+  pinnedVerdictId?: string | null;
+  pinnedTurnId?: string | null;
 };
 
 export type Project = {
