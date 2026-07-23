@@ -1007,21 +1007,23 @@ class SourceDiscoveryExecutionOrchestrator:
             raise RuntimeError("discover_sources_task_missing_coverage_cell")
         blueprint_json = execution.blueprint.blueprint_json or {}
         profile = self.scale_profile
+        region_code = task.coverage_cell.region_code
+        language_code = (task.coverage_cell.language_code or "und")[:16]
         return SourceDiscoveryContext(
             organization_id=execution.organization_id,
             execution_id=execution.id,
             coverage_cell_id=task.coverage_cell.id,
             task_id=task.id,
-            country_code=execution.country_code,
-            country_name=execution.country_name,
-            region_code=task.coverage_cell.region_code,
-            region_name=task.coverage_cell.region_name,
-            language_code=task.coverage_cell.language_code or "und",
-            language_name=task.coverage_cell.language_name,
-            source_category=task.coverage_cell.source_category,
-            mission_goal=self._mission_goal(blueprint_json),
-            requested_fields=self._requested_fields(blueprint_json),
-            blueprint_context=blueprint_json,
+            country_code=(execution.country_code or "XX")[:2].upper(),
+            country_name=(execution.country_name or "Unknown")[:120],
+            region_code=(region_code[:32] if region_code else None),
+            region_name=(task.coverage_cell.region_name or "National")[:160],
+            language_code=language_code or "und",
+            language_name=(task.coverage_cell.language_name or language_code or "und")[:120],
+            source_category=(task.coverage_cell.source_category or "directory")[:120],
+            mission_goal=self._mission_goal(blueprint_json)[:2000],
+            requested_fields=self._requested_fields(blueprint_json)[:50],
+            blueprint_context=blueprint_json if isinstance(blueprint_json, dict) else {},
             provider=get_settings().source_discovery_provider,
             max_queries_per_discovery=profile.serper_max_queries_per_discovery,
             results_per_query=profile.serper_results_per_query,
@@ -2053,6 +2055,8 @@ class SourceDiscoveryExecutionOrchestrator:
                 category = self._clean_text(raw_item)
             if not category:
                 continue
+            # Coverage + discovery context fields are capped (DB/API max 120).
+            category = category[:120].rstrip()
             identity = category.casefold()
             if identity in seen_categories:
                 continue

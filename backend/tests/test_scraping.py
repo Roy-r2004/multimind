@@ -2548,6 +2548,28 @@ def test_coverage_dimensions_keep_region_codes_inside_schema_limit(
     assert categories == ["general web"]
 
 
+def test_coverage_dimensions_truncate_long_source_categories(db: AsyncSession):
+    orchestrator = SourceDiscoveryExecutionOrchestrator(db)
+    long_category = (
+        "Federal government ministry directories and official national registries "
+        "of licensed rehabilitation and addiction treatment facilities " + ("x" * 80)
+    )
+
+    _, _, categories = orchestrator._coverage_dimensions_from_blueprint(
+        {
+            "scope": {"regions": ["Vienna"]},
+            "languages": [{"code": "de", "name": "German"}],
+            "source_strategy": [{"source_type": long_category}],
+        },
+        "AT",
+        "Austria",
+    )
+
+    assert len(categories) == 1
+    assert len(categories[0]) <= 120
+    assert categories[0] == long_category[:120].rstrip()
+
+
 def test_coverage_dimensions_derives_codes_for_string_languages(
     db: AsyncSession,
 ):
