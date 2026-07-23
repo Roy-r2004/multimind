@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
+import { LiveSiteActivity } from "@/components/scraping/LiveSiteActivity";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -347,6 +348,15 @@ function ScrapingExecutionPage() {
                 <Metric label="Duplicates" value={execution.duplicates_detected} />
               </div>
             </GlassCard>
+
+            <LiveSiteActivity
+              candidates={sourceCandidates}
+              tasks={tasks}
+              attempts={retrievalAttempts}
+              documents={sourceDocuments}
+              events={events}
+              isTerminal={isTerminal}
+            />
 
             <GlassCard className="p-6">
               <div className="mb-4 flex items-center justify-between">

@@ -843,22 +843,44 @@ class SourceDiscoveryExecutionOrchestrator:
             await self.db.commit()
             return
         await self._check_cancelled(execution)
+        candidate = (
+            await self.db.execute(
+                select(ScrapingSourceCandidate).where(
+                    ScrapingSourceCandidate.id == source_candidate_id,
+                    ScrapingSourceCandidate.execution_id == execution.id,
+                )
+            )
+        ).scalar_one_or_none()
+        candidate_url = candidate.canonical_url if candidate else None
         await self._start_task(
             execution,
             task,
             agent,
             agent_action="Retrieving a persisted source candidate",
-            task_action="Securely retrieving persisted source candidate",
+            task_action=(
+                f"Opening {candidate_url}"
+                if candidate_url
+                else "Securely retrieving persisted source candidate"
+            ),
         )
         await execution_service.emit_event(
             self.db,
             execution.id,
             "source_retrieval_started",
-            "Secure retrieval started for a persisted source candidate.",
+            (
+                f"Opening website: {candidate_url}"
+                if candidate_url
+                else "Secure retrieval started for a persisted source candidate."
+            ),
             execution_agent_id=agent.id,
             task_id=task.id,
             coverage_cell_id=task.coverage_cell_id,
-            metadata={"candidate_id": source_candidate_id},
+            metadata={
+                "candidate_id": source_candidate_id,
+                "canonical_url": candidate_url,
+                "title": candidate.title if candidate else None,
+                "domain": candidate.domain if candidate else None,
+            },
         )
         max_attempts = max(1, min(task.max_attempts or 1, 3))
         summary: SourceRetrievalSummary | None = None
