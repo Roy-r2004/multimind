@@ -30,7 +30,7 @@ def make_settings(tmp_path, **overrides):
         "transcription_model": "large-v3-turbo",
         "transcription_device": "cpu",
         "transcription_compute_type": "float16",
-        "transcription_cpu_model": "small",
+        "transcription_cpu_model": "medium",
         "transcription_cpu_compute_type": "int8",
         "transcription_strict_device": False,
         "transcription_max_duration_seconds": 600,
@@ -39,7 +39,7 @@ def make_settings(tmp_path, **overrides):
         "transcription_tmp_dir": str(tmp_path / "transcriptions"),
         "transcription_concurrency": 1,
         "transcription_model_cache_dir": str(tmp_path / "models"),
-        "transcription_beam_size": 5,
+        "transcription_beam_size": 1,
         "transcription_vad_filter": True,
         "transcription_initial_prompt": "MultiMind, OpenRouter",
     }
@@ -152,13 +152,19 @@ def test_valid_webm_upload_returns_expected_schema(client):
 
 @pytest.mark.parametrize(
     ("request_language", "service_language"),
-    [("auto", None), ("en", "en"), ("fr", "fr"), ("ar", "ar")],
+    [("auto", None), ("en", "en"), ("fr", "fr")],
 )
 def test_language_mapping(client, request_language, service_language):
     response = post_audio(client, data={"language": request_language})
 
     assert response.status_code == 200
     assert client.fake_service.calls == [service_language]
+
+
+def test_arabic_language_returns_422(client):
+    response = post_audio(client, data={"language": "ar"})
+
+    assert response.status_code == 422
 
 
 def test_unsupported_language_returns_422(client):

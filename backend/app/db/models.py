@@ -1930,7 +1930,12 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
     verdict_model: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[TurnStatus] = mapped_column(
-        Enum(TurnStatus), default=TurnStatus.PENDING, nullable=False
+        Enum(
+            TurnStatus,
+            native_enum=False,
+        ),
+        default=TurnStatus.PENDING,
+        nullable=False,
     )
     custom_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision_insurance_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -1975,6 +1980,31 @@ class Verdict(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
     turn: Mapped["Turn"] = relationship(back_populates="verdict")
+
+
+class SavedVerdict(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "saved_verdicts"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "user_id", "source_verdict_id", name="uq_saved_verdict_user_source"
+        ),
+        Index("ix_saved_verdicts_org_user_saved_at", "org_id", "user_id", "saved_at"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    source_verdict_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_turn_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_chat_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_chat_title: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_text: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_model_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
+    saved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class VerdictLesson(Base, UUIDPrimaryKeyMixin, TimestampMixin):

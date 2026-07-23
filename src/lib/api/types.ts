@@ -115,13 +115,45 @@ export type ApiModelAnswer = {
 };
 
 export type ApiVerdict = {
+  id: string;
   model_id: string;
   strategy: Strategy;
   text: string;
   reason: string;
+  saved: boolean;
   tokens_input: number;
   tokens_output: number;
   cost_usd: number;
+};
+
+export type ApiSavedVerdictState = {
+  verdict_id: string;
+  saved: boolean;
+};
+
+export type ApiSavedVerdictDelete = {
+  id: string;
+  deleted: boolean;
+};
+
+export type ApiSavedVerdictPurge = {
+  deleted_count: number;
+};
+
+export type ApiSavedVerdict = {
+  id: string;
+  source_verdict_id: string;
+  source_turn_id?: string | null;
+  source_chat_id?: string | null;
+  source_chat_title: string;
+  source_user_message: string;
+  verdict_text: string;
+  verdict_reason: string;
+  verdict_model_id: string;
+  strategy: Strategy;
+  saved_at: string;
+  original_chat_exists: boolean;
+  original_chat_route?: string | null;
 };
 
 export type ApiDecisionInsurance = {
@@ -435,7 +467,7 @@ export type ApiError = {
   details?: unknown;
 };
 
-export type TranscriptionLanguage = "auto" | "en" | "fr" | "ar";
+export type TranscriptionLanguage = "auto" | "en" | "fr";
 
 export type ApiTranscriptionResponse = {
   text: string;

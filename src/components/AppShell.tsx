@@ -6,6 +6,7 @@ import {
   FolderKanban,
   LayoutGrid,
   LogOut,
+  Bookmark,
   Menu,
   MessageSquare,
   Search,
@@ -24,6 +25,7 @@ const NAV = [
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/brain", label: "Brain", icon: Brain },
   { to: "/lessons", label: "Lessons", icon: BookOpen },
+  { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
 ];
 
 const WORKSPACES = [

@@ -25,7 +25,7 @@ from app.core.exceptions import (
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
-SUPPORTED_LANGUAGES = {"ar", "en", "fr"}
+SUPPORTED_LANGUAGES = {"en", "fr"}
 WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -169,6 +169,8 @@ class TranscriptionService:
             result.duration_seconds > self.settings.transcription_max_duration_seconds
         ):
             raise AudioTooLongError()
+        if result.language is not None and result.language not in SUPPORTED_LANGUAGES:
+            raise InvalidAudioError("Unsupported transcription language")
 
         final = TranscriptionResult(
             text=result.text,

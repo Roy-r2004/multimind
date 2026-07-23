@@ -16,6 +16,7 @@ type RequestOptions = {
   token?: string | null;
   orgId?: string | null;
   timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 type FormRequestOptions = {
@@ -46,12 +47,21 @@ function authHeaders(token?: string | null, orgId?: string | null): Record<strin
   return headers;
 }
 
-function isAbortError(err: unknown): boolean {
+export function isAbortError(err: unknown): boolean {
   return (
     (typeof DOMException !== "undefined" &&
       err instanceof DOMException &&
       err.name === "AbortError") ||
     (err instanceof Error && err.name === "AbortError")
+  );
+}
+
+export function isRequestCancelled(err: unknown): boolean {
+  return (
+    isAbortError(err) ||
+    (err instanceof Error &&
+      "body" in err &&
+      (err as { body?: { error?: string } }).body?.error === "REQUEST_CANCELLED")
   );
 }
 
@@ -171,6 +181,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    signal: options.signal,
   });
 }
 

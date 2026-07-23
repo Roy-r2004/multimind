@@ -29,10 +29,14 @@ import type {
   ApiPricingCatalog,
   ApiProject,
   ApiProjectDetail,
+  ApiSavedVerdict,
+  ApiSavedVerdictState,
   ApiSession,
   ApiPromptBuilderImproveRequest,
   ApiPromptBuilderImproveResponse,
   ApiShareLink,
+  ApiSavedVerdictDelete,
+  ApiSavedVerdictPurge,
   ApiSharedChat,
   ApiTemplate,
   ApiTranscriptionResponse,
@@ -43,7 +47,7 @@ import type {
 
 export { streamTurn } from "@/lib/api/stream";
 
-type Auth = { token: string; orgId: string };
+type Auth = { token: string; orgId?: string | null };
 
 const TRANSCRIPTION_TIMEOUT_MS = 360_000;
 
@@ -95,6 +99,13 @@ function transcriptionFilename(options: CreateTranscriptionOptions): string {
     return safeFilename(options.file.name, fallback);
   }
   return fallback;
+}
+
+export function buildTranscriptionFormData(options: CreateTranscriptionOptions): FormData {
+  const formData = new FormData();
+  formData.append("file", options.file, transcriptionFilename(options));
+  formData.append("language", options.language ?? "auto");
+  return formData;
 }
 
 export const api = {
@@ -179,6 +190,13 @@ export const api = {
         orgId: auth.orgId,
       }),
 
+    deleteTurn: (auth: Auth, chatId: string, turnId: string) =>
+      apiRequest<{ turn_id: string; deleted: boolean }>(`/chats/${chatId}/turns/${turnId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
     createShareLink: (auth: Auth, chatId: string) =>
       apiRequest<ApiShareLink>(`/chats/${chatId}/share`, {
         method: "POST",
@@ -192,6 +210,44 @@ export const api = {
 
   share: {
     get: (token: string) => apiRequest<ApiSharedChat>(`/share/${token}`),
+  },
+
+  verdicts: {
+    save: (auth: Auth, verdictId: string) =>
+      apiRequest<ApiSavedVerdictState>(`/verdicts/${verdictId}/save`, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    unsave: (auth: Auth, verdictId: string) =>
+      apiRequest<ApiSavedVerdictState>(`/verdicts/${verdictId}/save`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  savedVerdicts: {
+    list: (auth: Auth) =>
+      apiRequest<ApiSavedVerdict[]>("/saved-verdicts", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    delete: (auth: Auth, savedVerdictId: string) =>
+      apiRequest<ApiSavedVerdictDelete>(`/saved-verdicts/${savedVerdictId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    purgeOrganization: (auth: Auth) =>
+      apiRequest<ApiSavedVerdictPurge>("/saved-verdicts", {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
   },
 
   projects: {
@@ -297,9 +353,7 @@ export const api = {
 
   transcriptions: {
     create: (auth: Auth, options: CreateTranscriptionOptions) => {
-      const formData = new FormData();
-      formData.append("file", options.file, transcriptionFilename(options));
-      formData.append("language", options.language ?? "auto");
+      const formData = buildTranscriptionFormData(options);
 
       return apiFormRequest<ApiTranscriptionResponse>("/transcriptions", {
         formData,

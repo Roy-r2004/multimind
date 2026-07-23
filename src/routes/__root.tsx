@@ -13,6 +13,7 @@ import appCss from "../styles.css?url";
 import { AuthProvider } from "@/lib/auth";
 import { ChatStoreProvider } from "@/lib/store";
 import { ModelsProvider } from "@/lib/models";
+import { Toaster } from "@/components/ui/sonner";
 
 function NotFoundComponent() {
   return (
@@ -136,6 +137,7 @@ function RootComponent() {
         <ModelsProvider>
           <ChatStoreProvider>
             <Outlet />
+            <Toaster position="bottom-right" />
           </ChatStoreProvider>
         </ModelsProvider>
       </AuthProvider>

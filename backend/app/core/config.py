@@ -106,9 +106,9 @@ class Settings(BaseSettings):
     # Transcription — faster-whisper
     transcription_enabled: bool = True
     transcription_model: str = "large-v3-turbo"
-    transcription_device: Literal["auto", "cpu", "cuda"] = "cuda"
+    transcription_device: Literal["auto", "cpu", "cuda"] = "cpu"
     transcription_compute_type: str = "float16"
-    transcription_cpu_model: str = "small"
+    transcription_cpu_model: str = "medium"
     transcription_cpu_compute_type: str = "int8"
     transcription_strict_device: bool = False
     transcription_max_duration_seconds: int = Field(default=600, gt=0)
@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     transcription_tmp_dir: str = "/tmp/multimind-transcriptions"
     transcription_concurrency: int = Field(default=1, ge=1)
     transcription_model_cache_dir: str = "/models/whisper"
-    transcription_beam_size: int = Field(default=5, ge=1)
+    transcription_beam_size: int = Field(default=1, ge=1)
     transcription_vad_filter: bool = True
     transcription_initial_prompt: str = (
         "MultiMind, OpenRouter, Ollama, Claude, Gemini, GPT, RAG, orchestrator, "

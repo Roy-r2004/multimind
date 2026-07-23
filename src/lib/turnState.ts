@@ -2,6 +2,26 @@
 
 import type { ApiTurn } from "@/lib/api/types";
 
+const GENERATING_STATUSES = new Set(["pending", "running"]);
+
+export function isTurnGenerating(turn: Pick<ApiTurn, "status">): boolean {
+  return GENERATING_STATUSES.has(String(turn.status).toLowerCase());
+}
+
+export function isAnyTurnGenerating(turns: Array<Pick<ApiTurn, "status">>): boolean {
+  return turns.some(isTurnGenerating);
+}
+
+export function canShowHistoricalTurnDelete(
+  turn: Pick<ApiTurn, "status">,
+): boolean {
+  return !isTurnGenerating(turn);
+}
+
+export function isHistoricalTurnDeleteDisabled(anyTurnGenerating: boolean): boolean {
+  return anyTurnGenerating;
+}
+
 export function applyStreamEvent(
   turn: ApiTurn,
   event: string,
@@ -48,10 +68,12 @@ export function applyStreamEvent(
     return {
       ...turn,
       verdict: {
+        id: String(data.id ?? ""),
         model_id: String(data.model_id ?? turn.verdict_model),
         strategy: turn.strategy,
         text: String(data.text ?? ""),
         reason: String(data.reason ?? ""),
+        saved: Boolean(data.saved ?? false),
         tokens_input: Number(data.tokens_input ?? 0),
         tokens_output: Number(data.tokens_output ?? 0),
         cost_usd: Number(data.cost_usd ?? 0),
@@ -99,6 +121,10 @@ export function upsertTurn(list: ApiTurn[], turn: ApiTurn): ApiTurn[] {
   const idx = list.findIndex((t) => t.id === turn.id);
   if (idx === -1) return [...list, turn];
   return list.map((t, i) => (i === idx ? mergeTurnFromApi(t, turn) : t));
+}
+
+export function removeTurnFromList(list: ApiTurn[], turnId: string): ApiTurn[] {
+  return list.filter((turn) => turn.id !== turnId);
 }
 
 export function mergeTurnLists(apiTurns: ApiTurn[], cachedTurns: ApiTurn[]): ApiTurn[] {

@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Send,
   Gavel,
@@ -23,7 +23,12 @@ import {
   BookOpen,
   Trophy,
   Scale,
+  Square,
+  Bookmark,
+  MoreHorizontal,
+  ArrowDown,
 } from "lucide-react";
+import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
 import { GlassCard, ModelPill, CinematicBackdrop } from "@/components/cinematic/PageChrome";
@@ -44,15 +49,26 @@ import { api } from "@/lib/api";
 import type { ApiTranscriptionResponse, ApiTurn } from "@/lib/api/types";
 import {
   mergeWithCachedTurns,
+  removeTurn,
   resumeRunningTurns,
   runTurnInBackground,
   seedChatTurns,
+  setVerdictSavedState as setCachedVerdictSavedState,
+  stopActiveTurn,
+  subscribeActiveTurn,
   subscribeChatRunning,
   subscribeChatTurns,
 } from "@/lib/turnRunner";
 import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
 import { cn } from "@/lib/utils";
+import { getVerdictBookmarkState, updateVerdictSavedInTurns } from "@/lib/savedVerdicts";
+import {
+  canShowHistoricalTurnDelete,
+  isAnyTurnGenerating,
+  isHistoricalTurnDeleteDisabled,
+  removeTurnFromList,
+} from "@/lib/turnState";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
 import {
@@ -61,6 +77,13 @@ import {
   mergeAssessmentIntoInstructions,
   parseCriteriaLines,
 } from "@/lib/assessmentCriteria";
+import { isChatNearBottom, shouldShowScrollToLatest } from "@/lib/chatScroll";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export const Route = createFileRoute("/chat")({
   head: () => ({ meta: [{ title: "Chat — MultiAI" }] }),
@@ -178,13 +201,82 @@ export function ChatPage() {
   const [showPlus, setShowPlus] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [stoppingTurnId, setStoppingTurnId] = useState<string | null>(null);
+  const [pendingSavedVerdicts, setPendingSavedVerdicts] = useState<Set<string>>(() => new Set());
   const [showDeleteChat, setShowDeleteChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
+  const [deleteTurnTarget, setDeleteTurnTarget] = useState<ApiTurn | null>(null);
+  const [deletingTurn, setDeletingTurn] = useState(false);
+  const [deleteTurnError, setDeleteTurnError] = useState<string | null>(null);
   const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
   const [showCriteria, setShowCriteria] = useState(false);
   const [savingCriteria, setSavingCriteria] = useState(false);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const threadEndRef = useRef<HTMLDivElement | null>(null);
+  const shouldPinToBottomRef = useRef(true);
+  const showScrollToLatestRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeChat = chats.find((c) => c.id === activeChatId);
+
+  const updateThreadScrollState = useCallback(() => {
+    const thread = threadRef.current;
+    if (!thread) return;
+    const metrics = {
+      scrollTop: thread.scrollTop,
+      scrollHeight: thread.scrollHeight,
+      clientHeight: thread.clientHeight,
+    };
+    const nearBottom = isChatNearBottom(metrics);
+    const nextShowButton = shouldShowScrollToLatest(metrics);
+
+    shouldPinToBottomRef.current = nearBottom;
+    if (showScrollToLatestRef.current !== nextShowButton) {
+      showScrollToLatestRef.current = nextShowButton;
+      setShowScrollToLatest(nextShowButton);
+    }
+  }, []);
+
+  const scrollThreadToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+    shouldPinToBottomRef.current = true;
+    threadEndRef.current?.scrollIntoView({ behavior, block: "end" });
+  }, []);
+
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (!thread) return;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        updateThreadScrollState();
+      });
+    };
+
+    updateThreadScrollState();
+    thread.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      thread.removeEventListener("scroll", onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [updateThreadScrollState]);
+
+  useEffect(() => {
+    shouldPinToBottomRef.current = true;
+    showScrollToLatestRef.current = false;
+    setShowScrollToLatest(false);
+    window.requestAnimationFrame(() => scrollThreadToLatest("auto"));
+  }, [activeChatId, scrollThreadToLatest]);
+
+  useEffect(() => {
+    if (!shouldPinToBottomRef.current) return;
+    window.requestAnimationFrame(() => {
+      scrollThreadToLatest("auto");
+      updateThreadScrollState();
+    });
+  }, [apiTurns, loading, scrollThreadToLatest, updateThreadScrollState]);
 
   useEffect(() => {
     if (!set) return;
@@ -224,6 +316,7 @@ export function ChatPage() {
 
     const unsubTurns = subscribeChatTurns(activeChatId, setApiTurns);
     const unsubRunning = subscribeChatRunning(activeChatId, setLoading);
+    const unsubActiveTurn = subscribeActiveTurn(activeChatId, setActiveTurnId);
 
     void api.chats.listTurns(auth, activeChatId).then((turns) => {
       const merged = mergeWithCachedTurns(activeChatId, turns);
@@ -235,6 +328,7 @@ export function ChatPage() {
     return () => {
       unsubTurns();
       unsubRunning();
+      unsubActiveTurn();
     };
   }, [isApiMode, activeChatId, authHeaders]);
 
@@ -263,6 +357,39 @@ export function ChatPage() {
     }
   }
 
+  function setVerdictSavedState(verdictId: string, saved: boolean) {
+    if (!activeChatId) return;
+    setApiTurns((prev) => updateVerdictSavedInTurns(prev, verdictId, saved));
+    setCachedVerdictSavedState(verdictId, saved);
+  }
+
+  async function toggleSavedVerdict(verdictId: string, saved: boolean) {
+    const auth = authHeaders();
+    if (!auth || pendingSavedVerdicts.has(verdictId)) return;
+
+    const nextSaved = !saved;
+    setPendingSavedVerdicts((prev) => new Set(prev).add(verdictId));
+    setVerdictSavedState(verdictId, nextSaved);
+    try {
+      if (nextSaved) {
+        await api.verdicts.save(auth, verdictId);
+        toast.success("Verdict saved");
+      } else {
+        await api.verdicts.unsave(auth, verdictId);
+        toast.success("Verdict removed from saved items");
+      }
+    } catch (error) {
+      setVerdictSavedState(verdictId, saved);
+      throw error;
+    } finally {
+      setPendingSavedVerdicts((prev) => {
+        const next = new Set(prev);
+        next.delete(verdictId);
+        return next;
+      });
+    }
+  }
+
   async function send() {
     if (isVoiceActive || !input.trim() || !set) return;
     const question = input.trim();
@@ -287,6 +414,7 @@ export function ChatPage() {
         model_set_id: set.id,
         custom_instructions: customInstructions,
       });
+      scrollThreadToLatest("smooth");
       setRefChat(null);
       setFiles([]);
       void runTurnInBackground(auth, chatId, pending).catch((error) => {
@@ -301,6 +429,47 @@ export function ChatPage() {
     }
   }
 
+  async function stopGenerating() {
+    const auth = authHeaders();
+    if (!auth || !activeChatId || !activeTurnId || stoppingTurnId === activeTurnId) return;
+    setStoppingTurnId(activeTurnId);
+    setLoading(false);
+    setSending(false);
+    try {
+      await stopActiveTurn(auth, activeChatId);
+    } catch (error) {
+      console.error(error);
+      alert(error instanceof Error ? error.message : "Failed to stop generating");
+    } finally {
+      setStoppingTurnId(null);
+    }
+  }
+
+  async function confirmDeleteTurn() {
+    const auth = authHeaders();
+    if (!auth || !activeChatId || !deleteTurnTarget || deletingTurn) return;
+    if (anyTurnGenerating || !canShowHistoricalTurnDelete(deleteTurnTarget)) {
+      setDeleteTurnError("Wait for generation to finish or stop it before deleting a turn.");
+      return;
+    }
+    const target = deleteTurnTarget;
+    setDeletingTurn(true);
+    setDeleteTurnError(null);
+    try {
+      await api.chats.deleteTurn(auth, activeChatId, target.id);
+      removeTurn(activeChatId, target.id);
+      setApiTurns((prev) => removeTurnFromList(prev, target.id));
+      setDeleteTurnTarget(null);
+      toast.success("Turn deleted.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete turn";
+      setDeleteTurnError(message);
+      toast.error(message);
+    } finally {
+      setDeletingTurn(false);
+    }
+  }
+
   async function handleShare() {
     const auth = authHeaders();
     if (!auth || !activeChatId) return;
@@ -312,10 +481,12 @@ export function ChatPage() {
   const empty = isAuthenticated && apiTurns.length === 0 && !loading;
   const voiceAuth = authHeaders();
   const voiceDisabled = !voiceAuth || !set || sending || loading;
+  const anyTurnGenerating = isAnyTurnGenerating(apiTurns) || loading;
+  const turnDeleteDisabled = isHistoricalTurnDeleteDisabled(anyTurnGenerating);
 
   return (
     <AppShell>
-      <div className="flex h-[calc(100vh-3.5rem)] flex-col md:h-screen">
+      <div className="relative flex h-[calc(100vh-3.5rem)] flex-col md:h-screen">
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-border bg-background px-4 py-3 md:px-6">
           {set ? (
@@ -389,7 +560,7 @@ export function ChatPage() {
         </div>
 
         {/* Thread */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 xl:px-8">
+        <div ref={threadRef} className="flex-1 overflow-y-auto px-4 pt-6 pb-16 md:px-6 xl:px-8">
           <div className="mx-auto max-w-6xl space-y-10">
             {!isAuthenticated && (
               <GlassCard glow className="p-10 text-center animate-fade-up">
@@ -450,38 +621,91 @@ export function ChatPage() {
             )}
 
             {set &&
-              apiTurns.map((turn) => (
-                <div key={turn.id} className="space-y-6 animate-fade-up">
-                  <div className="flex justify-end">
-                    <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
-                      <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
+              apiTurns.map((turn) => {
+                const showTurnDelete = canShowHistoricalTurnDelete(turn);
+                return (
+                  <div key={turn.id} className="space-y-6 animate-fade-up">
+                    <div className="flex items-start justify-end gap-2">
+                      {showTurnDelete && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="Turn options"
+                              className="mt-1 rounded-lg border border-border bg-card/70 p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                            >
+                              <MoreHorizontal className="size-4" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem
+                              disabled={turnDeleteDisabled}
+                              className="text-destructive focus:text-destructive"
+                              onSelect={() => {
+                                if (turnDeleteDisabled) return;
+                                setDeleteTurnError(null);
+                                setDeleteTurnTarget(turn);
+                              }}
+                            >
+                              <Trash2 className="size-3.5" /> Delete turn
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
+                        <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
+                      </div>
                     </div>
+                    <AiTurn
+                      set={set}
+                      turn={turn}
+                      modelById={modelById}
+                      assessmentCriteria={assessmentCriteria}
+                      onEditCriteria={() => setShowCriteria(true)}
+                      pendingSavedVerdicts={pendingSavedVerdicts}
+                      onToggleSavedVerdict={(verdictId, saved) =>
+                        toggleSavedVerdict(verdictId, saved).catch((error) => {
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Failed to update saved verdict",
+                          );
+                        })
+                      }
+                      onLessonUpdate={(lessonId, lessonStatus) => {
+                        setApiTurns((prev) =>
+                          prev.map((t) =>
+                            t.id === turn.id
+                              ? { ...t, lesson_id: lessonId, lesson_status: lessonStatus }
+                              : t,
+                          ),
+                        );
+                      }}
+                    />
                   </div>
-                  <AiTurn
-                    set={set}
-                    turn={turn}
-                    modelById={modelById}
-                    assessmentCriteria={assessmentCriteria}
-                    onEditCriteria={() => setShowCriteria(true)}
-                    onLessonUpdate={(lessonId, lessonStatus) => {
-                      setApiTurns((prev) =>
-                        prev.map((t) =>
-                          t.id === turn.id
-                            ? { ...t, lesson_id: lessonId, lesson_status: lessonStatus }
-                            : t,
-                        ),
-                      );
-                    }}
-                  />
-                </div>
-              ))}
+                );
+              })}
 
             {loading &&
               set &&
               !apiTurns.some((t) => t.status === "pending" || t.status === "running") && (
                 <LoadingTurn set={set} modelById={modelById} />
               )}
+            <div ref={threadEndRef} aria-hidden className="h-px" />
           </div>
+        </div>
+
+        <div className="pointer-events-none relative z-30">
+          {showScrollToLatest && (
+            <button
+              type="button"
+              aria-label="Scroll to latest message"
+              onClick={() => scrollThreadToLatest("smooth")}
+              className="pointer-events-auto absolute bottom-3 left-1/2 grid size-9 -translate-x-1/2 place-items-center rounded-full border border-border/80 bg-card/90 text-foreground shadow-lg shadow-primary/10 backdrop-blur transition hover:border-primary/40 hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
+            >
+              <ArrowDown className="size-4" />
+            </button>
+          )}
         </div>
 
         {/* Composer */}
@@ -624,26 +848,39 @@ export function ChatPage() {
                     onTranscript={handleVoiceTranscript}
                     onRecordingStateChange={setIsVoiceActive}
                   />
-                  <button
-                    type="button"
-                    onClick={() => void send()}
-                    disabled={
-                      !input.trim() ||
-                      sending ||
-                      loading ||
-                      !isAuthenticated ||
-                      !set ||
-                      isVoiceActive
-                    }
-                    className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
-                  >
-                    {loading ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
+                  {loading && activeTurnId ? (
+                    <button
+                      type="button"
+                      onClick={() => void stopGenerating()}
+                      disabled={stoppingTurnId === activeTurnId}
+                      aria-label="Stop generating"
+                      className="inline-flex items-center gap-2 rounded-xl bg-destructive px-3.5 py-2 text-sm font-medium text-destructive-foreground shadow-sm hover:bg-destructive/90 disabled:opacity-40"
+                    >
+                      {stoppingTurnId === activeTurnId ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Square className="size-3.5 fill-current" />
+                      )}
+                      {stoppingTurnId === activeTurnId ? "Stopping..." : "Stop generating"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void send()}
+                      disabled={
+                        !input.trim() ||
+                        sending ||
+                        loading ||
+                        !isAuthenticated ||
+                        !set ||
+                        isVoiceActive
+                      }
+                      className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
+                    >
                       <Send className="size-3.5" />
-                    )}
-                    Send
-                  </button>
+                      Send
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -739,6 +976,44 @@ export function ChatPage() {
         onSave={saveAssessmentCriteria}
         saving={savingCriteria}
       />
+
+      <Modal
+        open={!!deleteTurnTarget}
+        onClose={() => {
+          if (deletingTurn) return;
+          setDeleteTurnTarget(null);
+          setDeleteTurnError(null);
+        }}
+        title="Delete this turn?"
+        size="sm"
+      >
+        <p className="text-sm text-muted-foreground">
+          This permanently deletes this question, all AI answers, the final Verdict, and related
+          usage data. Later turns will remain unchanged.
+        </p>
+        {deleteTurnError && <p className="mt-3 text-sm text-destructive">{deleteTurnError}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setDeleteTurnTarget(null);
+              setDeleteTurnError(null);
+            }}
+            disabled={deletingTurn}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={deletingTurn || !deleteTurnTarget}
+            onClick={() => void confirmDeleteTurn()}
+            className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
+          >
+            {deletingTurn ? "Deleting..." : "Delete turn"}
+          </button>
+        </div>
+      </Modal>
 
       <Modal
         open={showDeleteChat}
@@ -866,6 +1141,8 @@ function AiTurn({
   modelById,
   assessmentCriteria,
   onEditCriteria,
+  pendingSavedVerdicts,
+  onToggleSavedVerdict,
   onLessonUpdate,
 }: {
   set: ModelSet;
@@ -873,13 +1150,14 @@ function AiTurn({
   modelById: (id: string) => { name: string; color: string };
   assessmentCriteria: string;
   onEditCriteria: () => void;
+  pendingSavedVerdicts: Set<string>;
+  onToggleSavedVerdict: (verdictId: string, saved: boolean) => void;
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
 }) {
   const { session } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
-  const scrolledToVerdictRef = useRef(false);
   const answerCards = deriveTurnAnswerCards(turn, set.models);
   const cardModelIds = answerCards.map((card) => card.modelId);
 
@@ -888,15 +1166,7 @@ function AiTurn({
   const canCollapseAnswers = Boolean(turn.verdict);
   const criteriaLines = parseCriteriaLines(assessmentCriteria);
   const turnStrategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
-
-  useEffect(() => {
-    if (!turn.verdict || scrolledToVerdictRef.current) return;
-    scrolledToVerdictRef.current = true;
-    const timer = window.setTimeout(() => {
-      verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 120);
-    return () => window.clearTimeout(timer);
-  }, [turn.verdict]);
+  const bookmarkState = getVerdictBookmarkState(turn, pendingSavedVerdicts);
 
   function openDisagree() {
     verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1039,6 +1309,32 @@ function AiTurn({
                 </span>
               )}
               <div className="ml-auto flex flex-wrap items-center gap-2">
+                {bookmarkState.visible && bookmarkState.verdictId && (
+                  <button
+                    type="button"
+                    aria-label={bookmarkState.label}
+                    title={bookmarkState.title}
+                    disabled={bookmarkState.disabled}
+                    onClick={() =>
+                      onToggleSavedVerdict(bookmarkState.verdictId!, bookmarkState.saved)
+                    }
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
+                      bookmarkState.saved
+                        ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                        : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                    )}
+                  >
+                    <Bookmark
+                      className={cn("size-3.5", bookmarkState.filled && "fill-current")}
+                    />
+                    {bookmarkState.disabled
+                      ? "Saving"
+                      : bookmarkState.saved
+                        ? "Saved"
+                        : "Save"}
+                  </button>
+                )}
                 {turn.lesson_id && turn.lesson_status === "completed" ? (
                   <Link
                     to="/lessons/$id"

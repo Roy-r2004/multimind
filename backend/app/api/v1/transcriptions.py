@@ -40,7 +40,7 @@ ALLOWED_AUDIO_TYPES = {
     "audio/wav",
     "audio/x-wav",
 }
-TranscriptionLanguage = Literal["auto", "en", "fr", "ar"]
+TranscriptionLanguage = Literal["auto", "en", "fr"]
 
 
 def get_transcription_service() -> TranscriptionService:
