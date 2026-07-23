@@ -361,7 +361,18 @@ class SourceDiscoveryExecutionOrchestrator:
                     "attempted_coverage_cell_count": self.attempted_coverage_cell_count,
                 },
             )
-            await self._mark_failed_safely(safe_execution_id, failure_category)
+            await self._mark_failed_safely(
+                safe_execution_id,
+                failure_category,
+                error_message=(
+                    f"Source discovery execution failed during {self.current_stage}: "
+                    f"{failure_category}"
+                ),
+                event_message=(
+                    f"Source discovery execution failed during {self.current_stage} "
+                    f"({failure_category})."
+                ),
+            )
 
     async def _ensure_profile_matrix_and_tasks(
         self,

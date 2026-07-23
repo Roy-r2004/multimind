@@ -55,8 +55,8 @@ class Settings(BaseSettings):
     serper_api_key: str | None = None
     serper_search_base_url: str = "https://google.serper.dev/search"
     serper_search_timeout_seconds: float = 10.0
-    serper_search_results_per_query: int = 5
-    serper_search_max_queries_per_discovery: int = 2
+    serper_search_results_per_query: int = 10
+    serper_search_max_queries_per_discovery: int = 4
 
     # Secure source retrieval
     source_retrieval_user_agent: str = "MultiMindSourceRetrieval/1.0 (+https://multimind.local/source-retrieval)"
@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     source_retrieval_max_bytes: int = 2_097_152
     source_retrieval_allowed_ports: Annotated[list[int], NoDecode] = Field(default=[80, 443])
     source_retrieval_robots_policy: Literal["respect"] = "respect"
-    source_retrieval_max_candidates_per_coverage_cell: int = 3
-    source_retrieval_max_candidates_per_execution: int = 25
+    source_retrieval_max_candidates_per_coverage_cell: int = 10
+    source_retrieval_max_candidates_per_execution: int = 150
 
     # Real facility extraction (worker-connected)
     facility_extraction_enabled: bool = True
@@ -78,8 +78,9 @@ class Settings(BaseSettings):
     facility_extraction_max_chunks_per_document: int = 20
     facility_extraction_max_candidates_per_chunk: int = 25
     facility_extraction_max_candidates_per_document: int = 100
-    facility_extraction_max_documents_per_execution: int = 3
-    facility_extraction_max_chunks_per_execution: int = 10
+    # Country demos need dozens of pages; 3 was a smoke-test cap that starved results.
+    facility_extraction_max_documents_per_execution: int = 50
+    facility_extraction_max_chunks_per_execution: int = 120
     facility_extraction_timeout_seconds: float = 60.0
     facility_extraction_max_attempts: int = 2
     facility_extraction_max_evidence_quote_characters: int = 1000
@@ -87,7 +88,7 @@ class Settings(BaseSettings):
     # Auto-publish verified staging candidates into final rehab tables
     facility_publication_enabled: bool = True
     facility_publication_min_confidence: float = 0.55
-    facility_publication_max_candidates_per_execution: int = 50
+    facility_publication_max_candidates_per_execution: int = 300
     facility_publication_duplicate_match_threshold: float = 0.82
 
     # Optional source discovery provider — Brave Search

@@ -261,18 +261,22 @@ class FacilityCandidatePublicationService:
             )
         ).scalars().all()
         published_set = set(published_ids)
-        candidates = (
-            await db.execute(
-                select(ScrapingFacilityCandidate)
-                .where(
-                    ScrapingFacilityCandidate.organization_id == organization_id,
-                    ScrapingFacilityCandidate.execution_id == execution_id,
-                    ScrapingFacilityCandidate.staging_status
-                    == FacilityCandidateStagingStatus.EXTRACTED,
+        # Materialize IDs before publishing: publish_one_candidate commits and
+        # expires ORM instances; lazy-loading candidate.id later raises MissingGreenlet.
+        candidate_ids = list(
+            (
+                await db.execute(
+                    select(ScrapingFacilityCandidate.id)
+                    .where(
+                        ScrapingFacilityCandidate.organization_id == organization_id,
+                        ScrapingFacilityCandidate.execution_id == execution_id,
+                        ScrapingFacilityCandidate.staging_status
+                        == FacilityCandidateStagingStatus.EXTRACTED,
+                    )
+                    .order_by(ScrapingFacilityCandidate.created_at.asc())
                 )
-                .order_by(ScrapingFacilityCandidate.created_at.asc())
-            )
-        ).scalars().all()
+            ).scalars().all()
+        )
         summary = {
             "candidates_considered": 0,
             "published": 0,
@@ -280,8 +284,8 @@ class FacilityCandidatePublicationService:
             "failed": 0,
             "reused": 0,
         }
-        for candidate in candidates:
-            if candidate.id in published_set:
+        for candidate_id in candidate_ids:
+            if candidate_id in published_set:
                 continue
             if summary["candidates_considered"] >= limit:
                 break
@@ -291,7 +295,7 @@ class FacilityCandidatePublicationService:
                 FacilityCandidatePublicationContext(
                     organization_id=organization_id,
                     execution_id=execution_id,
-                    facility_candidate_id=candidate.id,
+                    facility_candidate_id=candidate_id,
                 ),
             )
             if result.reused_existing_publication:
