@@ -27,7 +27,7 @@ from app.db.models import (
     SourceDocumentTextPreparationStatus,
 )
 
-PARSER_VERSION = "readable-text-v1"
+PARSER_VERSION = "readable-text-v2"
 SUPPORTED_TEXT_TYPES = {
     "text/html",
     "application/xhtml+xml",
@@ -144,11 +144,11 @@ class DocumentTextPreparationService:
             preparation_status=status,
             failure_classification=result.failure_classification,
         )
-        db.add(row)
         try:
-            await db.flush()
+            async with db.begin_nested():
+                db.add(row)
+                await db.flush()
         except IntegrityError:
-            await db.rollback()
             existing = await self._existing_prepared_text(db, context, document.content_sha256)
             if existing is None:
                 raise
@@ -188,11 +188,11 @@ class DocumentTextPreparationService:
             )
             for chunk in chunk_text(prepared.prepared_text)
         ]
-        db.add_all(rows)
         try:
-            await db.flush()
+            async with db.begin_nested():
+                db.add_all(rows)
+                await db.flush()
         except IntegrityError:
-            await db.rollback()
             result = await db.execute(
                 select(ScrapingSourceDocumentChunk)
                 .where(ScrapingSourceDocumentChunk.prepared_text_id == prepared.id)
@@ -236,7 +236,7 @@ class DocumentTextPreparationService:
             raise PreparationError("unsupported_content_type")
         original_count = len(text)
         max_chars = get_settings().facility_extraction_max_document_characters
-        truncated = len(text) > max_chars
+        truncated = max_chars > 0 and len(text) > max_chars
         if truncated:
             text = text[:max_chars].rstrip()
         if not text.strip():
@@ -321,7 +321,7 @@ def chunk_text(text: str) -> list[TextChunk]:
     max_chunks = settings.facility_extraction_max_chunks_per_document
     chunks: list[TextChunk] = []
     start = 0
-    while start < len(text) and len(chunks) < max_chunks:
+    while start < len(text) and (max_chunks <= 0 or len(chunks) < max_chunks):
         hard_end = min(len(text), start + size)
         end = _preferred_boundary(text, start, hard_end)
         if end <= start:
@@ -356,12 +356,20 @@ class _ReadableHTMLParser(HTMLParser):
         self._skip_depth = 0
         self._boilerplate_depth = 0
         self._in_title = False
+        self._in_json_ld = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         attrs_dict = {key.lower(): (value or "").lower() for key, value in attrs}
-        if tag in SKIP_TAGS or _hidden(attrs_dict):
+        if self._skip_depth:
             self._skip_depth += 1
+            return
+        if tag == "script" and "application/ld+json" in attrs_dict.get("type", ""):
+            self._in_json_ld = True
+            self.parts.append("\n")
+            return
+        if tag in SKIP_TAGS or _hidden(attrs_dict):
+            self._skip_depth = 1
             return
         if tag in BOILERPLATE_TAGS:
             self._boilerplate_depth += 1
@@ -374,6 +382,10 @@ class _ReadableHTMLParser(HTMLParser):
         tag = tag.lower()
         if self._skip_depth:
             self._skip_depth -= 1
+            return
+        if tag == "script" and self._in_json_ld:
+            self._in_json_ld = False
+            self.parts.append("\n")
             return
         if tag in BOILERPLATE_TAGS and self._boilerplate_depth:
             self._boilerplate_depth -= 1

@@ -33,16 +33,20 @@ def resolve_scale_profile(mode: str, settings: Any) -> ScaleProfile:
     if normalized == MODE_FULL_CENSUS:
         return ScaleProfile(
             mode=MODE_FULL_CENSUS,
-            label="Full census",
-            serper_results_per_query=20,
-            serper_max_queries_per_discovery=12,
-            retrieval_max_per_cell=40,
-            retrieval_max_per_execution=800,
-            extraction_max_documents=250,
-            extraction_max_chunks=800,
-            publication_max_candidates=2000,
-            discovery_query_hard_cap=16,
-            discovery_results_hard_cap=20,
+            label="Full census (unbounded)",
+            serper_results_per_query=max(settings.serper_search_results_per_query, 20),
+            serper_max_queries_per_discovery=max(
+                settings.serper_search_max_queries_per_discovery, 12
+            ),
+            # Zero means unlimited for count-based census stages.
+            retrieval_max_per_cell=0,
+            retrieval_max_per_execution=0,
+            extraction_max_documents=0,
+            extraction_max_chunks=0,
+            publication_max_candidates=0,
+            # Zero disables the internal hard cap while preserving provider/request limits.
+            discovery_query_hard_cap=0,
+            discovery_results_hard_cap=0,
         )
     return ScaleProfile(
         mode=MODE_REAL,
@@ -51,11 +55,11 @@ def resolve_scale_profile(mode: str, settings: Any) -> ScaleProfile:
         serper_max_queries_per_discovery=max(settings.serper_search_max_queries_per_discovery, 1),
         retrieval_max_per_cell=max(settings.source_retrieval_max_candidates_per_coverage_cell, 0),
         retrieval_max_per_execution=max(settings.source_retrieval_max_candidates_per_execution, 0),
-        extraction_max_documents=max(settings.facility_extraction_max_documents_per_execution, 1),
-        extraction_max_chunks=max(settings.facility_extraction_max_chunks_per_execution, 1),
+        extraction_max_documents=max(settings.facility_extraction_max_documents_per_execution, 0),
+        extraction_max_chunks=max(settings.facility_extraction_max_chunks_per_execution, 0),
         publication_max_candidates=max(
-            settings.facility_publication_max_candidates_per_execution, 1
+            settings.facility_publication_max_candidates_per_execution, 0
         ),
-        discovery_query_hard_cap=8,
-        discovery_results_hard_cap=20,
+        discovery_query_hard_cap=0,
+        discovery_results_hard_cap=0,
     )

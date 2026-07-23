@@ -240,12 +240,12 @@ class FacilityCandidatePublicationService:
     ) -> dict[str, int]:
         """Publish staged EXTRACTED candidates for an execution (worker auto-publish)."""
         settings = get_settings()
-        limit = max(
-            1,
+        configured_limit = (
             max_candidates
             if max_candidates is not None
-            else settings.facility_publication_max_candidates_per_execution,
+            else settings.facility_publication_max_candidates_per_execution
         )
+        limit = max(configured_limit, 0)
         published_ids = (
             await db.execute(
                 select(ScrapingFacilityCandidatePublication.facility_candidate_id).where(
@@ -287,7 +287,7 @@ class FacilityCandidatePublicationService:
         for candidate_id in candidate_ids:
             if candidate_id in published_set:
                 continue
-            if summary["candidates_considered"] >= limit:
+            if limit > 0 and summary["candidates_considered"] >= limit:
                 break
             summary["candidates_considered"] += 1
             result = await self.publish_one_candidate(

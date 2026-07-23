@@ -20,6 +20,10 @@ import {
   requestScrapingBlueprintChanges,
 } from "@/lib/scraping/api";
 import { countryLabel } from "@/lib/scraping/countries";
+import {
+  clearCachedGeneratedScrapingBlueprint,
+  readCachedGeneratedScrapingBlueprint,
+} from "@/lib/scraping/generatedBlueprintCache";
 import type {
   ScrapingBlueprint,
   ScrapingMissionDetail,
@@ -40,11 +44,17 @@ function ScrapingBlueprintPage() {
   const { missionId } = Route.useParams();
   const { authHeaders } = useAuth();
   const navigate = useNavigate();
+  const cachedGeneratedBlueprint = useMemo(
+    () => readCachedGeneratedScrapingBlueprint(missionId),
+    [missionId],
+  );
   const [mission, setMission] = useState<ScrapingMissionDetail | null>(null);
-  const [blueprints, setBlueprints] = useState<ScrapingBlueprint[]>([]);
+  const [blueprints, setBlueprints] = useState<ScrapingBlueprint[]>(() =>
+    cachedGeneratedBlueprint ? [cachedGeneratedBlueprint] : [],
+  );
   const [runs, setRuns] = useState<ScrapingRunSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<string>("");
-  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState<string>(cachedGeneratedBlueprint?.id ?? "");
+  const [loading, setLoading] = useState(!cachedGeneratedBlueprint);
   const [planning, setPlanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -64,11 +74,25 @@ function ScrapingBlueprintPage() {
       setLoading(true);
       setError(null);
       try {
-        const [missionResult, blueprintResult, runResult] = await Promise.all([
+        const [missionResult, serverBlueprints, runResult] = await Promise.all([
           getScrapingMission(auth, missionId),
           listScrapingBlueprints(auth, missionId),
           listScrapingRuns(auth, missionId),
         ]);
+        const cachedBlueprint = readCachedGeneratedScrapingBlueprint(missionId);
+        const blueprintResult =
+          cachedBlueprint &&
+          !serverBlueprints.some((blueprint) => blueprint.id === cachedBlueprint.id)
+            ? [cachedBlueprint, ...serverBlueprints]
+            : serverBlueprints;
+
+        if (
+          cachedBlueprint &&
+          serverBlueprints.some((blueprint) => blueprint.id === cachedBlueprint.id)
+        ) {
+          clearCachedGeneratedScrapingBlueprint(missionId);
+        }
+
         setMission(missionResult);
         setBlueprints(blueprintResult);
         setRuns(runResult);

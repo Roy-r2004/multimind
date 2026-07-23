@@ -121,15 +121,18 @@ class FacilityExtractionService:
             },
         )
         if existing is None:
-            db.add(attempt)
             try:
-                await db.flush()
+                async with db.begin_nested():
+                    db.add(attempt)
+                    await db.flush()
             except IntegrityError:
-                await db.rollback()
                 existing = await self._existing_attempt(db, context, attempt_key)
                 if existing is not None and existing.completed_at is not None:
                     return await self._summary_for_attempt(db, existing)
-                raise
+                if existing is not None:
+                    attempt = existing
+                else:
+                    raise
 
         try:
             provider_result = await self.provider.extract(
@@ -330,8 +333,12 @@ class FacilityExtractionService:
                 ScrapingFacilityCandidate.source_document_id == attempt.source_document_id,
             )
         ) or 0
-        for facility in output.facilities[: get_settings().facility_extraction_max_candidates_per_chunk]:
-            if document_count >= get_settings().facility_extraction_max_candidates_per_document:
+        settings = get_settings()
+        chunk_limit = settings.facility_extraction_max_candidates_per_chunk
+        document_limit = settings.facility_extraction_max_candidates_per_document
+        facilities = output.facilities if chunk_limit <= 0 else output.facilities[:chunk_limit]
+        for facility in facilities:
+            if document_limit > 0 and document_count >= document_limit:
                 rejected += 1
                 continue
             name_ev = _verify(facility.name, chunk.chunk_text)
@@ -363,11 +370,11 @@ class FacilityExtractionService:
                 staging_status=FacilityCandidateStagingStatus.EXTRACTED,
                 candidate_fingerprint=fingerprint,
             )
-            db.add(candidate)
             try:
-                await db.flush()
+                async with db.begin_nested():
+                    db.add(candidate)
+                    await db.flush()
             except IntegrityError:
-                await db.rollback()
                 continue
             await self._add_evidence(db, candidate, chunk, "name", facility.name.value, name_ev)
             for field_name, item in _iter_optional_fields(facility):
@@ -405,11 +412,14 @@ class FacilityExtractionService:
             evidence_hash=evidence_hash,
             verification_status=FacilityCandidateEvidenceVerificationStatus.VERIFIED,
         )
-        db.add(row)
         try:
-            await db.flush()
+            async with db.begin_nested():
+                db.add(row)
+                await db.flush()
         except IntegrityError:
-            await db.rollback()
+            # Duplicate evidence should only roll back its savepoint, never the
+            # successful candidates/evidence already staged in this chunk.
+            return
 
     async def _load_document(self, db: AsyncSession, context: FacilityExtractionContext) -> ScrapingSourceDocument:
         result = await db.execute(

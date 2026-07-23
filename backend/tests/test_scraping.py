@@ -2990,8 +2990,8 @@ async def test_failed_execution_cleanup_terminalizes_active_agents_and_tasks(
     assert len(failed_events) == 1
 
 
-def test_scraping_worker_timeout_is_explicit_and_above_default():
-    assert WorkerSettings.job_timeout > 300
+def test_scraping_worker_has_no_global_execution_timeout():
+    assert WorkerSettings.job_timeout is None
 
 
 def test_worker_uses_real_source_discovery_function():
@@ -3576,7 +3576,7 @@ async def test_large_mock_execution_batches_metric_refreshes(
     execution = await run_completed_mock_execution_with_blueprint(
         db, auth, monkeypatch, blueprint_json
     )
-    task_count = int(
+    discovery_task_count = int(
         (
             await db.execute(
                 select(func.count(ScrapingTask.id)).where(
@@ -3586,8 +3586,23 @@ async def test_large_mock_execution_batches_metric_refreshes(
             )
         ).scalar_one()
     )
-    assert task_count == 19 * 4 * 6
-    assert 1 < refresh_calls <= (task_count // METRIC_REFRESH_TASK_INTERVAL) + 3
+    processed_task_count = int(
+        (
+            await db.execute(
+                select(func.count(ScrapingTask.id)).where(
+                    ScrapingTask.execution_id == execution.id,
+                    ScrapingTask.task_type.in_(("discover_sources", "retrieve_source")),
+                )
+            )
+        ).scalar_one()
+    )
+    assert discovery_task_count == 19 * 4 * 6
+    assert processed_task_count >= discovery_task_count
+    assert (
+        1
+        < refresh_calls
+        <= (processed_task_count // METRIC_REFRESH_TASK_INTERVAL) + 3
+    )
     facility_count = await _execution_facility_count(db, execution.id)
     source_count = await _execution_source_count(db, execution.id)
     assert execution.status == ScrapingExecutionStatus.COMPLETED

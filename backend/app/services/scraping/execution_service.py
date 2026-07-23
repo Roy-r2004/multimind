@@ -86,7 +86,7 @@ class ScrapingExecutionService:
             raise ValidationError("This execution type is not startable in this phase.")
         if data.mode not in SUPPORTED_MODES:
             raise ValidationError(
-                "Unsupported scrape mode. Use 'real' (standard) or 'full_census'."
+                "Unsupported scrape mode. Use 'real' for real source discovery (standard) or 'full_census'."
             )
 
         team_plan = await self._team_plan_row(db, auth, team_plan_id)

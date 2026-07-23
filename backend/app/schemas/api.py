@@ -611,10 +611,10 @@ class SourceDiscoveryContext(BaseModel):
     requested_fields: list[str] = Field(default_factory=list, max_length=50)
     blueprint_context: dict[str, Any] = Field(default_factory=dict)
     provider: str = Field(default="serper", min_length=1, max_length=64)
-    max_queries_per_discovery: int | None = Field(default=None, ge=1, le=32)
+    max_queries_per_discovery: int | None = Field(default=None, ge=0, le=128)
     results_per_query: int | None = Field(default=None, ge=1, le=100)
-    discovery_query_hard_cap: int | None = Field(default=None, ge=1, le=32)
-    discovery_results_hard_cap: int | None = Field(default=None, ge=1, le=100)
+    discovery_query_hard_cap: int | None = Field(default=None, ge=0, le=128)
+    discovery_results_hard_cap: int | None = Field(default=None, ge=0, le=100)
 
     @field_validator("requested_fields")
     @classmethod
@@ -640,8 +640,9 @@ class SourceDiscoveryPlannedQuery(BaseModel):
 class SourceDiscoveryQueryPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Keep in sync with SourceDiscoveryContext.discovery_query_hard_cap (le=32).
-    queries: list[SourceDiscoveryPlannedQuery] = Field(min_length=1, max_length=32)
+    # The planner still returns a finite JSON response, but the scraper no longer truncates it
+    # to the previous 8/16-query execution caps.
+    queries: list[SourceDiscoveryPlannedQuery] = Field(min_length=1, max_length=128)
 
 
 class SourceDiscoveryProviderResult(BaseModel):

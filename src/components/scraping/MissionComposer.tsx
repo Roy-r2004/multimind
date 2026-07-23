@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/lib/auth";
 import { useChatStore } from "@/lib/store";
 import { createScrapingMission, generateScrapingBlueprint } from "@/lib/scraping/api";
+import { cacheGeneratedScrapingBlueprint } from "@/lib/scraping/generatedBlueprintCache";
 import { SCRAPING_COUNTRIES } from "@/lib/scraping/countries";
 
 export function MissionComposer() {
@@ -50,8 +51,12 @@ export function MissionComposer() {
         model_set_id: modelSetId,
         project_id: projectId === "none" ? null : projectId,
       });
-      await generateScrapingBlueprint(auth, mission.id);
-      void navigate({ to: "/scraping/$missionId/blueprint", params: { missionId: mission.id } });
+      const blueprint = await generateScrapingBlueprint(auth, mission.id);
+      cacheGeneratedScrapingBlueprint(mission.id, blueprint);
+      await navigate({
+        to: "/scraping/$missionId/blueprint",
+        params: { missionId: mission.id },
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate blueprint");
     } finally {

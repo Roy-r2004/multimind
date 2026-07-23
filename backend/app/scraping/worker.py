@@ -38,4 +38,6 @@ class WorkerSettings:
     on_shutdown = shutdown
     redis_settings = _redis_settings()
     max_jobs = get_settings().scraping_worker_concurrency
+    # ARQ derives the in-progress Redis lock TTL from this value. A very large finite timeout
+    # keeps long census jobs single-owner while the orchestrator watchdog detects real loops.
     job_timeout = get_settings().scraping_worker_job_timeout_seconds

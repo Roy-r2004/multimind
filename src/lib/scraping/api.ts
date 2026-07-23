@@ -179,16 +179,10 @@ export function deleteScrapingRun(auth: Auth, runId: string) {
   });
 }
 
-export type ScrapingExecutionMode = "real" | "full_census";
-
-export function createScrapingExecution(
-  auth: Auth,
-  runId: string,
-  mode: ScrapingExecutionMode = "real",
-) {
+export function createScrapingExecution(auth: Auth, runId: string) {
   return apiRequest<ScrapingExecutionSummary>(`/scraping/runs/${runId}/executions`, {
     method: "POST",
-    body: { execution_type: "initial_full_country", mode },
+    body: { execution_type: "initial_full_country", mode: "full_census" },
     token: auth.token,
     orgId: auth.orgId,
   });

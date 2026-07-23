@@ -519,7 +519,7 @@ def _max_queries_for_provider(
     *,
     context: SourceDiscoveryContext | None = None,
 ) -> int:
-    hard_cap = 8
+    hard_cap = 0
     if context is not None and context.discovery_query_hard_cap is not None:
         hard_cap = context.discovery_query_hard_cap
     if context is not None and context.max_queries_per_discovery is not None:
@@ -528,7 +528,8 @@ def _max_queries_for_provider(
         configured = settings.brave_search_max_queries_per_discovery
     else:
         configured = settings.serper_search_max_queries_per_discovery
-    return min(max(configured, 1), hard_cap)
+    configured = max(configured, 1)
+    return min(configured, hard_cap) if hard_cap > 0 else configured
 
 
 def _result_limit_for_provider(
@@ -537,7 +538,7 @@ def _result_limit_for_provider(
     *,
     context: SourceDiscoveryContext | None = None,
 ) -> int:
-    hard_cap = 20
+    hard_cap = 0
     if context is not None and context.discovery_results_hard_cap is not None:
         hard_cap = context.discovery_results_hard_cap
     if context is not None and context.results_per_query is not None:
@@ -546,7 +547,8 @@ def _result_limit_for_provider(
         configured = settings.brave_search_results_per_query
     else:
         configured = settings.serper_search_results_per_query
-    return min(max(configured, 1), hard_cap)
+    configured = max(configured, 1)
+    return min(configured, hard_cap) if hard_cap > 0 else configured
 
 
 def _safe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

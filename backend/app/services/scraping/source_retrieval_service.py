@@ -179,16 +179,19 @@ class SourceRetrievalService:
             metadata_json={},
         )
         if existing is None:
-            db.add(attempt)
             try:
-                await db.flush()
+                async with db.begin_nested():
+                    db.add(attempt)
+                    await db.flush()
             except IntegrityError:
-                await db.rollback()
                 existing = await self._existing_attempt(db, context)
                 if existing is not None and existing.completed_at is not None:
                     document = await self._document_for_attempt_or_hash(db, existing)
                     return self._summary(existing, document)
-                raise
+                if existing is not None:
+                    attempt = existing
+                else:
+                    raise
 
         try:
             validated = await self._validate_url(candidate.canonical_url)
@@ -443,13 +446,17 @@ class SourceRetrievalService:
             extracted_text=extracted_text,
             byte_size=byte_size,
             retrieval_timestamp=datetime.now(UTC),
-            metadata_json={"storage": "bounded_text", "max_bytes": get_settings().source_retrieval_max_bytes},
+            metadata_json={
+                "storage": "text",
+                "max_bytes": get_settings().source_retrieval_max_bytes or None,
+                "unbounded": get_settings().source_retrieval_max_bytes <= 0,
+            },
         )
-        db.add(document)
         try:
-            await db.flush()
+            async with db.begin_nested():
+                db.add(document)
+                await db.flush()
         except IntegrityError:
-            await db.rollback()
             existing_result = await db.execute(
                 select(ScrapingSourceDocument).where(
                     ScrapingSourceDocument.organization_id == context.organization_id,
@@ -666,7 +673,7 @@ class SourceRetrievalService:
         received = 0
         async for chunk in response.aiter_bytes():
             received += len(chunk)
-            if received > max_bytes:
+            if max_bytes > 0 and received > max_bytes:
                 raise SourceRetrievalError(
                     SourceRetrievalAttemptStatus.RESPONSE_TOO_LARGE,
                     "Response exceeded configured byte limit",

@@ -27,7 +27,14 @@ Return strict JSON with this shape and no extra keys:
 
 Rules:
 - Return {"document_relevant": false, "facilities": []} when no supported facility exists.
+- Scan the entire chunk and extract every distinct supported facility, not only the first or most prominent one.
+- Directory, registry, search-result, and provider-list pages may contain many facilities; return one facility object per distinct location or branch.
+- Do not merge separate branches, cities, campuses, or locations into one facility when the text identifies them separately.
+{% if max_candidates and max_candidates > 0 %}
 - Extract at most {{ max_candidates }} facilities.
+{% else %}
+- Extract every distinct supported facility present in this chunk; do not stop after an arbitrary count.
+{% endif %}
 - Name with exact evidence is required for every facility.
 - Every returned field must include an evidence_quote copied exactly from the source chunk.
 - Evidence quotes must be {{ max_quote_characters }} characters or fewer.

@@ -135,6 +135,7 @@ async function fetchRequest<T>(path: string, options: FetchRequestOptions): Prom
       headers: options.headers,
       body: options.body,
       credentials: "include",
+      cache: "no-store",
       signal: abort.signal,
     });
   } catch (err) {

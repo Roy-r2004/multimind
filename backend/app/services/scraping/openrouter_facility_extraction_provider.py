@@ -46,7 +46,7 @@ class OpenRouterFacilityExtractionProvider(FacilityExtractionProvider):
                 system=_system_prompt(),
                 user=prompt,
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=get_settings().facility_extraction_max_output_tokens,
                 response_format=response_format,
             )
             provider_request_id = _provider_request_id(response.raw)
@@ -123,7 +123,7 @@ class OpenRouterFacilityExtractionProvider(FacilityExtractionProvider):
             system=_system_prompt(),
             user=repair_user,
             model=self.model,
-            max_tokens=4096,
+            max_tokens=get_settings().facility_extraction_max_output_tokens,
             response_format=_response_format(),
         )
 

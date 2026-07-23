@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
@@ -61,8 +62,26 @@ function ScrapingExecutionPage() {
   const [downloadingExcel, setDownloadingExcel] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showScrollToTop, setShowScrollToTop] = useState(false);
   const lastSequenceRef = useRef(0);
   const refreshTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const updateScrollButton = () => {
+      setShowScrollToTop(window.scrollY > 480);
+    };
+
+    updateScrollButton();
+    window.addEventListener("scroll", updateScrollButton, { passive: true });
+
+    return () => {
+      window.removeEventListener("scroll", updateScrollButton);
+    };
+  }, []);
+
+  const scrollToTop = useCallback(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
 
   const loadAll = useCallback(async () => {
     const auth = authHeaders();
@@ -152,16 +171,18 @@ function ScrapingExecutionPage() {
             const frames = buffer.split("\n\n");
             buffer = frames.pop() ?? "";
             for (const frame of frames) {
-              const dataLine = frame
-                .split("\n")
-                .find((line) => line.startsWith("data: "));
+              const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
               if (!dataLine) continue;
               const event = JSON.parse(dataLine.slice(6)) as ScrapingEvent;
               if (event.sequence_number <= lastSequenceRef.current) continue;
               lastSequenceRef.current = event.sequence_number;
               setEvents((current) => [...current, event]);
               scheduleRefresh();
-              if (["execution_completed", "execution_failed", "execution_cancelled"].includes(event.event_type)) {
+              if (
+                ["execution_completed", "execution_failed", "execution_cancelled"].includes(
+                  event.event_type,
+                )
+              ) {
                 void loadAll();
               }
             }
@@ -216,16 +237,26 @@ function ScrapingExecutionPage() {
     [sourceCandidates],
   );
   const failedQueryCount = discoveryQueries.filter((query) => query.status === "failed").length;
-  const selectedRetrievalCount = tasks.filter((task) => task.task_type === "retrieve_source").length;
-  const successfulRetrievalCount = retrievalAttempts.filter((attempt) => attempt.status === "succeeded").length;
-  const blockedRetrievalCount = retrievalAttempts.filter((attempt) => attempt.status === "blocked_by_robots").length;
+  const selectedRetrievalCount = tasks.filter(
+    (task) => task.task_type === "retrieve_source",
+  ).length;
+  const successfulRetrievalCount = retrievalAttempts.filter(
+    (attempt) => attempt.status === "succeeded",
+  ).length;
+  const blockedRetrievalCount = retrievalAttempts.filter(
+    (attempt) => attempt.status === "blocked_by_robots",
+  ).length;
   const unsupportedRetrievalCount = retrievalAttempts.filter(
     (attempt) => attempt.status === "unsupported_content_type",
   ).length;
   const failedRetrievalCount = retrievalAttempts.filter(
-    (attempt) => !["succeeded", "blocked_by_robots", "unsupported_content_type"].includes(attempt.status),
+    (attempt) =>
+      !["succeeded", "blocked_by_robots", "unsupported_content_type"].includes(attempt.status),
   ).length;
-  const downloadedBytes = sourceDocuments.reduce((total, document) => total + document.byte_size, 0);
+  const downloadedBytes = sourceDocuments.reduce(
+    (total, document) => total + document.byte_size,
+    0,
+  );
   const candidatesById = useMemo(
     () => new Map(sourceCandidates.map((candidate) => [candidate.id, candidate])),
     [sourceCandidates],
@@ -239,6 +270,15 @@ function ScrapingExecutionPage() {
       failed: count("failed"),
     };
   }, [tasks]);
+  const latestLoopWatchdogEvent = useMemo(
+    () =>
+      [...events]
+        .reverse()
+        .find((event) =>
+          ["loop_watchdog_warning", "loop_watchdog_triggered"].includes(event.event_type),
+        ) ?? null,
+    [events],
+  );
 
   async function handleCancel() {
     const auth = authHeaders();
@@ -335,7 +375,12 @@ function ScrapingExecutionPage() {
                     {downloadingExcel ? "Preparing Excel…" : "Download Excel"}
                   </Button>
                   {detail.can_cancel && (
-                    <Button type="button" variant="outline" disabled={acting} onClick={() => void handleCancel()}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={acting}
+                      onClick={() => void handleCancel()}
+                    >
                       {acting ? "Cancelling..." : "Cancel"}
                     </Button>
                   )}
@@ -348,6 +393,39 @@ function ScrapingExecutionPage() {
                 <Metric label="Duplicates" value={execution.duplicates_detected} />
               </div>
             </GlassCard>
+
+            {latestLoopWatchdogEvent && (
+              <GlassCard
+                className={
+                  latestLoopWatchdogEvent.event_type === "loop_watchdog_triggered"
+                    ? "border-destructive/50 bg-destructive/5 p-5"
+                    : "border-amber-500/50 bg-amber-500/5 p-5"
+                }
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge
+                    variant={
+                      latestLoopWatchdogEvent.event_type === "loop_watchdog_triggered"
+                        ? "destructive"
+                        : "secondary"
+                    }
+                  >
+                    {latestLoopWatchdogEvent.event_type === "loop_watchdog_triggered"
+                      ? "Loop stopped"
+                      : "Possible loop detected"}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(latestLoopWatchdogEvent.created_at).toLocaleTimeString()}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm">{latestLoopWatchdogEvent.message}</p>
+                {typeof latestLoopWatchdogEvent.metadata_json?.watchdog_reason === "string" && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Reason: {latestLoopWatchdogEvent.metadata_json.watchdog_reason}
+                  </p>
+                )}
+              </GlassCard>
+            )}
 
             <LiveSiteActivity
               candidates={sourceCandidates}
@@ -479,7 +557,12 @@ function ScrapingExecutionPage() {
                   <div className="mb-3 flex items-center justify-between">
                     <h3 className="font-medium">Agents</h3>
                     {selectedAgentId && (
-                      <Button type="button" variant="outline" size="sm" onClick={() => setSelectedAgentId(null)}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedAgentId(null)}
+                      >
                         Clear filter
                       </Button>
                     )}
@@ -496,17 +579,24 @@ function ScrapingExecutionPage() {
                           <Badge variant="secondary">{agent.status}</Badge>
                           <span className="font-medium">{agent.planned_agent_name}</span>
                         </div>
-                        <p className="mt-1 text-muted-foreground">{agent.current_action ?? "Idle"}</p>
+                        <p className="mt-1 text-muted-foreground">
+                          {agent.current_action ?? "Idle"}
+                        </p>
                       </button>
                     ))}
                   </div>
                 </GlassCard>
                 <GridSection title="Tasks" rows={filteredTasks.map(formatTaskRow)} />
                 <GridSection title="Coverage" rows={filteredCoverage.map(formatCoverageRow)} />
-                <GridSection title="Discovery Queries" rows={discoveryQueries.map(formatQueryRow)} />
+                <GridSection
+                  title="Discovery Queries"
+                  rows={discoveryQueries.map(formatQueryRow)}
+                />
                 <GridSection
                   title="Retrieval Attempts"
-                  rows={retrievalAttempts.map((attempt) => formatAttemptRow(attempt, candidatesById))}
+                  rows={retrievalAttempts.map((attempt) =>
+                    formatAttemptRow(attempt, candidatesById),
+                  )}
                 />
                 <GridSection
                   title="Source Documents"
@@ -527,7 +617,12 @@ function ScrapingExecutionPage() {
                   </div>
                 </GlassCard>
                 {detail.can_delete && (
-                  <Button type="button" variant="destructive" disabled={acting} onClick={() => setShowDelete(true)}>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    disabled={acting}
+                    onClick={() => setShowDelete(true)}
+                  >
                     Delete scrape
                   </Button>
                 )}
@@ -536,6 +631,19 @@ function ScrapingExecutionPage() {
           </div>
         )}
       </div>
+      {showScrollToTop && (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="fixed top-6 left-1/2 -translate-x-1/2 z-50 h-11 w-11 rounded-full border-border bg-background/90 shadow-lg backdrop-blur transition hover:bg-muted"
+          onClick={scrollToTop}
+          aria-label="Scroll to top"
+          title="Scroll to top"
+        >
+          <ArrowUp className="h-5 w-5" aria-hidden="true" />
+        </Button>
+      )}
       <Modal
         open={showDelete}
         onClose={acting ? () => undefined : () => setShowDelete(false)}
@@ -544,14 +652,24 @@ function ScrapingExecutionPage() {
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Delete this terminal source discovery execution campaign? This permanently deletes tasks, coverage
-            history, and event history. This action cannot be undone.
+            Delete this terminal source discovery execution campaign? This permanently deletes
+            tasks, coverage history, and event history. This action cannot be undone.
           </p>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" disabled={acting} onClick={() => setShowDelete(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={acting}
+              onClick={() => setShowDelete(false)}
+            >
               Cancel
             </Button>
-            <Button type="button" variant="destructive" disabled={acting} onClick={() => void handleDelete()}>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={acting}
+              onClick={() => void handleDelete()}
+            >
               {acting ? "Deleting..." : "Delete Execution"}
             </Button>
           </div>

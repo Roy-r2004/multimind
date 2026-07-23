@@ -6,10 +6,12 @@ import asyncio
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
+from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -57,6 +59,11 @@ from app.services.scraping.facility_extraction_service import (
     FacilityExtractionContext,
     facility_extraction_service,
 )
+from app.services.scraping.loop_watchdog import (
+    LoopSnapshot,
+    ScrapingLoopWatchdog,
+    WatchdogSignal,
+)
 from app.services.scraping.source_discovery_service import source_discovery_service
 from app.services.scraping.scale_profile import ScaleProfile, resolve_scale_profile
 from app.services.scraping.source_retrieval_service import (
@@ -64,6 +71,7 @@ from app.services.scraping.source_retrieval_service import (
     SourceRetrievalSummary,
     source_retrieval_service,
 )
+from app.services.scraping.url_canonicalization import UrlRejected, canonicalize_discovery_url
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +104,161 @@ OFFICIAL_SOURCE_CATEGORY_TERMS = (
     "ministry",
 )
 
+
+_CRAWL_POSITIVE_TERMS = (
+    "addiction",
+    "alcohol",
+    "ambulanz",
+    "anbieter",
+    "drogen",
+    "detox",
+    "rehab",
+    "rehabil",
+    "recovery",
+    "sucht",
+    "entzug",
+    "therap",
+    "klinik",
+    "clinic",
+    "hospital",
+    "institut",
+    "krankenhaus",
+    "zentrum",
+    "center",
+    "centre",
+    "facility",
+    "einrichtung",
+    "behandlung",
+    "standort",
+    "location",
+    "campus",
+    "stationar",
+    "stationär",
+)
+
+_CRAWL_NEGATIVE_TERMS = (
+    "login",
+    "sign-in",
+    "signin",
+    "privacy",
+    "datenschutz",
+    "impressum",
+    "cookie",
+    "terms",
+    "kontakt",
+    "contact",
+    "jobs",
+    "karriere",
+    "career",
+    "news",
+    "blog",
+    "facebook",
+    "instagram",
+    "linkedin",
+    "youtube",
+)
+
+_CRAWL_BLOCKED_EXTENSIONS = (
+    ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".css", ".js",
+    ".zip", ".rar", ".7z", ".mp3", ".mp4", ".avi", ".mov", ".ics",
+)
+
+
+class _PageLinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.casefold() != "a":
+            return
+        href = next((value for name, value in attrs if name.casefold() == "href"), None)
+        self._href = (href or "").strip() or None
+        self._text_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            text = " ".join(data.split())
+            if text:
+                self._text_parts.append(text)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() != "a" or self._href is None:
+            return
+        self.links.append((self._href, " ".join(self._text_parts).strip()))
+        self._href = None
+        self._text_parts = []
+
+
+def _crawl_link_score(url: str, anchor_text: str) -> int:
+    haystack = f"{url} {anchor_text}".casefold()
+    positive_hits = sum(1 for term in _CRAWL_POSITIVE_TERMS if term in haystack)
+    # Unbounded crawling must remain relevance-gated. Generic internal navigation links are not
+    # queued unless the URL or anchor carries a facility/treatment/location signal.
+    if positive_hits == 0:
+        return -100
+    score = positive_hits * 3
+    score -= sum(5 for term in _CRAWL_NEGATIVE_TERMS if term in haystack)
+    parsed = urlsplit(url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) >= 2:
+        score += 1
+    if 4 <= len(anchor_text.strip()) <= 100:
+        score += 1
+    return score
+
+
+def _extract_crawl_links(
+    html: str,
+    *,
+    base_url: str,
+    limit: int | None = None,
+) -> list[tuple[str, str]]:
+    parser = _PageLinkParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        return []
+
+    base = urlsplit(base_url)
+    base_host = (base.hostname or "").casefold()
+    current_without_fragment = base_url.split("#", 1)[0]
+    ranked: list[tuple[int, str, str]] = []
+    seen: set[str] = set()
+    for href, anchor in parser.links:
+        lowered_href = href.casefold()
+        if lowered_href.startswith(("mailto:", "tel:", "javascript:", "data:")):
+            continue
+        absolute = urljoin(base_url, href).split("#", 1)[0]
+        parsed = urlsplit(absolute)
+        if parsed.scheme not in {"http", "https"}:
+            continue
+        if (parsed.hostname or "").casefold() != base_host:
+            continue
+        if absolute == current_without_fragment or parsed.path in {"", "/"}:
+            continue
+        if parsed.path.casefold().endswith(_CRAWL_BLOCKED_EXTENSIONS):
+            continue
+        try:
+            canonical = canonicalize_discovery_url(absolute).canonical_url
+        except UrlRejected:
+            continue
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        score = _crawl_link_score(canonical, anchor)
+        if score < 1:
+            continue
+        ranked.append((score, canonical, anchor[:300]))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    rows = [(url, anchor) for _, url, anchor in ranked]
+    if limit is None or limit <= 0:
+        return rows
+    return rows[:limit]
+
 LANGUAGE_CODE_BY_NAME = {
     "arabic": "ar",
     "bengali": "bn",
@@ -121,6 +284,12 @@ LANGUAGE_CODE_BY_NAME = {
 
 class ExecutionCancelled(Exception):
     pass
+
+
+class InfiniteLoopDetected(RuntimeError):
+    def __init__(self, signal: WatchdogSignal) -> None:
+        super().__init__(signal.message)
+        self.signal = signal
 
 
 class CoverageDimensionError(RuntimeError):
@@ -185,12 +354,32 @@ async def recover_scraping_executions(ctx: dict) -> None:
 class SourceDiscoveryExecutionOrchestrator:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+        settings = get_settings()
         self.current_stage = "not_started"
         self.coverage_region_count = 0
         self.coverage_language_count = 0
         self.coverage_source_category_count = 0
         self.attempted_coverage_cell_count = 0
-        self.scale_profile: ScaleProfile = resolve_scale_profile("real", get_settings())
+        self.scale_profile: ScaleProfile = resolve_scale_profile("real", settings)
+        self.loop_watchdog = ScrapingLoopWatchdog(
+            enabled=settings.scraping_loop_watchdog_enabled,
+            repeated_task_stop_threshold=(
+                settings.scraping_loop_watchdog_repeated_task_stop_threshold
+            ),
+            stagnant_round_warning_threshold=(
+                settings.scraping_loop_watchdog_stagnant_round_warning_threshold
+            ),
+            stagnant_round_stop_threshold=(
+                settings.scraping_loop_watchdog_stagnant_round_stop_threshold
+            ),
+            url_pattern_warning_threshold=(
+                settings.scraping_loop_watchdog_url_pattern_warning_threshold
+            ),
+            repeated_content_stop_threshold=(
+                settings.scraping_loop_watchdog_repeated_content_stop_threshold
+            ),
+        )
+        self.loop_watchdog_warning_count = 0
 
     async def run(self, execution_id: str) -> None:
         safe_execution_id = execution_id
@@ -290,6 +479,34 @@ class SourceDiscoveryExecutionOrchestrator:
             f"{self.scale_profile.label} source discovery campaign started.",
             metadata=self.scale_profile.as_metadata(),
         )
+        if self.loop_watchdog.enabled:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "loop_watchdog_started",
+                (
+                    "Progress watchdog enabled. The scrape has no count-based crawl, document, "
+                    "chunk, or publication cap; the watchdog intervenes only on repeated queued "
+                    "work or confirmed no-progress rounds."
+                ),
+                metadata={
+                    "repeated_task_stop_threshold": (
+                        self.loop_watchdog.repeated_task_stop_threshold
+                    ),
+                    "stagnant_round_warning_threshold": (
+                        self.loop_watchdog.stagnant_round_warning_threshold
+                    ),
+                    "stagnant_round_stop_threshold": (
+                        self.loop_watchdog.stagnant_round_stop_threshold
+                    ),
+                    "url_pattern_warning_threshold": (
+                        self.loop_watchdog.url_pattern_warning_threshold
+                    ),
+                    "repeated_content_stop_threshold": (
+                        self.loop_watchdog.repeated_content_stop_threshold
+                    ),
+                },
+            )
         await self.db.commit()
 
         try:
@@ -310,24 +527,57 @@ class SourceDiscoveryExecutionOrchestrator:
             settings = get_settings()
             if settings.facility_publication_enabled and settings.facility_extraction_enabled:
                 completion_message = (
-                    "Real source discovery, retrieval, facility extraction, and "
-                    "publication completed."
+                    "Scrape completed with "
+                    f"{execution.records_verified} published facilities from "
+                    f"{execution.documents_found} retrieved documents and "
+                    f"{execution.sources_discovered} discovered source pages."
                 )
             elif settings.facility_extraction_enabled:
                 completion_message = (
-                    "Real source discovery, secure retrieval, and bounded facility "
-                    "extraction completed."
+                    "Scrape completed with "
+                    f"{execution.records_extracted} staged facilities from "
+                    f"{execution.documents_found} retrieved documents."
                 )
             else:
                 completion_message = (
-                    "Real source discovery and bounded secure retrieval completed. "
-                    "Facility extraction is disabled."
+                    "Source discovery and retrieval completed, but facility extraction is disabled."
+                )
+            low_result_floor = max(5, self.coverage_region_count)
+            if (
+                self.scale_profile.mode == "full_census"
+                and settings.facility_publication_enabled
+                and execution.records_verified < low_result_floor
+            ):
+                await execution_service.emit_event(
+                    self.db,
+                    execution.id,
+                    "execution_low_result_warning",
+                    (
+                        f"Full census published only {execution.records_verified} facilities; "
+                        "coverage is likely incomplete and should not be presented as a complete census."
+                    ),
+                    metadata={
+                        "published_facility_count": execution.records_verified,
+                        "retrieved_document_count": execution.documents_found,
+                        "discovered_source_count": execution.sources_discovered,
+                        "coverage_region_count": self.coverage_region_count,
+                        "warning_floor": low_result_floor,
+                    },
                 )
             await execution_service.emit_event(
                 self.db,
                 execution.id,
                 "execution_completed",
                 completion_message,
+                metadata={
+                    "published_facility_count": execution.records_verified,
+                    "staging_candidate_count": execution.records_extracted,
+                    "retrieved_document_count": execution.documents_found,
+                    "discovered_source_count": execution.sources_discovered,
+                    "blocked_source_count": execution.blocked_sources,
+                    "coverage_debt": execution.coverage_debt,
+                    "loop_watchdog_warning_count": self.loop_watchdog_warning_count,
+                },
             )
             await self.db.commit()
             self._log(
@@ -344,6 +594,23 @@ class SourceDiscoveryExecutionOrchestrator:
                 reason="execution_cancelled",
             )
             return
+        except InfiniteLoopDetected as exc:
+            self._log(
+                "loop_watchdog_triggered",
+                execution_id=safe_execution_id,
+                reason=exc.signal.reason,
+                **exc.signal.metadata,
+            )
+            await self._mark_failed_safely(
+                safe_execution_id,
+                "infinite_loop_detected",
+                error_message=exc.signal.message,
+                event_message=exc.signal.message,
+                event_metadata={
+                    "watchdog_reason": exc.signal.reason,
+                    **exc.signal.metadata,
+                },
+            )
         except Exception as exc:
             failure_category = type(exc).__name__
             failure_detail = str(exc).strip() or failure_category
@@ -377,14 +644,12 @@ class SourceDiscoveryExecutionOrchestrator:
             await self._mark_failed_safely(
                 safe_execution_id,
                 failure_category,
-                error_message=(
-                    f"Source discovery execution failed during {self.current_stage}: "
-                    f"{failure_detail}"
-                ),
-                event_message=(
-                    f"Source discovery execution failed during {self.current_stage}: "
-                    f"{failure_detail}"
-                ),
+                error_message="Source discovery execution failed.",
+                event_message="Source discovery execution failed.",
+                event_metadata={
+                    "stage": self.current_stage,
+                    "failure_category": failure_category,
+                },
             )
 
     async def _ensure_profile_matrix_and_tasks(
@@ -401,14 +666,12 @@ class SourceDiscoveryExecutionOrchestrator:
                 execution.country_name,
             )
             profile = self.scale_profile
-            max_queries = min(
-                max(profile.serper_max_queries_per_discovery, 1),
-                profile.discovery_query_hard_cap,
-            )
-            results_per_query = min(
-                max(profile.serper_results_per_query, 1),
-                profile.discovery_results_hard_cap,
-            )
+            max_queries = max(profile.serper_max_queries_per_discovery, 1)
+            if profile.discovery_query_hard_cap > 0:
+                max_queries = min(max_queries, profile.discovery_query_hard_cap)
+            results_per_query = max(profile.serper_results_per_query, 1)
+            if profile.discovery_results_hard_cap > 0:
+                results_per_query = min(results_per_query, profile.discovery_results_hard_cap)
             execution.country_profile_json = {
                 "phase": "source_discovery",
                 "mode": profile.mode,
@@ -553,6 +816,12 @@ class SourceDiscoveryExecutionOrchestrator:
             tasks = await self._queued_tasks(execution.id)
             if not tasks:
                 break
+            snapshot = await self._loop_snapshot(execution.id, queued_tasks=len(tasks))
+            signals = self.loop_watchdog.observe_round(
+                snapshot,
+                [task.id for task in tasks],
+            )
+            await self._handle_watchdog_signals(execution, signals)
             for task in tasks:
                 processed_count += 1
                 execution = await self._load_execution(execution.id)
@@ -598,9 +867,11 @@ class SourceDiscoveryExecutionOrchestrator:
             return
 
         documents = await self._source_documents_for_extraction(execution)
-        document_limit = max(self.scale_profile.extraction_max_documents, 1)
-        chunk_limit = max(self.scale_profile.extraction_max_chunks, 1)
-        selected_documents = documents[:document_limit]
+        document_limit = max(self.scale_profile.extraction_max_documents, 0)
+        chunk_limit = max(self.scale_profile.extraction_max_chunks, 0)
+        selected_documents = (
+            documents if document_limit <= 0 else documents[:document_limit]
+        )
         summary: dict[str, Any] = {
             "documents_considered": len(documents),
             "documents_prepared": 0,
@@ -612,7 +883,9 @@ class SourceDiscoveryExecutionOrchestrator:
             "staging_candidates_created": 0,
             "accepted_evidence_count": 0,
             "rejected_evidence_count": 0,
-            "document_limit_reached": len(documents) > document_limit,
+            "document_limit_reached": (
+                document_limit > 0 and len(documents) > document_limit
+            ),
             "chunk_limit_reached": False,
         }
         await execution_service.emit_event(
@@ -622,8 +895,10 @@ class SourceDiscoveryExecutionOrchestrator:
             "Facility extraction phase started for retrieved source documents.",
             metadata={
                 "documents_considered": summary["documents_considered"],
-                "document_limit": document_limit,
-                "chunk_limit": chunk_limit,
+                "document_limit": document_limit or None,
+                "chunk_limit": chunk_limit or None,
+                "unbounded_documents": document_limit <= 0,
+                "unbounded_chunks": chunk_limit <= 0,
                 "document_limit_reached": summary["document_limit_reached"],
             },
         )
@@ -631,7 +906,7 @@ class SourceDiscoveryExecutionOrchestrator:
 
         for document in selected_documents:
             await self._check_cancelled(execution)
-            if summary["chunks_considered"] >= chunk_limit:
+            if chunk_limit > 0 and summary["chunks_considered"] >= chunk_limit:
                 summary["chunk_limit_reached"] = True
                 summary["documents_skipped"] += 1
                 continue
@@ -681,7 +956,7 @@ class SourceDiscoveryExecutionOrchestrator:
             document_evidence_count = 0
             for chunk in chunks:
                 await self._check_cancelled(execution)
-                if summary["chunks_considered"] >= chunk_limit:
+                if chunk_limit > 0 and summary["chunks_considered"] >= chunk_limit:
                     summary["chunk_limit_reached"] = True
                     break
                 summary["chunks_considered"] += 1
@@ -789,7 +1064,8 @@ class SourceDiscoveryExecutionOrchestrator:
             "facility_publication_phase_started",
             "Facility publication phase started for verified staging candidates.",
             metadata={
-                "max_candidates": self.scale_profile.publication_max_candidates,
+                "max_candidates": self.scale_profile.publication_max_candidates or None,
+                "unbounded_candidates": self.scale_profile.publication_max_candidates <= 0,
                 "min_confidence": settings.facility_publication_min_confidence,
                 "mode": self.scale_profile.mode,
             },
@@ -944,21 +1220,237 @@ class SourceDiscoveryExecutionOrchestrator:
             if summary.status == SourceRetrievalAttemptStatus.SUCCEEDED.value or not retryable:
                 break
 
-        task.status = ScrapingTaskStatus.COMPLETED
+        crawled_link_count = 0
+        if (
+            summary is not None
+            and summary.status == SourceRetrievalAttemptStatus.SUCCEEDED.value
+            and summary.document_id
+            and candidate is not None
+        ):
+            crawled_link_count = await self._queue_crawled_facility_links(
+                execution, task, candidate, summary.document_id
+            )
+            task.output_json = {
+                **(task.output_json or {}),
+                "crawled_link_count": crawled_link_count,
+            }
+
+        succeeded = (
+            summary is not None
+            and summary.status == SourceRetrievalAttemptStatus.SUCCEEDED.value
+        )
+        blocked = (
+            summary is not None
+            and summary.status
+            in {
+                SourceRetrievalAttemptStatus.BLOCKED_BY_ROBOTS.value,
+                SourceRetrievalAttemptStatus.UNSUPPORTED_CONTENT_TYPE.value,
+            }
+        )
+        task.status = (
+            ScrapingTaskStatus.COMPLETED
+            if succeeded
+            else ScrapingTaskStatus.BLOCKED
+            if blocked
+            else ScrapingTaskStatus.FAILED
+        )
+        task.error_message = None if succeeded else (
+            summary.safe_error_message if summary is not None else "Retrieval produced no result"
+        )
         task.completed_at = datetime.now(UTC)
         task.current_action = None
         self._complete_agent(agent)
+        event_type = (
+            "task_completed"
+            if succeeded
+            else "task_blocked"
+            if blocked
+            else "task_failed"
+        )
         await execution_service.emit_event(
             self.db,
             execution.id,
-            "task_completed",
-            f"{task.title} completed with secure retrieval output.",
+            event_type,
+            (
+                f"{task.title} completed and queued {crawled_link_count} facility-page links."
+                if succeeded
+                else f"{task.title} did not produce a retrievable source document."
+            ),
             execution_agent_id=agent.id,
             task_id=task.id,
             coverage_cell_id=task.coverage_cell_id,
             metadata={"task_type": task.task_type, **(task.output_json or {})},
         )
         await self.db.commit()
+
+
+    async def _queue_crawled_facility_links(
+        self,
+        execution: ScrapingExecution,
+        parent_task: ScrapingTask,
+        parent_candidate: ScrapingSourceCandidate,
+        source_document_id: str,
+    ) -> int:
+        metadata = parent_candidate.metadata_json or {}
+        try:
+            crawl_depth = int(metadata.get("crawl_depth", 0))
+        except (TypeError, ValueError):
+            crawl_depth = 0
+
+        document = await self.db.scalar(
+            select(ScrapingSourceDocument).where(
+                ScrapingSourceDocument.id == source_document_id,
+                ScrapingSourceDocument.execution_id == execution.id,
+            )
+        )
+        if document is None or "html" not in (document.content_type or "").casefold():
+            return 0
+
+        # Identical-content stopping is a crawl-loop safeguard, not a general source
+        # deduplication rule. Seed/search-result pages can legitimately return the same
+        # landing page, mirror, or test fixture without forming an infinite crawl.
+        if parent_candidate.provider == "crawler" or crawl_depth > 0:
+            repeated_content_signal = self.loop_watchdog.observe_content_hash(
+                document.content_sha256,
+                url=document.final_url,
+                crawl_depth=crawl_depth,
+            )
+            if repeated_content_signal is not None:
+                await self._handle_watchdog_signals(execution, [repeated_content_signal])
+
+        links = _extract_crawl_links(
+            document.content_text,
+            base_url=document.final_url,
+            limit=None,
+        )
+        if not links:
+            return 0
+
+        existing_candidates = {
+            candidate.canonical_url: candidate
+            for candidate in (
+                await self.db.execute(
+                    select(ScrapingSourceCandidate).where(
+                        ScrapingSourceCandidate.organization_id == execution.organization_id,
+                        ScrapingSourceCandidate.execution_id == execution.id,
+                        ScrapingSourceCandidate.canonical_url.in_([url for url, _ in links]),
+                    )
+                )
+            ).scalars().all()
+        }
+        existing_retrieval_candidate_ids = {
+            str((task.input_json or {}).get("source_candidate_id"))
+            for task in (
+                await self.db.execute(
+                    select(ScrapingTask).where(
+                        ScrapingTask.execution_id == execution.id,
+                        ScrapingTask.task_type == "retrieve_source",
+                    )
+                )
+            ).scalars().all()
+            if (task.input_json or {}).get("source_candidate_id")
+        }
+        created = 0
+        watchdog_signals: list[WatchdogSignal] = []
+        for index, (canonical_url, anchor_text) in enumerate(links, start=1):
+            signal = self.loop_watchdog.observe_url(
+                canonical_url,
+                crawl_depth=crawl_depth + 1,
+            )
+            if signal is not None:
+                watchdog_signals.append(signal)
+            child = existing_candidates.get(canonical_url)
+            parsed = urlsplit(canonical_url)
+            if child is None:
+                child = ScrapingSourceCandidate(
+                    organization_id=execution.organization_id,
+                    execution_id=execution.id,
+                    coverage_cell_id=parent_candidate.coverage_cell_id,
+                    discovery_query_id=parent_candidate.discovery_query_id,
+                    provider="crawler",
+                    provider_result_id=None,
+                    rank=max(parent_candidate.rank * 100 + index, 1),
+                    url=canonical_url,
+                    canonical_url=canonical_url,
+                    domain=(parsed.hostname or parent_candidate.domain).casefold(),
+                    title=(
+                        anchor_text or parsed.path.rsplit("/", 1)[-1] or "Facility page"
+                    )[:300],
+                    snippet=(
+                        f"Linked from {document.final_url}; selected as a possible facility detail page."
+                    )[:1000],
+                    country_code=parent_candidate.country_code,
+                    country_name=parent_candidate.country_name,
+                    region_code=parent_candidate.region_code,
+                    region_name=parent_candidate.region_name,
+                    language_code=parent_candidate.language_code,
+                    language_name=parent_candidate.language_name,
+                    source_category=parent_candidate.source_category,
+                    initial_relevance_score=0.70,
+                    initial_trust_tier=parent_candidate.initial_trust_tier,
+                    status=SourceCandidateStatus.DISCOVERED,
+                    discovered_at=datetime.now(UTC),
+                    metadata_json={
+                        "crawl_depth": crawl_depth + 1,
+                        "parent_source_candidate_id": parent_candidate.id,
+                        "parent_source_document_id": source_document_id,
+                        "parent_url": document.final_url,
+                        "anchor_text": anchor_text[:300],
+                    },
+                )
+                try:
+                    async with self.db.begin_nested():
+                        self.db.add(child)
+                        await self.db.flush()
+                except IntegrityError:
+                    continue
+                existing_candidates[canonical_url] = child
+            if child.id in existing_retrieval_candidate_ids:
+                continue
+            self.db.add(
+                ScrapingTask(
+                    execution_id=execution.id,
+                    execution_agent_id=parent_task.execution_agent_id,
+                    coverage_cell_id=parent_task.coverage_cell_id,
+                    parent_task_id=parent_task.id,
+                    task_type="retrieve_source",
+                    title=f"Retrieve crawled facility page: {child.domain}",
+                    status=ScrapingTaskStatus.QUEUED,
+                    priority=parent_task.priority + index,
+                    attempt_count=0,
+                    max_attempts=3,
+                    input_json={
+                        "source_candidate_id": child.id,
+                        "phase": "source_retrieval",
+                        "discovery_method": "same_domain_facility_link_crawl",
+                    },
+                    output_json={},
+                    dependency_task_ids_json=[parent_task.id],
+                )
+            )
+            existing_retrieval_candidate_ids.add(child.id)
+            created += 1
+
+        await self._handle_watchdog_signals(execution, watchdog_signals)
+
+        if created:
+            await self.db.flush()
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_links_discovered",
+                f"Discovered {created} same-site facility detail links for retrieval.",
+                execution_agent_id=parent_task.execution_agent_id,
+                task_id=parent_task.id,
+                coverage_cell_id=parent_task.coverage_cell_id,
+                metadata={
+                    "source_document_id": source_document_id,
+                    "parent_source_candidate_id": parent_candidate.id,
+                    "created_retrieval_task_count": created,
+                    "crawl_depth": crawl_depth + 1,
+                },
+            )
+        return created
 
     async def _process_audit_task(
         self, execution: ScrapingExecution, task: ScrapingTask
@@ -1153,10 +1645,10 @@ class SourceDiscoveryExecutionOrchestrator:
     ) -> list[ScrapingSourceCandidate]:
         per_cell_limit = max(self.scale_profile.retrieval_max_per_cell, 0)
         per_execution_limit = max(self.scale_profile.retrieval_max_per_execution, 0)
-        if per_cell_limit == 0 or per_execution_limit == 0:
-            return []
         existing_execution_tasks = await self._retrieval_task_count(execution_id)
-        remaining = max(per_execution_limit - existing_execution_tasks, 0)
+        remaining: int | None = None
+        if per_execution_limit > 0:
+            remaining = max(per_execution_limit - existing_execution_tasks, 0)
         if remaining == 0:
             return []
         result = await self.db.execute(
@@ -1173,7 +1665,12 @@ class SourceDiscoveryExecutionOrchestrator:
         for candidate in sorted(candidates, key=self._candidate_sort_key):
             unique_by_url.setdefault(candidate.canonical_url, candidate)
         sorted_candidates = list(unique_by_url.values())
-        limit = min(per_cell_limit, remaining)
+        positive_limits = [
+            value
+            for value in (per_cell_limit, remaining)
+            if value is not None and value > 0
+        ]
+        limit = min(positive_limits) if positive_limits else len(sorted_candidates)
         selected: list[ScrapingSourceCandidate] = []
         seen_domains: set[str] = set()
         for candidate in sorted_candidates:
@@ -1210,12 +1707,16 @@ class SourceDiscoveryExecutionOrchestrator:
         )
         return len(result.scalars().all())
 
-    async def _max_retrieval_estimate(self, execution_id: str) -> int:
+    async def _max_retrieval_estimate(self, execution_id: str) -> int | None:
         cell_count = await self._coverage_count(execution_id)
-        return min(
-            cell_count * max(self.scale_profile.retrieval_max_per_cell, 0),
-            max(self.scale_profile.retrieval_max_per_execution, 0),
-        )
+        per_cell = max(self.scale_profile.retrieval_max_per_cell, 0)
+        per_execution = max(self.scale_profile.retrieval_max_per_execution, 0)
+        if per_cell <= 0 and per_execution <= 0:
+            return None
+        if per_cell <= 0:
+            return per_execution
+        estimate = cell_count * per_cell
+        return min(estimate, per_execution) if per_execution > 0 else estimate
 
     async def _emit_discovery_outcome_events(
         self,
@@ -1787,6 +2288,7 @@ class SourceDiscoveryExecutionOrchestrator:
         *,
         error_message: str = "Source discovery execution failed.",
         event_message: str = "Source discovery execution failed.",
+        event_metadata: dict[str, Any] | None = None,
     ) -> None:
         try:
             await self.db.rollback()
@@ -1829,6 +2331,7 @@ class SourceDiscoveryExecutionOrchestrator:
                     execution_id,
                     "execution_failed",
                     event_message,
+                    metadata=event_metadata or {},
                 )
             await self.db.commit()
             self._log(
@@ -1945,6 +2448,105 @@ class SourceDiscoveryExecutionOrchestrator:
             )
         )
         return list(result.scalars().all())
+
+    async def _loop_snapshot(
+        self,
+        execution_id: str,
+        *,
+        queued_tasks: int,
+    ) -> LoopSnapshot:
+        task_statuses = list(
+            (
+                await self.db.execute(
+                    select(ScrapingTask.status).where(
+                        ScrapingTask.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        terminal_statuses = {
+            ScrapingTaskStatus.BLOCKED,
+            ScrapingTaskStatus.COMPLETED,
+            ScrapingTaskStatus.FAILED,
+            ScrapingTaskStatus.CANCELLED,
+        }
+        source_candidates = len(
+            (
+                await self.db.execute(
+                    select(ScrapingSourceCandidate.id).where(
+                        ScrapingSourceCandidate.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        source_documents = len(
+            (
+                await self.db.execute(
+                    select(ScrapingSourceDocument.id).where(
+                        ScrapingSourceDocument.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        retrieval_attempts = len(
+            (
+                await self.db.execute(
+                    select(ScrapingSourceRetrievalAttempt.id).where(
+                        ScrapingSourceRetrievalAttempt.execution_id == execution_id
+                    )
+                )
+            ).scalars().all()
+        )
+        return LoopSnapshot(
+            total_tasks=len(task_statuses),
+            queued_tasks=queued_tasks,
+            terminal_tasks=len([status for status in task_statuses if status in terminal_statuses]),
+            source_candidates=source_candidates,
+            source_documents=source_documents,
+            retrieval_attempts=retrieval_attempts,
+        )
+
+    async def _handle_watchdog_signals(
+        self,
+        execution: ScrapingExecution,
+        signals: list[WatchdogSignal],
+    ) -> None:
+        if not signals:
+            return
+        stop_signal: WatchdogSignal | None = None
+        for signal in signals:
+            metadata = {
+                "watchdog_reason": signal.reason,
+                "stage": self.current_stage,
+                **signal.metadata,
+            }
+            if signal.severity == "warning":
+                self.loop_watchdog_warning_count += 1
+                await execution_service.emit_event(
+                    self.db,
+                    execution.id,
+                    "loop_watchdog_warning",
+                    signal.message,
+                    metadata=metadata,
+                )
+                self._log(
+                    "loop_watchdog_warning",
+                    execution_id=execution.id,
+                    reason=signal.reason,
+                    **signal.metadata,
+                )
+            else:
+                stop_signal = stop_signal or signal
+                await execution_service.emit_event(
+                    self.db,
+                    execution.id,
+                    "loop_watchdog_triggered",
+                    signal.message,
+                    metadata=metadata,
+                )
+        await self.db.commit()
+        if stop_signal is not None:
+            raise InfiniteLoopDetected(stop_signal)
 
     async def _queued_tasks(self, execution_id: str) -> list[ScrapingTask]:
         result = await self.db.execute(

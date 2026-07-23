@@ -38,7 +38,15 @@ class Settings(BaseSettings):
     scraping_mock_step_delay_ms: int = 600
     scraping_worker_concurrency: int = 4
     scraping_execution_stale_seconds: int = 120
-    scraping_worker_job_timeout_seconds: int = 1800
+    # ARQ uses this timeout both for job cancellation and for the Redis in-progress lock TTL.
+    # Keep it very large rather than None: in ARQ 0.28, None makes the lock expire after 10 seconds.
+    scraping_worker_job_timeout_seconds: int = 60 * 60 * 24 * 7  # 7 days
+    scraping_loop_watchdog_enabled: bool = True
+    scraping_loop_watchdog_repeated_task_stop_threshold: int = 3
+    scraping_loop_watchdog_stagnant_round_warning_threshold: int = 2
+    scraping_loop_watchdog_stagnant_round_stop_threshold: int = 5
+    scraping_loop_watchdog_url_pattern_warning_threshold: int = 250
+    scraping_loop_watchdog_repeated_content_stop_threshold: int = 8
     # When true (default in development), run scrapes inside the API process if Redis/worker is down
     scraping_inline_execution: bool | None = None
 
@@ -63,32 +71,34 @@ class Settings(BaseSettings):
     source_retrieval_timeout_seconds: float = 15.0
     source_retrieval_connect_timeout_seconds: float = 5.0
     source_retrieval_max_redirects: int = 5
-    source_retrieval_max_bytes: int = 2_097_152
+    # Count/size limits use 0 to mean unlimited. Redirect and per-request timeouts remain
+    # bounded because they are direct loop/network safety controls rather than census caps.
+    source_retrieval_max_bytes: int = 0
     source_retrieval_allowed_ports: Annotated[list[int], NoDecode] = Field(default=[80, 443])
     source_retrieval_robots_policy: Literal["respect"] = "respect"
-    source_retrieval_max_candidates_per_coverage_cell: int = 10
-    source_retrieval_max_candidates_per_execution: int = 150
+    source_retrieval_max_candidates_per_coverage_cell: int = 0
+    source_retrieval_max_candidates_per_execution: int = 0
 
     # Real facility extraction (worker-connected)
     facility_extraction_enabled: bool = True
     facility_extraction_model: str = "gpt-4.1"
-    facility_extraction_max_document_characters: int = 200_000
+    facility_extraction_max_document_characters: int = 0
     facility_extraction_chunk_characters: int = 12_000
     facility_extraction_chunk_overlap_characters: int = 500
-    facility_extraction_max_chunks_per_document: int = 20
-    facility_extraction_max_candidates_per_chunk: int = 25
-    facility_extraction_max_candidates_per_document: int = 100
-    # Country demos need dozens of pages; 3 was a smoke-test cap that starved results.
-    facility_extraction_max_documents_per_execution: int = 50
-    facility_extraction_max_chunks_per_execution: int = 120
+    facility_extraction_max_chunks_per_document: int = 0
+    facility_extraction_max_candidates_per_chunk: int = 0
+    facility_extraction_max_candidates_per_document: int = 0
+    facility_extraction_max_documents_per_execution: int = 0
+    facility_extraction_max_chunks_per_execution: int = 0
     facility_extraction_timeout_seconds: float = 60.0
     facility_extraction_max_attempts: int = 2
+    facility_extraction_max_output_tokens: int = 16_384
     facility_extraction_max_evidence_quote_characters: int = 1000
 
     # Auto-publish verified staging candidates into final rehab tables
     facility_publication_enabled: bool = True
     facility_publication_min_confidence: float = 0.55
-    facility_publication_max_candidates_per_execution: int = 300
+    facility_publication_max_candidates_per_execution: int = 0
     facility_publication_duplicate_match_threshold: float = 0.82
 
     # Optional source discovery provider — Brave Search
@@ -148,20 +158,56 @@ class Settings(BaseSettings):
 
     @field_validator(
         "facility_extraction_max_document_characters",
-        "facility_extraction_chunk_characters",
         "facility_extraction_max_chunks_per_document",
         "facility_extraction_max_documents_per_execution",
         "facility_extraction_max_chunks_per_execution",
         "facility_extraction_max_candidates_per_chunk",
         "facility_extraction_max_candidates_per_document",
+    )
+    @classmethod
+    def validate_non_negative_extraction_limits(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("facility extraction limits must be zero (unlimited) or positive")
+        if value > 1_000_000:
+            raise ValueError("facility extraction limits must be bounded")
+        return value
+
+    @field_validator(
+        "facility_extraction_chunk_characters",
+        "facility_extraction_max_output_tokens",
         "facility_extraction_max_evidence_quote_characters",
     )
     @classmethod
-    def validate_positive_bounded_extraction_limits(cls, value: int) -> int:
+    def validate_positive_extraction_sizes(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("facility extraction limits must be positive")
+            raise ValueError("facility extraction chunk and evidence sizes must be positive")
         if value > 1_000_000:
-            raise ValueError("facility extraction limits must be bounded")
+            raise ValueError("facility extraction sizes must be bounded")
+        return value
+
+    @field_validator(
+        "source_retrieval_max_bytes",
+        "source_retrieval_max_candidates_per_coverage_cell",
+        "source_retrieval_max_candidates_per_execution",
+        "facility_publication_max_candidates_per_execution",
+    )
+    @classmethod
+    def validate_zero_or_positive_unbounded_counts(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("scraping count limits must be zero (unlimited) or positive")
+        return value
+
+    @field_validator(
+        "scraping_loop_watchdog_repeated_task_stop_threshold",
+        "scraping_loop_watchdog_stagnant_round_warning_threshold",
+        "scraping_loop_watchdog_stagnant_round_stop_threshold",
+        "scraping_loop_watchdog_url_pattern_warning_threshold",
+        "scraping_loop_watchdog_repeated_content_stop_threshold",
+    )
+    @classmethod
+    def validate_positive_watchdog_thresholds(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("loop watchdog thresholds must be positive")
         return value
 
     @field_validator("facility_extraction_chunk_overlap_characters")

@@ -23,7 +23,10 @@ async def create_execution(
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    return await execution_service.create_execution(db, auth, run_id, data)
+    # Standard scraping is no longer exposed. Normalize every API request,
+    # including requests from older frontend bundles, to Full Census.
+    full_census_data = data.model_copy(update={"mode": "full_census"})
+    return await execution_service.create_execution(db, auth, run_id, full_census_data)
 
 
 @router.get("/{run_id}/executions", response_model=list[ScrapingExecutionSummary])

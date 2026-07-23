@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 MAX_VALUE_LENGTH = 1000
-MAX_ARRAY_ITEMS = 25
 EXTRACTION_SCHEMA_VERSION = "facility-extraction-schema-v2"
 
 
@@ -31,15 +30,15 @@ class ExtractedFacility(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: ExtractedEvidenceValue
-    aliases: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
+    aliases: list[ExtractedEvidenceValue] = Field(default_factory=list)
     facility_type: ExtractedEvidenceValue | None = None
     operator: ExtractedEvidenceValue | None = None
-    addresses: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
-    phones: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
-    emails: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
-    websites: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
-    services: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
-    license_or_registration: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
+    addresses: list[ExtractedEvidenceValue] = Field(default_factory=list)
+    phones: list[ExtractedEvidenceValue] = Field(default_factory=list)
+    emails: list[ExtractedEvidenceValue] = Field(default_factory=list)
+    websites: list[ExtractedEvidenceValue] = Field(default_factory=list)
+    services: list[ExtractedEvidenceValue] = Field(default_factory=list)
+    license_or_registration: list[ExtractedEvidenceValue] = Field(default_factory=list)
     model_confidence: float | None = Field(default=None, ge=0, le=1)
 
 
@@ -47,7 +46,7 @@ class FacilityExtractionOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     document_relevant: bool
-    facilities: list[ExtractedFacility] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
+    facilities: list[ExtractedFacility] = Field(default_factory=list)
 
 
 class FacilityExtractionProviderResult(BaseModel):

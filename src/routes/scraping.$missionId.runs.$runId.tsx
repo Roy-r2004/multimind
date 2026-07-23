@@ -120,7 +120,7 @@ function ScrapingRunDetailPage() {
     }
   }
 
-  async function handleStartExecution(mode: "real" | "full_census" = "real") {
+  async function handleStartExecution() {
     const auth = authHeaders();
     if (!auth) {
       void navigate({ to: "/login" });
@@ -136,7 +136,7 @@ function ScrapingRunDetailPage() {
     setStartingExecution(true);
     setError(null);
     try {
-      const execution = await createScrapingExecution(auth, runId, mode);
+      const execution = await createScrapingExecution(auth, runId);
       setExecutions((current) => [execution, ...current]);
       void navigate({
         to: "/scraping/$missionId/executions/$executionId",
@@ -217,8 +217,7 @@ function ScrapingRunDetailPage() {
                   </p>
                   {!activeExecution && (
                     <p className="mt-2 text-xs text-muted-foreground">
-                      <strong>Full census</strong> uses much higher limits (hours, higher cost) for
-                      broader country coverage. <strong>Standard</strong> is faster for demos.
+                      Every run uses the complete Full Census pipeline for maximum coverage.
                     </p>
                   )}
                 </div>
@@ -233,29 +232,18 @@ function ScrapingRunDetailPage() {
                       Watch progress
                     </Button>
                   ) : (
-                    <>
-                      <Button
-                        type="button"
-                        size="lg"
-                        variant="outline"
-                        disabled={startingExecution || run.status !== "planned"}
-                        onClick={() => void handleStartExecution("real")}
-                      >
-                        {startingExecution
-                          ? "Starting…"
-                          : executions.length > 0
-                            ? "Standard again"
-                            : "Standard scrape"}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="lg"
-                        disabled={startingExecution || run.status !== "planned"}
-                        onClick={() => void handleStartExecution("full_census")}
-                      >
-                        {startingExecution ? "Starting…" : "Full census"}
-                      </Button>
-                    </>
+                    <Button
+                      type="button"
+                      size="lg"
+                      disabled={startingExecution || run.status !== "planned"}
+                      onClick={() => void handleStartExecution()}
+                    >
+                      {startingExecution
+                        ? "Starting…"
+                        : executions.length > 0
+                          ? "Run Full Census again"
+                          : "Start Full Census"}
+                    </Button>
                   )}
                 </div>
               </div>
@@ -265,8 +253,7 @@ function ScrapingRunDetailPage() {
               <h2 className="text-lg font-semibold">Results</h2>
               {executions.length === 0 ? (
                 <p className="mt-3 text-sm text-muted-foreground">
-                  No scrape yet. Choose <strong>Standard scrape</strong> or{" "}
-                  <strong>Full census</strong> above.
+                  No scrape yet. Start the <strong>Full Census</strong> above.
                 </p>
               ) : (
                 <div className="mt-4 space-y-3">
@@ -284,7 +271,9 @@ function ScrapingRunDetailPage() {
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge variant="secondary">{execution.status_label}</Badge>
                             <Badge variant="outline">
-                              {execution.mode === "full_census" ? "Full census" : "Standard"}
+                              {execution.mode === "full_census"
+                                ? "Full census"
+                                : "Legacy limited run"}
                             </Badge>
                             <span className="text-sm text-muted-foreground">
                               {execution.country_name}
