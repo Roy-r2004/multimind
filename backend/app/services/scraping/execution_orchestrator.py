@@ -58,7 +58,14 @@ from app.services.scraping.facility_extraction_service import (
     facility_extraction_service,
 )
 from app.services.scraping.source_discovery_service import source_discovery_service
-from app.services.scraping.scale_profile import ScaleProfile, resolve_scale_profile
+from app.services.scraping.scale_profile import (
+    MODE_FULL_CENSUS,
+    ScaleProfile,
+    expected_pages_from_blueprint,
+    resolve_dynamic_scale_profile,
+    resolve_scale_profile,
+    scale_profile_from_country_profile,
+)
 from app.services.scraping.source_retrieval_service import (
     SourceRetrievalContext,
     SourceRetrievalSummary,
@@ -70,6 +77,7 @@ logger = logging.getLogger(__name__)
 TASK_TYPES = ["create_coverage_matrix", "discover_sources", "retrieve_source", "audit_coverage"]
 
 METRIC_REFRESH_TASK_INTERVAL = 25
+CENSUS_EMPTY_DISCOVERY_STOP_STREAK = 8
 
 NON_RETRYABLE_RETRIEVAL_STATUSES = {
     SourceRetrievalAttemptStatus.UNSAFE_URL.value,
@@ -190,6 +198,7 @@ class SourceDiscoveryExecutionOrchestrator:
         self.coverage_language_count = 0
         self.coverage_source_category_count = 0
         self.attempted_coverage_cell_count = 0
+        self.consecutive_empty_discovery_cells = 0
         self.scale_profile: ScaleProfile = resolve_scale_profile("real", get_settings())
 
     async def run(self, execution_id: str) -> None:
@@ -395,10 +404,19 @@ class SourceDiscoveryExecutionOrchestrator:
         await self._check_cancelled(execution)
         if execution.country_profile_json is None:
             self.current_stage = "snapshot_source_discovery_profile"
+            blueprint_json = execution.blueprint.blueprint_json or {}
             regions, languages, categories = self._coverage_dimensions_from_blueprint(
-                execution.blueprint.blueprint_json or {},
+                blueprint_json,
                 execution.country_code,
                 execution.country_name,
+            )
+            cell_count = len(regions) * len(languages) * len(categories)
+            expected_pages = expected_pages_from_blueprint(blueprint_json)
+            self.scale_profile = resolve_dynamic_scale_profile(
+                execution.mode,
+                get_settings(),
+                cell_count=cell_count,
+                expected_pages=expected_pages,
             )
             profile = self.scale_profile
             max_queries = min(
@@ -417,12 +435,12 @@ class SourceDiscoveryExecutionOrchestrator:
                 "administrative_regions": regions,
                 "languages": languages,
                 "source_categories": categories,
+                "expected_pages": expected_pages,
+                "coverage_cell_count": cell_count,
                 "max_queries_per_discovery": max_queries,
                 "results_per_query": results_per_query,
-                "max_search_request_count": len(regions)
-                * len(languages)
-                * len(categories)
-                * max_queries,
+                "max_search_request_count": cell_count * max_queries,
+                "scale_budget": profile.as_metadata(),
             }
             await execution_service.emit_event(
                 self.db,
@@ -434,6 +452,9 @@ class SourceDiscoveryExecutionOrchestrator:
                     "max_search_request_count": execution.country_profile_json[
                         "max_search_request_count"
                     ],
+                    "coverage_cell_count": cell_count,
+                    "expected_pages": expected_pages,
+                    **profile.as_metadata(),
                 },
             )
             await self.db.commit()
@@ -443,7 +464,33 @@ class SourceDiscoveryExecutionOrchestrator:
                 region_count=len(regions),
                 language_count=len(languages),
                 source_category_count=len(categories),
+                coverage_cell_count=cell_count,
+                retrieval_max_per_execution=profile.retrieval_max_per_execution,
+                extraction_max_documents=profile.extraction_max_documents,
             )
+        else:
+            restored = scale_profile_from_country_profile(
+                execution.mode,
+                get_settings(),
+                execution.country_profile_json,
+            )
+            if restored is not None:
+                self.scale_profile = restored
+            else:
+                profile_json = execution.country_profile_json or {}
+                regions = profile_json.get("administrative_regions") or []
+                languages = profile_json.get("languages") or []
+                categories = profile_json.get("source_categories") or []
+                self.scale_profile = resolve_dynamic_scale_profile(
+                    execution.mode,
+                    get_settings(),
+                    cell_count=len(regions) * len(languages) * len(categories),
+                    expected_pages=profile_json.get("expected_pages")
+                    if profile_json.get("expected_pages") is not None
+                    else expected_pages_from_blueprint(
+                        execution.blueprint.blueprint_json or {}
+                    ),
+                )
 
         coverage_count = await self._coverage_count(execution.id)
         if coverage_count == 0:
@@ -600,7 +647,13 @@ class SourceDiscoveryExecutionOrchestrator:
         documents = await self._source_documents_for_extraction(execution)
         document_limit = max(self.scale_profile.extraction_max_documents, 1)
         chunk_limit = max(self.scale_profile.extraction_max_chunks, 1)
-        selected_documents = documents[:document_limit]
+        # Materialize before commits — expired ORM attrs raise MissingGreenlet in async.
+        execution_id = execution.id
+        organization_id = execution.organization_id
+        selected_documents = [
+            {"id": document.id, "final_url": document.final_url}
+            for document in documents[:document_limit]
+        ]
         summary: dict[str, Any] = {
             "documents_considered": len(documents),
             "documents_prepared": 0,
@@ -617,7 +670,7 @@ class SourceDiscoveryExecutionOrchestrator:
         }
         await execution_service.emit_event(
             self.db,
-            execution.id,
+            execution_id,
             "facility_extraction_phase_started",
             "Facility extraction phase started for retrieved source documents.",
             metadata={
@@ -630,6 +683,8 @@ class SourceDiscoveryExecutionOrchestrator:
         await self.db.commit()
 
         for document in selected_documents:
+            document_id = document["id"]
+            document_final_url = document["final_url"]
             await self._check_cancelled(execution)
             if summary["chunks_considered"] >= chunk_limit:
                 summary["chunk_limit_reached"] = True
@@ -638,21 +693,22 @@ class SourceDiscoveryExecutionOrchestrator:
             prepared = await document_text_preparation_service.prepare(
                 self.db,
                 SourceDocumentPreparationContext(
-                    organization_id=execution.organization_id,
-                    execution_id=execution.id,
-                    source_document_id=document.id,
+                    organization_id=organization_id,
+                    execution_id=execution_id,
+                    source_document_id=document_id,
                 ),
             )
-            if prepared.preparation_status != "prepared" or not prepared.id:
+            prepared_id = prepared.id
+            if prepared.preparation_status != "prepared" or not prepared_id:
                 summary["documents_skipped"] += 1
                 await execution_service.emit_event(
                     self.db,
-                    execution.id,
+                    execution_id,
                     "facility_extraction_document_skipped",
                     "Source document was skipped before extraction.",
                     metadata={
-                        "source_document_id": document.id,
-                        "source_hostname": _hostname(document.final_url),
+                        "source_document_id": document_id,
+                        "source_hostname": _hostname(document_final_url),
                         "preparation_status": prepared.preparation_status,
                         "failure_classification": prepared.failure_classification,
                     },
@@ -662,12 +718,12 @@ class SourceDiscoveryExecutionOrchestrator:
             summary["documents_prepared"] += 1
             await execution_service.emit_event(
                 self.db,
-                execution.id,
+                execution_id,
                 "facility_extraction_document_prepared",
                 "Source document prepared for facility extraction.",
                 metadata={
-                    "source_document_id": document.id,
-                    "source_hostname": _hostname(document.final_url),
+                    "source_document_id": document_id,
+                    "source_hostname": _hostname(document_final_url),
                     "prepared_character_count": prepared.character_count,
                     "chunk_count": prepared.chunk_count,
                     "truncated": prepared.truncated,
@@ -675,11 +731,17 @@ class SourceDiscoveryExecutionOrchestrator:
                 },
             )
             await self.db.commit()
-            chunks = await self._chunks_for_prepared_text(prepared.id)
+            chunks = await self._chunks_for_prepared_text(prepared_id)
+            chunk_refs = [
+                {"id": chunk.id, "coverage_cell_id": chunk.coverage_cell_id}
+                for chunk in chunks
+            ]
             document_had_failure = False
             document_candidate_count = 0
             document_evidence_count = 0
-            for chunk in chunks:
+            for chunk in chunk_refs:
+                chunk_id = chunk["id"]
+                coverage_cell_id = chunk["coverage_cell_id"]
                 await self._check_cancelled(execution)
                 if summary["chunks_considered"] >= chunk_limit:
                     summary["chunk_limit_reached"] = True
@@ -688,14 +750,14 @@ class SourceDiscoveryExecutionOrchestrator:
                 extraction_summary = await facility_extraction_service.extract_one_chunk(
                     self.db,
                     FacilityExtractionContext(
-                        organization_id=execution.organization_id,
-                        execution_id=execution.id,
-                        source_document_id=document.id,
-                        prepared_text_id=prepared.id,
-                        chunk_id=chunk.id,
-                        coverage_cell_id=chunk.coverage_cell_id,
+                        organization_id=organization_id,
+                        execution_id=execution_id,
+                        source_document_id=document_id,
+                        prepared_text_id=prepared_id,
+                        chunk_id=chunk_id,
+                        coverage_cell_id=coverage_cell_id,
                         idempotency_key=self._facility_extraction_attempt_key(
-                            execution.id, document.id, chunk.id
+                            execution_id, document_id, chunk_id
                         ),
                     ),
                 )
@@ -717,21 +779,21 @@ class SourceDiscoveryExecutionOrchestrator:
                     document_had_failure = True
                     self._log(
                         "facility_extraction_chunk_failed",
-                        execution_id=execution.id,
-                        source_document_id=document.id,
-                        chunk_id=chunk.id,
+                        execution_id=execution_id,
+                        source_document_id=document_id,
+                        chunk_id=chunk_id,
                         failure_classification=extraction_summary.failure_classification,
                     )
             if document_had_failure:
                 summary["documents_failed"] += 1
             await execution_service.emit_event(
                 self.db,
-                execution.id,
+                execution_id,
                 "facility_extraction_document_completed",
                 "Source document facility extraction completed.",
                 metadata={
-                    "source_document_id": document.id,
-                    "source_hostname": _hostname(document.final_url),
+                    "source_document_id": document_id,
+                    "source_hostname": _hostname(document_final_url),
                     "candidate_count": document_candidate_count,
                     "accepted_evidence_count": document_evidence_count,
                     "had_failure": document_had_failure,
@@ -739,10 +801,10 @@ class SourceDiscoveryExecutionOrchestrator:
             )
             await self.db.commit()
 
-        summary.update(await self._facility_extraction_metric_metadata(execution.id))
+        summary.update(await self._facility_extraction_metric_metadata(execution_id))
         await execution_service.emit_event(
             self.db,
-            execution.id,
+            execution_id,
             "facility_extraction_phase_completed",
             "Facility extraction phase completed; staging candidates are ready for publication.",
             metadata=summary,
@@ -750,7 +812,7 @@ class SourceDiscoveryExecutionOrchestrator:
         await self.db.commit()
         self._log(
             "facility_extraction_phase_completed",
-            execution_id=execution.id,
+            execution_id=execution_id,
             **summary,
         )
 
@@ -867,7 +929,80 @@ class SourceDiscoveryExecutionOrchestrator:
                 "max_retrieval_estimate": output["max_retrieval_estimate"],
             },
         )
+        await self._maybe_stop_census_discovery_early(execution, summary.candidate_count)
         await self.db.commit()
+
+    async def _maybe_stop_census_discovery_early(
+        self,
+        execution: ScrapingExecution,
+        candidate_count: int,
+    ) -> None:
+        """Stop scheduling more discovery when census yield dries up or fetch budget is full."""
+        if self.scale_profile.mode != MODE_FULL_CENSUS:
+            return
+        if candidate_count > 0:
+            self.consecutive_empty_discovery_cells = 0
+        else:
+            self.consecutive_empty_discovery_cells += 1
+
+        retrieval_tasks = await self._retrieval_task_count(execution.id)
+        budget_exhausted = (
+            self.scale_profile.retrieval_max_per_execution > 0
+            and retrieval_tasks >= self.scale_profile.retrieval_max_per_execution
+        )
+        yield_exhausted = (
+            self.consecutive_empty_discovery_cells >= CENSUS_EMPTY_DISCOVERY_STOP_STREAK
+        )
+        if not budget_exhausted and not yield_exhausted:
+            return
+
+        reason = (
+            "retrieval_budget_exhausted"
+            if budget_exhausted
+            else "consecutive_empty_discovery_cells"
+        )
+        result = await self.db.execute(
+            select(ScrapingTask).where(
+                ScrapingTask.execution_id == execution.id,
+                ScrapingTask.task_type == "discover_sources",
+                ScrapingTask.status == ScrapingTaskStatus.QUEUED,
+            )
+        )
+        skipped = list(result.scalars().all())
+        if not skipped:
+            return
+        now = datetime.now(UTC)
+        for queued in skipped:
+            queued.status = ScrapingTaskStatus.CANCELLED
+            queued.completed_at = now
+            queued.current_action = None
+            queued.error_message = f"Census discovery stopped early ({reason})."
+            if queued.coverage_cell and queued.coverage_cell.status in {
+                ScrapingCoverageStatus.NOT_STARTED,
+                ScrapingCoverageStatus.IN_PROGRESS,
+            }:
+                queued.coverage_cell.status = ScrapingCoverageStatus.CANCELLED
+                queued.coverage_cell.completed_at = now
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "task_completed",
+            f"Full census stopped remaining discovery tasks ({reason}).",
+            metadata={
+                "task_type": "discover_sources",
+                "reason": reason,
+                "skipped_discovery_tasks": len(skipped),
+                "consecutive_empty_discovery_cells": self.consecutive_empty_discovery_cells,
+                "retrieval_tasks": retrieval_tasks,
+                "retrieval_max_per_execution": self.scale_profile.retrieval_max_per_execution,
+            },
+        )
+        self._log(
+            "census_discovery_stopped_early",
+            execution_id=execution.id,
+            reason=reason,
+            skipped_discovery_tasks=len(skipped),
+        )
 
     async def _process_retrieval_task(
         self, execution: ScrapingExecution, task: ScrapingTask

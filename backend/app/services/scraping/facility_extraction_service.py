@@ -99,13 +99,21 @@ class FacilityExtractionService:
                 failure_classification=prepared.failure_classification or "empty_prepared_text",
             )
         chunk = await self._select_chunk(db, context, prepared)
+        # Materialize before any flush/rollback — expired chunk attrs raise MissingGreenlet.
+        chunk_id = chunk.id
+        chunk_text = chunk.chunk_text
+        chunk_hash = chunk.chunk_hash
+        document_id = document.id
+        prepared_id = prepared.id
+        prepared_coverage_cell_id = prepared.coverage_cell_id
+        prepared_language = prepared.detected_language
         attempt = existing or ScrapingFacilityExtractionAttempt(
             organization_id=context.organization_id,
             execution_id=context.execution_id,
-            source_document_id=document.id,
-            prepared_text_id=prepared.id,
-            chunk_id=chunk.id,
-            coverage_cell_id=context.coverage_cell_id or prepared.coverage_cell_id,
+            source_document_id=document_id,
+            prepared_text_id=prepared_id,
+            chunk_id=chunk_id,
+            coverage_cell_id=context.coverage_cell_id or prepared_coverage_cell_id,
             provider=self.provider.provider_name,
             model=self.provider.model,
             prompt_version=self.provider.prompt_version,
@@ -113,10 +121,10 @@ class FacilityExtractionService:
             attempt_number=1,
             idempotency_key=attempt_key,
             requested_at=datetime.now(UTC),
-            input_character_count=len(chunk.chunk_text),
+            input_character_count=len(chunk_text),
             output_candidate_count=0,
             metadata_json={
-                "chunk_hash_prefix": chunk.chunk_hash[:12],
+                "chunk_hash_prefix": chunk_hash[:12],
                 "schema_version": self.provider.schema_version,
             },
         )
@@ -133,8 +141,8 @@ class FacilityExtractionService:
 
         try:
             provider_result = await self.provider.extract(
-                chunk_text=chunk.chunk_text,
-                language_hint=context.language_hint or prepared.detected_language,
+                chunk_text=chunk_text,
+                language_hint=context.language_hint or prepared_language,
             )
             if isinstance(provider_result, FacilityExtractionProviderResult):
                 output = provider_result.output
@@ -144,7 +152,9 @@ class FacilityExtractionService:
                 output = provider_result
                 provider_diagnostics = {}
                 provider_request_id = None
-            accepted, rejected = await self._persist_output(db, attempt, chunk, output)
+            accepted, rejected = await self._persist_output(
+                db, attempt, chunk_id=chunk_id, chunk_text=chunk_text, output=output
+            )
             attempt.status = FacilityExtractionAttemptStatus.SUCCEEDED
             attempt.completed_at = datetime.now(UTC)
             attempt.output_candidate_count = len(output.facilities)
@@ -153,7 +163,7 @@ class FacilityExtractionService:
             attempt.provider_request_id = provider_request_id
             attempt.metadata_json = {
                 "document_relevant": output.document_relevant,
-                "chunk_hash_prefix": chunk.chunk_hash[:12],
+                "chunk_hash_prefix": chunk_hash[:12],
                 "schema_version": self.provider.schema_version,
                 "structured_output": _safe_metadata(provider_diagnostics),
             }
@@ -161,8 +171,8 @@ class FacilityExtractionService:
             await db.refresh(attempt)
             return FacilityExtractionSummary(
                 attempt_id=attempt.id,
-                source_document_id=document.id,
-                chunk_id=chunk.id,
+                source_document_id=document_id,
+                chunk_id=chunk_id,
                 provider=attempt.provider,
                 model=attempt.model,
                 status=attempt.status.value,
@@ -319,44 +329,52 @@ class FacilityExtractionService:
         self,
         db: AsyncSession,
         attempt: ScrapingFacilityExtractionAttempt,
-        chunk: ScrapingSourceDocumentChunk,
+        *,
+        chunk_id: str,
+        chunk_text: str,
         output: FacilityExtractionOutput,
     ) -> tuple[int, int]:
         accepted = 0
         rejected = 0
+        organization_id = attempt.organization_id
+        execution_id = attempt.execution_id
+        coverage_cell_id = attempt.coverage_cell_id
+        source_document_id = attempt.source_document_id
+        prepared_text_id = attempt.prepared_text_id
+        attempt_id = attempt.id
         document_count = await db.scalar(
             select(func.count()).select_from(ScrapingFacilityCandidate).where(
-                ScrapingFacilityCandidate.organization_id == attempt.organization_id,
-                ScrapingFacilityCandidate.source_document_id == attempt.source_document_id,
+                ScrapingFacilityCandidate.organization_id == organization_id,
+                ScrapingFacilityCandidate.source_document_id == source_document_id,
             )
         ) or 0
         for facility in output.facilities[: get_settings().facility_extraction_max_candidates_per_chunk]:
             if document_count >= get_settings().facility_extraction_max_candidates_per_document:
                 rejected += 1
                 continue
-            name_ev = _verify(facility.name, chunk.chunk_text)
+            name_ev = _verify(facility.name, chunk_text)
             if name_ev is None:
                 rejected += 1
                 continue
-            fingerprint = _candidate_fingerprint(attempt.source_document_id, facility.name.value)
+            fingerprint = _candidate_fingerprint(source_document_id, facility.name.value)
             existing_candidate = await db.scalar(
                 select(ScrapingFacilityCandidate.id).where(
-                    ScrapingFacilityCandidate.organization_id == attempt.organization_id,
-                    ScrapingFacilityCandidate.source_document_id == attempt.source_document_id,
-                    ScrapingFacilityCandidate.chunk_id == chunk.id,
+                    ScrapingFacilityCandidate.organization_id == organization_id,
+                    ScrapingFacilityCandidate.source_document_id == source_document_id,
+                    ScrapingFacilityCandidate.chunk_id == chunk_id,
                     ScrapingFacilityCandidate.candidate_fingerprint == fingerprint,
                 )
             )
             if existing_candidate is not None:
                 continue
             candidate = ScrapingFacilityCandidate(
-                organization_id=attempt.organization_id,
-                execution_id=attempt.execution_id,
-                coverage_cell_id=attempt.coverage_cell_id,
-                source_document_id=attempt.source_document_id,
-                prepared_text_id=attempt.prepared_text_id,
-                chunk_id=chunk.id,
-                extraction_attempt_id=attempt.id,
+                organization_id=organization_id,
+                execution_id=execution_id,
+                coverage_cell_id=coverage_cell_id,
+                source_document_id=source_document_id,
+                prepared_text_id=prepared_text_id,
+                chunk_id=chunk_id,
+                extraction_attempt_id=attempt_id,
                 raw_name=facility.name.value[:255],
                 raw_payload=_bounded_payload(facility),
                 model_confidence=facility.model_confidence,
@@ -369,13 +387,36 @@ class FacilityExtractionService:
             except IntegrityError:
                 await db.rollback()
                 continue
-            await self._add_evidence(db, candidate, chunk, "name", facility.name.value, name_ev)
+            candidate_id = candidate.id
+            await self._add_evidence(
+                db,
+                organization_id=organization_id,
+                execution_id=execution_id,
+                facility_candidate_id=candidate_id,
+                source_document_id=source_document_id,
+                prepared_text_id=prepared_text_id,
+                chunk_id=chunk_id,
+                field_name="name",
+                raw_value=facility.name.value,
+                verified=name_ev,
+            )
             for field_name, item in _iter_optional_fields(facility):
-                verified = _verify(item, chunk.chunk_text)
+                verified = _verify(item, chunk_text)
                 if verified is None:
                     rejected += 1
                     continue
-                await self._add_evidence(db, candidate, chunk, field_name, item.value, verified)
+                await self._add_evidence(
+                    db,
+                    organization_id=organization_id,
+                    execution_id=execution_id,
+                    facility_candidate_id=candidate_id,
+                    source_document_id=source_document_id,
+                    prepared_text_id=prepared_text_id,
+                    chunk_id=chunk_id,
+                    field_name=field_name,
+                    raw_value=item.value,
+                    verified=verified,
+                )
             accepted += 1
             document_count += 1
         return accepted, rejected
@@ -383,20 +424,25 @@ class FacilityExtractionService:
     async def _add_evidence(
         self,
         db: AsyncSession,
-        candidate: ScrapingFacilityCandidate,
-        chunk: ScrapingSourceDocumentChunk,
+        *,
+        organization_id: str,
+        execution_id: str | None,
+        facility_candidate_id: str,
+        source_document_id: str,
+        prepared_text_id: str | None,
+        chunk_id: str,
         field_name: str,
         raw_value: Any,
         verified: tuple[str, int, int, str],
     ) -> None:
         quote, start, end, evidence_hash = verified
         row = ScrapingFacilityCandidateEvidence(
-            organization_id=candidate.organization_id,
-            execution_id=candidate.execution_id,
-            facility_candidate_id=candidate.id,
-            source_document_id=candidate.source_document_id,
-            prepared_text_id=candidate.prepared_text_id,
-            chunk_id=chunk.id,
+            organization_id=organization_id,
+            execution_id=execution_id,
+            facility_candidate_id=facility_candidate_id,
+            source_document_id=source_document_id,
+            prepared_text_id=prepared_text_id,
+            chunk_id=chunk_id,
             field_name=field_name[:120],
             raw_value=raw_value,
             evidence_quote=quote,

@@ -2,8 +2,11 @@ from types import SimpleNamespace
 
 from app.schemas.api import SourceDiscoveryQueryPlan
 from app.services.scraping.scale_profile import (
+    CENSUS_PER_CELL_FETCH,
     MODE_FULL_CENSUS,
     MODE_REAL,
+    expected_pages_from_blueprint,
+    resolve_dynamic_scale_profile,
     resolve_scale_profile,
 )
 from app.services.scraping.source_discovery_service import _normalize_planned_query_payload
@@ -30,13 +33,41 @@ def test_real_mode_uses_settings_values():
     assert profile.retrieval_max_per_execution == 150
 
 
-def test_full_census_raises_throughput_far_above_standard():
-    profile = resolve_scale_profile(MODE_FULL_CENSUS, _settings())
+def test_austria_sized_matrix_scales_fetch_without_clamps():
+    # 9 regions × 1 language × 5 categories
+    cells = 45
+    profile = resolve_dynamic_scale_profile(
+        MODE_FULL_CENSUS,
+        _settings(),
+        cell_count=cells,
+        expected_pages=None,
+    )
     assert profile.mode == MODE_FULL_CENSUS
-    assert profile.extraction_max_documents >= 200
-    assert profile.retrieval_max_per_execution >= 500
-    assert profile.publication_max_candidates >= 1000
+    assert profile.retrieval_max_per_cell == CENSUS_PER_CELL_FETCH
+    assert profile.retrieval_max_per_execution == cells * CENSUS_PER_CELL_FETCH
+    assert profile.retrieval_max_per_execution == 1800
+    assert profile.extraction_max_documents == 900
+    assert profile.extraction_max_chunks == 2700
+    assert profile.publication_max_candidates == 3600
     assert profile.serper_max_queries_per_discovery >= 10
+
+
+def test_expected_pages_raises_budget_with_no_ceiling():
+    profile = resolve_dynamic_scale_profile(
+        MODE_FULL_CENSUS,
+        _settings(),
+        cell_count=45,
+        expected_pages=5000,
+    )
+    assert profile.retrieval_max_per_execution == 5000
+    assert profile.extraction_max_documents == 2500
+    assert profile.publication_max_candidates == 10000
+
+
+def test_expected_pages_from_blueprint():
+    assert expected_pages_from_blueprint({"estimated_workload": {"expected_pages": 1200}}) == 1200
+    assert expected_pages_from_blueprint({"estimated_workload": {}}) is None
+    assert expected_pages_from_blueprint(None) is None
 
 
 def test_query_plan_schema_accepts_full_census_query_counts():
