@@ -28,25 +28,22 @@ logger = get_logger(__name__)
 
 EventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 ACTIVE_TURN_STATUSES = (TurnStatus.PENDING, TurnStatus.RUNNING)
-CANCELLATION_POLL_INTERVAL_SECONDS = 0.5
+DELETION_POLL_INTERVAL_SECONDS = 0.5
 MODEL_ANSWER_FAILED_CODE = "MODEL_ANSWER_FAILED"
 MODEL_ANSWER_FAILED_MESSAGE = "A model failed to respond."
 TURN_FAILED_CODE = "TURN_FAILED"
 TURN_FAILED_MESSAGE = "Turn failed."
 
 
-class TurnCancellationDetected(Exception):
-    """Raised internally when a turn was cancelled or deleted durably."""
+class TurnNoLongerWritable(Exception):
+    """Raised internally when a turn was deleted or no longer accepts writes."""
 
 
-async def is_turn_cancel_requested_or_deleted(db: AsyncSession, turn_id: str) -> bool:
+async def is_turn_deleted(db: AsyncSession, turn_id: str) -> bool:
     result = await db.execute(
-        select(Turn.id, Turn.cancel_requested_at)
-        .where(Turn.id == turn_id)
-        .execution_options(populate_existing=True)
+        select(Turn.id).where(Turn.id == turn_id).execution_options(populate_existing=True)
     )
-    row = result.one_or_none()
-    return row is None or row.cancel_requested_at is not None
+    return result.scalar_one_or_none() is None
 
 
 @dataclass
@@ -98,14 +95,13 @@ class TurnOrchestrator:
         self._prompts = get_prompt_engine()
         self._providers = get_provider_registry()
 
-    async def _ensure_not_cancelled(self, db: AsyncSession, turn_id: str) -> None:
-        if await is_turn_cancel_requested_or_deleted(db, turn_id):
-            raise TurnCancellationDetected
+    async def _ensure_not_deleted(self, db: AsyncSession, turn_id: str) -> None:
+        if await is_turn_deleted(db, turn_id):
+            raise TurnNoLongerWritable
 
     def _active_turn_exists(self, turn_id: str):
         return exists().where(
             Turn.id == turn_id,
-            Turn.cancel_requested_at.is_(None),
             Turn.status.in_(ACTIVE_TURN_STATUSES),
         )
 
@@ -114,19 +110,18 @@ class TurnOrchestrator:
             select(Turn.id)
             .where(
                 Turn.id == turn_id,
-                Turn.cancel_requested_at.is_(None),
                 Turn.status.in_(ACTIVE_TURN_STATUSES),
             )
             .with_for_update()
         )
         if result.scalar_one_or_none() is None:
-            raise TurnCancellationDetected
+            raise TurnNoLongerWritable
 
-    async def _fresh_cancellation_check(self, turn_id: str) -> bool:
+    async def _fresh_deletion_check(self, turn_id: str) -> bool:
         from app.db.session import AsyncSessionLocal
 
-        async with AsyncSessionLocal() as cancellation_db:
-            return await is_turn_cancel_requested_or_deleted(cancellation_db, turn_id)
+        async with AsyncSessionLocal() as deletion_db:
+            return await is_turn_deleted(deletion_db, turn_id)
 
     async def _await_provider_complete(
         self,
@@ -138,14 +133,14 @@ class TurnOrchestrator:
             while True:
                 done, _ = await asyncio.wait(
                     {provider_task},
-                    timeout=CANCELLATION_POLL_INTERVAL_SECONDS,
+                    timeout=DELETION_POLL_INTERVAL_SECONDS,
                 )
                 if provider_task in done:
                     return await provider_task
-                if await self._fresh_cancellation_check(turn_id):
+                if await self._fresh_deletion_check(turn_id):
                     provider_task.cancel()
                     await asyncio.gather(provider_task, return_exceptions=True)
-                    raise TurnCancellationDetected
+                    raise TurnNoLongerWritable
         except asyncio.CancelledError:
             if not provider_task.done():
                 provider_task.cancel()
@@ -163,12 +158,12 @@ class TurnOrchestrator:
         )
         return result.scalar_one_or_none()
 
-    async def _turn_deleted_or_cancelled_after_rollback(
+    async def _turn_deleted_after_rollback(
         self,
         db: AsyncSession,
         turn_id: str,
     ) -> bool:
-        return await is_turn_cancel_requested_or_deleted(db, turn_id)
+        return await is_turn_deleted(db, turn_id)
 
     async def run(
         self,
@@ -194,7 +189,6 @@ class TurnOrchestrator:
             active = await db.execute(
                 select(Turn.id).where(
                     Turn.id == ctx.turn_id,
-                    Turn.cancel_requested_at.is_(None),
                     Turn.status == TurnStatus.RUNNING,
                 )
             )
@@ -206,7 +200,6 @@ class TurnOrchestrator:
                 update(Turn)
                 .where(
                     Turn.id == ctx.turn_id,
-                    Turn.cancel_requested_at.is_(None),
                     Turn.status == TurnStatus.PENDING,
                 )
                 .values(status=TurnStatus.RUNNING)
@@ -226,7 +219,7 @@ class TurnOrchestrator:
                 .values(status=ModelAnswerStatus.RUNNING)
             )
         else:
-            await self._ensure_not_cancelled(db, ctx.turn_id)
+            await self._ensure_not_deleted(db, ctx.turn_id)
             for model_id in ctx.model_ids:
                 db.add(
                     ModelAnswer(
@@ -239,8 +232,8 @@ class TurnOrchestrator:
 
         # Phase 1: parallel model answers
         try:
-            await self._ensure_not_cancelled(db, ctx.turn_id)
-        except TurnCancellationDetected:
+            await self._ensure_not_deleted(db, ctx.turn_id)
+        except TurnNoLongerWritable:
             await rollback_quietly()
             return result
 
@@ -249,7 +242,7 @@ class TurnOrchestrator:
             await emit("model_answer_started", {"model_id": model_id})
 
         async def call_model(model_id: str) -> ModelCallResult:
-            await self._ensure_not_cancelled(db, ctx.turn_id)
+            await self._ensure_not_deleted(db, ctx.turn_id)
             model = get_model(model_id)
             system = self._prompts.model_answer_prompt(
                 user_message=ctx.user_message,
@@ -265,7 +258,7 @@ class TurnOrchestrator:
 
             try:
                 provider = self._providers.get_provider(model.provider)
-                await self._ensure_not_cancelled(db, ctx.turn_id)
+                await self._ensure_not_deleted(db, ctx.turn_id)
                 response = await self._await_provider_complete(
                     ctx.turn_id,
                     provider.complete(
@@ -275,11 +268,11 @@ class TurnOrchestrator:
                         max_tokens=4096,
                     ),
                 )
-                await self._ensure_not_cancelled(db, ctx.turn_id)
+                await self._ensure_not_deleted(db, ctx.turn_id)
                 return ModelCallResult(model_id=model_id, model_name=model.name, response=response)
             except asyncio.CancelledError:
                 raise
-            except TurnCancellationDetected:
+            except TurnNoLongerWritable:
                 raise
             except Exception as exc:
                 return ModelCallResult(model_id=model_id, model_name=model.name, error=exc)
@@ -361,11 +354,11 @@ class TurnOrchestrator:
                 await db.commit()
             except IntegrityError:
                 await db.rollback()
-                if await self._turn_deleted_or_cancelled_after_rollback(
+                if await self._turn_deleted_after_rollback(
                     db,
                     ctx.turn_id,
                 ):
-                    raise TurnCancellationDetected
+                    raise TurnNoLongerWritable
                 raise
             result.cost_records.append(cost)
             await emit(
@@ -386,7 +379,7 @@ class TurnOrchestrator:
             for task in asyncio.as_completed(tasks):
                 call_result = await task
                 await persist_model_result(call_result)
-        except TurnCancellationDetected:
+        except TurnNoLongerWritable:
             for task in tasks:
                 if not task.done():
                     task.cancel()
@@ -401,8 +394,8 @@ class TurnOrchestrator:
             raise
 
         try:
-            await self._ensure_not_cancelled(db, ctx.turn_id)
-        except TurnCancellationDetected:
+            await self._ensure_not_deleted(db, ctx.turn_id)
+        except TurnNoLongerWritable:
             await rollback_quietly()
             return result
 
@@ -434,7 +427,7 @@ class TurnOrchestrator:
         if not successful:
             try:
                 await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-            except TurnCancellationDetected:
+            except TurnNoLongerWritable:
                 await rollback_quietly()
                 return result
             failed_update = await db.execute(
@@ -454,8 +447,8 @@ class TurnOrchestrator:
 
         # Phase 2: Verdict
         try:
-            await self._ensure_not_cancelled(db, ctx.turn_id)
-        except TurnCancellationDetected:
+            await self._ensure_not_deleted(db, ctx.turn_id)
+        except TurnNoLongerWritable:
             await rollback_quietly()
             return result
 
@@ -475,7 +468,7 @@ class TurnOrchestrator:
         provider = self._providers.get_provider(verdict_model.provider)
 
         try:
-            await self._ensure_not_cancelled(db, ctx.turn_id)
+            await self._ensure_not_deleted(db, ctx.turn_id)
             verdict_response = await self._await_provider_complete(
                 ctx.turn_id,
                 provider.complete(
@@ -485,7 +478,7 @@ class TurnOrchestrator:
                     max_tokens=2048,
                 ),
             )
-            await self._ensure_not_cancelled(db, ctx.turn_id)
+            await self._ensure_not_deleted(db, ctx.turn_id)
             parsed = provider.parse_json_response(verdict_response.text)
 
             failed_count = sum(1 for a in answer_context if a["failed"])
@@ -510,7 +503,7 @@ class TurnOrchestrator:
             result.verdict = verdict_row
             await db.flush()
 
-            await self._ensure_not_cancelled(db, ctx.turn_id)
+            await self._ensure_not_deleted(db, ctx.turn_id)
             cost = CostRecord(
                 org_id=ctx.org_id,
                 chat_id=ctx.chat_id,
@@ -535,7 +528,7 @@ class TurnOrchestrator:
                 await rollback_quietly()
                 return result
             await db.commit()
-            await self._ensure_not_cancelled(db, ctx.turn_id)
+            await self._ensure_not_deleted(db, ctx.turn_id)
 
             await emit(
                 "verdict_completed",
@@ -552,18 +545,18 @@ class TurnOrchestrator:
             )
         except asyncio.CancelledError:
             raise
-        except TurnCancellationDetected:
+        except TurnNoLongerWritable:
             await rollback_quietly()
             return result
         except Exception as exc:
-            if await is_turn_cancel_requested_or_deleted(db, ctx.turn_id):
+            if await is_turn_deleted(db, ctx.turn_id):
                 await rollback_quietly()
                 return result
             message = format_llm_error(exc)
             logger.error("verdict_failed", error=message)
             try:
                 await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-            except TurnCancellationDetected:
+            except TurnNoLongerWritable:
                 await rollback_quietly()
                 return result
             failed_update = await db.execute(
@@ -581,7 +574,7 @@ class TurnOrchestrator:
             await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
             return result
 
-        if await is_turn_cancel_requested_or_deleted(db, ctx.turn_id):
+        if await is_turn_deleted(db, ctx.turn_id):
             await rollback_quietly()
             return result
         await emit(

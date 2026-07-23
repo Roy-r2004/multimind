@@ -1930,14 +1930,16 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
     verdict_model: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[TurnStatus] = mapped_column(
-        Enum(TurnStatus), default=TurnStatus.PENDING, nullable=False
+        Enum(
+            TurnStatus,
+            native_enum=False,
+        ),
+        default=TurnStatus.PENDING,
+        nullable=False,
     )
     custom_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision_insurance_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    cancel_requested_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
 
     chat: Mapped["Chat"] = relationship(back_populates="turns")
     model_answers: Mapped[list["ModelAnswer"]] = relationship(back_populates="turn")

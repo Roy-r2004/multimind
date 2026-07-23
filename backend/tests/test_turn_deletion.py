@@ -4,14 +4,16 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.api.v1 import chats as chats_api_module
 from app.core.dependencies import AuthContext
 from app.core.exceptions import ForbiddenError, NotFoundError
 from app.db.base import Base
+from app.db import session as db_session_module
 from app.db.models import (
     Chat,
     CostRecord,
@@ -38,6 +40,15 @@ from app.services.chat_service import chat_service
 
 
 class FakeProvider:
+    MODEL_TRACKING_ALIASES = {
+        "gpt-4.1": "openai/gpt-4.1",
+        "openai/gpt-4.1": "openai/gpt-4.1",
+        "claude": "anthropic/claude-sonnet-4",
+        "anthropic/claude-sonnet-4": "anthropic/claude-sonnet-4",
+        "gemini": "google/gemini-2.5-pro",
+        "google/gemini-2.5-pro": "google/gemini-2.5-pro",
+    }
+
     def __init__(self) -> None:
         self.started: dict[str, asyncio.Event] = {}
         self.release: dict[str, asyncio.Event] = {}
@@ -49,29 +60,37 @@ class FakeProvider:
         self.calls: list[str] = []
         self.verdict_calls = 0
 
+    def tracking_model_id(self, model: str) -> str:
+        return self.MODEL_TRACKING_ALIASES.get(model, model)
+
     async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096):
-        self.started.setdefault(model, asyncio.Event()).set()
-        self.calls.append(model)
-        if model in self.blocking_models:
+        tracking_id = self.tracking_model_id(model)
+        self.started.setdefault(tracking_id, asyncio.Event()).set()
+        self.calls.append(tracking_id)
+        if tracking_id in self.blocking_models:
             try:
-                await self.release.setdefault(model, asyncio.Event()).wait()
+                await self.release.setdefault(tracking_id, asyncio.Event()).wait()
             except asyncio.CancelledError:
-                self.cancel_attempted.add(model)
-                if model not in self.ignore_cancellation_models:
+                self.cancel_attempted.add(tracking_id)
+                if tracking_id not in self.ignore_cancellation_models:
                     raise
         if user == "Produce the verdict JSON now.":
             self.verdict_calls += 1
-            if model in self.failing_models:
-                raise RuntimeError(self.failure_messages.get(model, f"{model} failed"))
+            if tracking_id in self.failing_models:
+                raise RuntimeError(
+                    self.failure_messages.get(tracking_id, f"{tracking_id} failed")
+                )
             return LLMResponse(
                 text='{"text":"Final verdict","reason":"Because."}',
                 tokens_input=10,
                 tokens_output=5,
             )
-        if model in self.failing_models:
-            raise RuntimeError(self.failure_messages.get(model, f"{model} failed"))
+        if tracking_id in self.failing_models:
+            raise RuntimeError(
+                self.failure_messages.get(tracking_id, f"{tracking_id} failed")
+            )
         return LLMResponse(
-            text=f"Answer from {model}",
+            text=f"Answer from {tracking_id}",
             tokens_input=10,
             tokens_output=5,
             confidence=90,
@@ -84,16 +103,40 @@ class FakeProvider:
 class FakeRegistry:
     def __init__(self, provider: FakeProvider) -> None:
         self.provider = provider
+        self.provider_names: list[str] = []
 
     def get_provider(self, _provider_name: str) -> FakeProvider:
+        self.provider_names.append(_provider_name)
         return self.provider
 
 
+def make_test_orchestrator(registry: FakeRegistry) -> TurnOrchestrator:
+    orchestrator = TurnOrchestrator()
+    orchestrator._providers = registry
+    return orchestrator
+
+
+async def cleanup_orchestration_tasks() -> None:
+    tasks = list(chat_service_module._orchestration_tasks.values())
+    awaitable_tasks = []
+    for task in tasks:
+        if hasattr(task, "done") and not task.done() and hasattr(task, "cancel"):
+            task.cancel()
+        if isinstance(task, asyncio.Task):
+            awaitable_tasks.append(task)
+    if awaitable_tasks:
+        await asyncio.gather(*awaitable_tasks, return_exceptions=True)
+    chat_service_module._orchestration_tasks.clear()
+
+
 @pytest.fixture
-async def db_setup(tmp_path):
+async def db_setup(tmp_path, monkeypatch):
     db_path = tmp_path / "turn-delete.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", poolclass=NullPool)
     Session = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(chat_service_module, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(chats_api_module, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(db_session_module, "AsyncSessionLocal", Session)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -138,12 +181,18 @@ async def db_setup(tmp_path):
         await db.commit()
 
     provider = FakeProvider()
+    registry = FakeRegistry(provider)
+    monkeypatch.setattr(
+        chat_service_module,
+        "get_orchestrator",
+        lambda: make_test_orchestrator(registry),
+    )
     try:
         yield SimpleNamespace(
             engine=engine,
             Session=Session,
             provider=provider,
-            registry=FakeRegistry(provider),
+            registry=registry,
             auth=AuthContext(user=user, org_id=org.id, role=OrgRole.MEMBER),
             admin_auth=AuthContext(user=admin, org_id=org.id, role=OrgRole.ADMIN),
             owner_auth=AuthContext(user=owner, org_id=org.id, role=OrgRole.OWNER),
@@ -159,7 +208,7 @@ async def db_setup(tmp_path):
             other_chat_id=other_chat.id,
         )
     finally:
-        chat_service_module._orchestration_tasks.clear()
+        await cleanup_orchestration_tasks()
         await engine.dispose()
 
 
@@ -182,7 +231,6 @@ async def run_turn(Session, registry, auth, turn_id: str, chat_id: str):
             .where(
                 Turn.id == turn_id,
                 Turn.status == TurnStatus.PENDING,
-                Turn.cancel_requested_at.is_(None),
             )
             .values(status=TurnStatus.RUNNING)
         )
@@ -213,6 +261,16 @@ async def count_rows(Session, model, **filters):
         for field, value in filters.items():
             statement = statement.where(getattr(model, field) == value)
         return len((await db.execute(statement)).scalars().all())
+
+
+async def hard_delete_turn_rows(Session, turn_id: str) -> None:
+    async with Session() as db:
+        await db.execute(delete(CostRecord).where(CostRecord.turn_id == turn_id))
+        await db.execute(delete(DecisionInsurance).where(DecisionInsurance.turn_id == turn_id))
+        await db.execute(delete(Verdict).where(Verdict.turn_id == turn_id))
+        await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id == turn_id))
+        await db.execute(delete(Turn).where(Turn.id == turn_id))
+        await db.commit()
 
 
 async def first_stream_event(Session, auth, turn_id: str):
@@ -250,12 +308,35 @@ async def claim_turn(Session, turn_id: str) -> int:
             .where(
                 Turn.id == turn_id,
                 Turn.status == TurnStatus.PENDING,
-                Turn.cancel_requested_at.is_(None),
             )
             .values(status=TurnStatus.RUNNING, error_message=None)
         )
         await db.commit()
         return result.rowcount
+
+
+def test_fake_provider_tracking_model_id_normalizes_aliases():
+    provider = FakeProvider()
+
+    assert provider.tracking_model_id("gpt-4.1") == provider.tracking_model_id(
+        "openai/gpt-4.1"
+    )
+    assert provider.tracking_model_id("claude") == provider.tracking_model_id(
+        "anthropic/claude-sonnet-4"
+    )
+
+
+def test_fake_registry_returns_shared_provider_for_all_model_families(db_setup):
+    assert db_setup.registry.get_provider("openai") is db_setup.provider
+    assert db_setup.registry.get_provider("anthropic") is db_setup.provider
+    assert db_setup.registry.get_provider("google") is db_setup.provider
+
+
+def test_turn_status_mapping_uses_varchar_backed_enum():
+    status_type = Turn.__table__.c.status.type
+
+    assert status_type.native_enum is False
+    assert list(status_type.enums) == [status.name for status in TurnStatus]
 
 
 @pytest.mark.asyncio
@@ -485,7 +566,6 @@ async def test_viewer_cannot_delete_or_stop_turn_and_has_no_side_effects(db_setu
             saved_turn = await db.get(Turn, turn.id)
             assert saved_turn is not None
             assert saved_turn.status == TurnStatus.RUNNING
-            assert saved_turn.cancel_requested_at is None
     finally:
         chat_service_module._discard_orchestration_task(turn.id, task)
         task.cancel()
@@ -509,9 +589,6 @@ async def test_delete_turn_route_denies_same_org_viewer(db_setup):
     assert exc_info.value.message == "You do not have permission to delete this turn."
     assert exc_info.value.code == "FORBIDDEN"
     assert await count_rows(db_setup.Session, Turn, id=turn.id) == 1
-    async with db_setup.Session() as db:
-        saved_turn = await db.get(Turn, turn.id)
-        assert saved_turn.cancel_requested_at is None
 
 
 @pytest.mark.asyncio
@@ -541,9 +618,6 @@ async def test_viewer_cannot_delete_own_created_chat_turn(db_setup):
     assert exc_info.value.message == "You do not have permission to delete this turn."
     assert exc_info.value.code == "FORBIDDEN"
     assert await count_rows(db_setup.Session, Turn, id=turn.id) == 1
-    async with db_setup.Session() as db:
-        saved_turn = await db.get(Turn, turn.id)
-        assert saved_turn.cancel_requested_at is None
 
 
 @pytest.mark.asyncio
@@ -563,9 +637,6 @@ async def test_non_creator_member_cannot_delete_another_members_turn(db_setup):
     assert exc_info.value.message == "You do not have permission to delete this turn."
     assert exc_info.value.code == "FORBIDDEN"
     assert await count_rows(db_setup.Session, Turn, id=turn.id) == 1
-    async with db_setup.Session() as db:
-        saved_turn = await db.get(Turn, turn.id)
-        assert saved_turn.cancel_requested_at is None
 
 
 @pytest.mark.asyncio
@@ -615,7 +686,15 @@ async def test_repeated_deletion_is_safe_and_list_turns_omits_deleted_turn(db_se
 
 @pytest.mark.asyncio
 async def test_concurrent_stream_starts_create_one_orchestration_task_and_provider_run(db_setup):
-    db_setup.provider.blocking_models.update(["openai/gpt-4.1", "anthropic/claude-sonnet-4"])
+    provider_models = [
+        db_setup.provider.tracking_model_id("gpt-4.1"),
+        db_setup.provider.tracking_model_id("claude"),
+    ]
+    db_setup.provider.blocking_models.update(provider_models)
+    started_events = [
+        db_setup.provider.started.setdefault(model_id, asyncio.Event())
+        for model_id in provider_models
+    ]
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
 
     first = asyncio.create_task(first_stream_event(db_setup.Session, db_setup.auth, turn.id))
@@ -631,16 +710,9 @@ async def test_concurrent_stream_starts_create_one_orchestration_task_and_provid
         winning_task = chat_service_module._orchestration_tasks[turn.id]
         assert not winning_task.done()
 
-        await asyncio.wait_for(
-            db_setup.provider.started["openai/gpt-4.1"].wait(), timeout=5
-        )
-        await asyncio.wait_for(
-            db_setup.provider.started["anthropic/claude-sonnet-4"].wait(), timeout=5
-        )
-        assert sorted(db_setup.provider.calls) == [
-            "anthropic/claude-sonnet-4",
-            "openai/gpt-4.1",
-        ]
+        for event in started_events:
+            await asyncio.wait_for(event.wait(), timeout=5)
+        assert sorted(db_setup.provider.calls) == sorted(provider_models)
     finally:
         async with db_setup.Session() as db:
             await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
@@ -660,7 +732,15 @@ async def test_cross_worker_atomic_claim_allows_one_winner(db_setup):
 
 @pytest.mark.asyncio
 async def test_high_contention_stream_starts_produce_one_provider_run(db_setup):
-    db_setup.provider.blocking_models.update(["openai/gpt-4.1", "anthropic/claude-sonnet-4"])
+    provider_models = [
+        db_setup.provider.tracking_model_id("gpt-4.1"),
+        db_setup.provider.tracking_model_id("claude"),
+    ]
+    db_setup.provider.blocking_models.update(provider_models)
+    started_events = [
+        db_setup.provider.started.setdefault(model_id, asyncio.Event())
+        for model_id in provider_models
+    ]
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
 
     events = await asyncio.gather(
@@ -673,16 +753,9 @@ async def test_high_contention_stream_starts_produce_one_provider_run(db_setup):
         assert len(duplicate_events) == 4
         assert all(event["data"]["code"] == "TURN_ALREADY_RUNNING" for event in duplicate_events)
 
-        await asyncio.wait_for(
-            db_setup.provider.started["openai/gpt-4.1"].wait(), timeout=5
-        )
-        await asyncio.wait_for(
-            db_setup.provider.started["anthropic/claude-sonnet-4"].wait(), timeout=5
-        )
-        assert sorted(db_setup.provider.calls) == [
-            "anthropic/claude-sonnet-4",
-            "openai/gpt-4.1",
-        ]
+        for event in started_events:
+            await asyncio.wait_for(event.wait(), timeout=5)
+        assert sorted(db_setup.provider.calls) == sorted(provider_models)
     finally:
         async with db_setup.Session() as db:
             await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
@@ -717,7 +790,7 @@ async def test_stream_start_never_overwrites_live_registry_task(db_setup):
 
 @pytest.mark.asyncio
 async def test_stream_start_removes_stale_completed_registry_task(db_setup):
-    db_setup.provider.blocking_models.add("openai/gpt-4.1")
+    db_setup.provider.blocking_models.add(db_setup.provider.tracking_model_id("gpt-4.1"))
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
     stale_task = asyncio.create_task(asyncio.sleep(0))
     await stale_task
@@ -732,22 +805,6 @@ async def test_stream_start_removes_stale_completed_registry_task(db_setup):
     finally:
         async with db_setup.Session() as db:
             await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
-
-
-@pytest.mark.asyncio
-async def test_stream_start_after_cancellation_does_not_create_task_or_provider_call(db_setup):
-    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
-    async with db_setup.Session() as db:
-        await db.execute(
-            update(Turn).where(Turn.id == turn.id).values(cancel_requested_at=func.now())
-        )
-        await db.commit()
-
-    event = await first_stream_event(db_setup.Session, db_setup.auth, turn.id)
-
-    assert event["type"] == "turn_deleted"
-    assert turn.id not in chat_service_module._orchestration_tasks
-    assert db_setup.provider.calls == []
 
 
 @pytest.mark.asyncio
@@ -772,7 +829,7 @@ async def test_stream_start_recovers_claim_when_task_creation_fails(db_setup, mo
     def fail_create_task(coroutine):
         raise RuntimeError("create task failed")
 
-    monkeypatch.setattr(chat_service_module.asyncio, "create_task", fail_create_task)
+    monkeypatch.setattr(chat_service_module, "_create_orchestration_task", fail_create_task)
 
     event = await first_stream_event(db_setup.Session, db_setup.auth, turn.id)
 
@@ -813,7 +870,6 @@ async def test_stream_start_recovers_claim_when_request_is_cancelled_after_commi
     async with db_setup.Session() as db:
         saved = await db.get(Turn, turn.id)
     assert saved.status == TurnStatus.FAILED
-    assert saved.cancel_requested_at is None
 
 
 @pytest.mark.asyncio
@@ -850,7 +906,10 @@ async def test_stream_provider_failure_event_does_not_leak_provider_details(db_s
         "provider body token sk-secret endpoint https://provider.internal/v1 "
         "postgresql://user:secret@internal-db:5432/app"
     )
-    provider_models = ["openai/gpt-4.1", "anthropic/claude-sonnet-4"]
+    provider_models = [
+        db_setup.provider.tracking_model_id("gpt-4.1"),
+        db_setup.provider.tracking_model_id("claude"),
+    ]
     db_setup.provider.failing_models.update(provider_models)
     db_setup.provider.failure_messages.update({model: sensitive for model in provider_models})
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
@@ -1302,7 +1361,6 @@ async def test_delete_chat_commit_failure_preserves_active_turn_and_task(
             saved_turn = await db.get(Turn, turn.id)
             assert saved_turn is not None
             assert saved_turn.status == TurnStatus.RUNNING
-            assert saved_turn.cancel_requested_at is None
     finally:
         chat_service_module._orchestration_tasks.pop(turn.id, None)
         task.cancel()
@@ -1313,7 +1371,10 @@ async def test_delete_chat_commit_failure_preserves_active_turn_and_task(
 async def test_delete_chat_during_unregistered_orchestration_discards_late_provider_result(
     db_setup
 ):
-    provider_models = ["openai/gpt-4.1", "anthropic/claude-sonnet-4"]
+    provider_models = [
+        db_setup.provider.tracking_model_id("gpt-4.1"),
+        db_setup.provider.tracking_model_id("claude"),
+    ]
     db_setup.provider.blocking_models.update(provider_models)
     db_setup.provider.ignore_cancellation_models.update(provider_models)
     started_events = [
@@ -1368,7 +1429,10 @@ async def test_delete_chat_during_unregistered_orchestration_discards_late_provi
 
 @pytest.mark.asyncio
 async def test_cross_worker_cancellation_stops_unregistered_orchestration(db_setup):
-    provider_models = ["openai/gpt-4.1", "anthropic/claude-sonnet-4"]
+    provider_models = [
+        db_setup.provider.tracking_model_id("gpt-4.1"),
+        db_setup.provider.tracking_model_id("claude"),
+    ]
     db_setup.provider.blocking_models.update(provider_models)
     started_events = [
         db_setup.provider.started.setdefault(model_id, asyncio.Event())
@@ -1403,8 +1467,11 @@ async def test_cross_worker_cancellation_stops_unregistered_orchestration(db_set
 
 
 @pytest.mark.asyncio
-async def test_late_provider_result_after_cancel_request_does_not_persist(db_setup):
-    provider_models = ["openai/gpt-4.1", "anthropic/claude-sonnet-4"]
+async def test_late_provider_result_after_turn_deletion_does_not_persist(db_setup):
+    provider_models = [
+        db_setup.provider.tracking_model_id("gpt-4.1"),
+        db_setup.provider.tracking_model_id("claude"),
+    ]
     db_setup.provider.blocking_models.update(provider_models)
     db_setup.provider.ignore_cancellation_models.update(provider_models)
     started_events = [
@@ -1419,26 +1486,13 @@ async def test_late_provider_result_after_cancel_request_does_not_persist(db_set
         for event in started_events:
             await asyncio.wait_for(event.wait(), timeout=5)
 
-        async with db_setup.Session() as db:
-            await db.execute(
-                update(Turn)
-                .where(Turn.id == turn.id)
-                .values(cancel_requested_at=func.now())
-            )
-            await db.commit()
+        await hard_delete_turn_rows(db_setup.Session, turn.id)
 
         await asyncio.wait_for(task, timeout=5)
 
-        async with db_setup.Session() as db:
-            saved = await db.get(Turn, turn.id)
-            answers = (
-                await db.execute(select(ModelAnswer).where(ModelAnswer.turn_id == turn.id))
-            ).scalars().all()
-
-        assert saved.status == TurnStatus.RUNNING
-        assert saved.cancel_requested_at is not None
+        assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
+        assert await count_rows(db_setup.Session, ModelAnswer, turn_id=turn.id) == 0
         assert db_setup.provider.cancel_attempted == set(provider_models)
-        assert all(answer.status == ModelAnswerStatus.RUNNING for answer in answers)
         assert await count_rows(db_setup.Session, Verdict, turn_id=turn.id) == 0
         assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
         assert db_setup.provider.verdict_calls == 0
@@ -1474,7 +1528,6 @@ async def test_delete_turn_does_not_cancel_local_task_when_delete_commit_fails(
     async with db_setup.Session() as db:
         saved_turn = await db.get(Turn, turn.id)
         assert saved_turn.status == TurnStatus.PENDING
-        assert saved_turn.cancel_requested_at is None
         retry = await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
     assert retry.deleted is True
     assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
@@ -1507,7 +1560,6 @@ async def test_delete_turn_does_not_cancel_local_task_when_delete_flush_fails(
     async with db_setup.Session() as db:
         saved_turn = await db.get(Turn, turn.id)
         assert saved_turn.status == TurnStatus.PENDING
-        assert saved_turn.cancel_requested_at is None
         retry = await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
     assert retry.deleted is True
     assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
@@ -1543,8 +1595,8 @@ async def test_delete_turn_success_survives_post_commit_local_cancel_failure(db_
 
 
 @pytest.mark.asyncio
-async def test_missing_turn_row_is_treated_as_cancelled_by_orchestrator(db_setup):
-    model_id = "openai/gpt-4.1"
+async def test_missing_turn_row_is_treated_as_deleted_by_orchestrator(db_setup):
+    model_id = db_setup.provider.tracking_model_id("gpt-4.1")
     db_setup.provider.blocking_models.add(model_id)
     started_event = db_setup.provider.started.setdefault(model_id, asyncio.Event())
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
@@ -1580,8 +1632,8 @@ async def test_missing_turn_row_is_treated_as_cancelled_by_orchestrator(db_setup
 
 
 @pytest.mark.asyncio
-async def test_cancel_request_cannot_be_overwritten_by_verdict_completion(db_setup):
-    verdict_model_id = "google/gemini-2.5-pro"
+async def test_turn_deletion_cannot_be_overwritten_by_verdict_completion(db_setup):
+    verdict_model_id = db_setup.provider.tracking_model_id("gemini")
     db_setup.provider.blocking_models.add(verdict_model_id)
     verdict_started = db_setup.provider.started.setdefault(verdict_model_id, asyncio.Event())
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
@@ -1591,22 +1643,13 @@ async def test_cancel_request_cannot_be_overwritten_by_verdict_completion(db_set
     try:
         await asyncio.wait_for(verdict_started.wait(), timeout=5)
 
-        async with db_setup.Session() as db:
-            await db.execute(
-                update(Turn)
-                .where(Turn.id == turn.id)
-                .values(cancel_requested_at=func.now())
-            )
-            await db.commit()
+        await hard_delete_turn_rows(db_setup.Session, turn.id)
 
         await asyncio.wait_for(task, timeout=5)
 
-        async with db_setup.Session() as db:
-            saved = await db.get(Turn, turn.id)
-
-        assert saved.status == TurnStatus.RUNNING
-        assert saved.cancel_requested_at is not None
+        assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
         assert await count_rows(db_setup.Session, Verdict, turn_id=turn.id) == 0
+        assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
         assert verdict_model_id in db_setup.provider.cancel_attempted
     finally:
         if not task.done():
@@ -1615,8 +1658,11 @@ async def test_cancel_request_cannot_be_overwritten_by_verdict_completion(db_set
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_after_cancel_request_does_not_mark_turn_failed(db_setup):
-    provider_models = ["openai/gpt-4.1", "anthropic/claude-sonnet-4"]
+async def test_provider_failure_after_turn_deletion_does_not_mark_turn_failed(db_setup):
+    provider_models = [
+        db_setup.provider.tracking_model_id("gpt-4.1"),
+        db_setup.provider.tracking_model_id("claude"),
+    ]
     db_setup.provider.blocking_models.update(provider_models)
     db_setup.provider.ignore_cancellation_models.update(provider_models)
     db_setup.provider.failing_models.update(provider_models)
@@ -1626,6 +1672,7 @@ async def test_provider_failure_after_cancel_request_does_not_mark_turn_failed(d
     ]
     events: list[tuple[str, dict]] = []
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
+    assert await claim_turn(db_setup.Session, turn.id) == 1
 
     async def run_with_events():
         async with db_setup.Session() as db:
@@ -1658,21 +1705,11 @@ async def test_provider_failure_after_cancel_request_does_not_mark_turn_failed(d
         for event in started_events:
             await asyncio.wait_for(event.wait(), timeout=5)
 
-        async with db_setup.Session() as db:
-            await db.execute(
-                update(Turn)
-                .where(Turn.id == turn.id)
-                .values(cancel_requested_at=func.now())
-            )
-            await db.commit()
+        await hard_delete_turn_rows(db_setup.Session, turn.id)
 
         await asyncio.wait_for(task, timeout=5)
 
-        async with db_setup.Session() as db:
-            saved = await db.get(Turn, turn.id)
-
-        assert saved.status == TurnStatus.RUNNING
-        assert saved.cancel_requested_at is not None
+        assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
         assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
         assert await count_rows(db_setup.Session, Verdict, turn_id=turn.id) == 0
         assert all(event_name != "turn_failed" for event_name, _ in events)
@@ -1684,7 +1721,7 @@ async def test_provider_failure_after_cancel_request_does_not_mark_turn_failed(d
 
 
 @pytest.mark.asyncio
-async def test_answer_persistence_rechecks_after_cancel_between_precheck_and_write(
+async def test_answer_persistence_rechecks_after_delete_between_precheck_and_write(
     db_setup, monkeypatch
 ):
     pause_before_lock = asyncio.Event()
@@ -1705,26 +1742,13 @@ async def test_answer_persistence_rechecks_after_cancel_between_precheck_and_wri
     try:
         await asyncio.wait_for(pause_before_lock.wait(), timeout=5)
 
-        async with db_setup.Session() as db:
-            await db.execute(
-                update(Turn)
-                .where(Turn.id == turn.id)
-                .values(cancel_requested_at=func.now())
-            )
-            await db.commit()
+        await hard_delete_turn_rows(db_setup.Session, turn.id)
 
         release_lock.set()
         await asyncio.wait_for(task, timeout=5)
 
-        async with db_setup.Session() as db:
-            saved = await db.get(Turn, turn.id)
-            answers = (
-                await db.execute(select(ModelAnswer).where(ModelAnswer.turn_id == turn.id))
-            ).scalars().all()
-
-        assert saved.status == TurnStatus.RUNNING
-        assert saved.cancel_requested_at is not None
-        assert all(answer.status == ModelAnswerStatus.RUNNING for answer in answers)
+        assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
+        assert await count_rows(db_setup.Session, ModelAnswer, turn_id=turn.id) == 0
         assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
         assert await count_rows(db_setup.Session, Verdict, turn_id=turn.id) == 0
     finally:
@@ -1735,7 +1759,7 @@ async def test_answer_persistence_rechecks_after_cancel_between_precheck_and_wri
 
 
 @pytest.mark.asyncio
-async def test_verdict_persistence_rechecks_after_cancel_between_precheck_and_write(
+async def test_verdict_persistence_rechecks_after_delete_between_precheck_and_write(
     db_setup, monkeypatch
 ):
     pause_before_lock = asyncio.Event()
@@ -1761,24 +1785,14 @@ async def test_verdict_persistence_rechecks_after_cancel_between_precheck_and_wr
     try:
         await asyncio.wait_for(pause_before_lock.wait(), timeout=5)
 
-        async with db_setup.Session() as db:
-            await db.execute(
-                update(Turn)
-                .where(Turn.id == turn.id)
-                .values(cancel_requested_at=func.now())
-            )
-            await db.commit()
+        await hard_delete_turn_rows(db_setup.Session, turn.id)
 
         release_lock.set()
         await asyncio.wait_for(task, timeout=5)
 
-        async with db_setup.Session() as db:
-            saved = await db.get(Turn, turn.id)
-
-        assert saved.status == TurnStatus.RUNNING
-        assert saved.cancel_requested_at is not None
+        assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
         assert await count_rows(db_setup.Session, Verdict, turn_id=turn.id) == 0
-        assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 2
+        assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
     finally:
         release_lock.set()
         if not task.done():
@@ -1787,7 +1801,7 @@ async def test_verdict_persistence_rechecks_after_cancel_between_precheck_and_wr
 
 
 @pytest.mark.asyncio
-async def test_turn_failure_rechecks_after_cancel_between_precheck_and_write(
+async def test_turn_failure_rechecks_after_delete_between_precheck_and_write(
     db_setup, monkeypatch
 ):
     db_setup.provider.failing_models.update(["openai/gpt-4.1", "anthropic/claude-sonnet-4"])
@@ -1814,22 +1828,12 @@ async def test_turn_failure_rechecks_after_cancel_between_precheck_and_write(
     try:
         await asyncio.wait_for(pause_before_lock.wait(), timeout=5)
 
-        async with db_setup.Session() as db:
-            await db.execute(
-                update(Turn)
-                .where(Turn.id == turn.id)
-                .values(cancel_requested_at=func.now())
-            )
-            await db.commit()
+        await hard_delete_turn_rows(db_setup.Session, turn.id)
 
         release_lock.set()
         await asyncio.wait_for(task, timeout=5)
 
-        async with db_setup.Session() as db:
-            saved = await db.get(Turn, turn.id)
-
-        assert saved.status == TurnStatus.RUNNING
-        assert saved.cancel_requested_at is not None
+        assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
         assert await count_rows(db_setup.Session, Verdict, turn_id=turn.id) == 0
         assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
     finally:
@@ -1840,7 +1844,7 @@ async def test_turn_failure_rechecks_after_cancel_between_precheck_and_write(
 
 
 @pytest.mark.asyncio
-async def test_answer_cost_integrity_error_after_delete_is_quiet_cancellation(
+async def test_answer_cost_integrity_error_after_delete_is_discarded(
     db_setup, monkeypatch
 ):
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
@@ -1853,25 +1857,26 @@ async def test_answer_cost_integrity_error_after_delete_is_quiet_cancellation(
     async def run_with_commit_race():
         async with db_setup.Session() as db:
             original_commit = db.commit
+            original_rollback = db.rollback
             commit_calls = 0
+            rollback_calls = 0
 
             async def fail_answer_cost_commit_after_delete():
                 nonlocal commit_calls
                 commit_calls += 1
                 if commit_calls == 2:
-                    async with db_setup.Session() as delete_db:
-                        await delete_db.execute(
-                            delete(CostRecord).where(CostRecord.turn_id == turn.id)
-                        )
-                        await delete_db.execute(
-                            delete(ModelAnswer).where(ModelAnswer.turn_id == turn.id)
-                        )
-                        await delete_db.execute(delete(Turn).where(Turn.id == turn.id))
-                        await delete_db.commit()
                     raise IntegrityError("cost insert raced delete", None, None)
                 await original_commit()
 
+            async def rollback_then_delete_turn():
+                nonlocal rollback_calls
+                rollback_calls += 1
+                await original_rollback()
+                if rollback_calls == 1:
+                    await hard_delete_turn_rows(db_setup.Session, turn.id)
+
             monkeypatch.setattr(db, "commit", fail_answer_cost_commit_after_delete)
+            monkeypatch.setattr(db, "rollback", rollback_then_delete_turn)
             orchestrator = TurnOrchestrator()
             orchestrator._providers = db_setup.registry
             await orchestrator.run(
@@ -1894,72 +1899,6 @@ async def test_answer_cost_integrity_error_after_delete_is_quiet_cancellation(
 
     assert await count_rows(db_setup.Session, Turn, id=turn.id) == 0
     assert await count_rows(db_setup.Session, ModelAnswer, turn_id=turn.id) == 0
-    assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
-    assert await count_rows(db_setup.Session, Verdict, turn_id=turn.id) == 0
-
-
-@pytest.mark.asyncio
-async def test_answer_cost_integrity_error_after_cancel_is_quiet_cancellation(
-    db_setup, monkeypatch
-):
-    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
-    async with db_setup.Session() as db:
-        await db.execute(
-            update(Turn).where(Turn.id == turn.id).values(status=TurnStatus.RUNNING)
-        )
-        await db.commit()
-
-    async with db_setup.Session() as db:
-        original_commit = db.commit
-        commit_calls = 0
-
-        async def fail_answer_cost_commit_after_cancel():
-            nonlocal commit_calls
-            commit_calls += 1
-            if commit_calls == 2:
-                async with db_setup.Session() as cancel_db:
-                    await cancel_db.execute(
-                        update(Turn)
-                        .where(Turn.id == turn.id)
-                        .values(cancel_requested_at=func.now())
-                    )
-                    await cancel_db.commit()
-                raise IntegrityError("cost insert raced cancel", None, None)
-            await original_commit()
-
-        monkeypatch.setattr(db, "commit", fail_answer_cost_commit_after_cancel)
-        orchestrator = TurnOrchestrator()
-        orchestrator._providers = db_setup.registry
-        await orchestrator.run(
-            db,
-            TurnContext(
-                turn_id=turn.id,
-                chat_id=db_setup.chat_id,
-                org_id=db_setup.auth.org_id,
-                project_id=None,
-                user_message="Cancel this prompt",
-                model_ids=["gpt-4.1"],
-                verdict_model_id="gemini",
-                strategy=Strategy.SYNTHESIZE,
-                model_set_name="Test Set",
-                skip_answer_seed=True,
-            ),
-        )
-
-    async with db_setup.Session() as db:
-        saved = await db.get(Turn, turn.id)
-        answer = (
-            await db.execute(
-                select(ModelAnswer).where(
-                    ModelAnswer.turn_id == turn.id,
-                    ModelAnswer.model_id == "gpt-4.1",
-                )
-            )
-        ).scalar_one()
-
-    assert saved.status == TurnStatus.RUNNING
-    assert saved.cancel_requested_at is not None
-    assert answer.status == ModelAnswerStatus.RUNNING
     assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
     assert await count_rows(db_setup.Session, Verdict, turn_id=turn.id) == 0
 
@@ -2087,29 +2026,38 @@ async def test_answer_cost_integrity_error_with_missing_answer_is_not_swallowed(
         saved = await db.get(Turn, turn.id)
 
     assert saved.status == TurnStatus.RUNNING
-    assert saved.cancel_requested_at is None
-    assert await count_rows(db_setup.Session, ModelAnswer, turn_id=turn.id) == 0
+    assert (
+        await count_rows(
+            db_setup.Session,
+            ModelAnswer,
+            turn_id=turn.id,
+            model_id="gpt-4.1",
+        )
+        == 0
+    )
+    assert await count_rows(db_setup.Session, ModelAnswer, turn_id=turn.id) == 1
     assert await count_rows(db_setup.Session, CostRecord, turn_id=turn.id) == 0
 
 
 @pytest.mark.asyncio
-async def test_conditional_completion_update_loses_to_cancel_request(db_setup):
+async def test_conditional_completion_update_loses_to_deleted_turn(db_setup):
     turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
 
     async with db_setup.Session() as db:
         await db.execute(
             update(Turn)
             .where(Turn.id == turn.id)
-            .values(status=TurnStatus.RUNNING, cancel_requested_at=func.now())
+            .values(status=TurnStatus.RUNNING)
         )
         await db.commit()
+
+    await hard_delete_turn_rows(db_setup.Session, turn.id)
 
     async with db_setup.Session() as db:
         completed = await db.execute(
             update(Turn)
             .where(
                 Turn.id == turn.id,
-                Turn.cancel_requested_at.is_(None),
                 Turn.status.in_((TurnStatus.PENDING, TurnStatus.RUNNING)),
             )
             .values(status=TurnStatus.COMPLETED)
@@ -2120,8 +2068,7 @@ async def test_conditional_completion_update_loses_to_cancel_request(db_setup):
         saved = await db.get(Turn, turn.id)
 
     assert completed.rowcount == 0
-    assert saved.status == TurnStatus.RUNNING
-    assert saved.cancel_requested_at is not None
+    assert saved is None
 
 
 @pytest.mark.asyncio

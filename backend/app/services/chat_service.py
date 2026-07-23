@@ -33,7 +33,7 @@ from app.llm.orchestrator import (
     ACTIVE_TURN_STATUSES,
     TurnContext,
     get_orchestrator,
-    is_turn_cancel_requested_or_deleted,
+    is_turn_deleted,
 )
 from app.services.saved_verdict_service import saved_verdict_service
 from app.schemas.api import (
@@ -114,6 +114,10 @@ async def _cancel_orchestration_task_after_commit(
         _discard_orchestration_task(turn_id, task)
 
 
+def _create_orchestration_task(coroutine: Any) -> asyncio.Task[None]:
+    return asyncio.create_task(coroutine)
+
+
 async def _commit_or_rollback(db: AsyncSession) -> None:
     try:
         await db.commit()
@@ -129,7 +133,6 @@ async def _mark_claimed_turn_failed(db: AsyncSession, turn_id: str) -> None:
             .where(
                 Turn.id == turn_id,
                 Turn.status == TurnStatus.RUNNING,
-                Turn.cancel_requested_at.is_(None),
             )
             .values(status=TurnStatus.FAILED, error_message=TURN_START_FAILED_MESSAGE)
         )
@@ -393,7 +396,7 @@ class ChatService:
         """Wait for an in-flight turn (e.g. after stream timeout or reconnect)."""
         while True:
             async with AsyncSessionLocal() as db:
-                if await is_turn_cancel_requested_or_deleted(db, turn_id):
+                if await is_turn_deleted(db, turn_id):
                     yield {"type": "turn_deleted", "data": {"turn_id": turn_id}}
                     return
                 try:
@@ -429,10 +432,6 @@ class ChatService:
         )
         turn = result.scalar_one_or_none()
         if turn is None:
-            yield {"type": "turn_deleted", "data": {"turn_id": turn_id}}
-            return
-
-        if turn.cancel_requested_at is not None:
             yield {"type": "turn_deleted", "data": {"turn_id": turn_id}}
             return
 
@@ -493,7 +492,6 @@ class ChatService:
             .where(
                 Turn.id == turn_id,
                 Turn.status == TurnStatus.PENDING,
-                Turn.cancel_requested_at.is_(None),
             )
             .values(status=TurnStatus.RUNNING, error_message=None)
         )
@@ -512,7 +510,7 @@ class ChatService:
                 .execution_options(populate_existing=True)
             )
             fresh_turn = fresh_result.scalar_one_or_none()
-            if fresh_turn is None or fresh_turn.cancel_requested_at is not None:
+            if fresh_turn is None:
                 yield {"type": "turn_deleted", "data": {"turn_id": turn_id}}
                 return
             if fresh_turn.status == TurnStatus.RUNNING:
@@ -571,7 +569,7 @@ class ChatService:
                     await get_orchestrator().run(run_db, ctx, on_event=on_event)
                     await run_db.commit()
                 async with AsyncSessionLocal() as read_db:
-                    if await is_turn_cancel_requested_or_deleted(read_db, turn_id):
+                    if await is_turn_deleted(read_db, turn_id):
                         await queue.put({"type": "turn_deleted", "data": {"turn_id": turn_id}})
                         return
                     try:
@@ -622,7 +620,7 @@ class ChatService:
                     return
 
             coroutine = orchestrate()
-            task = asyncio.create_task(coroutine)
+            task = _create_orchestration_task(coroutine)
             _orchestration_tasks[turn_id] = task
             task_registered = True
             task.add_done_callback(
