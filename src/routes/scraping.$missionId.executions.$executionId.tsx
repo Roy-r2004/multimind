@@ -305,7 +305,7 @@ function ScrapingExecutionPage() {
                 ? "Scrape finished"
                 : "Scrape in progress"
           }
-          description={`${execution?.country_name ?? "Country"} · ${sourceDocuments.length} pages downloaded · ${sourceCandidates.length} sources`}
+          description={`${execution?.country_name ?? "Country"} · ${Math.max(sourceDocuments.length, execution?.documents_found ?? 0)} pages downloaded · ${Math.max(sourceCandidates.length, execution?.sources_discovered ?? 0)} sources`}
           action={
             <Link
               to="/scraping/$missionId"
@@ -342,9 +342,18 @@ function ScrapingExecutionPage() {
                 </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Metric label="Facilities" value={facilities.length} />
-                <Metric label="Pages" value={sourceDocuments.length} />
-                <Metric label="Sources" value={sourceCandidates.length} />
+                <Metric
+                  label="Facilities"
+                  value={Math.max(facilities.length, execution.records_verified)}
+                />
+                <Metric
+                  label="Pages"
+                  value={Math.max(sourceDocuments.length, execution.documents_found)}
+                />
+                <Metric
+                  label="Sources"
+                  value={Math.max(sourceCandidates.length, execution.sources_discovered)}
+                />
                 <Metric label="Duplicates" value={execution.duplicates_detected} />
               </div>
             </GlassCard>
@@ -421,12 +430,14 @@ function ScrapingExecutionPage() {
 
             <details className="rounded-xl border border-border bg-card/40 p-4">
               <summary className="cursor-pointer text-sm font-medium">
-                Sources & pages ({sourceCandidates.length} sources · {sourceDocuments.length} pages)
+                Sources & pages (
+                {Math.max(sourceCandidates.length, execution.sources_discovered)} sources ·{" "}
+                {Math.max(sourceDocuments.length, execution.documents_found)} pages)
               </summary>
               <div className="mt-4 space-y-4">
-                <div className="overflow-auto rounded-lg border border-border">
+                <div className="max-h-[28rem] overflow-auto rounded-lg border border-border">
                   <table className="w-full min-w-[720px] text-left text-sm">
-                    <thead className="bg-muted/50">
+                    <thead className="sticky top-0 bg-muted/50">
                       <tr>
                         <th className="px-3 py-2 font-medium">Source</th>
                         <th className="px-3 py-2 font-medium">Domain</th>
@@ -434,7 +445,7 @@ function ScrapingExecutionPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {sourceCandidates.slice(0, 40).map((candidate) => (
+                      {sourceCandidates.map((candidate) => (
                         <tr key={candidate.id} className="border-t border-border">
                           <td className="px-3 py-2 align-top">
                             <a
@@ -453,11 +464,13 @@ function ScrapingExecutionPage() {
                     </tbody>
                   </table>
                 </div>
-                {sourceCandidates.length > 40 && (
-                  <p className="text-xs text-muted-foreground">
-                    Showing first 40 of {sourceCandidates.length} sources.
-                  </p>
-                )}
+                <p className="text-xs text-muted-foreground">
+                  Loaded {sourceCandidates.length} sources
+                  {execution.sources_discovered > sourceCandidates.length
+                    ? ` (execution reports ${execution.sources_discovered})`
+                    : ""}
+                  .
+                </p>
               </div>
             </details>
 

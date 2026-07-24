@@ -21,6 +21,32 @@ import type {
 
 type Auth = { token: string; orgId: string };
 
+/** Page size for census-scale lists (must stay ≤ backend max of 10000). */
+const SCRAPING_LIST_PAGE_SIZE = 2000;
+
+async function listAllPages<T>(
+  auth: Auth,
+  path: string,
+  pageSize = SCRAPING_LIST_PAGE_SIZE,
+): Promise<T[]> {
+  const all: T[] = [];
+  let offset = 0;
+  for (;;) {
+    const separator = path.includes("?") ? "&" : "?";
+    const page = await apiRequest<T[]>(
+      `${path}${separator}limit=${pageSize}&offset=${offset}`,
+      {
+        token: auth.token,
+        orgId: auth.orgId,
+      },
+    );
+    all.push(...page);
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
+
 export function createScrapingMission(auth: Auth, data: ScrapingMissionCreateInput) {
   return apiRequest<ScrapingMissionDetail>("/scraping/missions", {
     method: "POST",
@@ -209,17 +235,14 @@ export function getScrapingExecution(auth: Auth, executionId: string) {
 }
 
 export function listScrapingExecutionTasks(auth: Auth, executionId: string) {
-  return apiRequest<ScrapingTask[]>(`/scraping/executions/${executionId}/tasks`, {
-    token: auth.token,
-    orgId: auth.orgId,
-  });
+  return listAllPages<ScrapingTask>(auth, `/scraping/executions/${executionId}/tasks`);
 }
 
 export function listScrapingExecutionCoverage(auth: Auth, executionId: string) {
-  return apiRequest<ScrapingCoverageCell[]>(`/scraping/executions/${executionId}/coverage`, {
-    token: auth.token,
-    orgId: auth.orgId,
-  });
+  return listAllPages<ScrapingCoverageCell>(
+    auth,
+    `/scraping/executions/${executionId}/coverage`,
+  );
 }
 
 export function listScrapingExecutionEvents(
@@ -228,51 +251,49 @@ export function listScrapingExecutionEvents(
   afterSequence?: number,
 ) {
   const query = afterSequence ? `?after_sequence=${afterSequence}` : "";
-  return apiRequest<ScrapingEvent[]>(`/scraping/executions/${executionId}/events${query}`, {
-    token: auth.token,
-    orgId: auth.orgId,
-  });
-}
-
-export function listScrapingExecutionFacilities(auth: Auth, executionId: string) {
-  return apiRequest<ScrapingFacilitySummary[]>(`/scraping/executions/${executionId}/facilities`, {
-    token: auth.token,
-    orgId: auth.orgId,
-  });
-}
-
-export function listScrapingSourceCandidates(auth: Auth, executionId: string) {
-  return apiRequest<SourceCandidate[]>(`/scraping/executions/${executionId}/source-candidates`, {
-    token: auth.token,
-    orgId: auth.orgId,
-  });
-}
-
-export function listScrapingSourceDiscoveryQueries(auth: Auth, executionId: string) {
-  return apiRequest<SourceDiscoveryQuery[]>(
-    `/scraping/executions/${executionId}/source-discovery-queries`,
+  // Events use a cursor (`after_sequence`), not offset pagination.
+  return apiRequest<ScrapingEvent[]>(
+    `/scraping/executions/${executionId}/events${query}${query ? "&" : "?"}limit=1000`,
     {
       token: auth.token,
       orgId: auth.orgId,
     },
+  );
+}
+
+export function listScrapingExecutionFacilities(auth: Auth, executionId: string) {
+  return listAllPages<ScrapingFacilitySummary>(
+    auth,
+    `/scraping/executions/${executionId}/facilities`,
+  );
+}
+
+export function listScrapingSourceCandidates(auth: Auth, executionId: string) {
+  return listAllPages<SourceCandidate>(
+    auth,
+    `/scraping/executions/${executionId}/source-candidates`,
+  );
+}
+
+export function listScrapingSourceDiscoveryQueries(auth: Auth, executionId: string) {
+  return listAllPages<SourceDiscoveryQuery>(
+    auth,
+    `/scraping/executions/${executionId}/source-discovery-queries`,
   );
 }
 
 export function listScrapingSourceRetrievalAttempts(auth: Auth, executionId: string) {
-  return apiRequest<SourceRetrievalAttempt[]>(
+  return listAllPages<SourceRetrievalAttempt>(
+    auth,
     `/scraping/executions/${executionId}/retrieval-attempts`,
-    {
-      token: auth.token,
-      orgId: auth.orgId,
-    },
   );
 }
 
 export function listScrapingSourceDocuments(auth: Auth, executionId: string) {
-  return apiRequest<SourceDocument[]>(`/scraping/executions/${executionId}/source-documents`, {
-    token: auth.token,
-    orgId: auth.orgId,
-  });
+  return listAllPages<SourceDocument>(
+    auth,
+    `/scraping/executions/${executionId}/source-documents`,
+  );
 }
 
 export async function downloadScrapingExecutionWorkbook(auth: Auth, executionId: string) {

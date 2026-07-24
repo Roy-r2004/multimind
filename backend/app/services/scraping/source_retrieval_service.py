@@ -311,7 +311,7 @@ class SourceRetrievalService:
             )
             .order_by(ScrapingSourceRetrievalAttempt.started_at.desc())
             .offset(max(offset, 0))
-            .limit(min(max(limit, 1), 500))
+            .limit(min(max(limit, 1), 10000))
         )
         if source_candidate_id:
             query = query.where(ScrapingSourceRetrievalAttempt.source_candidate_id == source_candidate_id)
@@ -340,7 +340,7 @@ class SourceRetrievalService:
             )
             .order_by(ScrapingSourceDocument.retrieval_timestamp.desc())
             .offset(max(offset, 0))
-            .limit(min(max(limit, 1), 500))
+            .limit(min(max(limit, 1), 10000))
         )
         if source_candidate_id:
             query = query.where(ScrapingSourceDocument.source_candidate_id == source_candidate_id)

@@ -177,7 +177,7 @@ class SourceDiscoveryService:
             )
             .order_by(ScrapingSourceDiscoveryQuery.created_at.desc())
             .offset(max(offset, 0))
-            .limit(min(max(limit, 1), 500))
+            .limit(min(max(limit, 1), 10000))
         )
         if coverage_cell_id:
             query = query.where(ScrapingSourceDiscoveryQuery.coverage_cell_id == coverage_cell_id)
@@ -219,7 +219,7 @@ class SourceDiscoveryService:
             )
             .order_by(ScrapingSourceCandidate.discovered_at.desc(), ScrapingSourceCandidate.rank)
             .offset(max(offset, 0))
-            .limit(min(max(limit, 1), 500))
+            .limit(min(max(limit, 1), 10000))
         )
         if coverage_cell_id:
             query = query.where(ScrapingSourceCandidate.coverage_cell_id == coverage_cell_id)

@@ -216,7 +216,7 @@ class ScrapingExecutionService:
             )
             .order_by(ScrapingTask.created_at.desc())
             .offset(max(offset, 0))
-            .limit(min(max(limit, 1), 500))
+            .limit(min(max(limit, 1), 10000))
         )
         if status:
             query = query.where(ScrapingTask.status == ScrapingTaskStatus(status))
@@ -324,7 +324,7 @@ class ScrapingExecutionService:
             )
             .order_by(RehabilitationFacility.stable_key)
             .offset(max(offset, 0))
-            .limit(min(max(limit, 1), 500))
+            .limit(min(max(limit, 1), 10000))
         )
         return [self._facility_response(facility) for facility in result.scalars().all()]
 

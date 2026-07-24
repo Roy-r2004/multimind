@@ -80,7 +80,12 @@ import {
   mergeAssessmentIntoInstructions,
   parseCriteriaLines,
 } from "@/lib/assessmentCriteria";
-import { isChatNearBottom, shouldShowScrollToLatest } from "@/lib/chatScroll";
+import {
+  findPinnedSynthesisElement,
+  isChatNearBottom,
+  scrollThreadToElement,
+  shouldShowScrollToLatest,
+} from "@/lib/chatScroll";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -296,9 +301,49 @@ export function ChatPage() {
   }, [apiTurns.length, activeChatId]);
 
   function scrollToPinnedVerdict() {
-    if (!pinnedTurnId) return;
-    const el = document.getElementById(`turn-${pinnedTurnId}`);
-    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!pinnedVerdictId && !pinnedTurnId) return;
+    // Stop "stick to bottom" from fighting the jump to the pinned synthesis.
+    shouldPinToBottomRef.current = false;
+    showScrollToLatestRef.current = true;
+    setShowScrollToLatest(true);
+
+    const flash = (el: HTMLElement) => {
+      el.classList.add("ring-2", "ring-amber-400", "ring-offset-2", "ring-offset-background");
+      window.setTimeout(() => {
+        el.classList.remove("ring-2", "ring-amber-400", "ring-offset-2", "ring-offset-background");
+      }, 1600);
+    };
+
+    const attempt = (n: number) => {
+      const target = findPinnedSynthesisElement(pinnedVerdictId, pinnedTurnId);
+      if (!target) {
+        if (n < 12) {
+          window.setTimeout(() => attempt(n + 1), 40);
+          return;
+        }
+        toast.error("Could not find the pinned verdict in this chat");
+        return;
+      }
+      const thread = threadRef.current;
+      if (thread) {
+        scrollThreadToElement(thread, target, "smooth");
+      } else {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      flash(target);
+      // Second pass after layout settles (images/markdown can shift height).
+      window.setTimeout(() => {
+        const settled = findPinnedSynthesisElement(pinnedVerdictId, pinnedTurnId);
+        if (!settled) return;
+        if (threadRef.current) {
+          scrollThreadToElement(threadRef.current, settled, "auto");
+        } else {
+          settled.scrollIntoView({ behavior: "auto", block: "center" });
+        }
+      }, 220);
+    };
+
+    window.requestAnimationFrame(() => attempt(0));
   }
 
   async function handlePinVerdict(verdictId: string, currentlyPinned: boolean) {
@@ -1367,7 +1412,11 @@ function AiTurn({
         <div
           ref={verdictRef}
           id={`verdict-${turn.verdict.id}`}
-          className={cn("scroll-mt-24", isPinned && "rounded-2xl ring-2 ring-amber-400/70")}
+          data-verdict-synthesis="true"
+          className={cn(
+            "scroll-mt-28",
+            isPinned && "rounded-2xl ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
+          )}
         >
           <GlassCard glow className="p-5">
             <div className="flex flex-wrap items-center gap-2">
