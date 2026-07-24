@@ -19,11 +19,20 @@ Return strict JSON with this shape and no extra keys:
       "emails": [{"value": "...", "evidence_quote": "..."}],
       "websites": [{"value": "...", "evidence_quote": "..."}],
       "services": [{"value": "...", "evidence_quote": "..."}],
+      "programs": [{"value": "...", "evidence_quote": "..."}],
+      "populations_served": [{"value": "...", "evidence_quote": "..."}],
+      "admissions_eligibility": [{"value": "...", "evidence_quote": "..."}],
       "license_or_registration": [{"value": "...", "evidence_quote": "..."}],
       "model_confidence": 0.0
     }
   ]
 }
+
+Field guidance:
+- services: clinical or therapeutic offerings (detox, counseling, MAT, therapy modalities).
+- programs: named programs or tracks (residential 30-day, outpatient IOP, aftercare).
+- populations_served: who is treated (adults, adolescents, women, dual diagnosis, etc.).
+- admissions_eligibility: intake rules (age minimum, referral required, insurance, exclusion criteria).
 
 Rules:
 - Return {"document_relevant": false, "facilities": []} when no supported facility exists.
@@ -32,7 +41,7 @@ Rules:
 - Every returned field must include an evidence_quote copied exactly from the source chunk.
 - Evidence quotes must be {{ max_quote_characters }} characters or fewer.
 - Preserve original-language names and addresses. Do not translate unless a translated value is explicitly present.
-- Do not infer missing phones, locations, licenses, websites, services, or operators.
+- Do not infer missing phones, locations, licenses, websites, services, programs, populations, admissions, or operators.
 - For websites: when an http(s) URL appears next to a facility (including bare URLs inserted after link text), extract it into websites with that URL as both value and evidence_quote. Prefer the facility's own site over directory/aggregator domains when both appear.
 - Do not include chain-of-thought.
 

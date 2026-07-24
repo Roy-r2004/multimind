@@ -597,7 +597,18 @@ def _iter_optional_fields(facility: ExtractedFacility):
         item = getattr(facility, field_name)
         if item is not None:
             yield field_name, item
-    for field_name in ("aliases", "addresses", "phones", "emails", "websites", "services", "license_or_registration"):
+    for field_name in (
+        "aliases",
+        "addresses",
+        "phones",
+        "emails",
+        "websites",
+        "services",
+        "programs",
+        "populations_served",
+        "admissions_eligibility",
+        "license_or_registration",
+    ):
         for item in getattr(facility, field_name):
             yield field_name, item
 

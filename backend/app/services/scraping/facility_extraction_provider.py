@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MAX_VALUE_LENGTH = 1000
 MAX_ARRAY_ITEMS = 25
-EXTRACTION_SCHEMA_VERSION = "facility-extraction-schema-v2"
+EXTRACTION_SCHEMA_VERSION = "facility-extraction-schema-v3"
 
 
 class ExtractedEvidenceValue(BaseModel):
@@ -39,6 +39,13 @@ class ExtractedFacility(BaseModel):
     emails: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
     websites: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
     services: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
+    programs: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
+    populations_served: list[ExtractedEvidenceValue] = Field(
+        default_factory=list, max_length=MAX_ARRAY_ITEMS
+    )
+    admissions_eligibility: list[ExtractedEvidenceValue] = Field(
+        default_factory=list, max_length=MAX_ARRAY_ITEMS
+    )
     license_or_registration: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
     model_confidence: float | None = Field(default=None, ge=0, le=1)
 

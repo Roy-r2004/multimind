@@ -433,6 +433,14 @@ async def test_optional_fields_create_valid_children_and_invalid_contacts_become
             ("websites", "ftp://example.test", "ftp://example.test", "verified"),
             ("services", "Detoxification", "Detoxification", "verified"),
             ("services", "Counseling", "Counseling", "verified"),
+            ("programs", "Residential 30-day", "Residential 30-day", "verified"),
+            ("populations_served", "Adults", "Adults", "verified"),
+            (
+                "admissions_eligibility",
+                "Referral required",
+                "Referral required",
+                "verified",
+            ),
         ],
     )
 
@@ -445,9 +453,20 @@ async def test_optional_fields_create_valid_children_and_invalid_contacts_become
     attributes = (
         await db.execute(select(RehabilitationFacilityAttribute))
     ).scalars().all()
-    assert len(attributes) == 2
-    assert {attr.attribute_group for attr in attributes} == {"treatment_service"}
-    assert {attr.display_name for attr in attributes} == {"Detoxification", "Counseling"}
+    assert len(attributes) == 5
+    assert {attr.attribute_group for attr in attributes} == {
+        "treatment_service",
+        "program",
+        "population_served",
+        "admission_eligibility",
+    }
+    assert {attr.display_name for attr in attributes} == {
+        "Detoxification",
+        "Counseling",
+        "Residential 30-day",
+        "Adults",
+        "Referral required",
+    }
     contacts = (
         await db.execute(
             select(RehabilitationFacilityContact).order_by(
@@ -472,8 +491,12 @@ async def test_optional_fields_create_valid_children_and_invalid_contacts_become
     assert len(detail.locations) == 1
     assert len(detail.contacts) == 3
     assert len([a for a in detail.attributes if a.attribute_group == "treatment_service"]) == 2
+    assert len([a for a in detail.attributes if a.attribute_group == "program"]) == 1
+    assert len([a for a in detail.attributes if a.attribute_group == "population_served"]) == 1
+    assert len([a for a in detail.attributes if a.attribute_group == "admission_eligibility"]) == 1
     assert detail.sources
     assert any("treatment_service" in (row.field_path or "") for row in detail.evidence)
+    assert any("attributes.program" in (row.field_path or "") for row in detail.evidence)
 
 
 @pytest.mark.asyncio

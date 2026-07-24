@@ -105,6 +105,9 @@ class _PublicationPlan:
     locations: list[ScrapingFacilityCandidateEvidence]
     contacts: list[tuple[str, str, str | None, ScrapingFacilityCandidateEvidence]]
     services: list[ScrapingFacilityCandidateEvidence]
+    programs: list[ScrapingFacilityCandidateEvidence]
+    populations_served: list[ScrapingFacilityCandidateEvidence]
+    admissions_eligibility: list[ScrapingFacilityCandidateEvidence]
     unresolved: list[tuple[str, str, str]]
     evidence: list[ScrapingFacilityCandidateEvidence]
 
@@ -191,8 +194,33 @@ class FacilityCandidatePublicationService:
             contacts = await self._add_contacts(db, facility, plan, confidence=confidence)
             if not facility.primary_website and plan.primary_website:
                 facility.primary_website = plan.primary_website
-            services = await self._add_treatment_services(
-                db, facility, plan, confidence=confidence
+            services = await self._add_text_attributes(
+                db,
+                facility,
+                plan.services,
+                attribute_group="treatment_service",
+                confidence=confidence,
+            )
+            programs = await self._add_text_attributes(
+                db,
+                facility,
+                plan.programs,
+                attribute_group="program",
+                confidence=confidence,
+            )
+            populations = await self._add_text_attributes(
+                db,
+                facility,
+                plan.populations_served,
+                attribute_group="population_served",
+                confidence=confidence,
+            )
+            admissions = await self._add_text_attributes(
+                db,
+                facility,
+                plan.admissions_eligibility,
+                attribute_group="admission_eligibility",
+                confidence=confidence,
             )
             source_links = await self._link_source(db, facility, source)
             evidence, evidence_metadata = await self._add_field_evidence(
@@ -226,6 +254,9 @@ class FacilityCandidatePublicationService:
                         "locations_created": locations,
                         "contacts_created": contacts,
                         "treatment_services_created": services,
+                        "programs_created": programs,
+                        "populations_served_created": populations,
+                        "admissions_eligibility_created": admissions,
                         "sources_linked": source_links,
                         "field_evidence_created": evidence,
                         "unresolved_fields_created": unresolved,
@@ -422,6 +453,13 @@ class FacilityCandidatePublicationService:
         addresses = [row for row in evidence if row.field_name == "addresses"]
         contacts, unresolved = _build_contacts(evidence)
         services = [row for row in evidence if row.field_name == "services"]
+        programs = [row for row in evidence if row.field_name == "programs"]
+        populations_served = [
+            row for row in evidence if row.field_name == "populations_served"
+        ]
+        admissions_eligibility = [
+            row for row in evidence if row.field_name == "admissions_eligibility"
+        ]
         primary_address = _normalize_text_value(addresses[0].raw_value) if addresses else None
         primary_website = next(
             (value for contact_type, value, _, _ in contacts if contact_type == "website"),
@@ -446,6 +484,9 @@ class FacilityCandidatePublicationService:
             locations=addresses,
             contacts=contacts,
             services=services,
+            programs=programs,
+            populations_served=populations_served,
+            admissions_eligibility=admissions_eligibility,
             unresolved=unresolved,
             evidence=evidence,
         )
@@ -724,17 +765,18 @@ class FacilityCandidatePublicationService:
         await db.flush()
         return count
 
-    async def _add_treatment_services(
+    async def _add_text_attributes(
         self,
         db: AsyncSession,
         facility: RehabilitationFacility,
-        plan: _PublicationPlan,
+        rows: list[ScrapingFacilityCandidateEvidence],
         *,
+        attribute_group: str,
         confidence: Decimal,
     ) -> int:
         count = 0
         seen_keys: set[str] = set()
-        for row in plan.services:
+        for row in rows:
             display = _normalize_text_value(row.raw_value)
             if not display:
                 continue
@@ -748,7 +790,7 @@ class FacilityCandidatePublicationService:
             existing = await db.scalar(
                 select(RehabilitationFacilityAttribute.id).where(
                     RehabilitationFacilityAttribute.facility_id == facility.id,
-                    RehabilitationFacilityAttribute.attribute_group == "treatment_service",
+                    RehabilitationFacilityAttribute.attribute_group == attribute_group,
                     RehabilitationFacilityAttribute.attribute_key == attribute_key,
                 )
             )
@@ -757,7 +799,7 @@ class FacilityCandidatePublicationService:
             db.add(
                 RehabilitationFacilityAttribute(
                     facility_id=facility.id,
-                    attribute_group="treatment_service",
+                    attribute_group=attribute_group,
                     attribute_key=attribute_key,
                     display_name=display[:255],
                     value_type="text",
@@ -818,8 +860,14 @@ class FacilityCandidatePublicationService:
                 and row.id not in published_contact_evidence_ids
             ):
                 continue
-            if row.field_name == "services" and row.id not in {
-                service_row.id for service_row in plan.services
+            attribute_plan_rows = {
+                "services": plan.services,
+                "programs": plan.programs,
+                "populations_served": plan.populations_served,
+                "admissions_eligibility": plan.admissions_eligibility,
+            }
+            if row.field_name in attribute_plan_rows and row.id not in {
+                attr_row.id for attr_row in attribute_plan_rows[row.field_name]
             }:
                 continue
             field_path = _field_path(row, field_counts)
@@ -1173,6 +1221,9 @@ def _field_path(row: ScrapingFacilityCandidateEvidence, counts: dict[str, int]) 
         "emails": "contacts.email",
         "websites": "contacts.website",
         "services": "attributes.treatment_service",
+        "programs": "attributes.program",
+        "populations_served": "attributes.population_served",
+        "admissions_eligibility": "attributes.admission_eligibility",
     }.get(row.field_name, row.field_name)
     index = counts.get(base, 0)
     counts[base] = index + 1

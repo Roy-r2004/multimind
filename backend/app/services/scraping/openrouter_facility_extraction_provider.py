@@ -20,7 +20,7 @@ from app.services.scraping.facility_extraction_provider import (
     FacilityStructuredOutputError,
 )
 
-PROMPT_VERSION = "facility-extractor-v2"
+PROMPT_VERSION = "facility-extractor-v3"
 MAX_REPAIR_INPUT_CHARS = 20_000
 MAX_DIAGNOSTIC_ITEMS = 8
 

@@ -622,6 +622,62 @@ async def test_valid_extraction_persists_verified_staging_only(db: AsyncSession,
 
 
 @pytest.mark.asyncio
+async def test_programs_populations_and_admissions_stage_as_evidence(db: AsyncSession, auth):
+    execution = await create_execution(db, auth)
+    body = (
+        "Centre Alpha offers a Residential 30-day track for Adults. "
+        "Referral required before intake."
+    )
+    document = await create_document(db, auth, execution, content_type="text/plain", body=body)
+    provider = FakeProvider(
+        FacilityExtractionOutput(
+            document_relevant=True,
+            facilities=[
+                ExtractedFacility(
+                    name=ExtractedEvidenceValue(
+                        value="Centre Alpha", evidence_quote="Centre Alpha"
+                    ),
+                    programs=[
+                        ExtractedEvidenceValue(
+                            value="Residential 30-day",
+                            evidence_quote="Residential 30-day",
+                        )
+                    ],
+                    populations_served=[
+                        ExtractedEvidenceValue(value="Adults", evidence_quote="Adults")
+                    ],
+                    admissions_eligibility=[
+                        ExtractedEvidenceValue(
+                            value="Referral required",
+                            evidence_quote="Referral required",
+                        )
+                    ],
+                    model_confidence=0.9,
+                )
+            ],
+        )
+    )
+    service = FacilityExtractionService(provider)
+    summary = await service.extract_one_chunk(
+        db,
+        FacilityExtractionContext(
+            organization_id=auth.org_id,
+            execution_id=execution.id,
+            source_document_id=document.id,
+            idempotency_key="extract-programs-1",
+        ),
+    )
+    assert summary.status == "succeeded"
+    evidence = (await db.execute(select(ScrapingFacilityCandidateEvidence))).scalars().all()
+    assert {row.field_name for row in evidence} == {
+        "name",
+        "programs",
+        "populations_served",
+        "admissions_eligibility",
+    }
+
+
+@pytest.mark.asyncio
 async def test_missing_name_evidence_empty_output_and_retry_are_idempotent(db: AsyncSession, auth):
     execution = await create_execution(db, auth)
     document = await create_document(db, auth, execution, content_type="text/plain", body="No exact name here.")
