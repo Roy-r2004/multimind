@@ -2,6 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ButtonHTMLAttributes } from "react";
 import { Loader2, Mic, Pause, Play, RotateCcw, Square, X } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -168,6 +178,7 @@ export function VoiceRecorderButton({
 }: VoiceRecorderButtonProps) {
   const [state, setState] = useState<RecorderState>({ status: "idle", elapsedSeconds: 0 });
   const [language, setLanguage] = useState<TranscriptionLanguage>("auto");
+  const [cancelConfirmationOpen, setCancelConfirmationOpen] = useState(false);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -318,6 +329,7 @@ export function VoiceRecorderButton({
   }, []);
 
   const resetToIdle = useCallback(() => {
+    setCancelConfirmationOpen(false);
     resetRecordingRefs(true);
     if (mountedRef.current) {
       setState({ status: "idle", elapsedSeconds: 0 });
@@ -477,7 +489,8 @@ export function VoiceRecorderButton({
     startTimer(() => void stopRecording());
   }, [elapsedSecondsNow, startTimer, stopRecording]);
 
-  const cancel = useCallback(() => {
+  const discardRecording = useCallback(() => {
+    setCancelConfirmationOpen(false);
     cancelledRef.current = true;
     attemptIdRef.current += 1;
     abortControllerRef.current?.abort();
@@ -488,6 +501,10 @@ export function VoiceRecorderButton({
       setState({ status: "idle", elapsedSeconds: 0 });
     }
   }, [resetRecordingRefs]);
+
+  const requestCancel = useCallback(() => {
+    setCancelConfirmationOpen(true);
+  }, []);
 
   const startRecording = useCallback(async () => {
     if (disabled || !hasAuth || isBusy) return;
@@ -653,7 +670,7 @@ export function VoiceRecorderButton({
             <IconButton label="Stop and transcribe" onClick={() => void stopRecording()}>
               <Square className="size-4" />
             </IconButton>
-            <IconButton label="Cancel recording" onClick={cancel}>
+            <IconButton label="Cancel recording" onClick={requestCancel}>
               <X className="size-4" />
             </IconButton>
             {showFinalMinuteWarning ? (
@@ -670,7 +687,7 @@ export function VoiceRecorderButton({
             <span className="text-muted-foreground">
               {state.status === "ready_to_transcribe" ? "Preparing…" : "Transcribing…"}
             </span>
-            <IconButton label="Cancel transcription" onClick={cancel}>
+            <IconButton label="Cancel transcription" onClick={requestCancel}>
               <X className="size-4" />
             </IconButton>
           </div>
@@ -685,12 +702,32 @@ export function VoiceRecorderButton({
                 Retry
               </Button>
             ) : null}
-            <Button type="button" size="sm" variant="ghost" onClick={cancel}>
+            <Button type="button" size="sm" variant="ghost" onClick={requestCancel}>
               Discard
             </Button>
           </div>
         ) : null}
       </div>
+
+      <AlertDialog open={cancelConfirmationOpen} onOpenChange={setCancelConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard voice recording?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently discard the current recording. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep recording</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={discardRecording}
+            >
+              Discard recording
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </TooltipProvider>
   );
 }
