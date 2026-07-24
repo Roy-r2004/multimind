@@ -27,7 +27,7 @@ from app.db.models import (
     SourceDocumentTextPreparationStatus,
 )
 
-PARSER_VERSION = "readable-text-v1"
+PARSER_VERSION = "readable-text-v2"
 SUPPORTED_TEXT_TYPES = {
     "text/html",
     "application/xhtml+xml",
@@ -356,10 +356,13 @@ class _ReadableHTMLParser(HTMLParser):
         self._skip_depth = 0
         self._boilerplate_depth = 0
         self._in_title = False
+        # Preserve absolute link targets — directories often hide websites in href only.
+        self._link_href_stack: list[str | None] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         attrs_dict = {key.lower(): (value or "").lower() for key, value in attrs}
+        raw_attrs = {key.lower(): (value or "") for key, value in attrs}
         if tag in SKIP_TAGS or _hidden(attrs_dict):
             self._skip_depth += 1
             return
@@ -367,6 +370,8 @@ class _ReadableHTMLParser(HTMLParser):
             self._boilerplate_depth += 1
         if tag == "title":
             self._in_title = True
+        if tag == "a":
+            self._link_href_stack.append(raw_attrs.get("href") or None)
         if tag in BLOCK_TAGS:
             self.parts.append("\n")
 
@@ -379,6 +384,10 @@ class _ReadableHTMLParser(HTMLParser):
             self._boilerplate_depth -= 1
         if tag == "title":
             self._in_title = False
+        if tag == "a" and self._link_href_stack:
+            href = (self._link_href_stack.pop() or "").strip()
+            if href.startswith(("http://", "https://")) and not self._boilerplate_depth:
+                self.parts.append(f" {href} ")
         if tag in BLOCK_TAGS:
             self.parts.append("\n")
 

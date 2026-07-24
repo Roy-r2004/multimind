@@ -33,6 +33,7 @@ Rules:
 - Evidence quotes must be {{ max_quote_characters }} characters or fewer.
 - Preserve original-language names and addresses. Do not translate unless a translated value is explicitly present.
 - Do not infer missing phones, locations, licenses, websites, services, or operators.
+- For websites: when an http(s) URL appears next to a facility (including bare URLs inserted after link text), extract it into websites with that URL as both value and evidence_quote. Prefer the facility's own site over directory/aggregator domains when both appear.
 - Do not include chain-of-thought.
 
 Language hint: {{ language_hint or "unknown" }}

@@ -177,6 +177,8 @@ class FacilityCandidatePublicationService:
                 facility = merge_target
                 if confidence > Decimal(str(facility.confidence_score)):
                     facility.confidence_score = confidence
+                if not facility.primary_website and plan.primary_website:
+                    facility.primary_website = plan.primary_website
                 facility.duplicate_status = "merged"
                 facility.human_review_status = "required"
                 facility.last_verified_at = datetime.now(UTC)
@@ -187,6 +189,8 @@ class FacilityCandidatePublicationService:
             aliases = await self._add_aliases(db, facility, plan)
             locations = await self._add_locations(db, facility, plan, confidence=confidence)
             contacts = await self._add_contacts(db, facility, plan, confidence=confidence)
+            if not facility.primary_website and plan.primary_website:
+                facility.primary_website = plan.primary_website
             services = await self._add_treatment_services(
                 db, facility, plan, confidence=confidence
             )

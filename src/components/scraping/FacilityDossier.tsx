@@ -65,6 +65,12 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
     );
   }
 
+  const website =
+    detail.primary_website ||
+    detail.contacts.find((contact) => contact.contact_type === "website")?.value ||
+    detail.contacts.find((contact) => contact.contact_type === "booking_url")?.value ||
+    null;
+
   async function copyContact() {
     if (!detail?.primary_contact) return;
     try {
@@ -104,9 +110,9 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {detail.primary_website ? (
+          {website ? (
             <Button asChild size="sm" variant="outline">
-              <a href={detail.primary_website} target="_blank" rel="noreferrer">
+              <a href={website} target="_blank" rel="noreferrer">
                 Open website
               </a>
             </Button>
@@ -234,12 +240,17 @@ function Panel({ children }: { children: ReactNode }) {
 }
 
 function Overview({ detail }: { detail: ScrapingFacilityDetail }) {
+  const website =
+    detail.primary_website ||
+    detail.contacts.find((contact) => contact.contact_type === "website")?.value ||
+    detail.contacts.find((contact) => contact.contact_type === "booking_url")?.value ||
+    null;
   const rows = [
     ["Type", detail.facility_type],
     ["Country", detail.country_name],
     ["City / region", [detail.primary_city, detail.primary_region].filter(Boolean).join(", ") || null],
     ["Primary address", detail.primary_address],
-    ["Website", detail.primary_website],
+    ["Website", website],
     ["Primary contact", detail.primary_contact],
     ["Aliases", detail.aliases.map((a) => a.name).join(", ") || null],
     ["Sources linked", String(detail.source_count)],

@@ -688,6 +688,7 @@ class ScrapingExecutionService:
 
     def _facility_response(self, facility: RehabilitationFacility) -> ScrapingFacilitySummary:
         contact = _primary_contact(facility.contacts)
+        website = facility.primary_website or _primary_website_contact(facility.contacts)
         locations = getattr(facility, "locations", None) or []
         attributes = getattr(facility, "attributes", None) or []
         return ScrapingFacilitySummary(
@@ -700,7 +701,7 @@ class ScrapingExecutionService:
             primary_region=facility.primary_region,
             primary_city=facility.primary_city,
             facility_type=facility.facility_type,
-            primary_website=facility.primary_website,
+            primary_website=website,
             primary_contact=contact.value if contact else None,
             verification_status=facility.verification_status,
             confidence_score=float(facility.confidence_score),
@@ -850,3 +851,20 @@ def _primary_contact(
     ]
     primary = [contact for contact in normal_contacts if contact.is_primary]
     return (primary or normal_contacts or [None])[0]
+
+
+def _primary_website_contact(
+    contacts: list[RehabilitationFacilityContact] | None,
+) -> str | None:
+    if not contacts:
+        return None
+    website_contacts = [
+        contact
+        for contact in contacts
+        if contact.contact_type in {"website", "booking_url"} and (contact.value or "").strip()
+    ]
+    if not website_contacts:
+        return None
+    primary = [contact for contact in website_contacts if contact.is_primary]
+    chosen = (primary or website_contacts)[0]
+    return chosen.value.strip()
