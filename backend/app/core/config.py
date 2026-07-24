@@ -38,7 +38,8 @@ class Settings(BaseSettings):
     scraping_mock_step_delay_ms: int = 600
     scraping_worker_concurrency: int = 4
     scraping_execution_stale_seconds: int = 120
-    scraping_worker_job_timeout_seconds: int = 1800
+    # Full-census discovery alone can exceed 30m; keep ARQ job alive for multi-hour runs.
+    scraping_worker_job_timeout_seconds: int = 21600
     # When true (default in development), run scrapes inside the API process if Redis/worker is down
     scraping_inline_execution: bool | None = None
 
