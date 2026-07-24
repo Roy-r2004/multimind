@@ -8,9 +8,6 @@ const TABS = [
   "Locations",
   "Contacts",
   "Treatment Services",
-  "Programs",
-  "Populations Served",
-  "Admissions & Eligibility",
   "Sources & Evidence",
 ] as const;
 
@@ -29,14 +26,9 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
   const [tab, setTab] = useState<Tab>("Overview");
   const [copied, setCopied] = useState(false);
 
-  const grouped = useMemo(() => {
-    if (!detail) return null;
-    return {
-      treatment: detail.attributes.filter((a) => a.attribute_group === "treatment_service"),
-      programs: detail.attributes.filter((a) => a.attribute_group === "program"),
-      populations: detail.attributes.filter((a) => a.attribute_group === "population_served"),
-      admissions: detail.attributes.filter((a) => a.attribute_group === "admission_eligibility"),
-    };
+  const treatmentServices = useMemo(() => {
+    if (!detail) return [];
+    return detail.attributes.filter((a) => a.attribute_group === "treatment_service");
   }, [detail]);
 
   if (loading) {
@@ -173,31 +165,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
         ) : null}
         {tab === "Treatment Services" ? (
           <ListOrEmpty
-            items={(grouped?.treatment ?? []).map((attr) => ({
-              title: attr.display_name,
-              body: attr.value_text ?? "",
-            }))}
-          />
-        ) : null}
-        {tab === "Programs" ? (
-          <ListOrEmpty
-            items={(grouped?.programs ?? []).map((attr) => ({
-              title: attr.display_name,
-              body: attr.value_text ?? "",
-            }))}
-          />
-        ) : null}
-        {tab === "Populations Served" ? (
-          <ListOrEmpty
-            items={(grouped?.populations ?? []).map((attr) => ({
-              title: attr.display_name,
-              body: attr.value_text ?? "",
-            }))}
-          />
-        ) : null}
-        {tab === "Admissions & Eligibility" ? (
-          <ListOrEmpty
-            items={(grouped?.admissions ?? []).map((attr) => ({
+            items={treatmentServices.map((attr) => ({
               title: attr.display_name,
               body: attr.value_text ?? "",
             }))}
