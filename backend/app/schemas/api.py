@@ -517,8 +517,73 @@ class ScrapingFacilitySummary(BaseModel):
     human_review_status: str
     is_mock: bool
     source_count: int
+    location_count: int = 0
+    contact_count: int = 0
+    treatment_service_count: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class ScrapingFacilityAliasItem(BaseModel):
+    name: str
+    alias_type: str
+    is_primary: bool
+
+
+class ScrapingFacilityLocationItem(BaseModel):
+    id: str
+    location_type: str
+    location_name: str
+    full_address: str | None = None
+    city: str | None = None
+    region: str | None = None
+    is_primary: bool
+    confidence_score: float
+
+
+class ScrapingFacilityContactItem(BaseModel):
+    id: str
+    contact_type: str
+    label: str | None = None
+    value: str
+    is_primary: bool
+    confidence_score: float
+
+
+class ScrapingFacilityAttributeItem(BaseModel):
+    id: str
+    attribute_group: str
+    attribute_key: str
+    display_name: str
+    value_text: str | None = None
+    confidence_score: float
+
+
+class ScrapingFacilitySourceItem(BaseModel):
+    id: str
+    url: str
+    title: str | None = None
+    relationship_type: str
+
+
+class ScrapingFacilityEvidenceItem(BaseModel):
+    id: str
+    field_path: str
+    extracted_value: str | None = None
+    evidence_text: str | None = None
+    source_url_snapshot: str | None = None
+    page_title: str | None = None
+
+
+class ScrapingFacilityDetail(ScrapingFacilitySummary):
+    description: str | None = None
+    primary_address: str | None = None
+    aliases: list[ScrapingFacilityAliasItem] = Field(default_factory=list)
+    locations: list[ScrapingFacilityLocationItem] = Field(default_factory=list)
+    contacts: list[ScrapingFacilityContactItem] = Field(default_factory=list)
+    attributes: list[ScrapingFacilityAttributeItem] = Field(default_factory=list)
+    sources: list[ScrapingFacilitySourceItem] = Field(default_factory=list)
+    evidence: list[ScrapingFacilityEvidenceItem] = Field(default_factory=list)
 
 
 class ScrapingCoverageCellResponse(BaseModel):

@@ -26,6 +26,7 @@ from app.db.models import (
     FacilityExtractionAttemptStatus,
     RehabilitationFacility,
     RehabilitationFacilityAlias,
+    RehabilitationFacilityAttribute,
     RehabilitationFacilityContact,
     RehabilitationFacilityLocation,
     RehabilitationFacilitySourceLink,
@@ -103,6 +104,7 @@ class _PublicationPlan:
     aliases: list[ScrapingFacilityCandidateEvidence]
     locations: list[ScrapingFacilityCandidateEvidence]
     contacts: list[tuple[str, str, str | None, ScrapingFacilityCandidateEvidence]]
+    services: list[ScrapingFacilityCandidateEvidence]
     unresolved: list[tuple[str, str, str]]
     evidence: list[ScrapingFacilityCandidateEvidence]
 
@@ -185,6 +187,9 @@ class FacilityCandidatePublicationService:
             aliases = await self._add_aliases(db, facility, plan)
             locations = await self._add_locations(db, facility, plan, confidence=confidence)
             contacts = await self._add_contacts(db, facility, plan, confidence=confidence)
+            services = await self._add_treatment_services(
+                db, facility, plan, confidence=confidence
+            )
             source_links = await self._link_source(db, facility, source)
             evidence, evidence_metadata = await self._add_field_evidence(
                 db, facility, source, loaded, plan, confidence=confidence
@@ -216,6 +221,7 @@ class FacilityCandidatePublicationService:
                         "aliases_created": aliases,
                         "locations_created": locations,
                         "contacts_created": contacts,
+                        "treatment_services_created": services,
                         "sources_linked": source_links,
                         "field_evidence_created": evidence,
                         "unresolved_fields_created": unresolved,
@@ -411,6 +417,7 @@ class FacilityCandidatePublicationService:
 
         addresses = [row for row in evidence if row.field_name == "addresses"]
         contacts, unresolved = _build_contacts(evidence)
+        services = [row for row in evidence if row.field_name == "services"]
         primary_address = _normalize_text_value(addresses[0].raw_value) if addresses else None
         primary_website = next(
             (value for contact_type, value, _, _ in contacts if contact_type == "website"),
@@ -434,6 +441,7 @@ class FacilityCandidatePublicationService:
             aliases=aliases,
             locations=addresses,
             contacts=contacts,
+            services=services,
             unresolved=unresolved,
             evidence=evidence,
         )
@@ -712,6 +720,53 @@ class FacilityCandidatePublicationService:
         await db.flush()
         return count
 
+    async def _add_treatment_services(
+        self,
+        db: AsyncSession,
+        facility: RehabilitationFacility,
+        plan: _PublicationPlan,
+        *,
+        confidence: Decimal,
+    ) -> int:
+        count = 0
+        seen_keys: set[str] = set()
+        for row in plan.services:
+            display = _normalize_text_value(row.raw_value)
+            if not display:
+                continue
+            base_key = _attribute_key(display)
+            attribute_key = base_key
+            suffix = 2
+            while attribute_key in seen_keys:
+                attribute_key = f"{base_key}_{suffix}"[:120]
+                suffix += 1
+            seen_keys.add(attribute_key)
+            existing = await db.scalar(
+                select(RehabilitationFacilityAttribute.id).where(
+                    RehabilitationFacilityAttribute.facility_id == facility.id,
+                    RehabilitationFacilityAttribute.attribute_group == "treatment_service",
+                    RehabilitationFacilityAttribute.attribute_key == attribute_key,
+                )
+            )
+            if existing is not None:
+                continue
+            db.add(
+                RehabilitationFacilityAttribute(
+                    facility_id=facility.id,
+                    attribute_group="treatment_service",
+                    attribute_key=attribute_key,
+                    display_name=display[:255],
+                    value_type="text",
+                    value_text=display,
+                    verification_status=VERIFICATION_STATUS,
+                    confidence_score=confidence,
+                    is_mock=False,
+                )
+            )
+            count += 1
+        await db.flush()
+        return count
+
     async def _link_source(
         self, db: AsyncSession, facility: RehabilitationFacility, source: RehabilitationSource
     ) -> int:
@@ -752,12 +807,16 @@ class FacilityCandidatePublicationService:
             row.id for _type, _value, _normalized, row in plan.contacts
         }
         for row in plan.evidence:
-            if row.field_name in {"services", "license_or_registration", "operator"}:
+            if row.field_name in {"license_or_registration", "operator"}:
                 continue
             if (
                 row.field_name in {"phones", "emails", "websites"}
                 and row.id not in published_contact_evidence_ids
             ):
+                continue
+            if row.field_name == "services" and row.id not in {
+                service_row.id for service_row in plan.services
+            }:
                 continue
             field_path = _field_path(row, field_counts)
             db.add(
@@ -1095,6 +1154,11 @@ def _score_confidence(
     return Decimal(str(round(score, 4)))
 
 
+def _attribute_key(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    return (slug or "service")[:120]
+
+
 def _field_path(row: ScrapingFacilityCandidateEvidence, counts: dict[str, int]) -> str:
     base = {
         "name": "canonical_name",
@@ -1104,6 +1168,7 @@ def _field_path(row: ScrapingFacilityCandidateEvidence, counts: dict[str, int]) 
         "phones": "contacts.phone",
         "emails": "contacts.email",
         "websites": "contacts.website",
+        "services": "attributes.treatment_service",
     }.get(row.field_name, row.field_name)
     index = counts.get(base, 0)
     counts[base] = index + 1

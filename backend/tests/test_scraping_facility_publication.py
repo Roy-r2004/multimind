@@ -431,6 +431,8 @@ async def test_optional_fields_create_valid_children_and_invalid_contacts_become
             ("emails", "not an email", "not an email", "verified"),
             ("phones", "call us", "call us", "verified"),
             ("websites", "ftp://example.test", "ftp://example.test", "verified"),
+            ("services", "Detoxification", "Detoxification", "verified"),
+            ("services", "Counseling", "Counseling", "verified"),
         ],
     )
 
@@ -440,6 +442,12 @@ async def test_optional_fields_create_valid_children_and_invalid_contacts_become
     assert await db.scalar(select(func.count()).select_from(RehabilitationFacilityLocation)) == 1
     assert await db.scalar(select(func.count()).select_from(RehabilitationFacilityContact)) == 3
     assert await db.scalar(select(func.count()).select_from(RehabilitationUnresolvedField)) == 3
+    attributes = (
+        await db.execute(select(RehabilitationFacilityAttribute))
+    ).scalars().all()
+    assert len(attributes) == 2
+    assert {attr.attribute_group for attr in attributes} == {"treatment_service"}
+    assert {attr.display_name for attr in attributes} == {"Detoxification", "Counseling"}
     contacts = (
         await db.execute(
             select(RehabilitationFacilityContact).order_by(
@@ -452,6 +460,20 @@ async def test_optional_fields_create_valid_children_and_invalid_contacts_become
     assert any(contact.normalized_value == "+33122334455" for contact in contacts)
     facility = await db.get(RehabilitationFacility, summary.final_facility_id)
     assert facility.primary_website == "https://centre-alpha.fr/path"
+
+    from app.services.scraping.execution_service import execution_service
+
+    listed = await execution_service.list_facilities(db, auth, execution.id)
+    assert len(listed) == 1
+    assert listed[0].location_count == 1
+    assert listed[0].contact_count == 3
+    assert listed[0].treatment_service_count == 2
+    detail = await execution_service.get_facility(db, auth, execution.id, listed[0].id)
+    assert len(detail.locations) == 1
+    assert len(detail.contacts) == 3
+    assert len([a for a in detail.attributes if a.attribute_group == "treatment_service"]) == 2
+    assert detail.sources
+    assert any("treatment_service" in (row.field_path or "") for row in detail.evidence)
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 from app.db.models import (
     RehabilitationFacility,
     RehabilitationFacilityContact,
+    RehabilitationFacilitySourceLink,
     ScrapingCoverageCell,
     ScrapingCoverageStatus,
     ScrapingEvent,
@@ -43,6 +44,13 @@ from app.schemas.api import (
     ScrapingExecutionCreate,
     ScrapingExecutionDetail,
     ScrapingExecutionSummary,
+    ScrapingFacilityAliasItem,
+    ScrapingFacilityAttributeItem,
+    ScrapingFacilityContactItem,
+    ScrapingFacilityDetail,
+    ScrapingFacilityEvidenceItem,
+    ScrapingFacilityLocationItem,
+    ScrapingFacilitySourceItem,
     ScrapingFacilitySummary,
     ScrapingTaskResponse,
 )
@@ -320,6 +328,8 @@ class ScrapingExecutionService:
             )
             .options(
                 selectinload(RehabilitationFacility.contacts),
+                selectinload(RehabilitationFacility.locations),
+                selectinload(RehabilitationFacility.attributes),
                 selectinload(RehabilitationFacility.source_links),
             )
             .order_by(RehabilitationFacility.stable_key)
@@ -327,6 +337,37 @@ class ScrapingExecutionService:
             .limit(min(max(limit, 1), 10000))
         )
         return [self._facility_response(facility) for facility in result.scalars().all()]
+
+    async def get_facility(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        execution_id: str,
+        facility_id: str,
+    ) -> ScrapingFacilityDetail:
+        await self._execution_row(db, auth, execution_id)
+        result = await db.execute(
+            select(RehabilitationFacility)
+            .where(
+                RehabilitationFacility.id == facility_id,
+                RehabilitationFacility.execution_id == execution_id,
+                RehabilitationFacility.organization_id == auth.org_id,
+            )
+            .options(
+                selectinload(RehabilitationFacility.aliases),
+                selectinload(RehabilitationFacility.locations),
+                selectinload(RehabilitationFacility.contacts),
+                selectinload(RehabilitationFacility.attributes),
+                selectinload(RehabilitationFacility.source_links).selectinload(
+                    RehabilitationFacilitySourceLink.source
+                ),
+                selectinload(RehabilitationFacility.evidence),
+            )
+        )
+        facility = result.scalar_one_or_none()
+        if facility is None:
+            raise NotFoundError("Facility not found")
+        return self._facility_detail_response(facility)
 
     async def cancel_execution(
         self, db: AsyncSession, auth: AuthContext, execution_id: str
@@ -647,6 +688,8 @@ class ScrapingExecutionService:
 
     def _facility_response(self, facility: RehabilitationFacility) -> ScrapingFacilitySummary:
         contact = _primary_contact(facility.contacts)
+        locations = getattr(facility, "locations", None) or []
+        attributes = getattr(facility, "attributes", None) or []
         return ScrapingFacilitySummary(
             id=facility.id,
             execution_id=facility.execution_id,
@@ -664,8 +707,99 @@ class ScrapingExecutionService:
             human_review_status=facility.human_review_status,
             is_mock=facility.is_mock,
             source_count=len(facility.source_links),
+            location_count=len(locations),
+            contact_count=len(facility.contacts or []),
+            treatment_service_count=len(
+                [attr for attr in attributes if attr.attribute_group == "treatment_service"]
+            ),
             created_at=facility.created_at,
             updated_at=facility.updated_at,
+        )
+
+    def _facility_detail_response(self, facility: RehabilitationFacility) -> ScrapingFacilityDetail:
+        summary = self._facility_response(facility)
+        sources: list[ScrapingFacilitySourceItem] = []
+        for link in facility.source_links:
+            source = link.source
+            if source is None:
+                continue
+            sources.append(
+                ScrapingFacilitySourceItem(
+                    id=source.id,
+                    url=source.canonical_url,
+                    title=source.page_title,
+                    relationship_type=link.relationship_type,
+                )
+            )
+        return ScrapingFacilityDetail(
+            **summary.model_dump(),
+            description=facility.description,
+            primary_address=facility.primary_address,
+            aliases=[
+                ScrapingFacilityAliasItem(
+                    name=alias.name,
+                    alias_type=alias.alias_type,
+                    is_primary=alias.is_primary,
+                )
+                for alias in facility.aliases
+            ],
+            locations=[
+                ScrapingFacilityLocationItem(
+                    id=location.id,
+                    location_type=location.location_type,
+                    location_name=location.location_name,
+                    full_address=location.full_address,
+                    city=location.city,
+                    region=location.region,
+                    is_primary=location.is_primary,
+                    confidence_score=float(location.confidence_score),
+                )
+                for location in facility.locations
+            ],
+            contacts=[
+                ScrapingFacilityContactItem(
+                    id=contact.id,
+                    contact_type=contact.contact_type,
+                    label=contact.label,
+                    value=contact.value,
+                    is_primary=contact.is_primary,
+                    confidence_score=float(contact.confidence_score),
+                )
+                for contact in facility.contacts
+            ],
+            attributes=[
+                ScrapingFacilityAttributeItem(
+                    id=attr.id,
+                    attribute_group=attr.attribute_group,
+                    attribute_key=attr.attribute_key,
+                    display_name=attr.display_name,
+                    value_text=attr.value_text
+                    if attr.value_text is not None
+                    else (
+                        str(attr.value_boolean)
+                        if attr.value_boolean is not None
+                        else (
+                            str(attr.value_number)
+                            if attr.value_number is not None
+                            else None
+                        )
+                    ),
+                    confidence_score=float(attr.confidence_score),
+                )
+                for attr in facility.attributes
+            ],
+            sources=sources,
+            evidence=[
+                ScrapingFacilityEvidenceItem(
+                    id=row.id,
+                    field_path=row.field_path,
+                    extracted_value=row.extracted_value,
+                    evidence_text=row.evidence_text,
+                    source_url_snapshot=row.source_url_snapshot,
+                    page_title=row.page_title,
+                )
+                for row in facility.evidence
+            ],
         )
 
     def _event_response(self, event: ScrapingEvent) -> ScrapingEventResponse:

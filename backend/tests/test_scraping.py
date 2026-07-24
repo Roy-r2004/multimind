@@ -3636,6 +3636,9 @@ async def test_authorized_facility_api_lists_deterministic_summaries(
     assert rows[0].verification_status in {"verified", "unverified"}
     assert rows[0].confidence_score > 0
     assert rows[0].source_count > 0
+    assert rows[0].location_count > 0
+    assert rows[0].contact_count > 0
+    assert rows[0].treatment_service_count > 0
     other = await create_other_auth(db)
     with pytest.raises(Exception, match="ScrapingExecution not found"):
         await execution_service.list_facilities(db, other, execution.id)

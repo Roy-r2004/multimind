@@ -17,6 +17,7 @@ from app.schemas.api import (
     ScrapingEventResponse,
     ScrapingExecutionDetail,
     ScrapingExecutionSummary,
+    ScrapingFacilityDetail,
     ScrapingFacilitySummary,
     ScrapingTaskResponse,
     FacilityCandidateAuditResponse,
@@ -146,6 +147,19 @@ async def list_facilities(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get(
+    "/{execution_id}/facilities/{facility_id}",
+    response_model=ScrapingFacilityDetail,
+)
+async def get_facility(
+    execution_id: str,
+    facility_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await execution_service.get_facility(db, auth, execution_id, facility_id)
 
 
 @router.get(

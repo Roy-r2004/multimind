@@ -5,6 +5,7 @@ import type {
   ScrapingEvent,
   ScrapingExecutionDetail,
   ScrapingExecutionSummary,
+  ScrapingFacilityDetail,
   ScrapingFacilitySummary,
   ScrapingMissionCreateInput,
   ScrapingMissionDetail,
@@ -265,6 +266,20 @@ export function listScrapingExecutionFacilities(auth: Auth, executionId: string)
   return listAllPages<ScrapingFacilitySummary>(
     auth,
     `/scraping/executions/${executionId}/facilities`,
+  );
+}
+
+export function getScrapingExecutionFacility(
+  auth: Auth,
+  executionId: string,
+  facilityId: string,
+) {
+  return apiRequest<ScrapingFacilityDetail>(
+    `/scraping/executions/${executionId}/facilities/${facilityId}`,
+    {
+      token: auth.token,
+      orgId: auth.orgId,
+    },
   );
 }
 

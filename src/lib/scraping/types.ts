@@ -253,8 +253,73 @@ export type ScrapingFacilitySummary = {
   human_review_status: string;
   is_mock: boolean;
   source_count: number;
+  location_count?: number;
+  contact_count?: number;
+  treatment_service_count?: number;
   created_at: string;
   updated_at: string;
+};
+
+export type ScrapingFacilityAliasItem = {
+  name: string;
+  alias_type: string;
+  is_primary: boolean;
+};
+
+export type ScrapingFacilityLocationItem = {
+  id: string;
+  location_type: string;
+  location_name: string;
+  full_address?: string | null;
+  city?: string | null;
+  region?: string | null;
+  is_primary: boolean;
+  confidence_score: number;
+};
+
+export type ScrapingFacilityContactItem = {
+  id: string;
+  contact_type: string;
+  label?: string | null;
+  value: string;
+  is_primary: boolean;
+  confidence_score: number;
+};
+
+export type ScrapingFacilityAttributeItem = {
+  id: string;
+  attribute_group: string;
+  attribute_key: string;
+  display_name: string;
+  value_text?: string | null;
+  confidence_score: number;
+};
+
+export type ScrapingFacilitySourceItem = {
+  id: string;
+  url: string;
+  title?: string | null;
+  relationship_type: string;
+};
+
+export type ScrapingFacilityEvidenceItem = {
+  id: string;
+  field_path: string;
+  extracted_value?: string | null;
+  evidence_text?: string | null;
+  source_url_snapshot?: string | null;
+  page_title?: string | null;
+};
+
+export type ScrapingFacilityDetail = ScrapingFacilitySummary & {
+  description?: string | null;
+  primary_address?: string | null;
+  aliases: ScrapingFacilityAliasItem[];
+  locations: ScrapingFacilityLocationItem[];
+  contacts: ScrapingFacilityContactItem[];
+  attributes: ScrapingFacilityAttributeItem[];
+  sources: ScrapingFacilitySourceItem[];
+  evidence: ScrapingFacilityEvidenceItem[];
 };
 
 export type SourceCandidate = {
