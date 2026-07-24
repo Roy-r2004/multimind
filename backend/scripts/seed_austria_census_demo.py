@@ -269,15 +269,19 @@ async def seed_austria_demo(*, ensure_base: bool = True) -> dict[str, Any]:
             )
         await db.flush()
 
+        website_contact_facility_ids: set[str] = set()
         for row in contacts_src:
             facility_id = facility_id_map.get(row["facility_id"])
             if not facility_id:
                 continue
+            contact_type = row.get("contact_type") or "other"
+            if contact_type == "website":
+                website_contact_facility_ids.add(facility_id)
             db.add(
                 RehabilitationFacilityContact(
                     id=str(uuid4()),
                     facility_id=facility_id,
-                    contact_type=row.get("contact_type") or "other",
+                    contact_type=contact_type,
                     label=row.get("label"),
                     value=row["value"],
                     normalized_value=row.get("normalized_value"),
@@ -287,6 +291,30 @@ async def seed_austria_demo(*, ensure_base: bool = True) -> dict[str, Any]:
                     or "verified_from_staging",
                     confidence_score=float(row.get("confidence_score") or 0.5),
                     is_mock=_as_bool(row.get("is_mock"), False),
+                )
+            )
+
+        # Ensure every seeded website is also a contact so the dossier Contacts tab shows it.
+        for row in facilities_src:
+            website = (row.get("primary_website") or "").strip()
+            if not website:
+                continue
+            facility_id = facility_id_map[row["id"]]
+            if facility_id in website_contact_facility_ids:
+                continue
+            db.add(
+                RehabilitationFacilityContact(
+                    id=str(uuid4()),
+                    facility_id=facility_id,
+                    contact_type="website",
+                    label=None,
+                    value=website,
+                    normalized_value=website,
+                    is_primary=True,
+                    available_24_7=False,
+                    verification_status="enriched_for_demo",
+                    confidence_score=float(row.get("confidence_score") or 0.6),
+                    is_mock=False,
                 )
             )
 
