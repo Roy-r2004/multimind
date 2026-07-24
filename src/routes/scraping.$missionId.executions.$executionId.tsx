@@ -3,10 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
-import { FacilityDossier } from "@/components/scraping/FacilityDossier";
-import { FacilityRoster } from "@/components/scraping/FacilityRoster";
 import { LiveSiteActivity } from "@/components/scraping/LiveSiteActivity";
-import { RunPulse, type RunPulseStageId } from "@/components/scraping/RunPulse";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -15,7 +12,6 @@ import {
   deleteScrapingExecution,
   downloadScrapingExecutionWorkbook,
   getScrapingExecution,
-  getScrapingExecutionFacility,
   listScrapingExecutionFacilities,
   listScrapingExecutionCoverage,
   listScrapingExecutionEvents,
@@ -30,7 +26,6 @@ import type {
   ScrapingCoverageCell,
   ScrapingEvent,
   ScrapingExecutionDetail,
-  ScrapingFacilityDetail,
   ScrapingFacilitySummary,
   ScrapingTask,
   SourceCandidate,
@@ -40,16 +35,12 @@ import type {
 } from "@/lib/scraping/types";
 
 export const Route = createFileRoute("/scraping/$missionId/executions/$executionId")({
-  validateSearch: (search: Record<string, unknown>): { facility?: string } => ({
-    facility: typeof search.facility === "string" ? search.facility : undefined,
-  }),
-  head: () => ({ meta: [{ title: "Scrape Results - MultiAI" }] }),
+  head: () => ({ meta: [{ title: "Real Source Discovery Campaign - MultiAI" }] }),
   component: ScrapingExecutionPage,
 });
 
 function ScrapingExecutionPage() {
   const { missionId, executionId } = Route.useParams();
-  const { facility: facilityFromSearch } = Route.useSearch();
   const { authHeaders } = useAuth();
   const navigate = useNavigate();
   const [detail, setDetail] = useState<ScrapingExecutionDetail | null>(null);
@@ -62,14 +53,6 @@ function ScrapingExecutionPage() {
   const [retrievalAttempts, setRetrievalAttempts] = useState<SourceRetrievalAttempt[]>([]);
   const [sourceDocuments, setSourceDocuments] = useState<SourceDocument[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(
-    facilityFromSearch ?? null,
-  );
-  const [facilityDetail, setFacilityDetail] = useState<ScrapingFacilityDetail | null>(null);
-  const [facilityLoading, setFacilityLoading] = useState(false);
-  const [facilityError, setFacilityError] = useState<string | null>(null);
-  const [mobileShowDossier, setMobileShowDossier] = useState(Boolean(facilityFromSearch));
-  const [pipelineOpen, setPipelineOpen] = useState(true);
   const [connectionState, setConnectionState] = useState<"Live" | "Reconnecting" | "Disconnected">(
     "Disconnected",
   );
@@ -80,9 +63,6 @@ function ScrapingExecutionPage() {
   const [error, setError] = useState<string | null>(null);
   const lastSequenceRef = useRef(0);
   const refreshTimerRef = useRef<number | null>(null);
-  const sourcesPanelRef = useRef<HTMLDetailsElement | null>(null);
-  const pipelinePanelRef = useRef<HTMLDetailsElement | null>(null);
-  const rosterRef = useRef<HTMLDivElement | null>(null);
 
   const loadAll = useCallback(async () => {
     const auth = authHeaders();
@@ -132,92 +112,10 @@ function ScrapingExecutionPage() {
   }, [loadAll]);
 
   useEffect(() => {
-    setSelectedFacilityId(facilityFromSearch ?? null);
-    if (facilityFromSearch) {
-      setMobileShowDossier(true);
-    }
-  }, [facilityFromSearch]);
-
-  useEffect(() => {
-    if (facilities.length > 0) {
-      setPipelineOpen(false);
-    } else {
-      setPipelineOpen(true);
-    }
-  }, [facilities.length]);
-
-  useEffect(() => {
-    if (!selectedFacilityId && facilities.length > 0) {
-      const firstId = facilities[0].id;
-      setSelectedFacilityId(firstId);
-      void navigate({
-        to: "/scraping/$missionId/executions/$executionId",
-        params: { missionId, executionId },
-        search: { facility: firstId },
-        replace: true,
-      });
-    }
-  }, [facilities, selectedFacilityId, navigate, missionId, executionId]);
-
-  useEffect(() => {
-    const auth = authHeaders();
-    if (!auth || !selectedFacilityId) {
-      setFacilityDetail(null);
-      setFacilityError(null);
-      return;
-    }
-    let cancelled = false;
-    setFacilityLoading(true);
-    setFacilityError(null);
-    void getScrapingExecutionFacility(auth, executionId, selectedFacilityId)
-      .then((loaded) => {
-        if (!cancelled) setFacilityDetail(loaded);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setFacilityDetail(null);
-          setFacilityError(err instanceof Error ? err.message : "Failed to load facility");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setFacilityLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [authHeaders, executionId, selectedFacilityId]);
-
-  function selectFacility(facilityId: string) {
-    setSelectedFacilityId(facilityId);
-    setMobileShowDossier(true);
-    void navigate({
-      to: "/scraping/$missionId/executions/$executionId",
-      params: { missionId, executionId },
-      search: { facility: facilityId },
-      replace: true,
-    });
-  }
-
-  function handlePulseClick(stageId: RunPulseStageId) {
-    if (stageId === "sources" || stageId === "pages") {
-      if (sourcesPanelRef.current) {
-        sourcesPanelRef.current.open = true;
-        sourcesPanelRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-      return;
-    }
-    if (stageId === "facilities" || stageId === "confidence") {
-      rosterRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      return;
-    }
-  }
-
-  useEffect(() => {
     const auth = authHeaders();
     if (!auth) {
       return;
     }
-    const streamAuth = auth;
     let cancelled = false;
     let retryMs = 1000;
     let controller: AbortController | null = null;
@@ -232,8 +130,8 @@ function ScrapingExecutionPage() {
             {
               headers: {
                 Accept: "text/event-stream",
-                Authorization: `Bearer ${streamAuth.token}`,
-                "X-Org-Id": streamAuth.orgId,
+                Authorization: `Bearer ${auth.token}`,
+                "X-Org-Id": auth.orgId,
               },
               credentials: "include",
               signal: controller.signal,
@@ -423,61 +321,10 @@ function ScrapingExecutionPage() {
         {detail && execution && (
           <div className="mt-8 space-y-5">
             <GlassCard className="p-5">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0 flex-1">
-                  <RunPulse
-                    connectionState={connectionState}
-                    statusLabel={execution.status_label}
-                    onStageClick={handlePulseClick}
-                    stages={[
-                      {
-                        id: "sources",
-                        label: "Sources",
-                        value: String(
-                          Math.max(sourceCandidates.length, execution.sources_discovered),
-                        ),
-                        state: pulseState({
-                          isTerminal,
-                          count: Math.max(sourceCandidates.length, execution.sources_discovered),
-                          failed: execution.status === "failed",
-                        }),
-                      },
-                      {
-                        id: "pages",
-                        label: "Pages",
-                        value: String(
-                          Math.max(sourceDocuments.length, execution.documents_found),
-                        ),
-                        state: pulseState({
-                          isTerminal,
-                          count: Math.max(sourceDocuments.length, execution.documents_found),
-                          failed: execution.status === "failed",
-                        }),
-                      },
-                      {
-                        id: "facilities",
-                        label: "Facilities",
-                        value: String(
-                          Math.max(facilities.length, execution.records_verified),
-                        ),
-                        state: pulseState({
-                          isTerminal,
-                          count: Math.max(facilities.length, execution.records_verified),
-                          failed: execution.status === "failed",
-                        }),
-                      },
-                      {
-                        id: "confidence",
-                        label: "Confidence",
-                        value: confidenceSummary(facilities),
-                        state: pulseState({
-                          isTerminal,
-                          count: facilities.length,
-                          failed: execution.status === "failed",
-                        }),
-                      },
-                    ]}
-                  />
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">{execution.status_label}</Badge>
+                  <span className="text-sm text-muted-foreground">{connectionState}</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -494,62 +341,94 @@ function ScrapingExecutionPage() {
                   )}
                 </div>
               </div>
-              <p className="mt-3 text-xs text-muted-foreground">
-                Duplicates detected: {execution.duplicates_detected}
-              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Metric
+                  label="Facilities"
+                  value={Math.max(facilities.length, execution.records_verified)}
+                />
+                <Metric
+                  label="Pages"
+                  value={Math.max(sourceDocuments.length, execution.documents_found)}
+                />
+                <Metric
+                  label="Sources"
+                  value={Math.max(sourceCandidates.length, execution.sources_discovered)}
+                />
+                <Metric label="Duplicates" value={execution.duplicates_detected} />
+              </div>
             </GlassCard>
 
-            <div ref={rosterRef} className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-              <div className={mobileShowDossier ? "hidden lg:block" : "block"}>
-                {facilities.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-border bg-card/40 p-6 text-sm text-muted-foreground">
-                    {isTerminal
-                      ? "No facilities were published from the pages we retrieved."
-                      : "Still running… facilities show up here when extraction finishes."}
-                  </div>
-                ) : (
-                  <FacilityRoster
-                    facilities={facilities}
-                    selectedId={selectedFacilityId}
-                    onSelect={selectFacility}
-                  />
-                )}
-              </div>
-              <div className={mobileShowDossier || facilities.length === 0 ? "block" : "hidden lg:block"}>
-                <FacilityDossier
-                  detail={facilityDetail}
-                  loading={facilityLoading}
-                  error={facilityError}
-                  onBack={() => setMobileShowDossier(false)}
-                />
-              </div>
-            </div>
+            <LiveSiteActivity
+              candidates={sourceCandidates}
+              tasks={tasks}
+              attempts={retrievalAttempts}
+              documents={sourceDocuments}
+              events={events}
+              isTerminal={isTerminal}
+            />
 
-            <details
-              ref={pipelinePanelRef}
-              className="rounded-xl border border-border bg-card/40 p-4"
-              open={pipelineOpen}
-              onToggle={(event) => setPipelineOpen(event.currentTarget.open)}
-            >
-              <summary className="cursor-pointer text-sm font-medium">
-                Pipeline · live site activity
-              </summary>
-              <div className="mt-4">
-                <LiveSiteActivity
-                  candidates={sourceCandidates}
-                  tasks={tasks}
-                  attempts={retrievalAttempts}
-                  documents={sourceDocuments}
-                  events={events}
-                  isTerminal={isTerminal}
-                />
+            <GlassCard className="p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-xl font-semibold">Facilities</h2>
+                <Badge variant="secondary">{facilities.length}</Badge>
               </div>
-            </details>
+              {facilities.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
+                  {isTerminal
+                    ? "No facilities were published from the pages we retrieved."
+                    : "Still running… facilities show up here when extraction finishes."}
+                </div>
+              ) : (
+                <div className="overflow-auto rounded-lg border border-border">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2">Name</th>
+                        <th className="px-3 py-2">Type</th>
+                        <th className="px-3 py-2">Website</th>
+                        <th className="px-3 py-2">Confidence</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {facilities.map((facility) => (
+                        <tr key={facility.id} className="border-t border-border">
+                          <td className="px-3 py-2 align-top font-medium">
+                            {facility.canonical_name}
+                            {facility.primary_city || facility.primary_region ? (
+                              <p className="text-xs text-muted-foreground">
+                                {[facility.primary_city, facility.primary_region]
+                                  .filter(Boolean)
+                                  .join(", ")}
+                              </p>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2 align-top">{facility.facility_type}</td>
+                          <td className="px-3 py-2 align-top">
+                            {facility.primary_website ? (
+                              <a
+                                href={facility.primary_website}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-primary underline-offset-2 hover:underline"
+                              >
+                                Open site
+                              </a>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            {(facility.confidence_score * 100).toFixed(0)}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </GlassCard>
 
-            <details
-              ref={sourcesPanelRef}
-              className="rounded-xl border border-border bg-card/40 p-4"
-            >
+            <details className="rounded-xl border border-border bg-card/40 p-4">
               <summary className="cursor-pointer text-sm font-medium">
                 Sources & pages (
                 {Math.max(sourceCandidates.length, execution.sources_discovered)} sources ·{" "}
@@ -702,32 +581,6 @@ function Metric({ label, value }: { label: string; value: string | number }) {
       <p className="mt-1 text-lg font-semibold">{value}</p>
     </div>
   );
-}
-
-function pulseState({
-  isTerminal,
-  count,
-  failed,
-}: {
-  isTerminal: boolean;
-  count: number;
-  failed: boolean;
-}): "pending" | "active" | "done" | "failed" {
-  if (failed) return "failed";
-  if (isTerminal) return count > 0 ? "done" : "pending";
-  if (count > 0) return "active";
-  return "pending";
-}
-
-function confidenceSummary(facilities: ScrapingFacilitySummary[]): string {
-  if (facilities.length === 0) return "—";
-  const mean =
-    facilities.reduce((total, facility) => total + facility.confidence_score, 0) /
-    facilities.length;
-  const needsReview = facilities.filter(
-    (facility) => facility.human_review_status === "required",
-  ).length;
-  return `${(mean * 100).toFixed(0)}% · ${needsReview} review`;
 }
 
 function GridSection({ title, rows }: { title: string; rows: string[][] }) {
