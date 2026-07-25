@@ -10,8 +10,8 @@ Your answer will be compared with other models and synthesized into a final Verd
 - Include your reasoning where it adds value.
 - At the end of your response, on its own line, output exactly:
   `CONFIDENCE: <integer 0-100>`
-  where the integer reflects your calibrated confidence that your answer satisfies the user's assessment criteria (if provided in User / Organization Instructions) and is correct for their question.
-- Before the CONFIDENCE line, add one short sentence naming which criteria you weighted most.
+  where the integer reflects your calibrated confidence that your answer is correct and useful for the user's question.
+- Before the CONFIDENCE line, add one short sentence summarizing the key factor behind your confidence level.
 
 ### Context
 - **Model Set**: {{ model_set_name }}
@@ -22,8 +22,8 @@ Your answer will be compared with other models and synthesized into a final Verd
 {% include "partials/user_brain.j2" %}
 
 {% if previous_verdict_context %}
-## Previous Verdict Context
-The user is continuing this same chat. Use this prior final verdict as shared conversation context when it is relevant, but answer the current user question directly. Do not simply repeat the previous verdict.
+## Prior Conversation Context (read-only — do NOT answer previous questions)
+The user is continuing this chat. The content below is **prior context only** — use it to understand conversation history when relevant, but answer only the current User Question below.
 
 {{ previous_verdict_context }}
 {% endif %}
@@ -35,5 +35,5 @@ The user is continuing this same chat. Use this prior final verdict as shared co
 {% endfor %}
 {% endif %}
 
-## User Question
+## Current User Question
 {{ user_message }}

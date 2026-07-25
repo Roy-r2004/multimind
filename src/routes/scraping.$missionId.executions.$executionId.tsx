@@ -130,8 +130,8 @@ function ScrapingExecutionPage() {
             {
               headers: {
                 Accept: "text/event-stream",
-                Authorization: `Bearer ${auth.token}`,
-                "X-Org-Id": auth.orgId,
+                Authorization: `Bearer ${auth!.token}`,
+                "X-Org-Id": auth!.orgId,
               },
               credentials: "include",
               signal: controller.signal,

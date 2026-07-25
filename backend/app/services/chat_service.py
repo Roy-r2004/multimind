@@ -3,7 +3,7 @@
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, select, update
@@ -288,23 +288,26 @@ class ChatService:
         captured_task = _orchestration_tasks.get(turn_id)
 
         result = await db.execute(
-            select(Turn.id)
+            select(Turn.id, Turn.deleted_at)
             .where(Turn.id == turn_id, Turn.chat_id == chat_id)
             .with_for_update()
         )
-        existing_turn_id = result.scalar_one_or_none()
-        if existing_turn_id is None:
+        row = result.first()
+        if row is None:
             any_turn = await db.execute(select(Turn.id).where(Turn.id == turn_id))
             if any_turn.scalar_one_or_none() is not None:
                 raise NotFoundError("Turn", str(turn_id))
             return TurnDeleteResponse(turn_id=turn_id, deleted=True)
 
+        if row.deleted_at is not None:
+            return TurnDeleteResponse(turn_id=turn_id, deleted=True)
+
         try:
-            await db.execute(delete(CostRecord).where(CostRecord.turn_id == turn_id))
-            await db.execute(delete(DecisionInsurance).where(DecisionInsurance.turn_id == turn_id))
-            await db.execute(delete(Verdict).where(Verdict.turn_id == turn_id))
-            await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id == turn_id))
-            await db.execute(delete(Turn).where(Turn.id == turn_id, Turn.chat_id == chat_id))
+            await db.execute(
+                update(Turn)
+                .where(Turn.id == turn_id, Turn.chat_id == chat_id)
+                .values(deleted_at=datetime.now(UTC))
+            )
             await db.flush()
             await db.commit()
         except Exception:
@@ -313,6 +316,44 @@ class ChatService:
 
         await _cancel_orchestration_task_after_commit(turn_id, captured_task)
         return TurnDeleteResponse(turn_id=turn_id, deleted=True)
+
+    async def restore_turn(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, turn_id: str
+    ) -> TurnResponse:
+        """Restore a soft-deleted turn (unlimited undo)."""
+        chat = await self.get_chat(db, auth, chat_id)
+        self._authorize_turn_delete(chat, auth)
+
+        result = await db.execute(
+            select(Turn)
+            .where(Turn.id == turn_id, Turn.chat_id == chat_id)
+            .options(
+                selectinload(Turn.model_answers),
+                selectinload(Turn.verdict),
+                selectinload(Turn.decision_insurance),
+                selectinload(Turn.lesson),
+            )
+        )
+        turn = result.scalar_one_or_none()
+        if turn is None:
+            raise NotFoundError("Turn", str(turn_id))
+
+        turn.deleted_at = None
+        await db.commit()
+
+        result = await db.execute(
+            select(Turn)
+            .where(Turn.id == turn_id, Turn.chat_id == chat_id, Turn.deleted_at.is_(None))
+            .options(
+                selectinload(Turn.model_answers),
+                selectinload(Turn.verdict),
+                selectinload(Turn.decision_insurance),
+                selectinload(Turn.lesson),
+            )
+        )
+        restored = result.scalar_one()
+        saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [restored])
+        return self._turn_response(restored, saved_verdict_ids)
 
     async def _resolve_model_set(
         self, db: AsyncSession, auth: AuthContext, model_set_id: str
@@ -335,6 +376,11 @@ class ChatService:
         chat = await self.get_chat(db, auth, chat_id)
         model_set = await self._resolve_model_set(db, auth, data.model_set_id)
 
+        instruction_parts = [
+            part.strip()
+            for part in (model_set.custom_instructions, data.custom_instructions)
+            if part and part.strip()
+        ]
         turn = Turn(
             chat_id=chat.id,
             user_message=data.user_message.strip(),
@@ -342,7 +388,7 @@ class ChatService:
             strategy=model_set.strategy,
             verdict_model=model_set.verdict_model,
             status=TurnStatus.PENDING,
-            custom_instructions=data.custom_instructions or model_set.custom_instructions,
+            custom_instructions="\n\n".join(instruction_parts) or None,
             decision_insurance_enabled=False,
         )
         db.add(turn)
@@ -438,7 +484,7 @@ class ChatService:
         result = await db.execute(
             select(Turn)
             .join(Chat, Chat.id == Turn.chat_id)
-            .where(Turn.id == turn_id, Chat.org_id == auth.org_id)
+            .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
             .options(
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict),
@@ -521,7 +567,7 @@ class ChatService:
             fresh_result = await db.execute(
                 select(Turn)
                 .join(Chat, Chat.id == Turn.chat_id)
-                .where(Turn.id == turn_id, Chat.org_id == auth.org_id)
+                .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
                 .options(
                     selectinload(Turn.model_answers),
                     selectinload(Turn.verdict),
@@ -728,7 +774,7 @@ class ChatService:
         result = await db.execute(
             select(Turn)
             .join(Chat, Chat.id == Turn.chat_id)
-            .where(Turn.id == turn_id, Chat.org_id == auth.org_id)
+            .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
             .options(
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict),
@@ -750,6 +796,7 @@ class ChatService:
             select(Turn)
             .where(
                 Turn.chat_id == chat_id,
+                Turn.deleted_at.is_(None),
                 (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
             )
             .options(
@@ -780,6 +827,7 @@ class ChatService:
         filters = [
             Turn.chat_id == chat_id,
             Turn.id != current_turn_id,
+            Turn.deleted_at.is_(None),
             (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
         ]
         if current_turn_created_at is not None:
@@ -806,11 +854,13 @@ class ChatService:
 
         previous_turn, verdict = row
         parts = [
-            f"Previous user question:\n{previous_turn.user_message.strip()}",
             f"Previous final verdict:\n{verdict.text.strip()}",
         ]
         if verdict.reason:
             parts.append(f"Previous verdict rationale:\n{verdict.reason.strip()}")
+        parts.append(
+            f"Prior user question (prior context only — do not answer this):\n{previous_turn.user_message.strip()}"
+        )
 
         context = "\n\n".join(part for part in parts if part.strip())
         context = context[:6000] if context else None

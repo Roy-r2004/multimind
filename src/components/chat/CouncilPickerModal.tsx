@@ -122,8 +122,13 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
   return (
     <Modal open={open} onClose={onClose} title="Choose your council" size="lg">
       <p className="mb-4 text-sm text-muted-foreground">
-        Pick up to <strong className="text-foreground">{MAX_COUNCIL_MODELS} models</strong> from the
-        full OpenRouter catalog. They answer in parallel; Verdict AI synthesizes the final answer.
+        Select <strong className="text-foreground">one or more models</strong> (up to{" "}
+        {MAX_COUNCIL_MODELS}) for the same request. Click to multi-select — they answer in parallel;
+        Verdict AI synthesizes the final answer.
+      </p>
+      <p className="mb-4 text-xs font-medium text-foreground">
+        {picked.length} of {MAX_COUNCIL_MODELS} council models selected
+        {picked.length < 1 ? " — pick at least one" : ""}
       </p>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
@@ -181,7 +186,7 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
           const slug = isSearch ? item.openrouter_slug : (item.openrouter_slug ?? item.id);
           const id = isSearch
             ? (models.find((m) => m.openrouter_slug === item.openrouter_slug)?.id ??
-              slugToModelId(item.openrouter_slug))
+              slugToModelId(String(item.openrouter_slug)))
             : item.id;
           const name = isSearch ? item.name : item.name;
           const selected = picked.includes(id);
@@ -204,7 +209,16 @@ export function CouncilPickerModal({ open, onClose, currentSet, onSave }: Props)
                   {isSearch ? item.openrouter_slug : slug}
                 </div>
               </div>
-              <span className="shrink-0 text-xs text-primary">{selected ? "Selected" : "Add"}</span>
+              <span
+                className={cn(
+                  "shrink-0 rounded-md border px-2 py-0.5 text-xs",
+                  selected
+                    ? "border-primary/40 bg-primary/10 font-medium text-primary"
+                    : "border-border text-muted-foreground",
+                )}
+              >
+                {selected ? "Selected ✓" : "Add to council"}
+              </span>
             </button>
           );
         })}

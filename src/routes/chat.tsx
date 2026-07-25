@@ -22,13 +22,13 @@ import {
   Swords,
   BookOpen,
   Trophy,
-  Scale,
   Square,
   Bookmark,
   MoreHorizontal,
   ArrowDown,
   Pin,
   FilePlus2,
+  Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -40,7 +40,6 @@ import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/Ch
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
-import { AssessmentCriteriaModal } from "@/components/chat/AssessmentCriteriaModal";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
@@ -53,6 +52,7 @@ import type { ApiTranscriptionResponse, ApiTurn } from "@/lib/api/types";
 import {
   mergeWithCachedTurns,
   removeTurn,
+  restoreRemovedTurn,
   resumeRunningTurns,
   runTurnInBackground,
   seedChatTurns,
@@ -75,12 +75,6 @@ import {
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
 import {
-  DEFAULT_COMPANY_ASSESSMENT_CRITERIA,
-  extractAssessmentCriteria,
-  mergeAssessmentIntoInstructions,
-  parseCriteriaLines,
-} from "@/lib/assessmentCriteria";
-import {
   findPinnedSynthesisElement,
   isChatNearBottom,
   scrollThreadToElement,
@@ -98,7 +92,16 @@ export const Route = createFileRoute("/chat")({
   component: ChatPage,
 });
 
-type ComposerFile = { name: string; state: "uploading" | "uploaded" | "error" };
+type ComposerFile = {
+  localId: string;
+  name: string;
+  state: "uploading" | "uploaded" | "error";
+  attachmentId?: string;
+  textExcerpt?: string | null;
+  errorMessage?: string;
+};
+
+const TEXTAREA_MAX_HEIGHT_PX = 280;
 
 function transcriptInsertion(
   current: string,
@@ -166,15 +169,24 @@ async function buildComposerInstructions(
       );
     }
   }
-  const uploaded = files.filter((f) => f.state === "uploaded").map((f) => f.name);
+  const uploaded = files.filter((f) => f.state === "uploaded");
   if (uploaded.length > 0) {
-    parts.push(`Attached files (reference by name): ${uploaded.join(", ")}`);
+    parts.push(
+      `Attached files (reference by name): ${uploaded.map((f) => f.name).join(", ")}`,
+    );
+    for (const file of uploaded) {
+      if (file.textExcerpt?.trim()) {
+        parts.push(
+          `--- Begin attached file: ${file.name} ---\n${file.textExcerpt.trim()}\n--- End attached file: ${file.name} ---`,
+        );
+      }
+    }
   }
   const text = parts.join("\n\n").trim();
   return text || undefined;
 }
 
-const SYSTEM_MODEL_SETS = new Set(["balanced", "coding", "business", "research"]);
+const SYSTEM_MODEL_SETS = new Set(["referee", "balanced", "coding", "business", "research"]);
 
 export function ChatPage() {
   const {
@@ -220,9 +232,9 @@ export function ChatPage() {
   const [deletingTurn, setDeletingTurn] = useState(false);
   const [deleteTurnError, setDeleteTurnError] = useState<string | null>(null);
   const [saveTurnId, setSaveTurnId] = useState<string | null>(null);
-  const [assessmentCriteria, setAssessmentCriteria] = useState(DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
-  const [showCriteria, setShowCriteria] = useState(false);
-  const [savingCriteria, setSavingCriteria] = useState(false);
+  const [deletedTurns, setDeletedTurns] = useState<ApiTurn[]>([]);
+  const [restoringTurnId, setRestoringTurnId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
@@ -280,6 +292,7 @@ export function ChatPage() {
     shouldPinToBottomRef.current = true;
     showScrollToLatestRef.current = false;
     setShowScrollToLatest(false);
+    setDeletedTurns([]);
     window.requestAnimationFrame(() => scrollThreadToLatest("auto"));
   }, [activeChatId, scrollThreadToLatest]);
 
@@ -369,31 +382,11 @@ export function ChatPage() {
   }, [apiTurns, loading, scrollThreadToLatest, updateThreadScrollState]);
 
   useEffect(() => {
-    if (!set) return;
-    const fromSet = extractAssessmentCriteria(set.customInstructions);
-    const fromStorage =
-      typeof window !== "undefined"
-        ? localStorage.getItem(`multiai_assessment_criteria:${set.id}`)
-        : null;
-    setAssessmentCriteria(fromSet || fromStorage || DEFAULT_COMPANY_ASSESSMENT_CRITERIA);
-  }, [set?.id, set?.customInstructions]);
-
-  async function saveAssessmentCriteria(criteria: string) {
-    if (!set) return;
-    setSavingCriteria(true);
-    try {
-      if (SYSTEM_MODEL_SETS.has(set.id)) {
-        localStorage.setItem(`multiai_assessment_criteria:${set.id}`, criteria);
-      } else {
-        const merged = mergeAssessmentIntoInstructions(set.customInstructions, criteria);
-        await updateModelSet({ ...set, customInstructions: merged });
-      }
-      setAssessmentCriteria(criteria);
-      setShowCriteria(false);
-    } finally {
-      setSavingCriteria(false);
-    }
-  }
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`;
+  }, [input]);
 
   useEffect(() => {
     if (!isApiMode || !activeChatId) {
@@ -494,11 +487,7 @@ export function ChatPage() {
       let chatId = activeChatId;
       if (!chatId) chatId = await createChat();
       if (!chatId) return;
-      const baseInstructions = await buildComposerInstructions(auth, refChat, files);
-      const customInstructions = mergeAssessmentIntoInstructions(
-        baseInstructions,
-        assessmentCriteria,
-      );
+      const customInstructions = await buildComposerInstructions(auth, refChat, files);
       const pending = await api.chats.createTurn(auth, chatId, {
         user_message: question,
         model_set_id: set.id,
@@ -549,14 +538,80 @@ export function ChatPage() {
       await api.chats.deleteTurn(auth, activeChatId, target.id);
       removeTurn(activeChatId, target.id);
       setApiTurns((prev) => removeTurnFromList(prev, target.id));
+      setDeletedTurns((prev) => [target, ...prev.filter((t) => t.id !== target.id)]);
       setDeleteTurnTarget(null);
-      toast.success("Turn deleted.");
+      toast.success("Turn deleted. Use Undo below to restore anytime.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to delete turn";
       setDeleteTurnError(message);
       toast.error(message);
     } finally {
       setDeletingTurn(false);
+    }
+  }
+
+  async function undoDeletedTurn(turnId: string) {
+    const auth = authHeaders();
+    if (!auth || !activeChatId || restoringTurnId) return;
+    setRestoringTurnId(turnId);
+    try {
+      const restored = await api.chats.restoreTurn(auth, activeChatId, turnId);
+      setDeletedTurns((prev) => prev.filter((t) => t.id !== turnId));
+      restoreRemovedTurn(activeChatId, restored);
+      setApiTurns((prev) => {
+        if (prev.some((t) => t.id === restored.id)) return prev;
+        return [...prev, restored].sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        );
+      });
+      toast.success("Turn restored.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to restore turn");
+    } finally {
+      setRestoringTurnId(null);
+    }
+  }
+
+  async function uploadComposerFiles(fileList: FileList | null) {
+    if (!fileList?.length) return;
+    const auth = authHeaders();
+    if (!auth) {
+      void navigate({ to: "/login" });
+      return;
+    }
+    let chatId = activeChatId;
+    if (!chatId) {
+      chatId = await createChat();
+      if (!chatId) return;
+    }
+    for (const file of Array.from(fileList)) {
+      const localId = `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2, 8)}`;
+      setFiles((prev) => [...prev, { localId, name: file.name, state: "uploading" }]);
+      try {
+        const uploaded = await api.chats.uploadAttachment(auth, chatId, file);
+        setFiles((prev) =>
+          prev.map((item) =>
+            item.localId === localId
+              ? {
+                  ...item,
+                  state: "uploaded" as const,
+                  attachmentId: uploaded.id,
+                  textExcerpt: uploaded.text_excerpt,
+                }
+              : item,
+          ),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Upload failed";
+        setFiles((prev) =>
+          prev.map((item) =>
+            item.localId === localId
+              ? { ...item, state: "error" as const, errorMessage: message }
+              : item,
+          ),
+        );
+        toast.error(`${file.name}: ${message}`);
+      }
     }
   }
 
@@ -607,18 +662,10 @@ export function ChatPage() {
               <span className="ml-2 text-xs text-muted-foreground">{set.strategy}</span>
               <button
                 type="button"
-                onClick={() => setShowCriteria(true)}
-                className="ml-1 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-              >
-                <Scale className="size-3" />
-                Criteria
-              </button>
-              <button
-                type="button"
                 onClick={() => setShowCouncil(true)}
-                className="text-xs font-medium text-primary hover:underline"
+                className="ml-1 text-xs font-medium text-primary hover:underline"
               >
-                Edit council
+                Edit council ({set.models.length} models)
               </button>
               <button
                 onClick={() => setShowStrategy(true)}
@@ -768,8 +815,6 @@ export function ChatPage() {
                       set={set}
                       turn={turn}
                       modelById={modelById}
-                      assessmentCriteria={assessmentCriteria}
-                      onEditCriteria={() => setShowCriteria(true)}
                       pendingSavedVerdicts={pendingSavedVerdicts}
                       pinnedVerdictId={pinnedVerdictId}
                       onTogglePin={(verdictId, currentlyPinned) =>
@@ -840,20 +885,49 @@ export function ChatPage() {
             )}
             {files.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
-                {files.map((f, i) => (
+                {files.map((f) => (
                   <div
-                    key={`${f.name}-${i}`}
+                    key={f.localId}
                     className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs"
+                    title={f.errorMessage}
                   >
                     {f.state === "uploading" && <Loader2 className="size-3 animate-spin" />}
                     {f.state === "error" && <AlertCircle className="size-3 text-destructive" />}
                     <span className={cn(f.state === "error" && "text-destructive")}>{f.name}</span>
                     <button
                       type="button"
-                      onClick={() => setFiles((arr) => arr.filter((_, j) => j !== i))}
+                      onClick={() => setFiles((arr) => arr.filter((item) => item.localId !== f.localId))}
                       className="text-muted-foreground hover:text-foreground"
                     >
                       <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {deletedTurns.length > 0 && (
+              <div className="mb-2 space-y-2">
+                {deletedTurns.map((turn) => (
+                  <div
+                    key={turn.id}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/40 px-3 py-2 text-sm"
+                  >
+                    <span className="min-w-0 truncate text-muted-foreground">
+                      Deleted: {turn.user_message.slice(0, 80)}
+                      {turn.user_message.length > 80 ? "…" : ""}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={restoringTurnId === turn.id}
+                      onClick={() => void undoDeletedTurn(turn.id)}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                      {restoringTurnId === turn.id ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Undo2 className="size-3.5" />
+                      )}
+                      Undo
                     </button>
                   </div>
                 ))}
@@ -864,19 +938,24 @@ export function ChatPage() {
                 ref={textareaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    if (isVoiceActive) return;
-                    void send();
-                  }
-                }}
                 rows={2}
                 disabled={!isAuthenticated || !set}
                 placeholder={
-                  isAuthenticated ? "Ask your model council anything…" : "Log in to chat"
+                  isAuthenticated
+                    ? "Ask your model council anything… (Enter for new line; click Send to submit)"
+                    : "Log in to chat"
                 }
-                className="block w-full resize-none rounded-2xl bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                className="block max-h-[280px] min-h-[3.5rem] w-full resize-none overflow-y-auto rounded-2xl bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  void uploadComposerFiles(e.target.files);
+                  e.target.value = "";
+                }}
               />
               <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
                 <div className="relative">
@@ -896,18 +975,7 @@ export function ChatPage() {
                         label="Upload file"
                         onClick={() => {
                           setShowPlus(false);
-                          setFiles((f) => [...f, { name: "document.pdf", state: "uploading" }]);
-                          window.setTimeout(
-                            () =>
-                              setFiles((f) =>
-                                f.map((x) =>
-                                  x.name === "document.pdf" && x.state === "uploading"
-                                    ? { ...x, state: "uploaded" }
-                                    : x,
-                                ),
-                              ),
-                            800,
-                          );
+                          fileInputRef.current?.click();
                         }}
                       />
                       <ComposerMenuItem
@@ -915,7 +983,11 @@ export function ChatPage() {
                         label="Upload image"
                         onClick={() => {
                           setShowPlus(false);
-                          setFiles((f) => [...f, { name: "image.png", state: "uploaded" }]);
+                          if (fileInputRef.current) {
+                            fileInputRef.current.accept = "image/*";
+                            fileInputRef.current.click();
+                            fileInputRef.current.accept = "";
+                          }
                         }}
                       />
                       <ComposerMenuItem
@@ -1078,15 +1150,17 @@ export function ChatPage() {
       <ExcelPreviewModal
         open={showExcel}
         onClose={() => setShowExcel(false)}
-        onAddToChat={() => setFiles((f) => [...f, { name: "comparison.xlsx", state: "uploaded" }])}
-      />
-
-      <AssessmentCriteriaModal
-        open={showCriteria}
-        onClose={() => setShowCriteria(false)}
-        initialCriteria={assessmentCriteria}
-        onSave={saveAssessmentCriteria}
-        saving={savingCriteria}
+        onAddToChat={() =>
+          setFiles((f) => [
+            ...f,
+            {
+              localId: `excel-${Date.now()}`,
+              name: "comparison.xlsx",
+              state: "uploaded",
+              textExcerpt: "Excel comparison attached from Generate Excel.",
+            },
+          ])
+        }
       />
 
       <Modal
@@ -1100,8 +1174,8 @@ export function ChatPage() {
         size="sm"
       >
         <p className="text-sm text-muted-foreground">
-          This permanently deletes this question, all AI answers, the final Verdict, and related
-          usage data. Later turns will remain unchanged.
+          This removes the turn from the chat. You can restore it anytime with Undo — there is no
+          time limit.
         </p>
         {deleteTurnError && <p className="mt-3 text-sm text-destructive">{deleteTurnError}</p>}
         <div className="mt-4 flex justify-end gap-2">
@@ -1257,8 +1331,6 @@ function AiTurn({
   set,
   turn,
   modelById,
-  assessmentCriteria,
-  onEditCriteria,
   pendingSavedVerdicts,
   pinnedVerdictId,
   onTogglePin,
@@ -1268,8 +1340,6 @@ function AiTurn({
   set: ModelSet;
   turn: ApiTurn;
   modelById: (id: string) => { name: string; color: string };
-  assessmentCriteria: string;
-  onEditCriteria: () => void;
   pendingSavedVerdicts: Set<string>;
   pinnedVerdictId?: string | null;
   onTogglePin: (verdictId: string, currentlyPinned: boolean) => void;
@@ -1286,7 +1356,6 @@ function AiTurn({
   const topModelId = turn.verdict ? inferTopModelId(turn, cardModelIds, modelById) : null;
   const judgeModel = turn.verdict ? modelById(turn.verdict.model_id) : null;
   const canCollapseAnswers = Boolean(turn.verdict);
-  const criteriaLines = parseCriteriaLines(assessmentCriteria);
   const turnStrategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
   const bookmarkState = getVerdictBookmarkState(turn, pendingSavedVerdicts);
   const isPinned = Boolean(turn.verdict && pinnedVerdictId === turn.verdict.id);
@@ -1321,31 +1390,6 @@ function AiTurn({
 
       {!answersCollapsed && (
         <div className="space-y-3">
-          {criteriaLines.length > 0 && (
-            <div className="rounded-xl border border-border bg-muted/30 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
-                <Scale className="size-3.5 text-primary" />
-                Scoring against your criteria
-                <button
-                  type="button"
-                  onClick={onEditCriteria}
-                  className="ml-auto text-primary hover:underline"
-                >
-                  Edit
-                </button>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {criteriaLines.map((line) => (
-                  <span
-                    key={line}
-                    className="rounded-full border border-border bg-background px-2 py-0.5 text-[11px] text-foreground"
-                  >
-                    {line}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             {answerCards.map(({ modelId: id, answer: a, status }) => {
               const baseModel = modelById(id);
@@ -1381,7 +1425,6 @@ function AiTurn({
                         confidence={a.confidence}
                         isTopPick={isTopPick}
                         strategy={turnStrategy}
-                        criteria={assessmentCriteria}
                         modelName={m.name}
                       />
                     )}

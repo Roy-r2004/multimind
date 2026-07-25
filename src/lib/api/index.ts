@@ -215,6 +215,30 @@ export const api = {
         orgId: auth.orgId,
       }),
 
+    restoreTurn: (auth: Auth, chatId: string, turnId: string) =>
+      apiRequest<ApiTurn>(`/chats/${chatId}/turns/${turnId}/restore`, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    uploadAttachment: (auth: Auth, chatId: string, file: File) => {
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+      return apiFormRequest<{
+        id: string;
+        filename: string;
+        content_type: string | null;
+        size_bytes: number;
+        text_excerpt: string | null;
+      }>(`/chats/${chatId}/attachments`, {
+        formData,
+        token: auth.token,
+        orgId: auth.orgId,
+        timeoutMs: 120_000,
+      });
+    },
+
     createShareLink: (auth: Auth, chatId: string) =>
       apiRequest<ApiShareLink>(`/chats/${chatId}/share`, {
         method: "POST",

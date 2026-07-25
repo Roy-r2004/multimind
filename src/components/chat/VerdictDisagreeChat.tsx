@@ -183,7 +183,13 @@ export function VerdictDisagreeChat({
       setError(e instanceof Error ? e.message : "Failed to send message");
       setMessages((prev) => {
         const copy = [...prev];
-        const idx = copy.findLastIndex((m) => m.role === "user" && m.content === text);
+        let idx = -1;
+        for (let i = copy.length - 1; i >= 0; i -= 1) {
+          if (copy[i].role === "user" && copy[i].content === text) {
+            idx = i;
+            break;
+          }
+        }
         if (idx >= 0) copy.splice(idx, 1);
         return copy;
       });

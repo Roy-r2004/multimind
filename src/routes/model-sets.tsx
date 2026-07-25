@@ -13,7 +13,7 @@ export const Route = createFileRoute("/model-sets")({
   component: ModelSetsPage,
 });
 
-const SYSTEM_MODEL_SETS = new Set(["balanced", "coding", "business", "research"]);
+const SYSTEM_MODEL_SETS = new Set(["referee", "balanced", "coding", "business", "research"]);
 
 function ModelSetsPage() {
   const { modelSets, createModelSet, updateModelSet, deleteModelSet } = useChatStore();

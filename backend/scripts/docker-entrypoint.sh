@@ -9,13 +9,6 @@ if [ -n "$DATABASE_URL" ]; then
   esac
 fi
 
-# Worker containers receive their own command from Docker Compose.
-# Execute it directly instead of starting the API.
-if [ "$#" -gt 0 ]; then
-  echo "Starting container command: $*"
-  exec "$@"
-fi
-
 port="${PORT:-8000}"
 
 echo "Waiting for database..."
@@ -51,11 +44,14 @@ async def wait() -> None:
 asyncio.run(wait())
 PY
 
-echo "Running migrations..."
-alembic upgrade head
+# Always run before API *or* worker command (Coolify/compose overrides used to skip this).
+echo "Running deploy bootstrap (migrations + seeds)..."
+python -m scripts.deploy_bootstrap
 
-echo "Seeding reference data (best-effort)..."
-python -m scripts.seed || echo "Seed failed — continuing" >&2
+if [ "$#" -gt 0 ]; then
+  echo "Starting container command: $*"
+  exec "$@"
+fi
 
 echo "Starting API on port ${port}..."
 exec uvicorn app.main:app \

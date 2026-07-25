@@ -174,7 +174,7 @@ export function VoiceRecorderButton({
   const chunksRef = useRef<Blob[]>([]);
   const retainedBlobRef = useRef<Blob | null>(null);
   const selectedMimeTypeRef = useRef<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
+  const timerRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const attemptIdRef = useRef(0);
   const mountedRef = useRef(false);
@@ -478,6 +478,19 @@ export function VoiceRecorderButton({
   }, [elapsedSecondsNow, startTimer, stopRecording]);
 
   const cancel = useCallback(() => {
+    const hasAudioWork =
+      state.status === "recording" ||
+      state.status === "paused" ||
+      state.status === "ready_to_transcribe" ||
+      state.status === "uploading" ||
+      state.status === "transcribing" ||
+      (state.status === "error" && Boolean(retainedBlobRef.current));
+    if (hasAudioWork) {
+      const confirmed = window.confirm(
+        "Discard this recording? This cannot be undone.",
+      );
+      if (!confirmed) return;
+    }
     cancelledRef.current = true;
     attemptIdRef.current += 1;
     abortControllerRef.current?.abort();
@@ -487,7 +500,7 @@ export function VoiceRecorderButton({
     if (mountedRef.current) {
       setState({ status: "idle", elapsedSeconds: 0 });
     }
-  }, [resetRecordingRefs]);
+  }, [resetRecordingRefs, state.status]);
 
   const startRecording = useCallback(async () => {
     if (disabled || !hasAuth || isBusy) return;

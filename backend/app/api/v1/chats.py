@@ -1,14 +1,20 @@
 import json
+import mimetypes
+import re
+import uuid
+from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context
 from app.core.logging import get_logger
 from app.db.session import AsyncSessionLocal, get_db
 from app.schemas.api import (
+    AttachmentResponse,
     ChatCreateRequest,
     ChatResponse,
     ChatUpdateRequest,
@@ -21,6 +27,18 @@ from app.schemas.api import (
 )
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
 from app.services.share_service import share_service
+
+_TEXT_CONTENT_TYPES = frozenset({
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/html",
+    "text/xml",
+    "application/json",
+    "application/xml",
+})
+_TEXT_EXTENSIONS = frozenset({".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".yaml", ".yml"})
+_ATTACHMENT_TEXT_EXCERPT_MAX = 20_000
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -120,6 +138,16 @@ async def delete_turn(
     return await chat_service.delete_turn(db, auth, str(chat_id), str(turn_id))
 
 
+@router.post("/{chat_id}/turns/{turn_id}/restore", response_model=TurnResponse)
+async def restore_turn(
+    chat_id: UUID,
+    turn_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.restore_turn(db, auth, str(chat_id), str(turn_id))
+
+
 @router.get("/turns/{turn_id}", response_model=TurnResponse)
 async def get_turn(
     turn_id: UUID,
@@ -127,6 +155,57 @@ async def get_turn(
     db: AsyncSession = Depends(get_db),
 ):
     return await chat_service.get_turn(db, auth, str(turn_id))
+
+
+@router.post(
+    "/{chat_id}/attachments",
+    response_model=AttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_attachment(
+    chat_id: UUID,
+    file: UploadFile = File(...),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    settings = get_settings()
+    await chat_service.get_chat(db, auth, str(chat_id))
+
+    content = await file.read()
+    if len(content) > settings.chat_attachment_max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds maximum size of {settings.chat_attachment_max_bytes // (1024 * 1024)} MB.",
+        )
+
+    original_filename = file.filename or "upload"
+    safe_filename = re.sub(r"[^\w.\-]", "_", original_filename)[:200]
+    attachment_id = str(uuid.uuid4())
+    content_type = file.content_type or (mimetypes.guess_type(original_filename)[0] or "application/octet-stream")
+
+    dest_dir = Path.cwd() / "data" / "chat_attachments" / auth.org_id / str(chat_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / f"{attachment_id}_{safe_filename}"
+    dest_path.write_bytes(content)
+
+    text_excerpt: str | None = None
+    ext = Path(original_filename).suffix.lower()
+    base_ct = content_type.split(";")[0].strip().lower()
+    is_text = base_ct in _TEXT_CONTENT_TYPES or ext in _TEXT_EXTENSIONS
+    if is_text:
+        try:
+            raw_text = content.decode("utf-8", errors="replace")
+            text_excerpt = raw_text[:_ATTACHMENT_TEXT_EXCERPT_MAX]
+        except Exception:
+            text_excerpt = None
+
+    return AttachmentResponse(
+        id=attachment_id,
+        filename=original_filename,
+        content_type=content_type,
+        size_bytes=len(content),
+        text_excerpt=text_excerpt,
+    )
 
 
 @router.get("/turns/{turn_id}/stream")

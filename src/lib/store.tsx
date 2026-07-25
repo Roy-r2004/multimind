@@ -90,9 +90,14 @@ function mapProject(p: ApiProject): Project {
   };
 }
 
+const DEFAULT_MODEL_SET_SLUG = "referee";
+
 function selectExistingModelSetId(sets: ModelSet[], currentId: string): string {
   if (sets.some((set) => set.id === currentId)) return currentId;
-  return sets[0]?.id ?? "";
+  const preferred =
+    sets.find((set) => set.id === DEFAULT_MODEL_SET_SLUG) ??
+    sets.find((set) => set.name.toLowerCase().includes("referee"));
+  return preferred?.id ?? sets[0]?.id ?? "";
 }
 
 export function ChatStoreProvider({ children }: { children: ReactNode }) {

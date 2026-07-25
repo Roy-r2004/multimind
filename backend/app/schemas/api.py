@@ -1084,6 +1084,14 @@ class TurnDeleteResponse(BaseModel):
     deleted: bool
 
 
+class AttachmentResponse(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    text_excerpt: str | None = None
+
+
 class VerdictDisagreeRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=8000)
     user_position: str = Field(min_length=10, max_length=8000)

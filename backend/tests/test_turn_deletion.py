@@ -2110,3 +2110,132 @@ async def test_later_prompt_runs_normally_after_deletion(db_setup):
 
     assert saved.status == TurnStatus.COMPLETED
     assert verdict is not None
+
+
+# ---------------------------------------------------------------------------
+# Soft-delete + restore tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_sets_deleted_at_and_preserves_row(db_setup):
+    """delete_turn sets deleted_at; the row and related data remain in DB."""
+    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
+    async with db_setup.Session() as db:
+        result = await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    assert result.deleted is True
+
+    async with db_setup.Session() as db:
+        row = await db.get(Turn, turn.id)
+        answers = (
+            await db.execute(select(ModelAnswer).where(ModelAnswer.turn_id == turn.id))
+        ).scalars().all()
+
+    assert row is not None, "Turn row must still exist after soft-delete"
+    assert row.deleted_at is not None, "deleted_at must be set"
+    assert len(answers) > 0, "ModelAnswer rows must be preserved on soft-delete"
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_turn_excluded_from_list_turns(db_setup):
+    """list_turns hides soft-deleted turns by default."""
+    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
+
+    async with db_setup.Session() as db:
+        turns_before = await chat_service.list_turns(db, db_setup.auth, db_setup.chat_id)
+
+    assert any(t.id == turn.id for t in turns_before)
+
+    async with db_setup.Session() as db:
+        await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    async with db_setup.Session() as db:
+        turns_after = await chat_service.list_turns(db, db_setup.auth, db_setup.chat_id)
+
+    assert not any(t.id == turn.id for t in turns_after), "Soft-deleted turn must not appear in list"
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_turn_excluded_from_get_turn(db_setup):
+    """get_turn raises NotFoundError for a soft-deleted turn."""
+    from app.core.exceptions import NotFoundError
+
+    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
+
+    async with db_setup.Session() as db:
+        await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    with pytest.raises(NotFoundError):
+        async with db_setup.Session() as db:
+            await chat_service.get_turn(db, db_setup.auth, turn.id)
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_is_idempotent(db_setup):
+    """Calling delete_turn on an already-deleted turn returns deleted=True without error."""
+    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
+
+    async with db_setup.Session() as db:
+        await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    async with db_setup.Session() as db:
+        result = await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    assert result.deleted is True
+
+
+@pytest.mark.asyncio
+async def test_restore_turn_clears_deleted_at(db_setup):
+    """restore_turn clears deleted_at and returns the turn response."""
+    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
+
+    async with db_setup.Session() as db:
+        await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    async with db_setup.Session() as db:
+        restored = await chat_service.restore_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    assert restored.id == turn.id
+
+    async with db_setup.Session() as db:
+        row = await db.get(Turn, turn.id)
+
+    assert row.deleted_at is None, "deleted_at must be cleared after restore"
+
+
+@pytest.mark.asyncio
+async def test_restored_turn_visible_in_list_turns(db_setup):
+    """A restored turn reappears in list_turns."""
+    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
+
+    async with db_setup.Session() as db:
+        await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    async with db_setup.Session() as db:
+        await chat_service.restore_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+        await db.commit()
+
+    async with db_setup.Session() as db:
+        turns = await chat_service.list_turns(db, db_setup.auth, db_setup.chat_id)
+
+    assert any(t.id == turn.id for t in turns), "Restored turn must reappear in list"
+
+
+@pytest.mark.asyncio
+async def test_restore_nonexistent_turn_raises_not_found(db_setup):
+    """restore_turn raises NotFoundError for a turn that never existed."""
+    from app.core.exceptions import NotFoundError
+
+    fake_id = "00000000-0000-0000-0000-000000000099"
+    with pytest.raises(NotFoundError):
+        async with db_setup.Session() as db:
+            await chat_service.restore_turn(db, db_setup.auth, db_setup.chat_id, fake_id)

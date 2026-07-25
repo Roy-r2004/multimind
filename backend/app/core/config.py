@@ -126,6 +126,9 @@ class Settings(BaseSettings):
         "scraper, blueprint, verdict, model set"
     )
 
+    # Chat attachments
+    chat_attachment_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
+
     # Rate limiting
     rate_limit_per_minute: int = 60
 

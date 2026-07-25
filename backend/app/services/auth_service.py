@@ -47,7 +47,7 @@ class AuthService:
         membership = OrgMembership(org_id=org.id, user_id=user.id, role=OrgRole.OWNER)
         db.add(membership)
 
-        prefs = UserPreferences(user_id=user.id, default_model_set_id="balanced")
+        prefs = UserPreferences(user_id=user.id, default_model_set_id="referee")
         db.add(prefs)
         await db.flush()
 

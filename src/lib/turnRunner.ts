@@ -74,6 +74,12 @@ export function removeTurn(chatId: string, turnId: string) {
   emitChat(chatId);
 }
 
+export function restoreRemovedTurn(chatId: string, turn: ApiTurn) {
+  deletedTurns.delete(turn.id);
+  getChatTurnMap(chatId).set(turn.id, turn);
+  emitChat(chatId);
+}
+
 export function isTurnDeletedLocally(turnId: string): boolean {
   return deletedTurns.has(turnId);
 }

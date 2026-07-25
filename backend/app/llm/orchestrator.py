@@ -41,7 +41,9 @@ class TurnNoLongerWritable(Exception):
 
 async def is_turn_deleted(db: AsyncSession, turn_id: str) -> bool:
     result = await db.execute(
-        select(Turn.id).where(Turn.id == turn_id).execution_options(populate_existing=True)
+        select(Turn.id)
+        .where(Turn.id == turn_id, Turn.deleted_at.is_(None))
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none() is None
 
