@@ -24,6 +24,7 @@ from app.schemas.api import (
 )
 from app.scraping.blueprint_orchestrator import get_blueprint_orchestrator
 from app.services.scraping.mission_service import mission_service
+from app.services.scraping.scraper_policy_service import enrich_blueprint_payload
 
 
 class ScrapingBlueprintService:
@@ -50,7 +51,13 @@ class ScrapingBlueprintService:
 
         try:
             content = await get_blueprint_orchestrator().generate(mission, model_set)
-            validated = content.model_dump(mode="json")
+            validated = enrich_blueprint_payload(
+                content.model_dump(mode="json"),
+                mission_title=mission.title,
+                mission_prompt=mission.original_prompt,
+                country_code=mission.country_code,
+                country_name=mission.country_name,
+            )
             blueprint.blueprint_json = validated
             blueprint.status = ScrapingBlueprintStatus.DRAFT
             mission.status = ScrapingMissionStatus.AWAITING_APPROVAL
@@ -214,7 +221,13 @@ class ScrapingBlueprintService:
                 previous_blueprint=source.blueprint_json,
                 change_instructions=change_instructions,
             )
-            new_blueprint.blueprint_json = content.model_dump(mode="json")
+            new_blueprint.blueprint_json = enrich_blueprint_payload(
+                content.model_dump(mode="json"),
+                mission_title=source.mission.title,
+                mission_prompt=source.mission.original_prompt,
+                country_code=source.mission.country_code,
+                country_name=source.mission.country_name,
+            )
             new_blueprint.status = ScrapingBlueprintStatus.DRAFT
             source.mission.status = ScrapingMissionStatus.AWAITING_APPROVAL
             await db.commit()

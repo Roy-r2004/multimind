@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import get_settings
 from app.core.exceptions import NotFoundError
@@ -25,6 +26,9 @@ from app.db.models import (
     ScrapingSourceDocumentChunk,
     ScrapingSourceDocumentText,
     SourceDocumentTextPreparationStatus,
+)
+from app.services.scraping.contact_location_extract_service import (
+    extract_contacts_and_addresses,
 )
 
 PARSER_VERSION = "readable-text-v2"
@@ -226,6 +230,44 @@ class DocumentTextPreparationService:
             raise PreparationError("missing_document_content")
         if media_type in {"text/html", "application/xhtml+xml"}:
             text, title = _prepare_html(source)
+            # Phase B2: deterministic contacts/addresses (header/footer preserved in raw HTML).
+            extracted = extract_contacts_and_addresses(
+                source, page_url=getattr(document, "final_url", None)
+            )
+            document.metadata_json = {
+                **(document.metadata_json or {}),
+                "deterministic_contacts": {
+                    "phones": [
+                        {
+                            "value": item.value,
+                            "source": item.source,
+                            "evidence_quote": item.evidence_quote,
+                        }
+                        for item in extracted.phones
+                    ],
+                    "emails": [
+                        {
+                            "value": item.value,
+                            "source": item.source,
+                            "evidence_quote": item.evidence_quote,
+                        }
+                        for item in extracted.emails
+                    ],
+                    "addresses": [
+                        {
+                            "value": item.value,
+                            "source": item.source,
+                            "evidence_quote": item.evidence_quote,
+                            "structured": item.structured,
+                        }
+                        for item in extracted.addresses
+                    ],
+                },
+            }
+            try:
+                flag_modified(document, "metadata_json")
+            except Exception:
+                pass
         elif media_type == "text/plain":
             text, title = _normalize_text(source), None
         elif media_type == "application/json" or media_type.endswith("+json"):

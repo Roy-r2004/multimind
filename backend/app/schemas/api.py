@@ -336,6 +336,8 @@ class ScrapingBlueprintContent(BaseModel):
     stop_conditions: list[str]
     estimated_workload: BlueprintEstimatedWorkload
     agent_assignments: list[BlueprintAgentAssignment]
+    policy_snapshot: dict[str, Any] | None = None
+    country_blueprint: dict[str, Any] | None = None
 
     @field_validator("task_plan")
     @classmethod
@@ -452,6 +454,7 @@ class ScrapingExecutionCreate(BaseModel):
     execution_type: str = "initial_full_country"
     # real = standard throughput; full_census = high-limit country census run
     mode: str = "real"
+    mission_profile: str | None = None
 
 
 class ScrapingExecutionAgentResponse(BaseModel):
@@ -484,6 +487,9 @@ class ScrapingExecutionSummary(BaseModel):
     status_label: str
     country_code: str
     country_name: str
+    mission_profile: str | None = None
+    result_counts: dict[str, int] = Field(default_factory=dict)
+    completeness_percent: float = 0.0
     started_at: datetime | None = None
     completed_at: datetime | None = None
     cancel_requested_at: datetime | None = None
@@ -512,9 +518,14 @@ class ScrapingFacilitySummary(BaseModel):
     facility_type: str
     primary_website: str | None = None
     primary_contact: str | None = None
+    primary_address: str | None = None
     verification_status: str
     confidence_score: float
     human_review_status: str
+    publication_class: str = "review_required"
+    country_containment_status: str = "legacy_unassessed"
+    country_containment_reason: str | None = None
+    completeness_percent: float = 0.0
     is_mock: bool
     source_count: int
     location_count: int = 0
@@ -534,19 +545,30 @@ class ScrapingFacilityLocationItem(BaseModel):
     id: str
     location_type: str
     location_name: str
+    country_code: str
+    country_name: str
     full_address: str | None = None
     city: str | None = None
     region: str | None = None
     is_primary: bool
+    verification_status: str
+    country_containment_status: str = "legacy_unassessed"
+    country_containment_reason: str | None = None
+    location_completeness_status: str = "unknown"
+    location_gap_reason: str | None = None
+    primary_phone: str | None = None
     confidence_score: float
 
 
 class ScrapingFacilityContactItem(BaseModel):
     id: str
+    location_id: str | None = None
     contact_type: str
     label: str | None = None
     value: str
     is_primary: bool
+    verification_status: str
+    contact_discovery_status: str = "found_unverified"
     confidence_score: float
 
 
@@ -648,6 +670,7 @@ class ScrapingEventResponse(BaseModel):
 class ScrapingExecutionDetail(BaseModel):
     execution: ScrapingExecutionSummary
     country_profile: dict[str, Any] | None = None
+    policy_snapshot: dict[str, Any] | None = None
     agents: list[ScrapingExecutionAgentResponse]
     task_summary_counts: dict[str, int]
     coverage_summary_counts: dict[str, int]

@@ -55,6 +55,17 @@ from app.schemas.api import (
     ScrapingTaskResponse,
 )
 from app.services.scraping.execution_outcome import execution_outcome_label
+from app.services.scraping.result_metrics import (
+    execution_completeness_percent,
+    facility_completeness_percent,
+    primary_phone_for_facility,
+    primary_phone_for_location,
+    result_counts,
+)
+from app.services.scraping.scraper_policy_service import (
+    build_policy_bundle,
+    resolve_mission_profile,
+)
 from app.services.scraping.scale_profile import MODE_FULL_CENSUS, SUPPORTED_EXECUTION_MODES
 
 ACTIVE_EXECUTION_STATUSES = {
@@ -122,6 +133,20 @@ class ScrapingExecutionService:
             country_code=team_plan.mission.country_code,
             country_name=team_plan.mission.country_name,
         )
+        blueprint_json = team_plan.blueprint.blueprint_json if team_plan.blueprint else {}
+        bundle = build_policy_bundle(
+            mission_title=team_plan.mission.title,
+            mission_prompt=team_plan.mission.original_prompt,
+            country_code=team_plan.mission.country_code,
+            country_name=team_plan.mission.country_name,
+            requested_mission_profile=data.mission_profile,
+            blueprint_json=blueprint_json if isinstance(blueprint_json, dict) else {},
+        )
+        execution.country_profile_json = {
+            "mission_profile": bundle.mission_profile,
+            "policy_snapshot": bundle.policy_snapshot,
+            "country_blueprint": bundle.country_blueprint,
+        }
         db.add(execution)
         try:
             await db.flush()
@@ -171,6 +196,18 @@ class ScrapingExecutionService:
         self, db: AsyncSession, auth: AuthContext, execution_id: str
     ) -> ScrapingExecutionDetail:
         execution = await self._execution_row(db, auth, execution_id)
+        facilities_result = await db.execute(
+            select(RehabilitationFacility)
+            .where(
+                RehabilitationFacility.execution_id == execution.id,
+                RehabilitationFacility.organization_id == auth.org_id,
+            )
+            .options(
+                selectinload(RehabilitationFacility.contacts),
+                selectinload(RehabilitationFacility.locations),
+            )
+        )
+        facilities = list(facilities_result.scalars().all())
         agents_result = await db.execute(
             select(ScrapingExecutionAgent)
             .where(ScrapingExecutionAgent.execution_id == execution.id)
@@ -182,8 +219,14 @@ class ScrapingExecutionService:
         )
         agents = agents_result.scalars().all()
         return ScrapingExecutionDetail(
-            execution=self._summary(execution),
+            execution=self._summary(
+                execution,
+                facilities=facilities,
+            ),
             country_profile=execution.country_profile_json,
+            policy_snapshot=(execution.country_profile_json or {}).get("policy_snapshot")
+            if isinstance(execution.country_profile_json, dict)
+            else None,
             agents=[self._agent_response(agent) for agent in agents],
             task_summary_counts=await self._count_by_status(db, ScrapingTask, execution.id),
             coverage_summary_counts=await self._count_by_status(
@@ -316,6 +359,7 @@ class ScrapingExecutionService:
         auth: AuthContext,
         execution_id: str,
         *,
+        publication_class: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[ScrapingFacilitySummary]:
@@ -336,7 +380,16 @@ class ScrapingExecutionService:
             .offset(max(offset, 0))
             .limit(min(max(limit, 1), 10000))
         )
-        return [self._facility_response(facility) for facility in result.scalars().all()]
+        facilities = list(result.scalars().all())
+        if publication_class:
+            normalized = publication_class.strip().lower()
+            target = "review_required" if normalized == "review" else normalized
+            facilities = [
+                facility
+                for facility in facilities
+                if getattr(facility, "publication_class", "review_required") == target
+            ]
+        return [self._facility_response(facility) for facility in facilities]
 
     async def get_facility(
         self,
@@ -579,7 +632,19 @@ class ScrapingExecutionService:
             },
         )
 
-    def _summary(self, execution: ScrapingExecution) -> ScrapingExecutionSummary:
+    def _summary(
+        self,
+        execution: ScrapingExecution,
+        *,
+        facilities: list[RehabilitationFacility] | None = None,
+    ) -> ScrapingExecutionSummary:
+        persisted_profile = execution.country_profile_json if isinstance(execution.country_profile_json, dict) else {}
+        mission_profile = persisted_profile.get("mission_profile") or resolve_mission_profile(
+            requested=None,
+            mission_title=execution.mission.title if execution.mission else "",
+            mission_prompt=execution.mission.original_prompt if execution.mission else "",
+        )
+        facility_rows = facilities or []
         return ScrapingExecutionSummary(
             id=execution.id,
             organization_id=execution.organization_id,
@@ -592,6 +657,9 @@ class ScrapingExecutionService:
             status_label=execution_outcome_label(execution.status, execution.coverage_debt),
             country_code=execution.country_code,
             country_name=execution.country_name,
+            mission_profile=mission_profile,
+            result_counts=result_counts(facility_rows),
+            completeness_percent=execution_completeness_percent(facility_rows),
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             cancel_requested_at=execution.cancel_requested_at,
@@ -702,10 +770,19 @@ class ScrapingExecutionService:
             primary_city=facility.primary_city,
             facility_type=facility.facility_type,
             primary_website=website,
-            primary_contact=contact.value if contact else None,
+            primary_contact=primary_phone_for_facility(facility) or (contact.value if contact else None),
+            primary_address=facility.primary_address,
             verification_status=facility.verification_status,
             confidence_score=float(facility.confidence_score),
             human_review_status=facility.human_review_status,
+            publication_class=getattr(facility, "publication_class", "review_required"),
+            country_containment_status=getattr(
+                facility,
+                "country_containment_status",
+                "legacy_unassessed",
+            ),
+            country_containment_reason=getattr(facility, "country_containment_reason", None),
+            completeness_percent=facility_completeness_percent(facility),
             is_mock=facility.is_mock,
             source_count=len(facility.source_links),
             location_count=len(locations),
@@ -735,7 +812,6 @@ class ScrapingExecutionService:
         return ScrapingFacilityDetail(
             **summary.model_dump(),
             description=facility.description,
-            primary_address=facility.primary_address,
             aliases=[
                 ScrapingFacilityAliasItem(
                     name=alias.name,
@@ -749,10 +825,30 @@ class ScrapingExecutionService:
                     id=location.id,
                     location_type=location.location_type,
                     location_name=location.location_name,
+                    country_code=location.country_code,
+                    country_name=location.country_name,
                     full_address=location.full_address,
                     city=location.city,
                     region=location.region,
                     is_primary=location.is_primary,
+                    verification_status=location.verification_status,
+                    country_containment_status=getattr(
+                        location,
+                        "country_containment_status",
+                        "legacy_unassessed",
+                    ),
+                    country_containment_reason=getattr(
+                        location,
+                        "country_containment_reason",
+                        None,
+                    ),
+                    location_completeness_status=getattr(
+                        location,
+                        "location_completeness_status",
+                        "unknown",
+                    ),
+                    location_gap_reason=getattr(location, "location_gap_reason", None),
+                    primary_phone=primary_phone_for_location(location, facility.contacts),
                     confidence_score=float(location.confidence_score),
                 )
                 for location in facility.locations
@@ -760,10 +856,17 @@ class ScrapingExecutionService:
             contacts=[
                 ScrapingFacilityContactItem(
                     id=contact.id,
+                    location_id=getattr(contact, "location_id", None),
                     contact_type=contact.contact_type,
                     label=contact.label,
                     value=contact.value,
                     is_primary=contact.is_primary,
+                    verification_status=contact.verification_status,
+                    contact_discovery_status=getattr(
+                        contact,
+                        "contact_discovery_status",
+                        "found_unverified",
+                    ),
                     confidence_score=float(contact.confidence_score),
                 )
                 for contact in facility.contacts

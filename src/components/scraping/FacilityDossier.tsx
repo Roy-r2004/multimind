@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { ScrapingFacilityDetail } from "@/lib/scraping/types";
+import { cn } from "@/lib/utils";
 
 const TABS = [
   "Overview",
@@ -31,10 +32,24 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
     return detail.attributes.filter((a) => a.attribute_group === "treatment_service");
   }, [detail]);
 
+  const phonesByLocationId = useMemo(() => {
+    if (!detail) return new Map<string, string[]>();
+    const map = new Map<string, string[]>();
+    for (const contact of detail.contacts) {
+      if (!["phone", "hotline", "whatsapp"].includes(contact.contact_type) || !contact.location_id) {
+        continue;
+      }
+      const current = map.get(contact.location_id) ?? [];
+      current.push(contact.value);
+      map.set(contact.location_id, current);
+    }
+    return map;
+  }, [detail]);
+
   if (loading) {
     return (
       <Panel>
-        <p className="text-sm text-muted-foreground">Loading facility dossier…</p>
+        <p className="text-sm text-white/50">Loading facility dossier…</p>
       </Panel>
     );
   }
@@ -42,7 +57,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
   if (error) {
     return (
       <Panel>
-        <p className="text-sm text-destructive">{error}</p>
+        <p className="text-sm text-rose-200">{error}</p>
       </Panel>
     );
   }
@@ -50,8 +65,10 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
   if (!detail) {
     return (
       <Panel>
-        <p className="text-sm text-muted-foreground">
-          Select a facility to inspect locations, contacts, services, and evidence.
+        <p className="text-[11px] uppercase tracking-[0.28em] text-[#d4a84b]/90">Dossier</p>
+        <p className="mt-2 font-display text-xl text-[#f7f1e4]">Pick a facility</p>
+        <p className="mt-2 text-sm text-white/50">
+          Inspect locations, contacts, services, and evidence as they crystallize.
         </p>
       </Panel>
     );
@@ -80,30 +97,47 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
         <button
           type="button"
           onClick={onBack}
-          className="mb-3 text-sm text-muted-foreground hover:text-foreground lg:hidden"
+          className="mb-3 text-sm text-white/50 hover:text-[#f3e6c4] lg:hidden"
         >
           ← Back to list
         </button>
       ) : null}
 
-      <div className="space-y-3 border-b border-border pb-4">
+      <div className="space-y-3 border-b border-white/10 pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-2xl font-semibold tracking-tight">{detail.canonical_name}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <h2 className="font-display text-2xl tracking-tight text-[#f7f1e4]">
+              {detail.canonical_name}
+            </h2>
+            <p className="mt-1 text-sm text-white/50">
               {[detail.facility_type, detail.primary_city, detail.primary_region, detail.country_name]
                 .filter(Boolean)
                 .join(" · ")}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary">{(detail.confidence_score * 100).toFixed(0)}% confidence</Badge>
-            <Badge variant="outline">{detail.human_review_status}</Badge>
+            <Badge
+              variant="secondary"
+              className="border border-[#d4a84b]/35 bg-[#d4a84b]/15 text-[#f3e6c4]"
+            >
+              {(detail.confidence_score * 100).toFixed(0)}% confidence
+            </Badge>
+            <Badge variant="outline" className="border-white/20 text-white/70">
+              {detail.human_review_status}
+            </Badge>
+            <Badge variant="outline" className="border-white/20 text-white/70">
+              {detail.publication_class}
+            </Badge>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {website ? (
-            <Button asChild size="sm" variant="outline">
+            <Button
+              asChild
+              size="sm"
+              variant="outline"
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+            >
               <a href={website} target="_blank" rel="noreferrer">
                 Open website
               </a>
@@ -114,11 +148,18 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
             size="sm"
             variant="outline"
             disabled={!detail.primary_contact}
+            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
             onClick={() => void copyContact()}
           >
             {copied ? "Copied" : "Copy contact"}
           </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={() => setTab("Sources & Evidence")}>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="text-white/60 hover:bg-white/10 hover:text-[#f3e6c4]"
+            onClick={() => setTab("Sources & Evidence")}
+          >
             Jump to sources
           </Button>
         </div>
@@ -130,11 +171,12 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
             key={name}
             type="button"
             onClick={() => setTab(name)}
-            className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={cn(
+              "shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition",
               tab === name
-                ? "bg-foreground text-background"
-                : "bg-muted/40 text-muted-foreground hover:bg-muted"
-            }`}
+                ? "bg-[#d4a84b] text-[#0b161c]"
+                : "bg-white/5 text-white/55 hover:bg-white/10",
+            )}
           >
             {name}
           </button>
@@ -142,26 +184,12 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
       </div>
 
       <div className="mt-4 min-h-[16rem]">
-        {tab === "Overview" ? (
-          <Overview detail={detail} />
-        ) : null}
+        {tab === "Overview" ? <Overview detail={detail} /> : null}
         {tab === "Locations" ? (
-          <ListOrEmpty
-            items={detail.locations.map((location) => ({
-              title: location.location_name,
-              body: [location.full_address, location.city, location.region]
-                .filter(Boolean)
-                .join(" · "),
-            }))}
-          />
+          <LocationCards detail={detail} phonesByLocationId={phonesByLocationId} />
         ) : null}
         {tab === "Contacts" ? (
-          <ListOrEmpty
-            items={detail.contacts.map((contact) => ({
-              title: contact.contact_type,
-              body: contact.value,
-            }))}
-          />
+          <ContactCards detail={detail} />
         ) : null}
         {tab === "Treatment Services" ? (
           <ListOrEmpty
@@ -174,7 +202,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
         {tab === "Sources & Evidence" ? (
           <div className="space-y-4">
             <section>
-              <h3 className="mb-2 text-sm font-medium">Sources</h3>
+              <h3 className="mb-2 text-sm font-medium text-[#f7f1e4]">Sources</h3>
               <ListOrEmpty
                 items={detail.sources.map((source) => ({
                   title: source.title || source.url,
@@ -184,7 +212,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
               />
             </section>
             <section>
-              <h3 className="mb-2 text-sm font-medium">Field evidence</h3>
+              <h3 className="mb-2 text-sm font-medium text-[#f7f1e4]">Field evidence</h3>
               <ListOrEmpty
                 items={detail.evidence.map((row) => ({
                   title: row.field_path,
@@ -201,7 +229,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
 
 function Panel({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-full min-h-[28rem] flex-col rounded-xl border border-border bg-card/40 p-4 md:p-5">
+    <div className="flex h-full min-h-[28rem] flex-col rounded-[1.5rem] border border-white/10 bg-[#0b161c]/75 p-4 shadow-[0_20px_50px_rgba(0,0,0,0.25)] backdrop-blur-md md:p-5">
       {children}
     </div>
   );
@@ -216,10 +244,17 @@ function Overview({ detail }: { detail: ScrapingFacilityDetail }) {
   const rows = [
     ["Type", detail.facility_type],
     ["Country", detail.country_name],
-    ["City / region", [detail.primary_city, detail.primary_region].filter(Boolean).join(", ") || null],
+    [
+      "City / region",
+      [detail.primary_city, detail.primary_region].filter(Boolean).join(", ") || null,
+    ],
     ["Primary address", detail.primary_address],
     ["Website", website],
     ["Primary contact", detail.primary_contact],
+    ["Publication class", detail.publication_class],
+    ["Country gate", detail.country_containment_status],
+    ["Gate reason", detail.country_containment_reason],
+    ["Completeness", `${detail.completeness_percent.toFixed(0)}%`],
     ["Aliases", detail.aliases.map((a) => a.name).join(", ") || null],
     ["Sources linked", String(detail.source_count)],
     ["Verification", detail.verification_status],
@@ -229,12 +264,101 @@ function Overview({ detail }: { detail: ScrapingFacilityDetail }) {
   return (
     <dl className="grid gap-3 sm:grid-cols-2">
       {rows.map(([label, value]) => (
-        <div key={label} className="rounded-lg border border-border/70 px-3 py-2">
-          <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt>
-          <dd className="mt-1 break-words text-sm">{value || EMPTY}</dd>
+        <div key={label} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+          <dt className="text-[11px] uppercase tracking-wide text-white/40">{label}</dt>
+          <dd className="mt-1 break-words text-sm text-[#f7f1e4]/90">{value || EMPTY}</dd>
         </div>
       ))}
     </dl>
+  );
+}
+
+function LocationCards({
+  detail,
+  phonesByLocationId,
+}: {
+  detail: ScrapingFacilityDetail;
+  phonesByLocationId: Map<string, string[]>;
+}) {
+  if (detail.locations.length === 0) {
+    return <p className="text-sm text-white/45">{EMPTY}</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {detail.locations.map((location) => {
+        const phones = location.primary_phone
+          ? [location.primary_phone]
+          : (phonesByLocationId.get(location.id) ?? []);
+        return (
+          <div
+            key={location.id}
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-3"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p className="font-medium text-[#f7f1e4]">{location.location_name}</p>
+                <p className="mt-1 text-sm text-white/50">
+                  {[location.location_type, location.city, location.region, location.country_name]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 text-[11px] uppercase tracking-wide text-white/45">
+                <span>{location.verification_status}</span>
+                <span>{location.location_completeness_status}</span>
+              </div>
+            </div>
+            <div className="mt-3 space-y-2 text-sm text-white/70">
+              <p>{location.full_address || EMPTY}</p>
+              <p>Phone: {phones.join(" · ") || EMPTY}</p>
+              <p>
+                Gate:{" "}
+                {[location.country_containment_status, location.country_containment_reason]
+                  .filter(Boolean)
+                  .join(" · ") || EMPTY}
+              </p>
+              {location.location_gap_reason ? <p>Gap: {location.location_gap_reason}</p> : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ContactCards({ detail }: { detail: ScrapingFacilityDetail }) {
+  if (detail.contacts.length === 0) {
+    return <p className="text-sm text-white/45">{EMPTY}</p>;
+  }
+  const locationNameById = new Map(detail.locations.map((location) => [location.id, location.location_name]));
+  return (
+    <ul className="space-y-2">
+      {detail.contacts.map((contact) => (
+        <li
+          key={contact.id}
+          className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <p className="font-medium text-[#f7f1e4]">
+                {contact.contact_type}
+                {contact.label ? ` · ${contact.label}` : ""}
+              </p>
+              <p className="mt-1 break-words text-sm text-white/60">{contact.value}</p>
+            </div>
+            <div className="text-right text-xs text-white/45">
+              <p>{contact.verification_status}</p>
+              <p>{contact.contact_discovery_status}</p>
+            </div>
+          </div>
+          {contact.location_id ? (
+            <p className="mt-2 text-xs text-white/45">
+              {locationNameById.get(contact.location_id) ?? "Linked location"}
+            </p>
+          ) : null}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -244,26 +368,29 @@ function ListOrEmpty({
   items: Array<{ title: string; body?: string; href?: string }>;
 }) {
   if (items.length === 0) {
-    return <p className="text-sm text-muted-foreground">{EMPTY}</p>;
+    return <p className="text-sm text-white/45">{EMPTY}</p>;
   }
   return (
     <ul className="space-y-2">
       {items.map((item, index) => (
-        <li key={`${item.title}-${index}`} className="rounded-lg border border-border/70 px-3 py-2">
+        <li
+          key={`${item.title}-${index}`}
+          className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+        >
           {item.href ? (
             <a
               href={item.href}
               target="_blank"
               rel="noreferrer"
-              className="font-medium text-primary underline-offset-2 hover:underline"
+              className="font-medium text-[#d4a84b] underline-offset-2 hover:underline"
             >
               {item.title}
             </a>
           ) : (
-            <p className="font-medium">{item.title}</p>
+            <p className="font-medium text-[#f7f1e4]">{item.title}</p>
           )}
           {item.body && item.body !== item.title ? (
-            <p className="mt-1 break-words text-sm text-muted-foreground">{item.body}</p>
+            <p className="mt-1 break-words text-sm text-white/50">{item.body}</p>
           ) : null}
         </li>
       ))}

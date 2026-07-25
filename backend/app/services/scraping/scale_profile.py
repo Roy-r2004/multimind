@@ -29,6 +29,7 @@ class ScaleProfile:
     publication_max_candidates: int
     discovery_query_hard_cap: int
     discovery_results_hard_cap: int
+    contact_crawl_max_pages: int = 3
 
     def as_metadata(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,6 +60,7 @@ def resolve_scale_profile(mode: str, settings: Any) -> ScaleProfile:
         ),
         discovery_query_hard_cap=8,
         discovery_results_hard_cap=20,
+        contact_crawl_max_pages=max(getattr(settings, "contact_crawl_max_pages_real", 3), 0),
     )
 
 
@@ -90,6 +92,7 @@ def resolve_dynamic_scale_profile(
         publication_max_candidates=extraction_max_documents * 4,
         discovery_query_hard_cap=CENSUS_DISCOVERY_QUERY_HARD_CAP,
         discovery_results_hard_cap=CENSUS_DISCOVERY_RESULTS_HARD_CAP,
+        contact_crawl_max_pages=max(getattr(settings, "contact_crawl_max_pages_full_census", 8), 0),
     )
 
 
@@ -132,6 +135,10 @@ def scale_profile_from_country_profile(
             publication_max_candidates=int(budget["publication_max_candidates"]),
             discovery_query_hard_cap=int(budget["discovery_query_hard_cap"]),
             discovery_results_hard_cap=int(budget["discovery_results_hard_cap"]),
+            contact_crawl_max_pages=int(
+                budget.get("contact_crawl_max_pages")
+                or getattr(settings, "contact_crawl_max_pages_full_census", 8)
+            ),
         )
     except (KeyError, TypeError, ValueError):
         return None

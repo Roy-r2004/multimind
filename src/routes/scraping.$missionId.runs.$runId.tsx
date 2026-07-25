@@ -1,8 +1,15 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
+import {
+  DreamHeader,
+  DreamPageShell,
+  DreamPanel,
+  dreamDetailsClass,
+  dreamGhostClass,
+  dreamMutedClass,
+} from "@/components/scraping/DreamPageShell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ApiClientError } from "@/lib/api/client";
@@ -14,6 +21,7 @@ import {
   deleteScrapingRun,
   getScrapingRun,
   listScrapingExecutions,
+  type ScrapingMissionProfile,
 } from "@/lib/scraping/api";
 import type {
   DeletableScrapingRunStatus,
@@ -44,6 +52,8 @@ function ScrapingRunDetailPage() {
   const [executions, setExecutions] = useState<ScrapingExecutionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [startingExecution, setStartingExecution] = useState(false);
+  const [missionProfile, setMissionProfile] =
+    useState<ScrapingMissionProfile>("full_national_census");
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deletingExecutionId, setDeletingExecutionId] = useState<string | null>(null);
@@ -136,7 +146,7 @@ function ScrapingRunDetailPage() {
     setStartingExecution(true);
     setError(null);
     try {
-      const execution = await createScrapingExecution(auth, runId, mode);
+      const execution = await createScrapingExecution(auth, runId, mode, missionProfile);
       setExecutions((current) => [execution, ...current]);
       void navigate({
         to: "/scraping/$missionId/executions/$executionId",
@@ -181,45 +191,59 @@ function ScrapingRunDetailPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-6xl px-6 py-10">
-        <PageHeader
-          eyebrow="Scraping Council"
+      <DreamPageShell maxWidth="max-w-6xl" intensity={activeExecution ? "live" : "calm"}>
+        <DreamHeader
+          eyebrow="Scraping Council · Takeoff"
           title={run ? `Scrape: ${run.mission_title}` : "Scrape"}
-          description="Start a scrape or open finished results. Agents are optional detail."
+          description="Ignite a flight or open landed results. Agents stay optional detail."
           action={
             <Link
               to="/scraping/$missionId"
               params={{ missionId }}
-              className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
+              className={dreamGhostClass}
             >
               Mission
             </Link>
           }
         />
-        {loading && (
-          <GlassCard className="mt-8 p-8 text-sm text-muted-foreground">Loading...</GlassCard>
-        )}
-        {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
+        {loading && <DreamPanel className="mt-8 text-sm text-white/60">Loading…</DreamPanel>}
+        {error && <DreamPanel className="mt-8 text-sm text-rose-200">{error}</DreamPanel>}
         {run && (
           <div className="mt-8 space-y-5">
-            <GlassCard className="border-primary/30 bg-primary/5 p-6">
+            <DreamPanel tone="amber">
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="text-xl font-semibold">
+                  <h2 className="font-display text-2xl text-[#f7f1e4]">
                     {activeExecution
-                      ? "Scrape in progress"
+                      ? "Vessel in flight"
                       : executions.some((item) => item.status === "completed")
-                        ? "Scrape results"
-                        : "Start your scrape"}
+                        ? "Flights landed"
+                        : "Ready for takeoff"}
                   </h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Search the web → download pages → extract facilities → Excel export.
+                  <p className="mt-1 text-sm text-white/55">
+                    Search → open pages → crystallize facilities → Excel.
                   </p>
                   {!activeExecution && (
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      <strong>Full census</strong> uses much higher limits (hours, higher cost) for
-                      broader country coverage. <strong>Standard</strong> is faster for demos.
+                    <p className="mt-2 text-xs text-white/45">
+                      <strong className="text-[#f3e6c4]">Full census</strong> uses much higher
+                      limits (hours, higher cost).{" "}
+                      <strong className="text-[#f3e6c4]">Standard</strong> is faster for demos.
                     </p>
+                  )}
+                  {!activeExecution && (
+                    <label className="mt-3 block text-sm text-white/65">
+                      Mission profile
+                      <select
+                        value={missionProfile}
+                        onChange={(event) =>
+                          setMissionProfile(event.target.value as ScrapingMissionProfile)
+                        }
+                        className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-[#f7f1e4] outline-none"
+                      >
+                        <option value="full_national_census">Full national census</option>
+                        <option value="private_residential">Private residential</option>
+                      </select>
+                    </label>
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -228,6 +252,7 @@ function ScrapingRunDetailPage() {
                       type="button"
                       size="lg"
                       disabled={startingExecution}
+                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                       onClick={() => void handleStartExecution()}
                     >
                       Watch progress
@@ -239,6 +264,7 @@ function ScrapingRunDetailPage() {
                         size="lg"
                         variant="outline"
                         disabled={startingExecution || run.status !== "planned"}
+                        className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
                         onClick={() => void handleStartExecution("real")}
                       >
                         {startingExecution
@@ -251,6 +277,7 @@ function ScrapingRunDetailPage() {
                         type="button"
                         size="lg"
                         disabled={startingExecution || run.status !== "planned"}
+                        className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                         onClick={() => void handleStartExecution("full_census")}
                       >
                         {startingExecution ? "Starting…" : "Full census"}
@@ -259,14 +286,14 @@ function ScrapingRunDetailPage() {
                   )}
                 </div>
               </div>
-            </GlassCard>
+            </DreamPanel>
 
-            <GlassCard className="p-6">
-              <h2 className="text-lg font-semibold">Results</h2>
+            <DreamPanel>
+              <h2 className="font-display text-lg text-[#f7f1e4]">Results</h2>
               {executions.length === 0 ? (
-                <p className="mt-3 text-sm text-muted-foreground">
-                  No scrape yet. Choose <strong>Standard scrape</strong> or{" "}
-                  <strong>Full census</strong> above.
+                <p className="mt-3 text-sm text-white/55">
+                  No scrape yet. Choose <strong className="text-[#f3e6c4]">Standard scrape</strong>{" "}
+                  or <strong className="text-[#f3e6c4]">Full census</strong> above.
                 </p>
               ) : (
                 <div className="mt-4 space-y-3">
@@ -278,29 +305,34 @@ function ScrapingRunDetailPage() {
                     return (
                       <div
                         key={execution.id}
-                        className="flex flex-col gap-3 rounded-xl border border-border p-4 md:flex-row md:items-center md:justify-between"
+                        className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 md:flex-row md:items-center md:justify-between"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge variant="secondary">{execution.status_label}</Badge>
-                            <Badge variant="outline">
+                            <Badge
+                              variant="outline"
+                              className="border-[#d4a84b]/35 text-[#f3e6c4]"
+                            >
                               {execution.mode === "full_census" ? "Full census" : "Standard"}
                             </Badge>
-                            <span className="text-sm text-muted-foreground">
-                              {execution.country_name}
-                            </span>
+                            <span className="text-sm text-white/50">{execution.country_name}</span>
                           </div>
-                          <p className="mt-2 text-sm text-muted-foreground">
+                          <p className="mt-2 text-sm text-white/55">
                             {execution.records_verified} facilities · {execution.documents_found}{" "}
                             pages · {execution.sources_discovered} sources
                           </p>
-                          <p className="mt-1 text-xs text-muted-foreground">
+                          <p className="mt-1 text-xs text-white/40">
+                            Profile: {(execution.mission_profile ?? "full_national_census").replaceAll("_", " ")}
+                          </p>
+                          <p className="mt-1 text-xs text-white/40">
                             {new Date(execution.created_at).toLocaleString()}
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button
                             type="button"
+                            className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                             onClick={() =>
                               void navigate({
                                 to: "/scraping/$missionId/executions/$executionId",
@@ -308,17 +340,14 @@ function ScrapingRunDetailPage() {
                               })
                             }
                           >
-                            {isLive
-                              ? "Watch progress"
-                              : isDone
-                                ? "View results"
-                                : "Open"}
+                            {isLive ? "Watch progress" : isDone ? "View results" : "Open"}
                           </Button>
                           {isDone && (
                             <Button
                               type="button"
                               variant="outline"
                               disabled={deletingExecutionId === execution.id}
+                              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
                               onClick={() => setExecutionToDelete(execution)}
                             >
                               {deletingExecutionId === execution.id ? "Deleting..." : "Delete"}
@@ -330,21 +359,21 @@ function ScrapingRunDetailPage() {
                   })}
                 </div>
               )}
-            </GlassCard>
+            </DreamPanel>
 
-            <details className="rounded-xl border border-border bg-card/40 p-4">
+            <details className={dreamDetailsClass}>
               <summary className="cursor-pointer text-sm font-medium">
                 AI agents ({run.agents.length}) — optional detail
               </summary>
               <div className="mt-4 space-y-3">
                 {run.error_message && (
-                  <p className="text-sm text-destructive">{run.error_message}</p>
+                  <p className="text-sm text-rose-200">{run.error_message}</p>
                 )}
                 {run.planner_rationale && (
-                  <p className="text-sm text-muted-foreground">{run.planner_rationale}</p>
+                  <p className={dreamMutedClass}>{run.planner_rationale}</p>
                 )}
                 {run.agents.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No agents saved.</p>
+                  <p className={dreamMutedClass}>No agents saved.</p>
                 ) : (
                   <div className="grid gap-4 lg:grid-cols-2">
                     {run.agents.map((agent) => (
@@ -358,6 +387,7 @@ function ScrapingRunDetailPage() {
                       type="button"
                       variant="outline"
                       disabled={cancelling}
+                      className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
                       onClick={() => void handleCancel()}
                     >
                       {cancelling ? "Cancelling..." : "Cancel plan"}
@@ -376,15 +406,16 @@ function ScrapingRunDetailPage() {
             </details>
           </div>
         )}
-      </div>
+      </DreamPageShell>
       <Modal
         open={showDelete}
         onClose={deleting ? () => undefined : () => setShowDelete(false)}
         title="Delete Run"
         size="md"
+        tone="dream"
       >
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className={dreamMutedClass}>
             Delete this AI team plan? This permanently deletes its planned agents, terminal
             execution campaigns, tasks, coverage history, and event history. This action cannot be
             undone.
@@ -394,6 +425,7 @@ function ScrapingRunDetailPage() {
               type="button"
               variant="outline"
               disabled={deleting}
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
               onClick={() => setShowDelete(false)}
             >
               Cancel
@@ -414,9 +446,10 @@ function ScrapingRunDetailPage() {
         onClose={deletingExecutionId ? () => undefined : () => setExecutionToDelete(null)}
         title="Delete Execution Campaign"
         size="md"
+        tone="dream"
       >
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className={dreamMutedClass}>
             Delete this terminal source discovery execution campaign? This permanently deletes its tasks,
             coverage history, and event history. This action cannot be undone.
           </p>
@@ -425,6 +458,7 @@ function ScrapingRunDetailPage() {
               type="button"
               variant="outline"
               disabled={deletingExecutionId !== null}
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
               onClick={() => setExecutionToDelete(null)}
             >
               Cancel
@@ -459,10 +493,10 @@ function AgentCard({
     (dependencyId) => agentNameById.get(dependencyId) ?? dependencyId,
   );
   return (
-    <GlassCard className="p-5">
+    <DreamPanel className="p-5">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="secondary">#{agent.sequence}</Badge>
-        <h3 className="font-semibold">{agent.name}</h3>
+        <h3 className="font-semibold text-[#f7f1e4]">{agent.name}</h3>
         <Badge variant="secondary">{agent.status}</Badge>
       </div>
       <dl className="mt-4 space-y-3 text-sm">
@@ -476,15 +510,15 @@ function AgentCard({
           value={dependencies.length > 0 ? dependencies.join(", ") : "None"}
         />
       </dl>
-    </GlassCard>
+    </DreamPanel>
   );
 }
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="font-medium">{label}</dt>
-      <dd className="mt-1 whitespace-pre-wrap text-muted-foreground">{value}</dd>
+      <dt className="font-medium text-[#f7f1e4]">{label}</dt>
+      <dd className="mt-1 whitespace-pre-wrap text-white/50">{value}</dd>
     </div>
   );
 }

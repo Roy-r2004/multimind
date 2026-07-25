@@ -3,6 +3,7 @@ import { ClipboardList, History, Plus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { ScrapingMissionMenu } from "@/components/scraping/ScrapingMissionMenu";
+import { dreamInputClass, dreamMutedClass } from "@/components/scraping/DreamPageShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -62,37 +63,37 @@ export function ScrapingSidebarContent({ onNavigate }: { onNavigate: () => void 
         <Link
           to="/scraping/new"
           onClick={onNavigate}
-          className="flex w-full items-center gap-2 rounded-xl bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+          className="flex w-full items-center gap-2 rounded-xl bg-[#d4a84b] px-3 py-2.5 text-sm font-semibold text-[#0b161c] shadow-[0_10px_24px_rgba(212,168,75,0.25)] hover:bg-[#e0b85c]"
         >
-          <Plus className="size-4" /> New Scraping Mission
+          <Plus className="size-4" /> New flight
         </Link>
       </div>
       <div className="mt-4 flex-1 overflow-hidden px-3">
-        <div className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-          <History className="size-3.5" /> Recent Scraping Missions
+        <div className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-[#d4a84b]/80">
+          <History className="size-3.5" /> Recent flights
         </div>
-        {message && <p className="mt-2 px-2 text-xs text-primary">{message}</p>}
-        {error && <p className="mt-2 px-2 text-xs text-destructive">{error}</p>}
+        {message && <p className="mt-2 px-2 text-xs text-teal-200">{message}</p>}
+        {error && <p className="mt-2 px-2 text-xs text-rose-300">{error}</p>}
         <div className="mt-2 max-h-[38vh] space-y-0.5 overflow-y-auto">
           {missions.length === 0 ? (
-            <p className="px-2 py-3 text-xs text-muted-foreground">No scraping missions yet</p>
+            <p className="px-2 py-3 text-xs text-white/40">No flights yet</p>
           ) : (
             missions.map((mission) => (
-              <div key={mission.id} className="group relative rounded-lg hover:bg-accent">
+              <div key={mission.id} className="group relative rounded-lg hover:bg-white/5">
                 <Link
                   to="/scraping/$missionId"
                   params={{ missionId: mission.id }}
                   onClick={onNavigate}
-                  className="flex items-start gap-2 rounded-lg px-3 py-2 pr-9 text-sm text-sidebar-foreground/85"
+                  className="flex items-start gap-2 rounded-lg px-3 py-2 pr-9 text-sm text-white/80"
                 >
-                  <ClipboardList className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  <ClipboardList className="mt-0.5 size-4 shrink-0 text-[#d4a84b]/80" />
                   <span className="min-w-0">
                     <span className="block truncate">{mission.title}</span>
-                    <span className="block truncate text-[10px] text-muted-foreground">
+                    <span className="block truncate text-[10px] text-white/40">
                       {mission.status}
                     </span>
                     {mission.project_name && (
-                      <span className="block truncate text-[10px] text-muted-foreground">
+                      <span className="block truncate text-[10px] text-white/35">
                         {mission.project_name}
                       </span>
                     )}
@@ -233,15 +234,16 @@ function AssignMissionProjectModal({
       onClose={submitting ? () => undefined : onClose}
       title={mission?.project_id ? "Change Project" : "Add to Project"}
       size="md"
+      tone="dream"
     >
       <div className="space-y-4">
         <div className="space-y-2">
-          <Label>Project</Label>
+          <Label className="text-[#f7f1e4]">Project</Label>
           <Select value={projectId} onValueChange={setProjectId}>
-            <SelectTrigger>
+            <SelectTrigger className="border-white/15 bg-white/5 text-[#f7f1e4]">
               <SelectValue placeholder="Select a project" />
             </SelectTrigger>
-            <SelectContent className="z-[200]">
+            <SelectContent className="z-[200] border-white/10 bg-[#0b161c] text-[#f7f1e4]">
               {projects.map((project) => (
                 <SelectItem key={project.id} value={project.id}>
                   {project.name}
@@ -251,10 +253,21 @@ function AssignMissionProjectModal({
           </Select>
         </div>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={submitting}
+            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+            onClick={onClose}
+          >
             Cancel
           </Button>
-          <Button type="button" disabled={!projectId || submitting} onClick={() => void submit()}>
+          <Button
+            type="button"
+            disabled={!projectId || submitting}
+            className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+            onClick={() => void submit()}
+          >
             {submitting ? "Saving..." : "Save"}
           </Button>
         </div>
@@ -295,14 +308,21 @@ function RemoveMissionProjectModal({
       onClose={submitting ? () => undefined : onClose}
       title="Remove from Project"
       size="md"
+      tone="dream"
     >
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">
+        <p className={dreamMutedClass}>
           Remove this scraping mission from its current project? The mission and all blueprint
           versions will remain available in Scraping Council.
         </p>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={submitting}
+            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+            onClick={onClose}
+          >
             Cancel
           </Button>
           <Button
@@ -358,24 +378,35 @@ function RenameMissionModal({
       onClose={submitting ? () => undefined : onClose}
       title="Rename Mission"
       size="md"
+      tone="dream"
     >
       <div className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="mission-name">Mission Name</Label>
+          <Label htmlFor="mission-name" className="text-[#f7f1e4]">
+            Mission Name
+          </Label>
           <Input
             id="mission-name"
             value={title}
             maxLength={512}
             onChange={(event) => setTitle(event.target.value)}
+            className={dreamInputClass}
           />
         </div>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={submitting}
+            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+            onClick={onClose}
+          >
             Cancel
           </Button>
           <Button
             type="button"
             disabled={!title.trim() || submitting}
+            className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
             onClick={() => void submit()}
           >
             Save Name
@@ -418,16 +449,23 @@ function DeleteMissionModal({
       onClose={submitting ? () => undefined : onClose}
       title="Delete Mission"
       size="md"
+      tone="dream"
     >
       {mission && (
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className={dreamMutedClass}>
             Permanently delete “{mission.title}”? This will delete the mission and all of its
             blueprint versions.
           </p>
-          <p className="text-sm font-medium text-destructive">This action cannot be undone.</p>
+          <p className="text-sm font-medium text-rose-200">This action cannot be undone.</p>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={submitting}
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              onClick={onClose}
+            >
               Cancel
             </Button>
             <Button

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -17,6 +18,7 @@ from app.core.config import get_settings
 from app.db.models import (
     FacilityCandidatePublicationStatus,
     RehabilitationFacility,
+    RehabilitationFacilitySourceLink,
     RehabilitationPossibleDuplicate,
     ScrapingFacilityCandidate,
     ScrapingFacilityCandidateEvidence,
@@ -47,6 +49,12 @@ from app.schemas.api import SourceDiscoveryContext, SourceDiscoverySummary
 from app.services.scraping.document_text_preparation_service import (
     SourceDocumentPreparationContext,
     document_text_preparation_service,
+)
+from app.services.scraping.contact_page_discovery_service import discover_contact_pages
+from app.services.scraping.coverage_gap_loop_service import (
+    CoverageGapCell,
+    CoverageGapFacility,
+    coverage_gap_loop_service,
 )
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.execution_outcome import GAP_COVERAGE_STATUSES
@@ -299,15 +307,33 @@ class SourceDiscoveryExecutionOrchestrator:
             f"{self.scale_profile.label} source discovery campaign started.",
             metadata=self.scale_profile.as_metadata(),
         )
+        await self._emit_stage_progress(execution, active_stage="discover")
         await self.db.commit()
 
         try:
             await self._ensure_profile_matrix_and_tasks(execution, execution_agents)
             await self._process_tasks(execution)
             await self._check_cancelled(execution)
+            await self._emit_stage_progress(
+                execution,
+                active_stage="verify",
+                completed_stages={"discover"},
+            )
             await self._run_facility_extraction_phase(execution)
             await self._check_cancelled(execution)
+            await self._emit_stage_progress(
+                execution,
+                active_stage="cite",
+                completed_stages={"discover", "verify"},
+            )
             await self._run_facility_publication_phase(execution)
+            await self._check_cancelled(execution)
+            await self._emit_stage_progress(
+                execution,
+                active_stage="clean",
+                completed_stages={"discover", "verify", "cite"},
+            )
+            await self._run_coverage_gap_loop(execution)
             await self._check_cancelled(execution)
             await self._refresh_metrics(execution)
             if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
@@ -316,6 +342,11 @@ class SourceDiscoveryExecutionOrchestrator:
             self.current_stage = "complete_execution"
             execution.status = ScrapingExecutionStatus.COMPLETED
             execution.completed_at = datetime.now(UTC)
+            await self._emit_stage_progress(
+                execution,
+                active_stage="clean",
+                completed_stages={"discover", "verify", "cite", "clean"},
+            )
             settings = get_settings()
             if settings.facility_publication_enabled and settings.facility_extraction_enabled:
                 completion_message = (
@@ -383,6 +414,12 @@ class SourceDiscoveryExecutionOrchestrator:
                     "attempted_coverage_cell_count": self.attempted_coverage_cell_count,
                 },
             )
+            await self._emit_stage_progress(
+                execution,
+                active_stage=self._flight_stage_from_internal_stage(self.current_stage),
+                completed_stages=self._completed_flight_stages(self.current_stage),
+                failed=True,
+            )
             await self._mark_failed_safely(
                 safe_execution_id,
                 failure_category,
@@ -402,7 +439,7 @@ class SourceDiscoveryExecutionOrchestrator:
         execution_agents: list[ScrapingExecutionAgent],
     ) -> None:
         await self._check_cancelled(execution)
-        if execution.country_profile_json is None:
+        if not self._has_profile_dimensions(execution.country_profile_json):
             self.current_stage = "snapshot_source_discovery_profile"
             blueprint_json = execution.blueprint.blueprint_json or {}
             regions, languages, categories = self._coverage_dimensions_from_blueprint(
@@ -427,7 +464,13 @@ class SourceDiscoveryExecutionOrchestrator:
                 max(profile.serper_results_per_query, 1),
                 profile.discovery_results_hard_cap,
             )
-            execution.country_profile_json = {
+            persisted_profile = (
+                dict(execution.country_profile_json)
+                if isinstance(execution.country_profile_json, dict)
+                else {}
+            )
+            persisted_profile.update(
+                {
                 "phase": "source_discovery",
                 "mode": profile.mode,
                 "country_code": execution.country_code,
@@ -441,7 +484,9 @@ class SourceDiscoveryExecutionOrchestrator:
                 "results_per_query": results_per_query,
                 "max_search_request_count": cell_count * max_queries,
                 "scale_budget": profile.as_metadata(),
-            }
+                }
+            )
+            execution.country_profile_json = persisted_profile
             await execution_service.emit_event(
                 self.db,
                 execution.id,
@@ -878,6 +923,376 @@ class SourceDiscoveryExecutionOrchestrator:
             **summary,
         )
 
+    async def _run_coverage_gap_loop(self, execution: ScrapingExecution) -> None:
+        self.current_stage = "coverage_gap_loop"
+        budget = self._coverage_gap_budget()
+        max_rounds = 2
+        prior_gap_total: int | None = None
+        stop_reason = "max_rounds_reached"
+
+        for round_number in range(1, max_rounds + 1):
+            measurement = await self._measure_coverage_gap_state(execution.id)
+            plan = coverage_gap_loop_service.plan_round(
+                measurement,
+                mission_profile=self._coverage_gap_mission_profile(),
+                round_number=round_number,
+                max_rounds=max_rounds,
+                remaining_budget=budget,
+                prior_gap_total=prior_gap_total,
+            )
+            stop_reason = plan.stop_reason or stop_reason
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "coverage_gap_follow_up_round",
+                f"Coverage gap follow-up round {round_number} evaluated remaining gaps.",
+                metadata={
+                    "round_number": round_number,
+                    "remaining_budget": budget,
+                    "coverage_gap_count": measurement.total_coverage_gaps,
+                    "location_missing": measurement.location_missing,
+                    "phone_missing": measurement.phone_missing,
+                    "country_uncertain": measurement.country_uncertain,
+                    "planned_coverage_retries": len(plan.coverage_retry_cell_ids),
+                    "planned_contact_retries": len(plan.contact_retry_facility_ids),
+                    "stop_reason": plan.stop_reason,
+                },
+            )
+            await self.db.commit()
+            if plan.stop_reason is not None:
+                break
+
+            coverage_created = await self._queue_coverage_gap_tasks(
+                execution,
+                coverage_cell_ids=plan.coverage_retry_cell_ids,
+                round_number=round_number,
+            )
+            budget = max(budget - coverage_created, 0)
+            contact_created = await self._queue_contact_retry_tasks(
+                execution,
+                facility_ids=plan.contact_retry_facility_ids,
+                round_number=round_number,
+                remaining_budget=budget,
+            )
+            budget = max(budget - contact_created, 0)
+            prior_gap_total = measurement.total_gap_items
+
+            if coverage_created == 0 and contact_created == 0:
+                stop_reason = "low_yield"
+                break
+
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "coverage_gap_follow_up_attempted",
+                "Coverage gap follow-up queued bounded discovery and contact-page retries.",
+                metadata={
+                    "round_number": round_number,
+                    "coverage_tasks_created": coverage_created,
+                    "contact_retry_tasks_created": contact_created,
+                    "remaining_budget": budget,
+                },
+            )
+            await self.db.commit()
+            await self._process_tasks(execution)
+            await self._check_cancelled(execution)
+            await self._run_facility_extraction_phase(execution)
+            await self._check_cancelled(execution)
+            await self._run_facility_publication_phase(execution)
+            await self._check_cancelled(execution)
+
+        remaining = await self._measure_coverage_gap_state(execution.id)
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "coverage_gap_loop_completed",
+            "Coverage gap follow-up completed with an honest summary of remaining gaps.",
+            metadata={
+                "stop_reason": stop_reason,
+                "coverage_gap_count": remaining.total_coverage_gaps,
+                "location_missing": remaining.location_missing,
+                "phone_missing": remaining.phone_missing,
+                "country_uncertain": remaining.country_uncertain,
+                "remaining_gap_items": remaining.total_gap_items,
+            },
+        )
+        await self.db.commit()
+
+    def _coverage_gap_budget(self) -> int:
+        settings = get_settings()
+        if self.scale_profile.mode == MODE_FULL_CENSUS:
+            return max(settings.contact_crawl_max_pages_full_census, 0)
+        return max(settings.contact_crawl_max_pages_real, 0)
+
+    def _coverage_gap_mission_profile(self) -> str:
+        if self.scale_profile.mode == MODE_FULL_CENSUS:
+            return "full_national_census"
+        return "private_residential"
+
+    async def _measure_coverage_gap_state(self, execution_id: str):
+        coverage = await self._coverage_cells(execution_id)
+        facilities = (
+            await self.db.execute(
+                select(RehabilitationFacility)
+                .where(
+                    RehabilitationFacility.execution_id == execution_id,
+                    RehabilitationFacility.is_mock.is_(False),
+                )
+                .options(
+                    selectinload(RehabilitationFacility.locations),
+                    selectinload(RehabilitationFacility.contacts),
+                    selectinload(RehabilitationFacility.source_links).selectinload(
+                        RehabilitationFacilitySourceLink.source
+                    ),
+                )
+            )
+        ).scalars().all()
+        facility_gaps: list[CoverageGapFacility] = []
+        for facility in facilities:
+            primary_source_link = next(
+                (link for link in facility.source_links if link.is_primary and link.source is not None),
+                None,
+            ) or next((link for link in facility.source_links if link.source is not None), None)
+            source = primary_source_link.source if primary_source_link is not None else None
+            primary_location = next(
+                (location for location in facility.locations if location.is_primary),
+                facility.locations[0] if facility.locations else None,
+            )
+            location_gap_reason = None
+            if primary_location is None:
+                location_gap_reason = "location_missing"
+            elif primary_location.location_completeness_status != "complete":
+                location_gap_reason = primary_location.location_gap_reason or "location_incomplete"
+            country_uncertain = facility.country_containment_status == "uncertain" or (
+                primary_location is not None
+                and primary_location.country_containment_status == "uncertain"
+            )
+            if location_gap_reason is None and not country_uncertain:
+                continue
+            facility_gaps.append(
+                CoverageGapFacility(
+                    facility_id=facility.id,
+                    region_name=source.region if source and source.region else "National",
+                    language_name=source.language_code if source and source.language_code else "und",
+                    source_category=(
+                        source.source_category if source and source.source_category else "retrieved_source"
+                    ),
+                    location_gap_reason=location_gap_reason,
+                    country_uncertain=country_uncertain,
+                )
+            )
+        return coverage_gap_loop_service.measure(
+            coverage_cells=[
+                CoverageGapCell(
+                    id=cell.id,
+                    region_name=cell.region_name,
+                    language_name=cell.language_name,
+                    source_category=cell.source_category,
+                    status=cell.status.value,
+                )
+                for cell in coverage
+            ],
+            facilities=facility_gaps,
+        )
+
+    async def _queue_coverage_gap_tasks(
+        self,
+        execution: ScrapingExecution,
+        *,
+        coverage_cell_ids: list[str],
+        round_number: int,
+    ) -> int:
+        if not coverage_cell_ids:
+            return 0
+        cells = {cell.id: cell for cell in await self._coverage_cells(execution.id)}
+        agents = await self._execution_agents(execution.id)
+        default_agent_id = agents[0].id if agents else None
+        created = 0
+        for index, cell_id in enumerate(coverage_cell_ids, start=1):
+            cell = cells.get(cell_id)
+            if cell is None or (cell.assigned_execution_agent_id is None and default_agent_id is None):
+                continue
+            existing = (
+                await self.db.execute(
+                    select(ScrapingTask.id).where(
+                        ScrapingTask.execution_id == execution.id,
+                        ScrapingTask.coverage_cell_id == cell.id,
+                        ScrapingTask.task_type == "discover_sources",
+                        ScrapingTask.status.in_(
+                            [ScrapingTaskStatus.QUEUED, ScrapingTaskStatus.RUNNING]
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                continue
+            self.db.add(
+                ScrapingTask(
+                    execution_id=execution.id,
+                    execution_agent_id=cell.assigned_execution_agent_id or default_agent_id,
+                    coverage_cell_id=cell.id,
+                    task_type="discover_sources",
+                    title=f"Follow up {cell.region_name} x {cell.language_name} x {cell.source_category}",
+                    status=ScrapingTaskStatus.QUEUED,
+                    priority=1500 + round_number * 100 + index,
+                    input_json={
+                        "country_code": execution.country_code,
+                        "country_name": execution.country_name,
+                        "region_code": cell.region_code,
+                        "region_name": cell.region_name,
+                        "language_code": cell.language_code,
+                        "language_name": cell.language_name,
+                        "source_category": cell.source_category,
+                        "phase": "coverage_gap_follow_up",
+                        "round_number": round_number,
+                    },
+                    output_json={},
+                    dependency_task_ids_json=[],
+                )
+            )
+            created += 1
+        if created:
+            await self.db.flush()
+        return created
+
+    async def _queue_contact_retry_tasks(
+        self,
+        execution: ScrapingExecution,
+        *,
+        facility_ids: list[str],
+        round_number: int,
+        remaining_budget: int,
+    ) -> int:
+        if not facility_ids or remaining_budget <= 0:
+            return 0
+        agents = await self._execution_agents(execution.id)
+        default_agent_id = agents[0].id if agents else None
+        created = 0
+        for facility_id in facility_ids:
+            if created >= remaining_budget:
+                break
+            facility = await self.db.scalar(
+                select(RehabilitationFacility)
+                .where(
+                    RehabilitationFacility.id == facility_id,
+                    RehabilitationFacility.execution_id == execution.id,
+                )
+                .options(
+                    selectinload(RehabilitationFacility.source_links).selectinload(
+                        RehabilitationFacilitySourceLink.source
+                    )
+                )
+            )
+            if facility is None:
+                continue
+            primary_link = next(
+                (link for link in facility.source_links if link.is_primary and link.source is not None),
+                None,
+            ) or next((link for link in facility.source_links if link.source is not None), None)
+            source = primary_link.source if primary_link is not None else None
+            if source is None:
+                continue
+            document = await self.db.scalar(
+                select(ScrapingSourceDocument)
+                .where(
+                    ScrapingSourceDocument.execution_id == execution.id,
+                    ScrapingSourceDocument.final_url == source.canonical_url,
+                )
+                .order_by(ScrapingSourceDocument.retrieval_timestamp.desc())
+            )
+            if document is None:
+                continue
+            html = document.content_text or document.extracted_text or ""
+            links = discover_contact_pages(base_url=document.final_url, html=html, max_links=1)
+            if not links:
+                continue
+            link = links[0]
+            existing_candidate = await self.db.scalar(
+                select(ScrapingSourceCandidate).where(
+                    ScrapingSourceCandidate.execution_id == execution.id,
+                    ScrapingSourceCandidate.canonical_url == link.url,
+                )
+            )
+            if existing_candidate is not None:
+                continue
+            query = ScrapingSourceDiscoveryQuery(
+                organization_id=execution.organization_id,
+                execution_id=execution.id,
+                coverage_cell_id=source.coverage_cell_id,
+                country_code=execution.country_code,
+                country_name=execution.country_name,
+                region_code=None,
+                region_name=source.region or execution.country_name,
+                language_code=(source.language_code or "und")[:16],
+                language_name=source.language_code or "und",
+                source_category="contact page follow-up",
+                query_text="contact page follow-up",
+                provider="internal_link",
+                status=SourceDiscoveryQueryStatus.SUCCEEDED,
+                result_count=1,
+                requested_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+            )
+            self.db.add(query)
+            await self.db.flush()
+            candidate = ScrapingSourceCandidate(
+                organization_id=execution.organization_id,
+                execution_id=execution.id,
+                coverage_cell_id=source.coverage_cell_id,
+                discovery_query_id=query.id,
+                provider="internal_link",
+                rank=1,
+                url=link.url,
+                canonical_url=link.url,
+                domain=urlsplit(link.url).hostname or source.domain,
+                title=f"Contact page for {facility.canonical_name}"[:300],
+                snippet=f"Internal contact follow-up discovered from {source.canonical_url}"[:1000],
+                country_code=execution.country_code,
+                country_name=execution.country_name,
+                region_code=None,
+                region_name=source.region or execution.country_name,
+                language_code=(source.language_code or "und")[:16],
+                language_name=source.language_code or "und",
+                source_category="contact page follow-up",
+                initial_relevance_score=1,
+                initial_trust_tier="high",
+                status=SourceCandidateStatus.DISCOVERED,
+                discovered_at=datetime.now(UTC),
+                metadata_json={
+                    "phase": "contact_page_retry",
+                    "round_number": round_number,
+                    "parent_facility_id": facility.id,
+                    "discovery_reason": link.reason,
+                },
+            )
+            self.db.add(candidate)
+            await self.db.flush()
+            if default_agent_id is None:
+                continue
+            self.db.add(
+                ScrapingTask(
+                    execution_id=execution.id,
+                    execution_agent_id=source.coverage_cell_id and default_agent_id or default_agent_id,
+                    coverage_cell_id=source.coverage_cell_id,
+                    task_type="retrieve_source",
+                    title=f"Retrieve contact page {candidate.domain}",
+                    status=ScrapingTaskStatus.QUEUED,
+                    priority=1700 + round_number * 100 + created,
+                    max_attempts=3,
+                    input_json={
+                        "source_candidate_id": candidate.id,
+                        "phase": "contact_page_retry",
+                        "round_number": round_number,
+                    },
+                    output_json={},
+                    dependency_task_ids_json=[],
+                )
+            )
+            created += 1
+        if created:
+            await self.db.flush()
+        return created
+
     async def _process_discovery_task(
         self, execution: ScrapingExecution, task: ScrapingTask
     ) -> None:
@@ -1079,6 +1494,16 @@ class SourceDiscoveryExecutionOrchestrator:
             if summary.status == SourceRetrievalAttemptStatus.SUCCEEDED.value or not retryable:
                 break
 
+        contact_crawl_queued = 0
+        if (
+            summary is not None
+            and summary.status == SourceRetrievalAttemptStatus.SUCCEEDED.value
+            and candidate is not None
+        ):
+            contact_crawl_queued = await self._enqueue_contact_page_crawls(
+                execution, task, candidate, summary
+            )
+
         task.status = ScrapingTaskStatus.COMPLETED
         task.completed_at = datetime.now(UTC)
         task.current_action = None
@@ -1091,9 +1516,152 @@ class SourceDiscoveryExecutionOrchestrator:
             execution_agent_id=agent.id,
             task_id=task.id,
             coverage_cell_id=task.coverage_cell_id,
-            metadata={"task_type": task.task_type, **(task.output_json or {})},
+            metadata={
+                "task_type": task.task_type,
+                "contact_crawl_queued": contact_crawl_queued,
+                **(task.output_json or {}),
+            },
         )
         await self.db.commit()
+
+    async def _enqueue_contact_page_crawls(
+        self,
+        execution: ScrapingExecution,
+        task: ScrapingTask,
+        candidate: ScrapingSourceCandidate,
+        summary: SourceRetrievalSummary,
+    ) -> int:
+        """Phase B1: after homepage fetch, queue ranked same-domain contact/location pages."""
+        meta = candidate.metadata_json or {}
+        if meta.get("phase") in {"contact_page_crawl", "contact_page_retry"}:
+            return 0
+        depth = int(meta.get("contact_crawl_depth") or 0)
+        max_depth = max(get_settings().contact_crawl_max_depth, 0)
+        if depth >= max_depth:
+            return 0
+        budget = max(self.scale_profile.contact_crawl_max_pages, 0)
+        if budget <= 0 or not summary.document_id:
+            return 0
+        document = await self.db.get(ScrapingSourceDocument, summary.document_id)
+        if document is None:
+            return 0
+        content_type = (document.content_type or "").split(";", 1)[0].strip().lower()
+        if content_type not in {"text/html", "application/xhtml+xml"}:
+            return 0
+        html = document.content_text or ""
+        links = discover_contact_pages(
+            base_url=document.final_url or candidate.canonical_url,
+            html=html,
+            max_links=budget,
+        )
+        if not links:
+            return 0
+
+        existing_urls = {
+            row
+            for row in (
+                await self.db.execute(
+                    select(ScrapingSourceCandidate.canonical_url).where(
+                        ScrapingSourceCandidate.execution_id == execution.id
+                    )
+                )
+            ).scalars().all()
+        }
+        existing_tasks = {
+            (row.input_json or {}).get("source_candidate_id")
+            for row in (
+                await self.db.execute(
+                    select(ScrapingTask).where(
+                        ScrapingTask.execution_id == execution.id,
+                        ScrapingTask.task_type == "retrieve_source",
+                    )
+                )
+            ).scalars().all()
+        }
+
+        created = 0
+        for index, link in enumerate(links, start=1):
+            if link.url in existing_urls:
+                continue
+            if await self._retrieval_task_count(execution.id) >= max(
+                self.scale_profile.retrieval_max_per_execution, 0
+            ):
+                break
+            crawl_candidate = ScrapingSourceCandidate(
+                organization_id=execution.organization_id,
+                execution_id=execution.id,
+                coverage_cell_id=candidate.coverage_cell_id,
+                discovery_query_id=candidate.discovery_query_id,
+                provider="internal_link",
+                rank=index,
+                url=link.url,
+                canonical_url=link.url,
+                domain=urlsplit(link.url).hostname or candidate.domain,
+                title=(link.anchor_text or f"Contact page ({link.reason})")[:300],
+                snippet=f"Same-domain contact crawl from {candidate.canonical_url}"[:1000],
+                country_code=candidate.country_code,
+                country_name=candidate.country_name,
+                region_code=candidate.region_code,
+                region_name=candidate.region_name,
+                language_code=candidate.language_code,
+                language_name=candidate.language_name,
+                source_category="contact page crawl",
+                initial_relevance_score=Decimal("0.95"),
+                initial_trust_tier=candidate.initial_trust_tier,
+                status=SourceCandidateStatus.DISCOVERED,
+                discovered_at=datetime.now(UTC),
+                metadata_json={
+                    "phase": "contact_page_crawl",
+                    "parent_candidate_id": candidate.id,
+                    "contact_crawl_depth": depth + 1,
+                    "discovery_reason": link.reason,
+                    "score": link.score,
+                },
+            )
+            self.db.add(crawl_candidate)
+            await self.db.flush()
+            existing_urls.add(link.url)
+            if crawl_candidate.id in existing_tasks:
+                created += 1
+                continue
+            self.db.add(
+                ScrapingTask(
+                    execution_id=execution.id,
+                    execution_agent_id=task.execution_agent_id,
+                    coverage_cell_id=task.coverage_cell_id,
+                    parent_task_id=task.id,
+                    task_type="retrieve_source",
+                    title=f"Retrieve contact page {crawl_candidate.domain}",
+                    status=ScrapingTaskStatus.QUEUED,
+                    priority=(task.priority or 100) + 50 + index,
+                    max_attempts=2,
+                    input_json={
+                        "source_candidate_id": crawl_candidate.id,
+                        "phase": "contact_page_crawl",
+                        "parent_candidate_id": candidate.id,
+                    },
+                    output_json={},
+                    dependency_task_ids_json=[task.id],
+                )
+            )
+            created += 1
+        if created:
+            await self.db.flush()
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "contact_page_crawl_queued",
+                f"Queued {created} same-domain contact/location page retrievals.",
+                execution_agent_id=task.execution_agent_id,
+                task_id=task.id,
+                coverage_cell_id=task.coverage_cell_id,
+                metadata={
+                    "parent_candidate_id": candidate.id,
+                    "queued_count": created,
+                    "budget": budget,
+                },
+            )
+        return created
 
     async def _process_audit_task(
         self, execution: ScrapingExecution, task: ScrapingTask
@@ -1170,6 +1738,68 @@ class SourceDiscoveryExecutionOrchestrator:
             discovery_query_hard_cap=profile.discovery_query_hard_cap,
             discovery_results_hard_cap=profile.discovery_results_hard_cap,
         )
+
+    def _has_profile_dimensions(self, country_profile_json: dict[str, Any] | None) -> bool:
+        if not isinstance(country_profile_json, dict):
+            return False
+        return all(
+            key in country_profile_json
+            for key in (
+                "administrative_regions",
+                "languages",
+                "source_categories",
+                "scale_budget",
+            )
+        )
+
+    async def _emit_stage_progress(
+        self,
+        execution: ScrapingExecution,
+        *,
+        active_stage: str,
+        completed_stages: set[str] | None = None,
+        failed: bool = False,
+    ) -> None:
+        completed = completed_stages or set()
+        stage_names = ("discover", "verify", "cite", "clean")
+        stage_states = {}
+        for stage_name in stage_names:
+            if failed and stage_name == active_stage:
+                stage_states[stage_name] = "failed"
+            elif stage_name in completed:
+                stage_states[stage_name] = "done"
+            elif stage_name == active_stage:
+                stage_states[stage_name] = "active"
+            else:
+                stage_states[stage_name] = "pending"
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "stage_progress",
+            f"Stage update: {active_stage}.",
+            metadata={
+                "active_stage": active_stage,
+                "stage_states": stage_states,
+            },
+        )
+
+    def _flight_stage_from_internal_stage(self, internal_stage: str) -> str:
+        if internal_stage in {"facility_extraction", "create_retrieval_tasks", "process_retrieval_task"}:
+            return "verify"
+        if internal_stage == "facility_publication":
+            return "cite"
+        if internal_stage in {"complete_execution", "refresh_metrics"}:
+            return "clean"
+        return "discover"
+
+    def _completed_flight_stages(self, internal_stage: str) -> set[str]:
+        if internal_stage in {"facility_extraction", "create_retrieval_tasks", "process_retrieval_task"}:
+            return {"discover"}
+        if internal_stage == "facility_publication":
+            return {"discover", "verify"}
+        if internal_stage in {"complete_execution", "refresh_metrics"}:
+            return {"discover", "verify", "cite"}
+        return set()
 
     async def _task_output(
         self, task: ScrapingTask, summary: SourceDiscoverySummary

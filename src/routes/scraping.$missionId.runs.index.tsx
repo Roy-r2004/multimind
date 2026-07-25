@@ -1,8 +1,14 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
+import {
+  DreamHeader,
+  DreamPageShell,
+  DreamPanel,
+  dreamGhostClass,
+  dreamMutedClass,
+} from "@/components/scraping/DreamPageShell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -78,37 +84,37 @@ function ScrapingRunsPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <PageHeader
-          eyebrow="Scraping Council"
-          title="AI Scraping Team Runs"
-          description="Historical team plans created from approved blueprints."
+      <DreamPageShell>
+        <DreamHeader
+          eyebrow="Scraping Council · Crew log"
+          title="AI team flights"
+          description="Persisted crew plans charted from approved blueprints."
           action={
             <Link
               to="/scraping/$missionId"
               params={{ missionId }}
-              className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
+              className={dreamGhostClass}
             >
               Mission
             </Link>
           }
         />
         {loading && (
-          <GlassCard className="mt-8 p-8 text-sm text-muted-foreground">Loading runs...</GlassCard>
+          <DreamPanel className="mt-8 text-sm text-white/60">Loading runs…</DreamPanel>
         )}
-        {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
+        {error && <DreamPanel className="mt-8 text-sm text-rose-200">{error}</DreamPanel>}
         {deleteError && !error && (
-          <GlassCard className="mt-8 p-4 text-sm text-destructive">{deleteError}</GlassCard>
+          <DreamPanel className="mt-8 text-sm text-rose-200">{deleteError}</DreamPanel>
         )}
         {!loading && !error && runs.length === 0 && (
-          <GlassCard className="mt-8 p-12 text-center text-sm text-muted-foreground">
+          <DreamPanel className="mt-8 p-12 text-center text-sm text-white/55">
             No AI scraping team plans have been created yet.
-          </GlassCard>
+          </DreamPanel>
         )}
         {!loading && !error && runs.length > 0 && (
           <div className="mt-8 space-y-3">
             {runs.map((run) => (
-              <GlassCard key={run.id} className="p-5 transition hover:border-primary/30">
+              <DreamPanel key={run.id} className="transition hover:border-[#d4a84b]/35">
                 <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                   <Link
                     to="/scraping/$missionId/runs/$runId"
@@ -118,16 +124,16 @@ function ScrapingRunsPage() {
                     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">
-                            Run from blueprint v{run.blueprint_version ?? "unknown"}
+                          <span className="font-display text-lg text-[#f7f1e4]">
+                            Flight from chart v{run.blueprint_version ?? "unknown"}
                           </span>
                           <Badge variant="secondary">{run.status}</Badge>
                         </div>
-                        <div className="mt-2 text-sm text-muted-foreground">
+                        <div className="mt-2 text-sm text-white/50">
                           Created {new Date(run.created_at).toLocaleString()}
                         </div>
                       </div>
-                      <div className="grid gap-1 text-sm text-muted-foreground md:text-right">
+                      <div className="grid gap-1 text-sm text-white/50 md:text-right">
                         <span>{run.recommended_agent_count ?? "-"} planned agents</span>
                         <span>{run.planner_model_id ?? "Planner pending"}</span>
                       </div>
@@ -149,28 +155,30 @@ function ScrapingRunsPage() {
                     </div>
                   )}
                 </div>
-              </GlassCard>
+              </DreamPanel>
             ))}
           </div>
         )}
-      </div>
+      </DreamPageShell>
       <Modal
         open={deleteTarget !== null}
         onClose={deleting ? () => undefined : () => setDeleteTarget(null)}
         title="Delete Run"
         size="md"
+        tone="dream"
       >
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className={dreamMutedClass}>
             Delete this run? This permanently deletes the saved AI team plan and all planned agents.
             This action cannot be undone.
           </p>
-          {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
+          {deleteError && <p className="text-sm text-rose-200">{deleteError}</p>}
           <div className="flex justify-end gap-2">
             <Button
               type="button"
               variant="outline"
               disabled={deleting}
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
               onClick={() => setDeleteTarget(null)}
             >
               Cancel

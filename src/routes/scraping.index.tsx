@@ -2,7 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
+import { DreamHeader, DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { MissionCard } from "@/components/scraping/MissionCard";
 import { useAuth } from "@/lib/auth";
 import { listScrapingMissions } from "@/lib/scraping/api";
@@ -36,39 +36,57 @@ function ScrapingPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <PageHeader
-          eyebrow="Workspace"
-          title="Scraping Council"
-          description="Create scraping missions, generate structured blueprints, and review them before approval."
+      <DreamPageShell>
+        <DreamHeader
+          eyebrow="Multimind · Scraping Council"
+          title="Missions in the sky"
+          description="Each mission is a flight path over one country — chart the blueprint, then watch sources drift in."
           action={
             <Link
               to="/scraping/new"
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+              className="inline-flex items-center gap-2 rounded-xl bg-[#d4a84b] px-4 py-2.5 text-sm font-semibold text-[#0b161c] shadow-[0_12px_28px_rgba(212,168,75,0.28)] hover:bg-[#e0b85c]"
             >
               <Plus className="size-4" />
-              New Scraping Mission
+              New flight
             </Link>
           }
         />
 
         <div className="mt-8 space-y-4">
           {loading && (
-            <GlassCard className="p-8 text-sm text-muted-foreground">Loading missions...</GlassCard>
+            <DreamPanel className="text-sm text-white/60">Loading missions…</DreamPanel>
           )}
           {error && !loading && (
-            <GlassCard className="p-8 text-sm text-destructive">{error}</GlassCard>
+            <DreamPanel className="text-sm text-rose-200">{error}</DreamPanel>
           )}
           {!loading && !error && missions.length === 0 && (
-            <GlassCard className="p-12 text-center text-sm text-muted-foreground">
-              No scraping missions yet.
-            </GlassCard>
+            <DreamPanel tone="amber" className="p-12 text-center">
+              <p className="font-display text-2xl text-[#f7f1e4]">No flights yet</p>
+              <p className="mx-auto mt-2 max-w-md text-sm text-white/55">
+                Name a destination and launch — the council charts the dream before anything scrapes.
+              </p>
+              <Link
+                to="/scraping/new"
+                className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[#d4a84b] px-4 py-2.5 text-sm font-semibold text-[#0b161c]"
+              >
+                <Plus className="size-4" />
+                Launch first mission
+              </Link>
+            </DreamPanel>
           )}
           {!loading &&
             !error &&
-            missions.map((mission) => <MissionCard key={mission.id} mission={mission} />)}
+            missions.map((mission, index) => (
+              <div
+                key={mission.id}
+                className={`dream-rise-delay-${Math.min(index + 1, 4)}`}
+                style={{ animation: "dream-rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both" }}
+              >
+                <MissionCard mission={mission} />
+              </div>
+            ))}
         </div>
-      </div>
+      </DreamPageShell>
     </AppShell>
   );
 }

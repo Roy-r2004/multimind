@@ -355,3 +355,176 @@
     transform: translateY(0);
   }
 }
+
+/* Scraping Council — dreamflight motion */
+@keyframes dream-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(3%, -2%, 0) scale(1.04);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes dream-drift-alt {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  50% {
+    transform: translate3d(-4%, 3%, 0) scale(1);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+}
+
+@keyframes dream-twinkle {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+@keyframes dream-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes dream-pulse-ring {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+@keyframes dream-flight-path {
+  0% {
+    stroke-dashoffset: 240;
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 0.9;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0.55;
+  }
+}
+
+@keyframes dream-beacon {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(212, 168, 75, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 28px 4px rgba(212, 168, 75, 0.25);
+  }
+}
+
+@keyframes dream-rise {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dream-shard {
+  0% {
+    transform: translate3d(0, 20px, 0) rotate(0deg);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: translate3d(12px, -40px, 0) rotate(18deg);
+    opacity: 0;
+  }
+}
+
+.dream-drift {
+  animation: dream-drift 18s ease-in-out infinite;
+}
+
+.dream-drift-alt {
+  animation: dream-drift-alt 22s ease-in-out infinite;
+}
+
+.dream-twinkle {
+  animation: dream-twinkle 3.6s ease-in-out infinite;
+}
+
+.dream-float {
+  animation: dream-float 5.5s ease-in-out infinite;
+}
+
+.dream-pulse-ring {
+  animation: dream-pulse-ring 2.4s ease-out infinite;
+}
+
+.dream-flight-path {
+  stroke-dasharray: 240;
+  animation: dream-flight-path 4.5s ease-in-out infinite;
+}
+
+.dream-beacon {
+  animation: dream-beacon 2.8s ease-in-out infinite;
+}
+
+.dream-rise {
+  animation: dream-rise 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dream-rise-delay-1 {
+  animation-delay: 0.08s;
+}
+.dream-rise-delay-2 {
+  animation-delay: 0.16s;
+}
+.dream-rise-delay-3 {
+  animation-delay: 0.24s;
+}
+.dream-rise-delay-4 {
+  animation-delay: 0.32s;
+}
+
+.dream-shard {
+  animation: dream-shard 7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dream-drift,
+  .dream-drift-alt,
+  .dream-twinkle,
+  .dream-float,
+  .dream-pulse-ring,
+  .dream-flight-path,
+  .dream-beacon,
+  .dream-rise,
+  .dream-shard {
+    animation: none !important;
+  }
+}

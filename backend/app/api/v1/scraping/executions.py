@@ -135,6 +135,7 @@ async def list_events(
 @router.get("/{execution_id}/facilities", response_model=list[ScrapingFacilitySummary])
 async def list_facilities(
     execution_id: str,
+    publication_class: str | None = None,
     limit: int = 100,
     offset: int = 0,
     auth: AuthContext = Depends(get_auth_context),
@@ -144,6 +145,7 @@ async def list_facilities(
         db,
         auth,
         execution_id,
+        publication_class=publication_class,
         limit=limit,
         offset=offset,
     )

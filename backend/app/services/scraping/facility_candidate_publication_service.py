@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
@@ -47,8 +48,23 @@ from app.db.models import (
     ScrapingSourceRetrievalAttempt,
 )
 from app.services.scraping.countries import resolve_country
+from app.services.scraping.country_containment_service import (
+    CountryContainmentResult,
+    assess_country_containment,
+)
+from app.services.scraping.branch_identity_service import (
+    BranchIdentityInput,
+    branch_identity_service,
+)
+from app.services.scraping.hard_gate_verification_service import (
+    HardGateEvidence,
+    HardGateLocation,
+    HardGateVerificationResult,
+    HardGateVerificationInput,
+    hard_gate_verification_service,
+)
 
-NORMALIZATION_VERSION = "facility-publication-v1"
+NORMALIZATION_VERSION = "facility-publication-v2"
 VERIFICATION_STATUS = "verified_from_staging"
 MAX_METADATA_EVIDENCE_ITEMS = 100
 
@@ -96,6 +112,7 @@ class _PublicationPlan:
     country_name: str
     country_source: str
     explicit_country_value: str | None
+    extracted_country_code: str | None
     facility_type: str
     primary_address: str | None
     primary_region: str | None
@@ -110,6 +127,8 @@ class _PublicationPlan:
     admissions_eligibility: list[ScrapingFacilityCandidateEvidence]
     unresolved: list[tuple[str, str, str]]
     evidence: list[ScrapingFacilityCandidateEvidence]
+    containment: CountryContainmentResult
+    hard_gate_results: HardGateVerificationResult
 
 
 class FacilityCandidatePublicationService:
@@ -169,10 +188,10 @@ class FacilityCandidatePublicationService:
                 return await self._mark_skipped(db, existing, "below_min_confidence")
 
             source = await self._get_or_create_source(db, loaded)
-            merge_target = await self._find_exact_name_match(
+            merge_target = await self._find_merge_target(
                 db,
                 execution_id=loaded.execution.id,
-                normalized_name=plan.normalized_name,
+                plan=plan,
                 country_code=plan.country_code,
             )
             merged_into_existing = merge_target is not None
@@ -184,6 +203,11 @@ class FacilityCandidatePublicationService:
                     facility.primary_website = plan.primary_website
                 facility.duplicate_status = "merged"
                 facility.human_review_status = "required"
+                facility.country_containment_status = plan.containment.status
+                facility.country_containment_reason = plan.containment.reason
+                facility.country_containment_signals_json = plan.containment.signals
+                facility.publication_class = plan.hard_gate_results.publication_class
+                facility.hard_gate_results_json = _safe_metadata(plan.hard_gate_results.as_json())
                 facility.last_verified_at = datetime.now(UTC)
             else:
                 facility = await self._create_facility(db, loaded, plan, confidence=confidence)
@@ -191,6 +215,7 @@ class FacilityCandidatePublicationService:
             await self._after_facility_created(db, facility)
             aliases = await self._add_aliases(db, facility, plan)
             locations = await self._add_locations(db, facility, plan, confidence=confidence)
+            await db.refresh(facility, attribute_names=["locations"])
             contacts = await self._add_contacts(db, facility, plan, confidence=confidence)
             if not facility.primary_website and plan.primary_website:
                 facility.primary_website = plan.primary_website
@@ -247,6 +272,7 @@ class FacilityCandidatePublicationService:
                         else None
                     ),
                     "publication_confidence": float(confidence),
+                    "hard_gate_results": plan.hard_gate_results.as_json(),
                     "merged_into_existing": merged_into_existing,
                     "evidence_mappings": evidence_metadata[:MAX_METADATA_EVIDENCE_ITEMS],
                     "counts": {
@@ -385,10 +411,12 @@ class FacilityCandidatePublicationService:
             raise NotFoundError("ScrapingFacilityCandidate", context.facility_candidate_id)
 
         execution = await db.scalar(
-            select(ScrapingExecution).where(
+            select(ScrapingExecution)
+            .where(
                 ScrapingExecution.id == context.execution_id,
                 ScrapingExecution.organization_id == context.organization_id,
             )
+            .options(selectinload(ScrapingExecution.blueprint))
         )
         attempt = await db.scalar(
             select(ScrapingFacilityExtractionAttempt).where(
@@ -441,10 +469,9 @@ class FacilityCandidatePublicationService:
         if not normalized_name:
             return "invalid_normalized_name"
 
-        country = _resolve_publication_country(loaded.execution, evidence)
-        if isinstance(country, str):
-            return country
-        country_code, country_name, country_source, explicit_country_value = country
+        country_code, country_name, country_source, explicit_country_value, extracted_country_code = (
+            _resolve_publication_country(loaded.execution, evidence)
+        )
 
         aliases = [row for row in evidence if row.field_name == "aliases"]
         if _meaningfully_different(candidate.raw_name, normalized_name):
@@ -452,6 +479,12 @@ class FacilityCandidatePublicationService:
 
         addresses = [row for row in evidence if row.field_name == "addresses"]
         contacts, unresolved = _build_contacts(evidence)
+        addresses, contacts = _merge_deterministic_contact_extracts(
+            loaded.source_document,
+            addresses=addresses,
+            contacts=contacts,
+            anchor_evidence=name_evidence[0],
+        )
         services = [row for row in evidence if row.field_name == "services"]
         programs = [row for row in evidence if row.field_name == "programs"]
         populations_served = [
@@ -465,8 +498,74 @@ class FacilityCandidatePublicationService:
             (value for contact_type, value, _, _ in contacts if contact_type == "website"),
             None,
         )
+        phone_values = [value for contact_type, value, _, _ in contacts if contact_type == "phone"]
+        website_host = None
+        if primary_website:
+            try:
+                website_host = urlsplit(primary_website).hostname
+            except Exception:
+                website_host = None
+        containment = assess_country_containment(
+            target_country_code=loaded.execution.country_code,
+            extracted_country_code=extracted_country_code,
+            extracted_country_raw=explicit_country_value,
+            address_text=primary_address,
+            phone_values=phone_values,
+            website_host=website_host,
+            country_source=country_source,
+        )
         facility_type = _normalize_text_value(
             next((row.raw_value for row in evidence if row.field_name == "facility_type"), None)
+        )
+        unique_location_addresses: list[str] = []
+        seen_addresses: set[str] = set()
+        for row in addresses:
+            address = _normalize_text_value(row.raw_value)
+            if not address or address.casefold() in seen_addresses:
+                continue
+            seen_addresses.add(address.casefold())
+            unique_location_addresses.append(address)
+        multi_branch = len(unique_location_addresses) > 1
+        hard_gate_locations: list[HardGateLocation] = []
+        for index, address in enumerate(unique_location_addresses):
+            has_phone_for_location = bool(phone_values) and (not multi_branch or index == 0)
+            completeness, gap = _location_completeness(
+                address=address, has_phone=has_phone_for_location
+            )
+            hard_gate_locations.append(
+                HardGateLocation(
+                    full_address=address,
+                    country_containment_status=assess_country_containment(
+                        target_country_code=loaded.execution.country_code,
+                        extracted_country_code=extracted_country_code,
+                        extracted_country_raw=explicit_country_value,
+                        address_text=address,
+                        phone_values=phone_values if has_phone_for_location else [],
+                        website_host=website_host,
+                        country_source=country_source,
+                    ).status,
+                    location_completeness_status=completeness,
+                    location_gap_reason=gap,
+                )
+            )
+        hard_gate_results = hard_gate_verification_service.evaluate(
+            HardGateVerificationInput(
+                target_country_code=loaded.execution.country_code,
+                mission_profile=_mission_profile(loaded.execution),
+                facility_country_containment_status=containment.status,
+                facility_type=facility_type or None,
+                locations=hard_gate_locations,
+                phone_values=phone_values,
+                verified_evidence_count=len(evidence),
+                evidence=[
+                    HardGateEvidence(
+                        field_name=row.field_name,
+                        raw_value=_normalize_text_value(row.raw_value) or None,
+                        evidence_quote=row.evidence_quote,
+                    )
+                    for row in evidence
+                ],
+            )
         )
         return _PublicationPlan(
             normalized_name=normalized_name,
@@ -475,6 +574,7 @@ class FacilityCandidatePublicationService:
             country_name=country_name,
             country_source=country_source,
             explicit_country_value=explicit_country_value,
+            extracted_country_code=extracted_country_code,
             facility_type=(facility_type or "rehabilitation_or_addiction_treatment")[:80],
             primary_address=primary_address,
             primary_region=None,
@@ -489,6 +589,8 @@ class FacilityCandidatePublicationService:
             admissions_eligibility=admissions_eligibility,
             unresolved=unresolved,
             evidence=evidence,
+            containment=containment,
+            hard_gate_results=hard_gate_results,
         )
 
     async def _get_or_create_source(
@@ -581,7 +683,12 @@ class FacilityCandidatePublicationService:
             verification_status=VERIFICATION_STATUS,
             confidence_score=confidence,
             duplicate_status="unique",
-            human_review_status="required" if confidence < Decimal("0.85") else "not_required",
+            human_review_status=_human_review_for_plan(plan, confidence),
+            country_containment_status=plan.containment.status,
+            country_containment_reason=plan.containment.reason,
+            country_containment_signals_json=plan.containment.signals,
+            publication_class=plan.hard_gate_results.publication_class,
+            hard_gate_results_json=_safe_metadata(plan.hard_gate_results.as_json()),
             is_mock=False,
             last_verified_at=datetime.now(UTC),
         )
@@ -589,25 +696,35 @@ class FacilityCandidatePublicationService:
         await db.flush()
         return facility
 
-    async def _find_exact_name_match(
+    async def _find_merge_target(
         self,
         db: AsyncSession,
         *,
         execution_id: str,
-        normalized_name: str,
+        plan: _PublicationPlan,
         country_code: str,
     ) -> RehabilitationFacility | None:
         result = await db.execute(
-            select(RehabilitationFacility).where(
+            select(RehabilitationFacility)
+            .where(
                 RehabilitationFacility.execution_id == execution_id,
                 RehabilitationFacility.country_code == country_code,
                 RehabilitationFacility.is_mock.is_(False),
             )
+            .options(
+                selectinload(RehabilitationFacility.contacts),
+                selectinload(RehabilitationFacility.locations),
+            )
         )
-        target = normalized_name.casefold()
+        target = plan.normalized_name.casefold()
         for facility in result.scalars().all():
             if (facility.canonical_name or "").casefold() == target:
-                return facility
+                verdict = branch_identity_service.compare(
+                    _branch_identity_input_for_facility(facility),
+                    _branch_identity_input_for_plan(plan),
+                )
+                if verdict.should_merge:
+                    return facility
         return None
 
     async def _after_facility_created(
@@ -706,11 +823,44 @@ class FacilityCandidatePublicationService:
     ) -> int:
         count = 0
         seen: set[str] = set()
+        unique_addresses: list[str] = []
         for row in plan.locations:
             address = _normalize_text_value(row.raw_value)
             if not address or address.casefold() in seen:
                 continue
             seen.add(address.casefold())
+            unique_addresses.append(address)
+        multi_branch = len(unique_addresses) > 1
+        facility_phones = [
+            value for contact_type, value, _, _ in plan.contacts if contact_type == "phone"
+        ]
+        has_facility_phone = bool(facility_phones)
+        seen.clear()
+        for address in unique_addresses:
+            # HQ/facility phone may verify the primary site only; branches need their own phone.
+            has_phone_for_location = has_facility_phone and (not multi_branch or count == 0)
+            loc_containment = assess_country_containment(
+                target_country_code=facility.country_code,
+                extracted_country_code=plan.extracted_country_code,
+                extracted_country_raw=plan.explicit_country_value,
+                address_text=address,
+                phone_values=facility_phones if has_phone_for_location else [],
+                website_host=None,
+                country_source=plan.country_source,
+            )
+            completeness, gap = _location_completeness(
+                address=address,
+                has_phone=has_phone_for_location,
+            )
+            location_gate = hard_gate_verification_service.location_snapshot(
+                location=HardGateLocation(
+                    full_address=address,
+                    country_containment_status=loc_containment.status,
+                    location_completeness_status=completeness,
+                    location_gap_reason=gap,
+                ),
+                has_phone=has_phone_for_location,
+            )
             db.add(
                 RehabilitationFacilityLocation(
                     facility_id=facility.id,
@@ -722,6 +872,12 @@ class FacilityCandidatePublicationService:
                     is_primary=count == 0,
                     verification_status=VERIFICATION_STATUS,
                     confidence_score=confidence,
+                    country_containment_status=loc_containment.status,
+                    country_containment_reason=loc_containment.reason,
+                    country_containment_signals_json=loc_containment.signals,
+                    location_completeness_status=completeness,
+                    location_gap_reason=gap,
+                    hard_gate_results_json=_safe_metadata(location_gate),
                     is_mock=False,
                 )
             )
@@ -740,6 +896,10 @@ class FacilityCandidatePublicationService:
         count = 0
         seen: set[tuple[str, str]] = set()
         primary_contact_types: set[str] = set()
+        primary_location_id = next(
+            (loc.id for loc in facility.locations if loc.is_primary),
+            facility.locations[0].id if facility.locations else None,
+        )
         for contact_type, value, normalized, _row in plan.contacts:
             key = (contact_type, value.casefold())
             if key in seen:
@@ -750,6 +910,7 @@ class FacilityCandidatePublicationService:
             db.add(
                 RehabilitationFacilityContact(
                     facility_id=facility.id,
+                    location_id=primary_location_id if contact_type == "phone" else None,
                     contact_type=contact_type,
                     label=None,
                     value=value[:512],
@@ -758,6 +919,12 @@ class FacilityCandidatePublicationService:
                     available_24_7=False,
                     verification_status=VERIFICATION_STATUS,
                     confidence_score=confidence,
+                    contact_discovery_status=(
+                        "verified"
+                        if plan.hard_gate_results.publication_class == "verified"
+                        and contact_type == "phone"
+                        else "found_unverified"
+                    ),
                     is_mock=False,
                 )
             )
@@ -1085,33 +1252,125 @@ def _meaningfully_different(raw: str, normalized: str) -> bool:
 def _resolve_publication_country(
     execution: ScrapingExecution,
     evidence: list[ScrapingFacilityCandidateEvidence],
-) -> tuple[str, str, str, str | None] | str:
+) -> tuple[str, str, str, str | None, str | None]:
+    """Return mission-scoped country plus optional extracted country code.
+
+    Mismatches no longer hard-skip; containment service classifies them as
+    confirmed_outside / uncertain for soft publish.
+    """
+    from app.services.scraping.countries import COUNTRIES
+
     explicit = next((row for row in evidence if row.field_name in {"country", "countries"}), None)
     execution_country = resolve_country(execution.country_code)
     if explicit is None:
-        return execution_country.code, execution_country.name, "execution_scope", None
+        return execution_country.code, execution_country.name, "execution_scope", None, None
     raw_value = _normalize_text_value(explicit.raw_value)
-    try:
-        country = resolve_country(raw_value[:2] if len(raw_value) == 2 else raw_value)
-    except ValidationError:
+    extracted_code: str | None = None
+    if len(raw_value) == 2:
+        try:
+            extracted_code = resolve_country(raw_value).code
+        except ValidationError:
+            extracted_code = None
+    if extracted_code is None:
         match = next(
             (
                 country
-                for country in (resolve_country(code) for code in [execution.country_code])
+                for country in COUNTRIES.values()
                 if country.name.casefold() == raw_value.casefold()
             ),
             None,
         )
-        if match is None:
-            return "country_scope_conflict"
-        country = match
-    if country.code != execution_country.code:
-        return "country_scope_conflict"
-    return country.code, country.name, "extracted_evidence", raw_value
+        extracted_code = match.code if match else None
+
+    return (
+        execution_country.code,
+        execution_country.name,
+        "extracted_evidence" if extracted_code else "execution_scope",
+        raw_value or None,
+        extracted_code,
+    )
+
+
+def _human_review_for_plan(plan: _PublicationPlan, confidence: Decimal) -> str:
+    if plan.hard_gate_results.publication_class != "verified":
+        return "required"
+    if confidence < Decimal("0.85"):
+        return "required"
+    return "not_required"
+
+
+def _location_completeness(*, address: str, has_phone: bool) -> tuple[str, str | None]:
+    if address and has_phone:
+        return "complete", None
+    if not address and not has_phone:
+        return "incomplete", "location_missing"
+    if not address:
+        return "incomplete", "location_missing"
+    return "incomplete", "phone_missing"
 
 
 ContactPlan = tuple[str, str, str | None, ScrapingFacilityCandidateEvidence]
 UnresolvedPlan = tuple[str, str, str]
+
+
+@dataclass
+class _SyntheticAddressEvidence:
+    raw_value: str
+    field_name: str = "addresses"
+    evidence_quote: str | None = None
+
+
+def _merge_deterministic_contact_extracts(
+    document: ScrapingSourceDocument,
+    *,
+    addresses: list[Any],
+    contacts: list[ContactPlan],
+    anchor_evidence: ScrapingFacilityCandidateEvidence,
+) -> tuple[list[Any], list[ContactPlan]]:
+    """Phase B2: fold tel/mailto/JSON-LD extracts into publication candidates."""
+    payload = (document.metadata_json or {}).get("deterministic_contacts")
+    if not isinstance(payload, dict):
+        return addresses, contacts
+    seen_addresses = {
+        _normalize_text_value(getattr(row, "raw_value", None)).casefold()
+        for row in addresses
+        if _normalize_text_value(getattr(row, "raw_value", None))
+    }
+    for item in payload.get("addresses") or []:
+        if not isinstance(item, dict):
+            continue
+        value = _normalize_text_value(item.get("value"))
+        if not value or value.casefold() in seen_addresses:
+            continue
+        seen_addresses.add(value.casefold())
+        addresses = [
+            *addresses,
+            _SyntheticAddressEvidence(
+                raw_value=value,
+                evidence_quote=(item.get("evidence_quote") or value)[:1000],
+            ),
+        ]
+    seen_contacts = {(ctype, value.casefold()) for ctype, value, _, _ in contacts}
+    for contact_type, key in (("phone", "phones"), ("email", "emails")):
+        for item in payload.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            value = _normalize_text_value(item.get("value"))
+            if not value:
+                continue
+            if (contact_type, value.casefold()) in seen_contacts:
+                continue
+            if contact_type == "email":
+                normalized = _normalize_email(value)
+                if normalized is None:
+                    continue
+                contacts = [*contacts, ("email", normalized, normalized, anchor_evidence)]
+                seen_contacts.add(("email", normalized.casefold()))
+            else:
+                normalized = _normalize_phone(value)
+                contacts = [*contacts, ("phone", value, normalized, anchor_evidence)]
+                seen_contacts.add(("phone", value.casefold()))
+    return addresses, contacts
 
 
 def _build_contacts(
@@ -1230,6 +1489,64 @@ def _field_path(row: ScrapingFacilityCandidateEvidence, counts: dict[str, int]) 
     if index == 0 and base in {"canonical_name", "facility_type"}:
         return base
     return f"{base}.{row.evidence_hash[:8]}"
+
+
+def _mission_profile(execution: ScrapingExecution) -> str:
+    country_profile = execution.country_profile_json or {}
+    blueprint_json = execution.blueprint.blueprint_json if execution.blueprint else {}
+    for key in (
+        "mission_profile",
+        "publication_profile",
+        "dataset_profile",
+        "collection_profile",
+    ):
+        value = country_profile.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        value = blueprint_json.get(key) if isinstance(blueprint_json, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value
+    return "full_national_census"
+
+
+def _branch_identity_input_for_plan(plan: _PublicationPlan) -> BranchIdentityInput:
+    phone_values = [
+        normalized or value
+        for contact_type, value, normalized, _row in plan.contacts
+        if contact_type == "phone"
+    ]
+    website = next(
+        (
+            normalized or value
+            for contact_type, value, normalized, _row in plan.contacts
+            if contact_type == "website"
+        ),
+        plan.primary_website,
+    )
+    return BranchIdentityInput(
+        canonical_name=plan.normalized_name,
+        address=plan.primary_address,
+        phone_values=phone_values,
+        website_host=urlsplit(website).hostname if website else None,
+    )
+
+
+def _branch_identity_input_for_facility(facility: RehabilitationFacility) -> BranchIdentityInput:
+    phone_values = [
+        contact.normalized_value or contact.value
+        for contact in facility.contacts
+        if contact.contact_type == "phone"
+    ]
+    primary_location = next((location for location in facility.locations if location.is_primary), None)
+    return BranchIdentityInput(
+        canonical_name=facility.canonical_name,
+        address=facility.primary_address or (primary_location.full_address if primary_location else None),
+        postal_code=primary_location.postal_code if primary_location else None,
+        phone_values=phone_values,
+        latitude=float(facility.latitude) if facility.latitude is not None else None,
+        longitude=float(facility.longitude) if facility.longitude is not None else None,
+        website_host=urlsplit(facility.primary_website).hostname if facility.primary_website else None,
+    )
 
 
 def _safe_metadata(value: dict[str, Any]) -> dict[str, Any]:

@@ -549,8 +549,16 @@ async def test_country_fallback_and_conflict(db: AsyncSession, auth):
         extra_evidence=[("country", "DE", "Germany", "verified")],
     )
     conflict_summary = await publish(db, auth, execution, conflict)
-    assert conflict_summary.status == "skipped"
-    assert conflict_summary.reason_code == "country_scope_conflict"
+    # Soft publish: foreign extracted country is classified, not hard-skipped.
+    assert conflict_summary.status == "published"
+    conflict_facility = await db.get(
+        RehabilitationFacility,
+        conflict_summary.final_facility_id,
+    )
+    assert conflict_facility is not None
+    assert conflict_facility.country_containment_status == "confirmed_outside"
+    assert conflict_facility.publication_class == "excluded"
+    assert conflict_facility.human_review_status == "required"
 
 
 @pytest.mark.asyncio

@@ -101,6 +101,8 @@ export type ScrapingBlueprintContent = {
     notes: string[];
   };
   agent_assignments: Array<{ role: string; responsibility: string; model_id: string }>;
+  policy_snapshot?: Record<string, unknown> | null;
+  country_blueprint?: Record<string, unknown> | null;
 };
 
 export type ScrapingBlueprint = {
@@ -220,6 +222,9 @@ export type ScrapingExecutionSummary = {
   status_label: string;
   country_code: string;
   country_name: string;
+  mission_profile?: string | null;
+  result_counts: Record<string, number>;
+  completeness_percent: number;
   started_at?: string | null;
   completed_at?: string | null;
   cancel_requested_at?: string | null;
@@ -248,9 +253,14 @@ export type ScrapingFacilitySummary = {
   facility_type: string;
   primary_website?: string | null;
   primary_contact?: string | null;
+  primary_address?: string | null;
   verification_status: string;
   confidence_score: number;
   human_review_status: string;
+  publication_class: string;
+  country_containment_status: string;
+  country_containment_reason?: string | null;
+  completeness_percent: number;
   is_mock: boolean;
   source_count: number;
   location_count?: number;
@@ -270,19 +280,30 @@ export type ScrapingFacilityLocationItem = {
   id: string;
   location_type: string;
   location_name: string;
+  country_code: string;
+  country_name: string;
   full_address?: string | null;
   city?: string | null;
   region?: string | null;
   is_primary: boolean;
+  verification_status: string;
+  country_containment_status: string;
+  country_containment_reason?: string | null;
+  location_completeness_status: string;
+  location_gap_reason?: string | null;
+  primary_phone?: string | null;
   confidence_score: number;
 };
 
 export type ScrapingFacilityContactItem = {
   id: string;
+  location_id?: string | null;
   contact_type: string;
   label?: string | null;
   value: string;
   is_primary: boolean;
+  verification_status: string;
+  contact_discovery_status: string;
   confidence_score: number;
 };
 
@@ -499,6 +520,7 @@ export type ScrapingEvent = {
 export type ScrapingExecutionDetail = {
   execution: ScrapingExecutionSummary;
   country_profile?: Record<string, unknown> | null;
+  policy_snapshot?: Record<string, unknown> | null;
   agents: ScrapingExecutionAgent[];
   task_summary_counts: Record<string, number>;
   coverage_summary_counts: Record<string, number>;

@@ -1,9 +1,17 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
+import {
+  DreamHeader,
+  DreamPageShell,
+  DreamPanel,
+  dreamMutedClass,
+} from "@/components/scraping/DreamPageShell";
+import { FacilityDossier } from "@/components/scraping/FacilityDossier";
+import { FacilityRoster } from "@/components/scraping/FacilityRoster";
 import { LiveSiteActivity } from "@/components/scraping/LiveSiteActivity";
+import { StageFlight, buildFlightStages } from "@/components/scraping/StageFlight";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -12,6 +20,7 @@ import {
   deleteScrapingExecution,
   downloadScrapingExecutionWorkbook,
   getScrapingExecution,
+  getScrapingExecutionFacility,
   listScrapingExecutionFacilities,
   listScrapingExecutionCoverage,
   listScrapingExecutionEvents,
@@ -26,6 +35,7 @@ import type {
   ScrapingCoverageCell,
   ScrapingEvent,
   ScrapingExecutionDetail,
+  ScrapingFacilityDetail,
   ScrapingFacilitySummary,
   ScrapingTask,
   SourceCandidate,
@@ -48,10 +58,15 @@ function ScrapingExecutionPage() {
   const [coverage, setCoverage] = useState<ScrapingCoverageCell[]>([]);
   const [events, setEvents] = useState<ScrapingEvent[]>([]);
   const [facilities, setFacilities] = useState<ScrapingFacilitySummary[]>([]);
+  const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(null);
+  const [facilityDetail, setFacilityDetail] = useState<ScrapingFacilityDetail | null>(null);
+  const [facilityDetailLoading, setFacilityDetailLoading] = useState(false);
+  const [facilityDetailError, setFacilityDetailError] = useState<string | null>(null);
   const [sourceCandidates, setSourceCandidates] = useState<SourceCandidate[]>([]);
   const [discoveryQueries, setDiscoveryQueries] = useState<SourceDiscoveryQuery[]>([]);
   const [retrievalAttempts, setRetrievalAttempts] = useState<SourceRetrievalAttempt[]>([]);
   const [sourceDocuments, setSourceDocuments] = useState<SourceDocument[]>([]);
+  const [facilityFilter, setFacilityFilter] = useState<"all" | "verified" | "review" | "excluded">("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<"Live" | "Reconnecting" | "Disconnected">(
     "Disconnected",
@@ -110,6 +125,51 @@ function ScrapingExecutionPage() {
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load execution"))
       .finally(() => setLoading(false));
   }, [loadAll]);
+
+  const visibleFacilities = useMemo(() => {
+    if (facilityFilter === "all") return facilities;
+    const target = facilityFilter === "review" ? "review_required" : facilityFilter;
+    return facilities.filter((facility) => facility.publication_class === target);
+  }, [facilities, facilityFilter]);
+
+  useEffect(() => {
+    if (visibleFacilities.length === 0) {
+      setSelectedFacilityId(null);
+      setFacilityDetail(null);
+      return;
+    }
+    if (!selectedFacilityId || !visibleFacilities.some((f) => f.id === selectedFacilityId)) {
+      setSelectedFacilityId(visibleFacilities[0].id);
+    }
+  }, [selectedFacilityId, visibleFacilities]);
+
+  useEffect(() => {
+    if (!selectedFacilityId) {
+      setFacilityDetail(null);
+      return;
+    }
+    const auth = authHeaders();
+    if (!auth) return;
+    let cancelled = false;
+    setFacilityDetailLoading(true);
+    setFacilityDetailError(null);
+    void getScrapingExecutionFacility(auth, executionId, selectedFacilityId)
+      .then((detail) => {
+        if (!cancelled) setFacilityDetail(detail);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setFacilityDetail(null);
+          setFacilityDetailError(err instanceof Error ? err.message : "Failed to load facility");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setFacilityDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authHeaders, executionId, selectedFacilityId]);
 
   useEffect(() => {
     const auth = authHeaders();
@@ -293,70 +353,92 @@ function ScrapingExecutionPage() {
     }
   }
 
+  const flightStages = useMemo(() => {
+    if (!execution) return [];
+    const stageStates = deriveStageStates(events);
+    return buildFlightStages({
+      sources: Math.max(sourceCandidates.length, execution.sources_discovered),
+      pages: Math.max(sourceDocuments.length, execution.documents_found),
+      facilities: Math.max(facilities.length, execution.records_verified),
+      duplicates: execution.duplicates_detected,
+      status: execution.status,
+      stageStates,
+    });
+  }, [events, execution, facilities.length, sourceCandidates.length, sourceDocuments.length]);
+
   return (
     <AppShell>
-      <div className="mx-auto max-w-7xl px-6 py-10">
-        <PageHeader
-          eyebrow="Scrape results"
+      <DreamPageShell maxWidth="max-w-7xl">
+        <DreamHeader
+          eyebrow="Scraping Council · Live flight"
           title={
             facilities.length > 0
               ? `${facilities.length} facilities found`
               : isTerminal
-                ? "Scrape finished"
-                : "Scrape in progress"
+                ? "Flight complete"
+                : "Dreamflight in progress"
           }
-          description={`${execution?.country_name ?? "Country"} · ${Math.max(sourceDocuments.length, execution?.documents_found ?? 0)} pages downloaded · ${Math.max(sourceCandidates.length, execution?.sources_discovered ?? 0)} sources`}
+          description={`${execution?.country_name ?? "Country"} · ${Math.max(sourceDocuments.length, execution?.documents_found ?? 0)} pages · ${Math.max(sourceCandidates.length, execution?.sources_discovered ?? 0)} sources`}
           action={
             <Link
               to="/scraping/$missionId"
               params={{ missionId }}
-              className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
+              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-[#f7f1e4] backdrop-blur-sm hover:bg-white/10"
             >
               Back to mission
             </Link>
           }
         />
-        {loading && <GlassCard className="mt-8 p-8 text-sm">Loading results...</GlassCard>}
-        {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
+        {loading && <DreamPanel className="mt-8 text-sm text-white/60">Loading results…</DreamPanel>}
+        {error && <DreamPanel className="mt-8 text-sm text-rose-200">{error}</DreamPanel>}
         {detail && execution && (
           <div className="mt-8 space-y-5">
-            <GlassCard className="p-5">
+            <StageFlight
+              stages={flightStages}
+              statusLabel={execution.status_label}
+              connectionState={connectionState}
+              countryName={execution.country_name}
+            />
+
+            <DreamPanel>
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="secondary">{execution.status_label}</Badge>
-                  <span className="text-sm text-muted-foreground">{connectionState}</span>
-                </div>
+                <p className="text-sm text-white/55">
+                  Export when the vessel lands — or abort mid-flight.
+                </p>
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
                     disabled={!isTerminal || downloadingExcel || facilities.length === 0}
+                    className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                     onClick={() => void handleDownloadExcel()}
                   >
                     {downloadingExcel ? "Preparing Excel…" : "Download Excel"}
                   </Button>
                   {detail.can_cancel && (
-                    <Button type="button" variant="outline" disabled={acting} onClick={() => void handleCancel()}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={acting}
+                      className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                      onClick={() => void handleCancel()}
+                    >
                       {acting ? "Cancelling..." : "Cancel"}
                     </Button>
                   )}
                 </div>
               </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Metric
-                  label="Facilities"
-                  value={Math.max(facilities.length, execution.records_verified)}
-                />
-                <Metric
-                  label="Pages"
-                  value={Math.max(sourceDocuments.length, execution.documents_found)}
-                />
-                <Metric
-                  label="Sources"
-                  value={Math.max(sourceCandidates.length, execution.sources_discovered)}
-                />
-                <Metric label="Duplicates" value={execution.duplicates_detected} />
-              </div>
-            </GlassCard>
+            </DreamPanel>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <Metric label="Verified" value={execution.result_counts.verified ?? 0} />
+              <Metric label="Review" value={execution.result_counts.review ?? 0} />
+              <Metric label="Excluded" value={execution.result_counts.excluded ?? 0} />
+              <Metric label="Completeness" value={`${execution.completeness_percent.toFixed(0)}%`} />
+              <Metric
+                label="Mission profile"
+                value={execution.mission_profile?.replaceAll("_", " ") ?? "default"}
+              />
+            </div>
 
             <LiveSiteActivity
               candidates={sourceCandidates}
@@ -367,77 +449,70 @@ function ScrapingExecutionPage() {
               isTerminal={isTerminal}
             />
 
-            <GlassCard className="p-6">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-xl font-semibold">Facilities</h2>
-                <Badge variant="secondary">{facilities.length}</Badge>
-              </div>
-              {facilities.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
+            {facilities.length === 0 ? (
+              <DreamPanel>
+                <h2 className="font-display text-lg text-[#f7f1e4]">Facilities</h2>
+                <p className="mt-2 text-sm text-white/50">
                   {isTerminal
                     ? "No facilities were published from the pages we retrieved."
-                    : "Still running… facilities show up here when extraction finishes."}
-                </div>
-              ) : (
-                <div className="overflow-auto rounded-lg border border-border">
-                  <table className="min-w-full text-left text-sm">
-                    <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-                      <tr>
-                        <th className="px-3 py-2">Name</th>
-                        <th className="px-3 py-2">Type</th>
-                        <th className="px-3 py-2">Website</th>
-                        <th className="px-3 py-2">Confidence</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {facilities.map((facility) => (
-                        <tr key={facility.id} className="border-t border-border">
-                          <td className="px-3 py-2 align-top font-medium">
-                            {facility.canonical_name}
-                            {facility.primary_city || facility.primary_region ? (
-                              <p className="text-xs text-muted-foreground">
-                                {[facility.primary_city, facility.primary_region]
-                                  .filter(Boolean)
-                                  .join(", ")}
-                              </p>
-                            ) : null}
-                          </td>
-                          <td className="px-3 py-2 align-top">{facility.facility_type}</td>
-                          <td className="px-3 py-2 align-top">
-                            {facility.primary_website ? (
-                              <a
-                                href={facility.primary_website}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-primary underline-offset-2 hover:underline"
-                              >
-                                Open site
-                              </a>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td className="px-3 py-2 align-top">
-                            {(facility.confidence_score * 100).toFixed(0)}%
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </GlassCard>
+                    : "Still running… facilities crystallize here when extraction finishes."}
+                </p>
+              </DreamPanel>
+            ) : (
+              <div className="space-y-3">
+                <DreamPanel className="p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {[
+                      ["all", "All"],
+                      ["verified", "Verified"],
+                      ["review", "Review"],
+                      ["excluded", "Excluded"],
+                    ].map(([value, label]) => (
+                      <Button
+                        key={value}
+                        type="button"
+                        size="sm"
+                        variant={facilityFilter === value ? "secondary" : "outline"}
+                        className={
+                          facilityFilter === value
+                            ? ""
+                            : "border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                        }
+                        onClick={() =>
+                          setFacilityFilter(value as "all" | "verified" | "review" | "excluded")
+                        }
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+                </DreamPanel>
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
+                <FacilityRoster
+                  facilities={visibleFacilities}
+                  selectedId={selectedFacilityId}
+                  onSelect={setSelectedFacilityId}
+                />
+                <FacilityDossier
+                  detail={facilityDetail}
+                  loading={facilityDetailLoading}
+                  error={facilityDetailError}
+                  onBack={() => setSelectedFacilityId(null)}
+                />
+              </div>
+              </div>
+            )}
 
-            <details className="rounded-xl border border-border bg-card/40 p-4">
-              <summary className="cursor-pointer text-sm font-medium">
+            <details className="rounded-2xl border border-white/10 bg-[#0b161c]/60 p-4 backdrop-blur-md">
+              <summary className="cursor-pointer text-sm font-medium text-[#f7f1e4]">
                 Sources & pages (
                 {Math.max(sourceCandidates.length, execution.sources_discovered)} sources ·{" "}
                 {Math.max(sourceDocuments.length, execution.documents_found)} pages)
               </summary>
               <div className="mt-4 space-y-4">
-                <div className="max-h-[28rem] overflow-auto rounded-lg border border-border">
-                  <table className="w-full min-w-[720px] text-left text-sm">
-                    <thead className="sticky top-0 bg-muted/50">
+                <div className="max-h-[28rem] overflow-auto rounded-xl border border-white/10">
+                  <table className="w-full min-w-[720px] text-left text-sm text-white/80">
+                    <thead className="sticky top-0 bg-[#102229]">
                       <tr>
                         <th className="px-3 py-2 font-medium">Source</th>
                         <th className="px-3 py-2 font-medium">Domain</th>
@@ -446,13 +521,13 @@ function ScrapingExecutionPage() {
                     </thead>
                     <tbody>
                       {sourceCandidates.map((candidate) => (
-                        <tr key={candidate.id} className="border-t border-border">
+                        <tr key={candidate.id} className="border-t border-white/10">
                           <td className="px-3 py-2 align-top">
                             <a
                               href={candidate.canonical_url}
                               target="_blank"
                               rel="noreferrer"
-                              className="font-medium text-primary underline-offset-4 hover:underline"
+                              className="font-medium text-[#d4a84b] underline-offset-4 hover:underline"
                             >
                               {candidate.title || candidate.canonical_url}
                             </a>
@@ -464,7 +539,7 @@ function ScrapingExecutionPage() {
                     </tbody>
                   </table>
                 </div>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-white/40">
                   Loaded {sourceCandidates.length} sources
                   {execution.sources_discovered > sourceCandidates.length
                     ? ` (execution reports ${execution.sources_discovered})`
@@ -474,8 +549,8 @@ function ScrapingExecutionPage() {
               </div>
             </details>
 
-            <details className="rounded-xl border border-border bg-card/40 p-4">
-              <summary className="cursor-pointer text-sm font-medium">
+            <details className="rounded-2xl border border-white/10 bg-[#0b161c]/60 p-4 backdrop-blur-md">
+              <summary className="cursor-pointer text-sm font-medium text-[#f7f1e4]">
                 Technical details (agents, tasks, logs)
               </summary>
               <div className="mt-4 space-y-4">
@@ -488,11 +563,17 @@ function ScrapingExecutionPage() {
                   <Metric label="Coverage" value={`${completedCoverage}/${coverage.length}`} />
                   <Metric label="Blocked" value={blockedRetrievalCount} />
                 </div>
-                <GlassCard className="p-4">
+                <DreamPanel className="p-4">
                   <div className="mb-3 flex items-center justify-between">
-                    <h3 className="font-medium">Agents</h3>
+                    <h3 className="font-medium text-[#f7f1e4]">Agents</h3>
                     {selectedAgentId && (
-                      <Button type="button" variant="outline" size="sm" onClick={() => setSelectedAgentId(null)}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="border-white/20 bg-white/5 text-[#f7f1e4]"
+                        onClick={() => setSelectedAgentId(null)}
+                      >
                         Clear filter
                       </Button>
                     )}
@@ -503,17 +584,17 @@ function ScrapingExecutionPage() {
                         key={agent.id}
                         type="button"
                         onClick={() => setSelectedAgentId(agent.id)}
-                        className="rounded-lg border border-border p-3 text-left text-sm hover:bg-muted/40"
+                        className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-left text-sm hover:border-[#d4a84b]/35"
                       >
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge variant="secondary">{agent.status}</Badge>
-                          <span className="font-medium">{agent.planned_agent_name}</span>
+                          <span className="font-medium text-[#f7f1e4]">{agent.planned_agent_name}</span>
                         </div>
-                        <p className="mt-1 text-muted-foreground">{agent.current_action ?? "Idle"}</p>
+                        <p className="mt-1 text-white/45">{agent.current_action ?? "Idle"}</p>
                       </button>
                     ))}
                   </div>
-                </GlassCard>
+                </DreamPanel>
                 <GridSection title="Tasks" rows={filteredTasks.map(formatTaskRow)} />
                 <GridSection title="Coverage" rows={filteredCoverage.map(formatCoverageRow)} />
                 <GridSection title="Discovery Queries" rows={discoveryQueries.map(formatQueryRow)} />
@@ -525,20 +606,23 @@ function ScrapingExecutionPage() {
                   title="Source Documents"
                   rows={sourceDocuments.map((document) => formatDocumentRow(document))}
                 />
-                <GlassCard className="p-4">
-                  <h3 className="font-medium">Live activity</h3>
+                <DreamPanel className="p-4">
+                  <h3 className="font-medium text-[#f7f1e4]">Live activity</h3>
                   <div className="mt-3 max-h-[360px] space-y-2 overflow-auto">
                     {filteredEvents.map((event) => (
-                      <div key={event.id} className="rounded-lg border border-border p-2 text-sm">
-                        <span className="text-muted-foreground">
+                      <div
+                        key={event.id}
+                        className="rounded-lg border border-white/10 bg-white/[0.03] p-2 text-sm"
+                      >
+                        <span className="text-white/40">
                           {new Date(event.created_at).toLocaleTimeString()}
                         </span>{" "}
-                        <span className="font-medium">{event.event_type}</span>
-                        <p className="text-muted-foreground">{event.message}</p>
+                        <span className="font-medium text-[#f7f1e4]">{event.event_type}</span>
+                        <p className="text-white/50">{event.message}</p>
                       </div>
                     ))}
                   </div>
-                </GlassCard>
+                </DreamPanel>
                 {detail.can_delete && (
                   <Button type="button" variant="destructive" disabled={acting} onClick={() => setShowDelete(true)}>
                     Delete scrape
@@ -548,20 +632,27 @@ function ScrapingExecutionPage() {
             </details>
           </div>
         )}
-      </div>
+      </DreamPageShell>
       <Modal
         open={showDelete}
         onClose={acting ? () => undefined : () => setShowDelete(false)}
         title="Delete Execution"
         size="md"
+        tone="dream"
       >
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className={dreamMutedClass}>
             Delete this terminal source discovery execution campaign? This permanently deletes tasks, coverage
             history, and event history. This action cannot be undone.
           </p>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" disabled={acting} onClick={() => setShowDelete(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={acting}
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              onClick={() => setShowDelete(false)}
+            >
               Cancel
             </Button>
             <Button type="button" variant="destructive" disabled={acting} onClick={() => void handleDelete()}>
@@ -576,22 +667,22 @@ function ScrapingExecutionPage() {
 
 function Metric({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-lg border border-border p-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 text-lg font-semibold">{value}</p>
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+      <p className="text-xs text-white/45">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-[#f7f1e4]">{value}</p>
     </div>
   );
 }
 
 function GridSection({ title, rows }: { title: string; rows: string[][] }) {
   return (
-    <GlassCard className="p-6">
-      <h2 className="text-lg font-semibold">{title}</h2>
-      <div className="mt-4 overflow-auto rounded-lg border border-border">
-        <table className="w-full min-w-[760px] text-left text-sm">
+    <DreamPanel className="p-5">
+      <h2 className="font-display text-lg text-[#f7f1e4]">{title}</h2>
+      <div className="mt-4 overflow-auto rounded-xl border border-white/10">
+        <table className="w-full min-w-[760px] text-left text-sm text-white/75">
           <tbody>
             {rows.map((row, index) => (
-              <tr key={`${title}-${index}`} className="border-b border-border last:border-0">
+              <tr key={`${title}-${index}`} className="border-b border-white/10 last:border-0">
                 {row.map((cell, cellIndex) => (
                   <td key={cellIndex} className="px-3 py-2 align-top">
                     {cell}
@@ -602,7 +693,7 @@ function GridSection({ title, rows }: { title: string; rows: string[][] }) {
           </tbody>
         </table>
       </div>
-    </GlassCard>
+    </DreamPanel>
   );
 }
 
@@ -679,4 +770,27 @@ function safeHostname(value?: string | null) {
   } catch {
     return "";
   }
+}
+
+function deriveStageStates(events: ScrapingEvent[]) {
+  const latest = [...events]
+    .reverse()
+    .find((event) => event.event_type === "stage_progress");
+  const stageStates = latest?.metadata_json?.stage_states;
+  if (!stageStates || typeof stageStates !== "object") {
+    return undefined;
+  }
+  return {
+    discover: readStageState(stageStates.discover),
+    verify: readStageState(stageStates.verify),
+    cite: readStageState(stageStates.cite),
+    clean: readStageState(stageStates.clean),
+  };
+}
+
+function readStageState(value: unknown): "pending" | "active" | "done" | "failed" | undefined {
+  if (value === "pending" || value === "active" || value === "done" || value === "failed") {
+    return value;
+  }
+  return undefined;
 }

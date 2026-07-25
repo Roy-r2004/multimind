@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { ExternalLink, Globe2, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { GlassCard } from "@/components/cinematic/PageChrome";
+import { DreamPanel } from "@/components/scraping/DreamPageShell";
 import { cn } from "@/lib/utils";
 import type {
   ScrapingEvent,
@@ -90,42 +90,45 @@ export function LiveSiteActivity({
 
   if (rows.length === 0) {
     return (
-      <GlassCard className="p-6">
+      <DreamPanel>
         <div className="flex items-start gap-3">
-          <div className="rounded-lg border border-border bg-muted/30 p-2">
-            <Globe2 className="size-4 text-muted-foreground" />
+          <div className="rounded-lg border border-white/15 bg-white/5 p-2">
+            <Globe2 className="size-4 text-[#d4a84b]" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold">Live websites</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <h2 className="font-display text-lg text-[#f7f1e4]">Sites in the drift</h2>
+            <p className="mt-1 text-sm text-white/50">
               {isTerminal
                 ? "No source websites were opened during this scrape."
-                : "Waiting for discovery… URLs will appear here as sites are opened and extracted."}
+                : "Waiting for discovery… URLs surface here as the vessel opens and extracts pages."}
             </p>
           </div>
         </div>
-      </GlassCard>
+      </DreamPanel>
     );
   }
 
   return (
-    <GlassCard className="p-6">
+    <DreamPanel>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold">Live websites</h2>
+            <h2 className="font-display text-lg text-[#f7f1e4]">Sites in the drift</h2>
             {!isTerminal && activeCount > 0 && (
-              <Badge variant="secondary" className="gap-1">
+              <Badge
+                variant="secondary"
+                className="gap-1 border border-[#d4a84b]/35 bg-[#d4a84b]/15 text-[#f3e6c4]"
+              >
                 <Loader2 className="size-3 animate-spin" />
                 {activeCount} active
               </Badge>
             )}
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Sites being opened and extracted in real time.
+          <p className="mt-1 text-sm text-white/50">
+            Pages opening and crystallizing as evidence in real time.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+        <div className="flex flex-wrap gap-2 text-xs text-white/45">
           <span>{rows.length} tracked</span>
           <span>·</span>
           <span>{extractedCount} extracted</span>
@@ -143,7 +146,7 @@ export function LiveSiteActivity({
           <SiteRow key={row.key} row={row} />
         ))}
       </div>
-    </GlassCard>
+    </DreamPanel>
   );
 }
 
@@ -152,8 +155,8 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
   return (
     <div
       className={cn(
-        "flex items-start gap-3 rounded-lg border border-border px-3 py-2.5 transition",
-        active && "border-primary/40 bg-primary/5",
+        "flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 transition",
+        active && "dream-float border-[#d4a84b]/35 bg-[#d4a84b]/10",
       )}
     >
       <StageDot stage={row.stage} />
@@ -163,7 +166,7 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
             href={row.url}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex max-w-full items-center gap-1 truncate font-medium text-foreground hover:underline"
+            className="inline-flex max-w-full items-center gap-1 truncate font-medium text-[#f7f1e4] hover:text-[#d4a84b]"
           >
             <span className="truncate">{row.title}</span>
             <ExternalLink className="size-3 shrink-0 opacity-60" />
@@ -171,23 +174,23 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
           <Badge
             variant="secondary"
             className={cn(
-              "shrink-0",
-              row.stage === "extracted" && "bg-emerald-500/15 text-emerald-700",
-              row.stage === "failed" && "bg-destructive/15 text-destructive",
-              row.stage === "blocked" && "bg-amber-500/15 text-amber-700",
-              active && "bg-primary/15 text-primary",
+              "shrink-0 border border-white/10 bg-white/5 text-white/70",
+              row.stage === "extracted" && "border-teal-300/30 bg-teal-400/10 text-teal-100",
+              row.stage === "failed" && "border-rose-400/30 bg-rose-500/10 text-rose-100",
+              row.stage === "blocked" && "border-[#d4a84b]/30 bg-[#d4a84b]/10 text-[#f3e6c4]",
+              active && "border-[#d4a84b]/40 bg-[#d4a84b]/15 text-[#f3e6c4]",
             )}
           >
             {STAGE_LABEL[row.stage]}
           </Badge>
         </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+        <p className="mt-0.5 truncate text-xs text-white/40">
           {row.domain}
           {row.detail ? ` · ${row.detail}` : ""}
         </p>
       </div>
       {row.updatedAt && (
-        <time className="shrink-0 text-[11px] text-muted-foreground">
+        <time className="shrink-0 text-[11px] text-white/35">
           {new Date(row.updatedAt).toLocaleTimeString()}
         </time>
       )}
@@ -199,20 +202,20 @@ function StageDot({ stage }: { stage: SiteStage }) {
   const active = stage === "opening" || stage === "extracting";
   const color =
     stage === "extracted"
-      ? "bg-emerald-500"
+      ? "bg-teal-300"
       : stage === "failed"
-        ? "bg-destructive"
+        ? "bg-rose-400"
         : stage === "blocked"
-          ? "bg-amber-500"
+          ? "bg-[#d4a84b]"
           : stage === "fetched"
-            ? "bg-sky-500"
+            ? "bg-sky-300"
             : stage === "skipped" || stage === "unsupported"
-              ? "bg-muted-foreground/50"
+              ? "bg-white/30"
               : stage === "queued"
-                ? "bg-muted-foreground/40"
+                ? "bg-white/25"
                 : active
-                  ? "bg-primary"
-                  : "bg-muted-foreground/30";
+                  ? "bg-[#d4a84b]"
+                  : "bg-white/20";
   return (
     <span className={cn("mt-1.5 size-2.5 shrink-0 rounded-full", color, active && "animate-pulse")} />
   );
@@ -308,7 +311,6 @@ export function buildSiteActivityRows(input: {
     } else if (attempt.status === "unsupported_content_type") {
       bump(candidateId, "unsupported", at, attempt.content_type ?? "Unsupported content");
     } else if (!["succeeded"].includes(attempt.status)) {
-      // Don't overwrite an in-flight opening task with a stale failed attempt if task still running
       const task = taskByCandidate.get(candidateId);
       if (task?.status === "running") continue;
       bump(
@@ -330,7 +332,6 @@ export function buildSiteActivityRows(input: {
     if (!row.title) row.title = doc.final_url;
   }
 
-  // Extraction events (document-scoped)
   for (const event of events) {
     const meta = event.metadata_json ?? {};
     const documentId = stringMeta(meta, "source_document_id");
@@ -381,7 +382,6 @@ export function buildSiteActivityRows(input: {
     }
   }
 
-  // If extraction phase started and we have fetched docs without a terminal extract state, show extracting
   const extractionStarted = events.some((e) => e.event_type === "facility_extraction_phase_started");
   const extractionDone = events.some((e) => e.event_type === "facility_extraction_phase_completed");
   if (extractionStarted && !extractionDone) {
@@ -396,7 +396,6 @@ export function buildSiteActivityRows(input: {
   for (const [key, row] of state) {
     const url = row.url;
     if (!url) continue;
-    // Prefer sites that entered the pipeline (not raw discovery backlog unless few items)
     rows.push({
       key,
       title: row.title?.trim() || url,
@@ -408,15 +407,13 @@ export function buildSiteActivityRows(input: {
     });
   }
 
-  // Prefer pipeline activity over pure discovery noise
   const pipeline = rows.filter((r) => r.stage !== "discovered");
   const display = pipeline.length > 0 ? pipeline : rows;
 
   display.sort((a, b) => {
     const rankDiff = STAGE_RANK[a.stage] - STAGE_RANK[b.stage];
     if (rankDiff !== 0) return rankDiff;
-    const at = new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime();
-    return at;
+    return new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime();
   });
 
   return display.slice(0, 80);

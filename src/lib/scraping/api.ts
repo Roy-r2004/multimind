@@ -207,15 +207,21 @@ export function deleteScrapingRun(auth: Auth, runId: string) {
 }
 
 export type ScrapingExecutionMode = "real" | "full_census";
+export type ScrapingMissionProfile = "full_national_census" | "private_residential";
 
 export function createScrapingExecution(
   auth: Auth,
   runId: string,
   mode: ScrapingExecutionMode = "real",
+  missionProfile?: ScrapingMissionProfile,
 ) {
   return apiRequest<ScrapingExecutionSummary>(`/scraping/runs/${runId}/executions`, {
     method: "POST",
-    body: { execution_type: "initial_full_country", mode },
+    body: {
+      execution_type: "initial_full_country",
+      mode,
+      mission_profile: missionProfile,
+    },
     token: auth.token,
     orgId: auth.orgId,
   });

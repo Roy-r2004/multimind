@@ -1,6 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { ArrowLeft } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
+import { DreamPageShell } from "@/components/scraping/DreamPageShell";
 import { MissionComposer } from "@/components/scraping/MissionComposer";
 
 export const Route = createFileRoute("/scraping/new")({
@@ -11,16 +12,32 @@ export const Route = createFileRoute("/scraping/new")({
 function NewScrapingMissionPage() {
   return (
     <AppShell>
-      <div className="mx-auto max-w-4xl px-6 py-10">
-        <PageHeader
-          eyebrow="Scraping Council"
-          title="New Scraping Mission"
-          description="Describe the mission and generate a reviewable blueprint."
-        />
-        <GlassCard className="mt-8 p-6">
+      <DreamPageShell maxWidth="max-w-3xl" className="flex min-h-[calc(100vh-3.5rem)] flex-col justify-center md:min-h-screen">
+        <Link
+          to="/scraping"
+          className="dream-rise mb-10 inline-flex w-fit items-center gap-2 text-sm text-white/55 transition hover:text-[#f3e6c4]"
+        >
+          <ArrowLeft className="size-3.5" />
+          All missions
+        </Link>
+
+        <div className="dream-rise dream-rise-delay-1 mb-10">
+          <p className="font-display text-[11px] font-semibold uppercase tracking-[0.42em] text-[#d4a84b]">
+            Multimind
+          </p>
+          <h1 className="mt-3 font-display text-5xl font-semibold tracking-tight text-[#f7f1e4] sm:text-6xl">
+            Scraping Council
+          </h1>
+          <p className="mt-4 max-w-md text-base leading-relaxed text-white/55">
+            Name the mission. Choose a country. We chart the flight — sources, gates, citations —
+            while you watch the dream move.
+          </p>
+        </div>
+
+        <div className="dream-rise dream-rise-delay-2 rounded-[1.75rem] border border-white/10 bg-black/25 p-6 shadow-[0_40px_100px_rgba(0,0,0,0.45)] backdrop-blur-md sm:p-8">
           <MissionComposer />
-        </GlassCard>
-      </div>
+        </div>
+      </DreamPageShell>
     </AppShell>
   );
 }

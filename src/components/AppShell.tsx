@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { CinematicBackdrop } from "@/components/cinematic/PageChrome";
+import { ScrapingDreamSky } from "@/components/scraping/ScrapingDreamSky";
 import { ChatSidebarContent } from "@/components/sidebar/ChatSidebarContent";
 import { ScrapingSidebarContent } from "@/components/sidebar/ScrapingSidebarContent";
 import { useAuth } from "@/lib/auth";
@@ -48,10 +49,28 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="relative flex min-h-screen w-full text-foreground">
-      <CinematicBackdrop />
+    <div
+      className={cn(
+        "relative flex min-h-screen w-full",
+        isScraping ? "text-[#f7f1e4]" : "text-foreground",
+      )}
+    >
+      {isScraping ? (
+        <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+          <ScrapingDreamSky intensity="live" />
+        </div>
+      ) : (
+        <CinematicBackdrop />
+      )}
 
-      <header className="fixed top-0 left-0 right-0 z-30 flex h-14 items-center justify-between border-b border-border bg-sidebar px-4 shadow-sm md:hidden">
+      <header
+        className={cn(
+          "fixed top-0 left-0 right-0 z-30 flex h-14 items-center justify-between border-b px-4 shadow-sm md:hidden",
+          isScraping
+            ? "border-white/10 bg-[#0b161c]/90 text-[#f7f1e4] backdrop-blur-md"
+            : "border-border bg-sidebar",
+        )}
+      >
         <button onClick={() => setOpen(true)} className="p-2 -ml-2">
           <Menu className="size-5" />
         </button>
@@ -66,11 +85,19 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-border bg-sidebar shadow-sm transition-transform md:sticky md:top-0 md:h-screen md:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r shadow-sm transition-transform md:sticky md:top-0 md:h-screen md:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full",
+          isScraping
+            ? "border-white/10 bg-[#0b161c]/92 text-[#f7f1e4] backdrop-blur-xl"
+            : "border-border bg-sidebar",
         )}
       >
-        <div className="flex h-14 items-center justify-between border-b border-border px-4">
+        <div
+          className={cn(
+            "flex h-14 items-center justify-between border-b px-4",
+            isScraping ? "border-white/10" : "border-border",
+          )}
+        >
           <Link
             to={isScraping ? "/scraping" : "/chat"}
             onClick={closeSidebar}
@@ -93,8 +120,14 @@ export function AppShell({ children }: { children: ReactNode }) {
                 to={n.to}
                 onClick={closeSidebar}
                 className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/80 transition hover:bg-accent",
-                  active && "bg-accent font-medium text-foreground",
+                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
+                  isScraping
+                    ? active
+                      ? "bg-[#d4a84b]/15 font-medium text-[#f3e6c4]"
+                      : "text-white/65 hover:bg-white/5 hover:text-[#f7f1e4]"
+                    : active
+                      ? "bg-accent font-medium text-foreground"
+                      : "text-sidebar-foreground/80 hover:bg-accent",
                 )}
               >
                 <n.icon className="size-4" /> {n.label}
@@ -110,8 +143,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               to={n.to}
               onClick={closeSidebar}
               className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/80 transition hover:bg-accent",
-                path.startsWith(n.to) && "bg-accent font-medium text-foreground",
+                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
+                isScraping
+                  ? path.startsWith(n.to)
+                    ? "bg-white/10 font-medium text-[#f7f1e4]"
+                    : "text-white/55 hover:bg-white/5"
+                  : path.startsWith(n.to)
+                    ? "bg-accent font-medium text-foreground"
+                    : "text-sidebar-foreground/80 hover:bg-accent",
               )}
             >
               <n.icon className="size-4" /> {n.label}
@@ -125,30 +164,52 @@ export function AppShell({ children }: { children: ReactNode }) {
           <ChatSidebarContent onNavigate={closeSidebar} />
         )}
 
-        <div className="border-t border-border p-3">
+        <div className={cn("border-t p-3", isScraping ? "border-white/10" : "border-border")}>
           <Link
             to="/settings"
             onClick={closeSidebar}
-            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-accent"
+            className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm",
+              isScraping ? "text-white/70 hover:bg-white/5" : "hover:bg-accent",
+            )}
           >
             <Settings className="size-4" /> Settings
           </Link>
           <div className="mt-2 flex items-center gap-3 rounded-lg px-2 py-2">
-            <div className="grid size-9 place-items-center rounded-full bg-primary/15 text-sm font-semibold text-primary">
+            <div
+              className={cn(
+                "grid size-9 place-items-center rounded-full text-sm font-semibold",
+                isScraping
+                  ? "bg-[#d4a84b]/20 text-[#f3e6c4]"
+                  : "bg-primary/15 text-primary",
+              )}
+            >
               {initials}
             </div>
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium">
                 {session?.user.full_name ?? "Guest"}
               </div>
-              <div className="truncate text-xs text-muted-foreground">{session?.user.email}</div>
+              <div
+                className={cn(
+                  "truncate text-xs",
+                  isScraping ? "text-white/40" : "text-muted-foreground",
+                )}
+              >
+                {session?.user.email}
+              </div>
             </div>
             <button
               onClick={() => {
                 signOut();
                 void navigate({ to: "/login" });
               }}
-              className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className={cn(
+                "rounded-lg p-2",
+                isScraping
+                  ? "text-white/45 hover:bg-white/5 hover:text-[#f7f1e4]"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              )}
               title="Sign out"
             >
               <LogOut className="size-4" />
@@ -158,10 +219,16 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       {open && (
-        <div onClick={closeSidebar} className="fixed inset-0 z-30 bg-foreground/25 md:hidden" />
+        <div
+          onClick={closeSidebar}
+          className={cn(
+            "fixed inset-0 z-30 md:hidden",
+            isScraping ? "bg-black/50" : "bg-foreground/25",
+          )}
+        />
       )}
 
-      <main className="relative flex-1 min-w-0 pt-14 md:pt-0">{children}</main>
+      <main className="relative min-w-0 flex-1 pt-14 md:pt-0">{children}</main>
     </div>
   );
 }

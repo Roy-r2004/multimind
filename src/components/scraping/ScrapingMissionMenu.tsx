@@ -38,13 +38,13 @@ export function ScrapingMissionMenu({
           }}
           className="rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100"
         >
-          <MoreHorizontal className="size-4 text-muted-foreground" />
+          <MoreHorizontal className="size-4 text-white/50" />
         </button>
       </DropdownMenuTrigger>
 
       <DropdownMenuContent
         align="end"
-        className="z-[100] w-44"
+        className="z-[100] w-44 border-white/10 bg-[#0b161c] text-[#f7f1e4]"
         onClick={(event) => event.stopPropagation()}
       >
         <DropdownMenuItem onSelect={() => runAfterMenuCloses(onAddOrChangeProject)}>

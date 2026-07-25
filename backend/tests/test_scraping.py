@@ -3700,80 +3700,38 @@ async def test_excel_export_workbook_contract_and_active_rejection(
     assert response.headers["content-type"] == (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    assert "mock-rehabilitation-dataset" in response.headers["content-disposition"]
+    assert "scraping-execution" in response.headers["content-disposition"]
     workbook = load_workbook(BytesIO(response.content))
     assert workbook.sheetnames == SHEET_ORDER
-    rehab_sheet = workbook["Rehab Centers"]
-    assert [rehab_sheet.cell(row=1, column=column).value for column in range(1, 6)] == [
-        "Official Name",
-        "Alternative Names",
-        "Original-Language Name",
-        "Facility Type",
-        "Organization Type",
-    ]
-    rehab_headers = [cell.value for cell in rehab_sheet[1]]
-    assert "Facility ID" in rehab_headers
-    assert rehab_sheet.max_row == execution.records_extracted + 1
-    confidence_column = rehab_headers.index("Confidence Score") + 1
-    mock_column = rehab_headers.index("Mock") + 1
-    website_column = rehab_headers.index("Primary Website") + 1
-    latitude_column = rehab_headers.index("Latitude") + 1
-    longitude_column = rehab_headers.index("Longitude") + 1
-    status_column = rehab_headers.index("Duplicate Status") + 1
-    assert isinstance(rehab_sheet.cell(row=2, column=confidence_column).value, int | float)
-    assert rehab_sheet.cell(row=2, column=confidence_column).number_format == "0.0%"
-    assert rehab_sheet.cell(row=2, column=mock_column).value == "Yes"
-    assert rehab_sheet.cell(row=2, column=website_column).hyperlink is not None
-    assert rehab_sheet.cell(row=2, column=status_column).value in {
-        "Unique",
-        "Possible Duplicate",
-    }
-    assert rehab_sheet.cell(row=2, column=latitude_column).value is None
-    assert rehab_sheet.cell(row=2, column=longitude_column).value is None
-    assert workbook["Contacts"].max_row - 1 == await _normal_contact_count(db)
-    contact_headers = [cell.value for cell in workbook["Contacts"][1]]
-    contact_value_column = contact_headers.index("Value") + 1
-    assert workbook["Contacts"].cell(row=2, column=contact_value_column).hyperlink is None
-    assert workbook["Social Media"].max_row - 1 == await _social_contact_count(db)
-    assert workbook["Social Media"].cell(row=2, column=6).hyperlink is not None
-    assert workbook["Sources"].max_row - 1 == execution.sources_discovered
-    assert workbook["Sources"].cell(row=2, column=6).hyperlink is not None
-    assert workbook["Field Evidence"].max_row - 1 == await _count_rows(db, RehabilitationFieldEvidence)
-    assert workbook["Possible Duplicates"].max_row - 1 == execution.duplicates_detected
-    assert workbook["Unresolved Records"].max_row - 1 == await _count_rows(db, RehabilitationUnresolvedField)
-    coverage_sheet = workbook["Coverage Report"]
-    assert coverage_sheet["A1"].value == "Coverage Status"
-    assert coverage_sheet["A2"].value == "Total Coverage Cells"
-    assert coverage_sheet["B2"].value == await _count_rows(db, ScrapingCoverageCell)
-    assert coverage_sheet["A14"].value == "Coverage Cell ID"
-    assert coverage_sheet.max_row - 14 == await _count_rows(db, ScrapingCoverageCell)
-    assert workbook["Execution Summary"]["A1"].value.startswith("MOCK REHABILITATION DATASET")
+    verified_sheet = workbook["Verified"]
+    review_sheet = workbook["Review"]
+    excluded_sheet = workbook["Excluded"]
+    assert verified_sheet["A1"].value == "Facility Name"
+    assert review_sheet["A1"].value == "Facility Name"
+    assert excluded_sheet["A1"].value == "Facility Name"
+    assert workbook["Locations"]["A1"].value == "Facility Name"
+    assert workbook["Contacts"]["A1"].value == "Facility Name"
+    assert workbook["Hard Gates"]["A1"].value == "Facility Name"
+    assert workbook["Contradictions"]["A1"].value == "Facility Name"
+    coverage_sheet = workbook["Coverage"]
+    assert coverage_sheet["A1"].value == "Coverage Cell ID"
+    assert coverage_sheet.max_row >= 2
+    assert workbook["Execution Summary"]["A1"].value.startswith("MOCK EXECUTION SUMMARY")
     assert workbook["Execution Summary"]["A2"].value == (
-        "All facility records in this workbook were generated for testing."
+        "This workbook contains generated mock records for pipeline testing."
     )
-    assert workbook["Execution Summary"]["A4"].value == (
-        "The facility rows in this workbook are fictional sample records used to test "
-        "the dataset structure. They are not a count or estimate of real rehabilitation "
-        "centers in the selected country."
-    )
-    assert workbook["Execution Summary"]["A5"].value == "KPI"
-    assert workbook["Execution Summary"]["A6"].value == "Total Facilities"
-    assert workbook["Execution Summary"]["B6"].value == execution.records_extracted
-    assert workbook["Execution Summary"]["C6"].value == "Sample Facility Count"
-    assert workbook["Execution Summary"]["D6"].value == execution.records_extracted
-    assert workbook["Execution Summary"]["A10"].value == "Coverage Percentage"
-    assert workbook["Execution Summary"]["B10"].number_format == "0.0%"
-    assert workbook["Execution Summary"]["C10"].value == "Coverage Outcome"
-    assert workbook["Execution Summary"]["D10"].value == "Completed with Gaps"
+    assert workbook["Execution Summary"]["A3"].value == "KPI"
+    assert workbook["Execution Summary"]["A4"].value == "Total Facilities"
+    assert workbook["Execution Summary"]["B4"].value == execution.records_extracted
+    assert workbook["Execution Summary"]["A8"].value == "Coverage Percentage"
+    assert workbook["Execution Summary"]["B8"].number_format == "0.0%"
     summary_values = {
         workbook["Execution Summary"].cell(row=row, column=1).value:
         workbook["Execution Summary"].cell(row=row, column=2).value
         for row in range(1, workbook["Execution Summary"].max_row + 1)
     }
-    assert summary_values["Dataset Type"] == "Mock Sample Dataset"
-    assert summary_values["Sample Facility Count"] == execution.records_extracted
-    assert summary_values["Country Completeness"] == "Not measured in mock mode"
-    assert summary_values["Coverage Outcome"] == "Completed with Gaps"
+    assert summary_values["Mission Name"] == "Mission"
+    assert summary_values["Country"] == execution.country_name
     assert all(workbook[sheet].max_row >= 1 for sheet in SHEET_ORDER)
 
     queued = await execution_service.create_execution(

@@ -1538,6 +1538,15 @@ class RehabilitationFacility(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
     duplicate_status: Mapped[str] = mapped_column(String(80), nullable=False)
     human_review_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    country_containment_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="legacy_unassessed"
+    )
+    country_containment_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    country_containment_signals_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    publication_class: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="review_required"
+    )
+    hard_gate_results_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -1623,9 +1632,22 @@ class RehabilitationFacilityLocation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
     confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    country_containment_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="legacy_unassessed"
+    )
+    country_containment_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    country_containment_signals_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    location_completeness_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="unknown"
+    )
+    location_gap_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    hard_gate_results_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     facility: Mapped["RehabilitationFacility"] = relationship(back_populates="locations")
+    contacts: Mapped[list["RehabilitationFacilityContact"]] = relationship(
+        back_populates="location",
+    )
 
 
 class RehabilitationFacilityContact(Base, UUIDPrimaryKeyMixin):
@@ -1640,6 +1662,9 @@ class RehabilitationFacilityContact(Base, UUIDPrimaryKeyMixin):
     facility_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("rehabilitation_facilities.id", ondelete="CASCADE"), nullable=False
     )
+    location_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("rehabilitation_facility_locations.id", ondelete="SET NULL"), nullable=True
+    )
     contact_type: Mapped[str] = mapped_column(String(40), nullable=False)
     label: Mapped[str | None] = mapped_column(String(160), nullable=True)
     value: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -1648,10 +1673,14 @@ class RehabilitationFacilityContact(Base, UUIDPrimaryKeyMixin):
     available_24_7: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     verification_status: Mapped[str] = mapped_column(String(80), nullable=False)
     confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    contact_discovery_status: Mapped[str] = mapped_column(
+        String(60), nullable=False, default="found_unverified"
+    )
     is_mock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     facility: Mapped["RehabilitationFacility"] = relationship(back_populates="contacts")
+    location: Mapped["RehabilitationFacilityLocation | None"] = relationship(back_populates="contacts")
 
 
 class RehabilitationFacilityAttribute(Base, UUIDPrimaryKeyMixin, TimestampMixin):

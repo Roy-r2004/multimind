@@ -1,10 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { BlueprintApprovalBar } from "@/components/scraping/BlueprintApprovalBar";
 import { BlueprintVersionList } from "@/components/scraping/BlueprintVersionList";
 import { BlueprintViewer } from "@/components/scraping/BlueprintViewer";
+import { DreamHeader, DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { MissionStatusBadge } from "@/components/scraping/MissionStatusBadge";
 import { Button } from "@/components/ui/button";
 import { ApiClientError } from "@/lib/api/client";
@@ -152,60 +152,60 @@ function ScrapingBlueprintPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <PageHeader
-          eyebrow="Scraping Council"
+      <DreamPageShell>
+        <DreamHeader
+          eyebrow="Scraping Council · Flight chart"
           title={mission?.title ?? "Blueprint"}
           description={
             mission
-              ? `Review the generated blueprint before approval. ${countryLabel(
+              ? `Review the chart before takeoff. ${countryLabel(
                   mission.country_code,
                   mission.country_name,
                 )}.`
-              : "Review the generated blueprint before approval."
+              : "Review the chart before takeoff."
           }
         />
         {loading && (
-          <GlassCard className="mt-8 p-8 text-sm text-muted-foreground">
-            Loading blueprint...
-          </GlassCard>
+          <DreamPanel className="mt-8 text-sm text-white/60">Loading chart…</DreamPanel>
         )}
-        {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
+        {error && <DreamPanel className="mt-8 text-sm text-rose-200">{error}</DreamPanel>}
         {success && !error && (
-          <GlassCard className="mt-8 p-4 text-sm text-primary">{success}</GlassCard>
+          <DreamPanel tone="teal" className="mt-8 text-sm text-teal-100">
+            {success}
+          </DreamPanel>
         )}
         {!loading && !error && !selected && (
-          <GlassCard className="mt-8 p-12 text-center text-sm text-muted-foreground">
+          <DreamPanel className="mt-8 p-12 text-center text-sm text-white/55">
             No blueprint versions yet.
-          </GlassCard>
+          </DreamPanel>
         )}
         {selected && (
           <div className="mt-8 space-y-5">
-            <GlassCard className="p-5">
+            <DreamPanel>
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div className="space-y-2 text-sm">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{blueprintDisplayName(selected)}</span>
-                    <span className="text-xs text-muted-foreground">
-                      Version {selected.version}
+                    <span className="font-display text-lg text-[#f7f1e4]">
+                      {blueprintDisplayName(selected)}
                     </span>
+                    <span className="text-xs text-white/45">Version {selected.version}</span>
                     <MissionStatusBadge status={selected.status} />
                   </div>
-                  <div className="text-muted-foreground">
+                  <div className="text-white/45">
                     Created {new Date(selected.created_at).toLocaleString()}
                   </div>
                   {selected.approved_at && (
-                    <div className="text-muted-foreground">
+                    <div className="text-white/45">
                       Approved {new Date(selected.approved_at).toLocaleString()}
                     </div>
                   )}
                   {selected.rejected_at && (
-                    <div className="text-muted-foreground">
+                    <div className="text-white/45">
                       Rejected {new Date(selected.rejected_at).toLocaleString()}
                     </div>
                   )}
                   {selected.rejection_reason && (
-                    <div className="text-destructive">Reason: {selected.rejection_reason}</div>
+                    <div className="text-rose-200">Reason: {selected.rejection_reason}</div>
                   )}
                 </div>
                 {mission && (
@@ -217,46 +217,52 @@ function ScrapingBlueprintPage() {
                   />
                 )}
               </div>
-            </GlassCard>
+            </DreamPanel>
             {selected.blueprint_json ? (
               <BlueprintViewer content={selected.blueprint_json} />
             ) : (
-              <GlassCard className="p-8 text-sm text-muted-foreground">
+              <DreamPanel className="text-sm text-white/55">
                 Blueprint content is not available.
-              </GlassCard>
+              </DreamPanel>
             )}
             {mission?.active_blueprint_id === selected.id &&
               selected.status === "approved" &&
               !selectedRun && (
-              <GlassCard className="p-5">
-                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <h2 className="text-base font-semibold">Plan AI Scraping Team</h2>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      The orchestrator will analyze the approved blueprint and choose the required
-                      AI scraping agents. No websites will be scraped yet.
-                    </p>
+                <DreamPanel tone="amber">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <h2 className="font-display text-lg text-[#f7f1e4]">Assemble AI crew</h2>
+                      <p className="mt-2 text-sm text-white/55">
+                        The orchestrator reads the approved chart and chooses agents. No websites
+                        scraped yet.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      disabled={planning}
+                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                      onClick={() => void handlePlanTeam()}
+                    >
+                      {planning ? "Planning AI Team..." : "Plan AI Scraping Team"}
+                    </Button>
                   </div>
-                  <Button type="button" disabled={planning} onClick={() => void handlePlanTeam()}>
-                    {planning ? "Planning AI Team..." : "Plan AI Scraping Team"}
-                  </Button>
-                </div>
-              </GlassCard>
-            )}
+                </DreamPanel>
+              )}
             {mission?.active_blueprint_id === selected.id &&
               selected.status === "approved" &&
               selectedRun && (
-                <GlassCard className="p-5">
+                <DreamPanel tone="teal">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
-                      <h2 className="text-base font-semibold">View AI Team Plan</h2>
-                      <p className="mt-2 text-sm text-muted-foreground">
-                        This approved blueprint version already has a persisted AI team plan.
+                      <h2 className="font-display text-lg text-[#f7f1e4]">Crew already charted</h2>
+                      <p className="mt-2 text-sm text-white/55">
+                        This approved chart already has a persisted AI team plan.
                       </p>
                     </div>
                     <Button
                       type="button"
                       disabled={selectedRun.status === "planning"}
+                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                       onClick={() =>
                         void navigate({
                           to: "/scraping/$missionId/runs/$runId",
@@ -269,7 +275,7 @@ function ScrapingBlueprintPage() {
                         : "View AI Team Plan"}
                     </Button>
                   </div>
-                </GlassCard>
+                </DreamPanel>
               )}
             <BlueprintApprovalBar
               blueprint={selected}
@@ -315,7 +321,7 @@ function ScrapingBlueprintPage() {
             />
           </div>
         )}
-      </div>
+      </DreamPageShell>
     </AppShell>
   );
 }

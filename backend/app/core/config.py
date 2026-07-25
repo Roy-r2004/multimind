@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     source_retrieval_robots_policy: Literal["respect"] = "respect"
     source_retrieval_max_candidates_per_coverage_cell: int = 10
     source_retrieval_max_candidates_per_execution: int = 150
+    # Phase B1: same-domain contact/location page crawl budgets
+    contact_crawl_max_pages_real: int = 3
+    contact_crawl_max_pages_full_census: int = 8
+    contact_crawl_max_depth: int = 1
+    contact_crawl_max_bytes_per_page: int = 1_048_576
 
     # Real facility extraction (worker-connected)
     facility_extraction_enabled: bool = True

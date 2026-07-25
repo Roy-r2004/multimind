@@ -1,8 +1,16 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { Modal } from "@/components/Modal";
+import {
+  DreamHeader,
+  DreamPageShell,
+  DreamPanel,
+  dreamDetailsClass,
+  dreamGhostClass,
+  dreamInputClass,
+  dreamMutedClass,
+} from "@/components/scraping/DreamPageShell";
 import { MissionStatusBadge } from "@/components/scraping/MissionStatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -150,54 +158,55 @@ function ScrapingMissionPage() {
     }
   }
 
+  const intensity = scrapeRunning ? "live" : "calm";
+
   return (
     <AppShell>
-      <div className="mx-auto max-w-4xl px-6 py-10">
-        <PageHeader
-          eyebrow="Scraping Council"
+      <DreamPageShell maxWidth="max-w-4xl" intensity={intensity}>
+        <DreamHeader
+          eyebrow="Scraping Council · Mission hub"
           title={mission?.title ?? "Scraping Mission"}
-          description="Your scrape job — results first, setup second."
+          description="Results first. Setup stays in the drift below."
           action={
             resultsReady && latestExecution ? (
               <Link
                 to="/scraping/$missionId/executions/$executionId"
                 params={{ missionId, executionId: latestExecution.id }}
-                className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground"
+                className="rounded-xl bg-[#d4a84b] px-4 py-2.5 text-sm font-semibold text-[#0b161c] shadow-[0_12px_28px_rgba(212,168,75,0.28)]"
               >
-                View results
+                Open flight
               </Link>
             ) : (
               <Link
                 to="/scraping/$missionId/blueprint"
                 params={{ missionId }}
-                className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
+                className={dreamGhostClass}
               >
-                Blueprint
+                Chart
               </Link>
             )
           }
         />
-        {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
+        {error && <DreamPanel className="mt-8 text-sm text-rose-200">{error}</DreamPanel>}
         {!error && !mission && (
-          <GlassCard className="mt-8 p-8 text-sm text-muted-foreground">
-            Loading mission...
-          </GlassCard>
+          <DreamPanel className="mt-8 text-sm text-white/60">Loading mission…</DreamPanel>
         )}
 
         {mission && resultsReady && latestExecution && (
-          <GlassCard className="mt-8 border-emerald-500/40 bg-emerald-500/10 p-6">
+          <DreamPanel tone="teal" className="dream-rise mt-8">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-lg font-semibold">Scrape results are ready</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {latestExecution.records_verified} facilities ·{" "}
-                  {latestExecution.documents_found} pages ·{" "}
-                  {latestExecution.sources_discovered} sources found
+                <p className="text-[11px] uppercase tracking-[0.28em] text-teal-200/80">Landed</p>
+                <p className="mt-1 font-display text-2xl text-[#f7f1e4]">Flight results ready</p>
+                <p className="mt-1 text-sm text-white/55">
+                  {latestExecution.records_verified} facilities · {latestExecution.documents_found}{" "}
+                  pages · {latestExecution.sources_discovered} sources
                 </p>
               </div>
               <Button
                 type="button"
                 size="lg"
+                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                 onClick={() =>
                   void navigate({
                     to: "/scraping/$missionId/executions/$executionId",
@@ -205,23 +214,25 @@ function ScrapingMissionPage() {
                   })
                 }
               >
-                Open results
+                Enter dreamflight
               </Button>
             </div>
-          </GlassCard>
+          </DreamPanel>
         )}
 
         {mission && scrapeRunning && latestExecution && (
-          <GlassCard className="mt-8 border-sky-500/40 bg-sky-500/10 p-6">
+          <DreamPanel tone="amber" className="dream-rise mt-8">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-lg font-semibold">Scrape is running…</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Watch live progress. Facilities appear when extraction finishes.
+                <p className="text-[11px] uppercase tracking-[0.28em] text-[#d4a84b]">In flight</p>
+                <p className="mt-1 font-display text-2xl text-[#f7f1e4]">Vessel is navigating…</p>
+                <p className="mt-1 text-sm text-white/55">
+                  Watch stages move as sources open and facilities crystallize.
                 </p>
               </div>
               <Button
                 type="button"
+                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                 onClick={() =>
                   void navigate({
                     to: "/scraping/$missionId/executions/$executionId",
@@ -232,14 +243,17 @@ function ScrapingMissionPage() {
                 Watch progress
               </Button>
             </div>
-          </GlassCard>
+          </DreamPanel>
         )}
 
         {mission && (
-          <GlassCard className="mt-6 p-6">
+          <DreamPanel className="dream-rise dream-rise-delay-1 mt-6">
             <div className="flex flex-wrap items-center gap-2">
               <MissionStatusBadge status={mission.status} />
-              <Badge variant="outline">
+              <Badge
+                variant="outline"
+                className="border-[#d4a84b]/35 bg-[#d4a84b]/10 text-[#f3e6c4]"
+              >
                 {countryLabel(mission.country_code, mission.country_name)}
               </Badge>
               {!mission.country_code && (
@@ -247,38 +261,42 @@ function ScrapingMissionPage() {
                   type="button"
                   variant="outline"
                   size="sm"
+                  className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
                   onClick={() => setShowCountryModal(true)}
                 >
                   Set Country
                 </Button>
               )}
             </div>
-            <p className="mt-4 whitespace-pre-wrap text-sm text-muted-foreground">
-              {mission.original_prompt}
-            </p>
-            <p className="mt-3 text-xs text-muted-foreground">
+            <p className="mt-4 whitespace-pre-wrap text-sm text-white/60">{mission.original_prompt}</p>
+            <p className="mt-3 text-xs text-white/40">
               Model set: {mission.model_set_name ?? mission.model_set_id}
               {mission.active_blueprint_version
-                ? ` · Blueprint v${mission.active_blueprint_version}`
+                ? ` · Chart v${mission.active_blueprint_version}`
                 : ""}
             </p>
-          </GlassCard>
+          </DreamPanel>
         )}
 
         {mission && activeApprovedBlueprint && !activeBlueprintRun && (
-          <GlassCard className="mt-6 p-6">
+          <DreamPanel tone="amber" className="mt-6">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <h2 className="text-base font-semibold">Next: prepare scrape</h2>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Create the AI team, then start the scrape to get facility results.
+                <h2 className="font-display text-lg text-[#f7f1e4]">Next: assemble the crew</h2>
+                <p className="mt-2 text-sm text-white/55">
+                  Chart the AI team from the approved blueprint — no websites touched yet.
                 </p>
               </div>
-              <Button type="button" disabled={planning} onClick={() => void handlePlanTeam()}>
+              <Button
+                type="button"
+                disabled={planning}
+                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                onClick={() => void handlePlanTeam()}
+              >
                 {planning ? "Preparing…" : "Continue"}
               </Button>
             </div>
-          </GlassCard>
+          </DreamPanel>
         )}
 
         {mission &&
@@ -286,17 +304,18 @@ function ScrapingMissionPage() {
           activeBlueprintRun &&
           !resultsReady &&
           !scrapeRunning && (
-            <GlassCard className="mt-6 p-6">
+            <DreamPanel tone="amber" className="mt-6">
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="text-base font-semibold">Ready to scrape</h2>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Start the scrape to search the web, extract facilities, and download Excel.
+                  <h2 className="font-display text-lg text-[#f7f1e4]">Ready for takeoff</h2>
+                  <p className="mt-2 text-sm text-white/55">
+                    Start the scrape — search, extract, crystallize facilities, export Excel.
                   </p>
                 </div>
                 <Button
                   type="button"
                   disabled={activeBlueprintRun.status === "planning"}
+                  className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                   onClick={() =>
                     void navigate({
                       to: "/scraping/$missionId/runs/$runId",
@@ -307,39 +326,40 @@ function ScrapingMissionPage() {
                   {activeBlueprintRun.status === "planning" ? "Preparing…" : "Start scrape"}
                 </Button>
               </div>
-            </GlassCard>
+            </DreamPanel>
           )}
 
         {mission && (
-          <details className="mt-6 rounded-xl border border-border bg-card/40 p-4 text-sm">
+          <details className={`mt-6 ${dreamDetailsClass}`}>
             <summary className="cursor-pointer font-medium">Advanced / setup</summary>
             <div className="mt-3 flex flex-wrap gap-2">
               <Link
                 to="/scraping/$missionId/blueprint"
                 params={{ missionId }}
-                className="rounded-lg border border-border px-3 py-2"
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 hover:bg-white/10"
               >
                 Blueprint
               </Link>
               <Link
                 to="/scraping/$missionId/runs"
                 params={{ missionId }}
-                className="rounded-lg border border-border px-3 py-2"
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 hover:bg-white/10"
               >
                 All runs
               </Link>
             </div>
           </details>
         )}
-      </div>
+      </DreamPageShell>
       <Modal
         open={showCountryModal}
         onClose={savingCountry ? () => undefined : () => setShowCountryModal(false)}
         title="Set Mission Country"
         size="md"
+        tone="dream"
       >
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className={dreamMutedClass}>
             Set the country for this mission. One mission = one country.
           </p>
           <input
@@ -347,7 +367,7 @@ function ScrapingMissionPage() {
             value={countryCode}
             onChange={(event) => setCountryCode(event.target.value.toUpperCase())}
             placeholder="Search country or enter code, e.g. LB"
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            className={dreamInputClass}
           />
           <datalist id="mission-country-options">
             {SCRAPING_COUNTRIES.map((country) => (
@@ -361,6 +381,7 @@ function ScrapingMissionPage() {
               type="button"
               variant="outline"
               disabled={savingCountry}
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
               onClick={() => setShowCountryModal(false)}
             >
               Cancel
@@ -368,6 +389,7 @@ function ScrapingMissionPage() {
             <Button
               type="button"
               disabled={savingCountry || !countryCode.trim()}
+              className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
               onClick={() => void handleSetCountry()}
             >
               {savingCountry ? "Saving..." : "Set Country"}

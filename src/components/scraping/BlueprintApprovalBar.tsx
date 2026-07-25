@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Modal } from "@/components/Modal";
-import { GlassCard } from "@/components/cinematic/PageChrome";
+import { DreamPanel, dreamMutedClass } from "@/components/scraping/DreamPageShell";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { ScrapingBlueprint } from "@/lib/scraping/types";
@@ -59,84 +59,82 @@ export function BlueprintApprovalBar({
   return (
     <>
       {blueprint.status === "approved" && (
-        <GlassCard className="space-y-2 p-5 text-sm">
+        <DreamPanel tone="teal" className="space-y-2 text-sm">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold">Approved</span>
+            <span className="font-semibold text-[#f7f1e4]">Approved</span>
             {isActiveBlueprint && (
-              <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
-                Active Blueprint
+              <span className="rounded-full border border-[#d4a84b]/40 bg-[#d4a84b]/15 px-2.5 py-0.5 text-xs font-medium text-[#f3e6c4]">
+                Active chart
               </span>
             )}
           </div>
-          <div className="text-muted-foreground">
-            Approved date: {formatDate(blueprint.approved_at)}
-          </div>
-          <div className="text-muted-foreground">
-            This blueprint version is locked and read-only.
-          </div>
-          <div className="text-muted-foreground">Approval does not start scraping.</div>
-        </GlassCard>
+          <div className="text-white/55">Approved date: {formatDate(blueprint.approved_at)}</div>
+          <div className="text-white/55">This chart version is locked and read-only.</div>
+          <div className="text-white/55">Approval does not start scraping.</div>
+        </DreamPanel>
       )}
 
       {blueprint.status === "rejected" && (
-        <GlassCard className="space-y-2 p-5 text-sm">
-          <div className="font-semibold">Rejected</div>
-          <div className="text-muted-foreground">
-            Rejection date: {formatDate(blueprint.rejected_at)}
-          </div>
+        <DreamPanel className="space-y-2 text-sm">
+          <div className="font-semibold text-[#f7f1e4]">Rejected</div>
+          <div className="text-white/55">Rejection date: {formatDate(blueprint.rejected_at)}</div>
           <div>
-            <span className="font-medium">Rejection reason: </span>
-            <span className="text-muted-foreground">
-              {blueprint.rejection_reason || "Not provided"}
-            </span>
+            <span className="font-medium text-[#f7f1e4]">Rejection reason: </span>
+            <span className="text-white/55">{blueprint.rejection_reason || "Not provided"}</span>
           </div>
-          <div className="text-muted-foreground">This version remains preserved in history.</div>
-        </GlassCard>
+          <div className="text-white/55">This version remains preserved in history.</div>
+        </DreamPanel>
       )}
 
       {blueprint.status === "superseded" && (
-        <GlassCard className="space-y-2 p-5 text-sm">
-          <div className="font-semibold">Superseded</div>
-          <div className="text-muted-foreground">
+        <DreamPanel className="space-y-2 text-sm">
+          <div className="font-semibold text-[#f7f1e4]">Superseded</div>
+          <div className="text-white/55">
             This version is preserved in history and is no longer active.
           </div>
-        </GlassCard>
+        </DreamPanel>
       )}
 
       {blueprint.status === "failed" && (
-        <GlassCard className="space-y-3 p-5 text-sm">
-          <div className="font-semibold">Generation Failed</div>
+        <DreamPanel className="space-y-3 text-sm">
+          <div className="font-semibold text-[#f7f1e4]">Generation Failed</div>
           {blueprint.error_message && (
-            <div className="text-muted-foreground">{blueprint.error_message}</div>
+            <div className="text-white/55">{blueprint.error_message}</div>
           )}
           {onGenerateNewVersion && (
             <Button
               type="button"
               disabled={busy}
               onClick={() => void run(onGenerateNewVersion)}
-              className="w-fit"
+              className="w-fit bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
             >
               {busy && <Loader2 className="size-4 animate-spin" />}
               Generate New Version
             </Button>
           )}
-        </GlassCard>
+        </DreamPanel>
       )}
 
       {(canApproveOrReject || canRequestChanges) && (
-        <div className="sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-card p-3 shadow-sm">
+        <div className="sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-white/15 bg-[#0b161c]/90 p-3 shadow-[0_16px_40px_rgba(0,0,0,0.35)] backdrop-blur-md">
           {canApproveOrReject && (
             <>
-              <Button type="button" disabled={busy} onClick={() => setMode("approve")}>
-                Approve Blueprint
+              <Button
+                type="button"
+                disabled={busy}
+                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                onClick={() => setMode("approve")}
+              >
+                Approve chart
               </Button>
               <Button
                 type="button"
                 variant="outline"
                 disabled={busy}
+                className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
                 onClick={() => setMode("reject")}
               >
-                Reject Blueprint
+                Reject
               </Button>
             </>
           )}
@@ -145,6 +143,7 @@ export function BlueprintApprovalBar({
               type="button"
               variant="outline"
               disabled={busy}
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
               onClick={() => setMode("changes")}
             >
               Request Changes
@@ -164,16 +163,17 @@ export function BlueprintApprovalBar({
               : "Request Changes"
         }
         size="md"
+        tone="dream"
       >
         <div className="space-y-3">
           {mode === "approve" ? (
-            <p className="text-sm text-muted-foreground">
+            <p className={dreamMutedClass}>
               Approving this version will lock it and mark it as the mission’s active blueprint. It
               will not start scraping.
             </p>
           ) : (
             <>
-              <label className="text-sm font-medium">
+              <label className="text-sm font-medium text-[#f7f1e4]">
                 {mode === "reject" ? "Rejection Reason" : "Change Instructions"}
               </label>
               <Textarea
@@ -181,16 +181,24 @@ export function BlueprintApprovalBar({
                 onChange={(event) => setText(event.target.value)}
                 rows={6}
                 required
+                className="border-white/15 bg-white/5 text-[#f7f1e4] placeholder:text-white/30"
               />
             </>
           )}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={closeModal} disabled={busy}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              onClick={closeModal}
+            >
               Cancel
             </Button>
             <Button
               type="button"
               disabled={busy || (mode !== "approve" && !text.trim())}
+              className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
               onClick={() =>
                 void run(() =>
                   mode === "approve"
