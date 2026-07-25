@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 120.0
     llm_max_retries: int = 2
 
+    # Gemini blueprint generation (Phase 1A defines configuration only; no live calls)
+    gemini_api_key: str | None = None
+    gemini_blueprint_model: str = "gemini-2.5-pro"
+    gemini_blueprint_timeout_seconds: float = 900.0
+    gemini_blueprint_poll_interval_seconds: float = 10.0
+
     # Real source discovery
     source_discovery_provider: str = "serper"
     serper_api_key: str | None = None

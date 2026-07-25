@@ -2,6 +2,18 @@
 
 Multi-model AI council app — ask one question, get answers from multiple LLMs, then a synthesized verdict. Includes brain memory, disagreement lessons, and an enterprise admin console.
 
+## Scraping blueprint foundation (Phase 1A)
+
+Country scraping missions store canonical ISO alpha-2/alpha-3 and continent metadata.
+The backend-owned prompt template is
+`backend/app/prompts/scraping/country_maximum_coverage_blueprint_v1.jinja2`.
+
+Gemini configuration is reserved for the next phase:
+`GEMINI_API_KEY`, `GEMINI_BLUEPRINT_MODEL`,
+`GEMINI_BLUEPRINT_TIMEOUT_SECONDS`, and
+`GEMINI_BLUEPRINT_POLL_INTERVAL_SECONDS`. Phase 1A makes no Gemini request;
+Phase 1B will add asynchronous blueprint generation.
+
 ## Quick start (Docker)
 
 ```bash

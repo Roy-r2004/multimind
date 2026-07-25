@@ -177,18 +177,35 @@ class ProjectScrapingMissionResponse(BaseModel):
 class ScrapingMissionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    title: str
-    country_code: str
+    title: str = Field(min_length=1, max_length=512)
+    country: str | None = Field(default=None, min_length=1, max_length=120)
+    country_code: str | None = Field(default=None, min_length=2, max_length=3)
     original_prompt: str
     model_set_id: str
     project_id: str | None = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def title_must_not_be_blank(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+        if not value:
+            raise ValueError("Mission title is required")
+        return value
+
+    @model_validator(mode="after")
+    def require_exactly_one_country_input(self) -> "ScrapingMissionCreate":
+        if bool(self.country) == bool(self.country_code):
+            raise ValueError("Provide exactly one country name or ISO code.")
+        return self
 
 
 class ScrapingMissionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str | None = Field(default=None, max_length=512)
-    country_code: str | None = None
+    country_code: str | None = Field(default=None, min_length=2, max_length=3)
+    country: str | None = Field(default=None, min_length=1, max_length=120)
     project_id: str | None = None
 
 
@@ -238,6 +255,8 @@ class ScrapingMissionSummary(BaseModel):
     status: str
     country_code: str | None = None
     country_name: str | None = None
+    country_iso3: str | None = None
+    continent: str | None = None
     project_id: str | None = None
     project_name: str | None = None
     active_blueprint_id: str | None = None
@@ -343,6 +362,110 @@ class ScrapingBlueprintContent(BaseModel):
         if not value:
             raise ValueError("task_plan cannot be empty")
         return value
+
+
+class BlueprintCitation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1)
+    title: str | None = None
+    source_type: str | None = None
+    notes: str | None = None
+
+
+class BlueprintApprovalRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ready: bool
+    reason: str = Field(min_length=1)
+
+
+class BlueprintCountryDossier(BaseModel):
+    """Required country facts with room for country-specific researched fields."""
+
+    model_config = ConfigDict(extra="allow")
+
+    country_name: str = Field(min_length=1)
+    country_iso3: str = Field(min_length=3, max_length=3)
+    continent: str = Field(min_length=1)
+
+
+class BlueprintStrategySection(BaseModel):
+    """A typed strategy section whose detail can vary by country."""
+
+    model_config = ConfigDict(extra="allow")
+
+    summary: str = Field(min_length=1)
+
+
+class BlueprintRegionCoveragePlanItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    region_name: str = Field(min_length=1)
+    coverage_actions: list[str] = Field(min_length=1)
+
+
+class BlueprintQueryMatrixItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    query: str = Field(min_length=1)
+    language: str = Field(min_length=1)
+    purpose: str = Field(min_length=1)
+
+
+class CountryMaximumCoverageStructuredBlueprint(BaseModel):
+    """Future Gemini output contract for country-specific campaign planning."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    country_dossier: BlueprintCountryDossier
+    regions: list[str]
+    languages: list[str]
+    regulatory_sources: list[BlueprintCitation]
+    commercial_sources: list[BlueprintCitation]
+    query_matrix: list[BlueprintQueryMatrixItem]
+    region_coverage_plan: list[BlueprintRegionCoveragePlanItem]
+    discovery_strategy: BlueprintStrategySection
+    crawl_strategy: BlueprintStrategySection
+    contact_completeness_strategy: BlueprintStrategySection
+    verification_rules: BlueprintStrategySection
+    country_containment_rules: BlueprintStrategySection
+    deduplication_rules: BlueprintStrategySection
+    confidence_model: BlueprintStrategySection
+    completion_criteria: list[str]
+    risks: list[str]
+    citations: list[BlueprintCitation]
+    estimated_coverage: BlueprintStrategySection
+    weak_areas: list[str]
+    human_review_questions: list[str]
+    approval_recommendation: BlueprintApprovalRecommendation
+
+
+class ScrapingBlueprintVersionResponse(BaseModel):
+    """Phase 1A persistence contract for a versioned provider blueprint."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    mission_id: str
+    version: int
+    status: str
+    provider: str | None = None
+    model_id: str | None = None
+    prompt_template_version: str | None = None
+    human_readable_blueprint: str | None = None
+    structured_blueprint: CountryMaximumCoverageStructuredBlueprint | None = None
+    citations: list[BlueprintCitation] | None = None
+    revision_request: str | None = None
+    generation_error: str | None = None
+    queued_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    approved_at: datetime | None = None
+    rejected_at: datetime | None = None
+    discarded_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class ScrapingBlueprintResponse(BaseModel):

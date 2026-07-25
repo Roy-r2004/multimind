@@ -1,14 +1,24 @@
-"""Offline country validation for scraping missions."""
+"""Offline canonical country metadata for scraping missions."""
 
 from dataclasses import dataclass
+
+import pycountry
+from pycountry_convert import country_alpha2_to_continent_code
 
 from app.core.exceptions import ValidationError
 
 
 @dataclass(frozen=True)
 class Country:
-    code: str
+    iso2: str
     name: str
+    iso3: str
+    continent: str
+
+    @property
+    def code(self) -> str:
+        """Backward-compatible alias for the legacy alpha-2 field."""
+        return self.iso2
 
 
 COUNTRY_DATA: tuple[tuple[str, str], ...] = (
@@ -263,17 +273,77 @@ COUNTRY_DATA: tuple[tuple[str, str], ...] = (
     ("ZW", "Zimbabwe"),
 )
 
-COUNTRIES: dict[str, Country] = {code: Country(code, name) for code, name in COUNTRY_DATA}
+_CONTINENT_NAMES = {
+    "AF": "Africa",
+    "AN": "Antarctica",
+    "AS": "Asia",
+    "EU": "Europe",
+    "NA": "North America",
+    "OC": "Oceania",
+    "SA": "South America",
+}
+_TERRITORY_CONTINENT_OVERRIDES = {
+    "AQ": "Antarctica",
+    "EH": "Africa",
+    "PN": "Oceania",
+    "SX": "North America",
+    "TF": "Antarctica",
+    "TL": "Asia",
+    "UM": "Oceania",
+    "VA": "Europe",
+}
+
+
+def _country_from_iso2(iso2: str, fallback_name: str) -> Country:
+    record = pycountry.countries.get(alpha_2=iso2)
+    if record is None:
+        raise RuntimeError(f"Country metadata is unavailable for ISO alpha-2 code {iso2!r}")
+    try:
+        continent = _CONTINENT_NAMES[country_alpha2_to_continent_code(iso2)]
+    except (KeyError, ValueError) as exc:
+        continent = _TERRITORY_CONTINENT_OVERRIDES.get(iso2)
+        if continent is None:
+            raise RuntimeError(
+                f"Continent metadata is unavailable for ISO alpha-2 code {iso2!r}"
+            ) from exc
+    return Country(
+        iso2=iso2,
+        name=fallback_name,
+        iso3=record.alpha_3,
+        continent=continent,
+    )
+
+
+COUNTRIES: dict[str, Country] = {
+    code: _country_from_iso2(code, name) for code, name in COUNTRY_DATA
+}
+_COUNTRIES_BY_ISO3: dict[str, Country] = {country.iso3: country for country in COUNTRIES.values()}
+_COUNTRIES_BY_NAME: dict[str, Country] = {
+    country.name.casefold(): country for country in COUNTRIES.values()
+}
 
 
 def normalize_country_code(country_code: str) -> str:
-    code = country_code.strip().upper()
-    if len(code) != 2 or not code.isalpha():
-        raise ValidationError("Country must be a valid ISO 3166-1 alpha-2 code.")
-    if code not in COUNTRIES:
-        raise ValidationError("Unsupported country code.")
-    return code
+    """Resolve a country name, alpha-2, or alpha-3 code to canonical alpha-2."""
+    return resolve_country(country_code).iso2
 
 
-def resolve_country(country_code: str) -> Country:
-    return COUNTRIES[normalize_country_code(country_code)]
+def resolve_country(country_input: str) -> Country:
+    """Resolve offline country input without accepting ambiguous values."""
+    value = country_input.strip()
+    if not value:
+        raise ValidationError("Country is required.")
+    upper = value.upper()
+    if len(upper) == 2 and upper.isalpha():
+        country = COUNTRIES.get(upper)
+    elif len(upper) == 3 and upper.isalpha():
+        country = _COUNTRIES_BY_ISO3.get(upper)
+    else:
+        country = _COUNTRIES_BY_NAME.get(value.casefold())
+    if country is None:
+        if len(upper) in (2, 3) and upper.isalpha():
+            raise ValidationError("Unsupported country code.")
+        raise ValidationError(
+            "Country must be a supported canonical name or ISO 3166-1 alpha-2/alpha-3 code."
+        )
+    return country

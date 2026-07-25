@@ -91,8 +91,12 @@ class ScrapingMissionStatus(str, enum.Enum):
 class ScrapingBlueprintStatus(str, enum.Enum):
     GENERATING = "generating"
     DRAFT = "draft"
+    QUEUED = "queued"
+    RUNNING = "running"
+    READY_FOR_REVIEW = "ready_for_review"
     APPROVED = "approved"
     REJECTED = "rejected"
+    DISCARDED = "discarded"
     SUPERSEDED = "superseded"
     FAILED = "failed"
 
@@ -376,6 +380,7 @@ class ScrapingMission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_scraping_missions_created_by", "created_by"),
         Index("ix_scraping_missions_status", "status"),
         Index("ix_scraping_missions_updated_at", "updated_at"),
+        Index("ix_scraping_missions_country_iso3", "country_iso3"),
     )
 
     org_id: Mapped[str] = UuidFK("organizations")
@@ -388,6 +393,8 @@ class ScrapingMission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     original_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     country_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    country_iso3: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    continent: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[ScrapingMissionStatus] = mapped_column(
         Enum(
             ScrapingMissionStatus,
@@ -432,6 +439,8 @@ class ScrapingBlueprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_scraping_blueprints_mission_id", "mission_id"),
         Index("ix_scraping_blueprints_status", "status"),
         Index("ix_scraping_blueprints_created_at", "created_at"),
+        Index("ix_scraping_blueprints_provider", "provider"),
+        Index("ix_scraping_blueprints_prompt_template_version", "prompt_template_version"),
     )
 
     mission_id: Mapped[str] = mapped_column(
@@ -462,6 +471,22 @@ class ScrapingBlueprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     change_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    country_name_snapshot: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    country_iso3_snapshot: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    continent_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_template_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rendered_prompt_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    human_readable_blueprint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_blueprint: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    citations: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    revision_request: Mapped[str | None] = mapped_column(Text, nullable=True)
+    generation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     mission: Mapped["ScrapingMission"] = relationship(
         back_populates="blueprints",

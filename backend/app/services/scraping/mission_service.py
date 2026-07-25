@@ -33,7 +33,7 @@ class ScrapingMissionService:
             raise ValidationError("Mission title is required")
         if not prompt:
             raise ValidationError("Mission prompt is required")
-        country = resolve_country(data.country_code)
+        country = resolve_country(data.country or data.country_code or "")
 
         model_set = await self.resolve_model_set(db, auth, data.model_set_id)
         if data.project_id is not None:
@@ -48,6 +48,8 @@ class ScrapingMissionService:
             original_prompt=prompt,
             country_code=country.code,
             country_name=country.name,
+            country_iso3=country.iso3,
+            continent=country.continent,
         )
         db.add(mission)
         await db.flush()
@@ -74,6 +76,8 @@ class ScrapingMissionService:
                 status=mission.status.value,
                 country_code=mission.country_code,
                 country_name=mission.country_name,
+                country_iso3=mission.country_iso3,
+                continent=mission.continent,
                 project_id=mission.project_id,
                 project_name=project_name,
                 active_blueprint_id=mission.active_blueprint_id,
@@ -104,6 +108,8 @@ class ScrapingMissionService:
             status=mission.status.value,
             country_code=mission.country_code,
             country_name=mission.country_name,
+            country_iso3=mission.country_iso3,
+            continent=mission.continent,
             active_blueprint_id=mission.active_blueprint_id,
             active_blueprint_version=active_version,
             created_at=mission.created_at,
@@ -134,10 +140,11 @@ class ScrapingMissionService:
                 project = await self.resolve_project(db, auth, data.project_id)
             mission.project_id = data.project_id
             mission.project = project
-        if "country_code" in data.model_fields_set:
-            if data.country_code is None:
+        country_fields = {"country", "country_code"} & data.model_fields_set
+        if country_fields:
+            if bool(data.country) == bool(data.country_code):
                 raise ValidationError("Country is required")
-            await self._apply_country_update(db, mission, data.country_code)
+            await self._apply_country_update(db, mission, data.country or data.country_code or "")
         await db.flush()
         return await self.get_mission(db, auth, mission_id)
 
@@ -207,10 +214,14 @@ class ScrapingMissionService:
         country = resolve_country(country_code)
         if mission.country_code == country.code:
             mission.country_name = country.name
+            mission.country_iso3 = country.iso3
+            mission.continent = country.continent
             return
         if mission.country_code is None:
             mission.country_code = country.code
             mission.country_name = country.name
+            mission.country_iso3 = country.iso3
+            mission.continent = country.continent
             return
 
         blueprint_count_result = await db.execute(
@@ -227,6 +238,8 @@ class ScrapingMissionService:
 
         mission.country_code = country.code
         mission.country_name = country.name
+        mission.country_iso3 = country.iso3
+        mission.continent = country.continent
 
 
 mission_service = ScrapingMissionService()

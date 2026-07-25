@@ -1,0 +1,29 @@
+You are designing a country-specific maximum-coverage research blueprint.
+
+Mission title: {{ MISSION_TITLE }}
+Selected country: {{ COUNTRY_NAME }} (ISO Alpha-3: {{ COUNTRY_ISO3 }})
+Continent: {{ CONTINENT }}
+
+This is a mission for {{ COUNTRY_NAME }}, not a worldwide mission. Create a blueprint only; do not begin final facility scraping and do not create a final facility database. Only facilities whose treatment-delivering physical location is inside {{ COUNTRY_NAME }} may later be published. Sources outside {{ COUNTRY_NAME }} may be used only as supporting evidence; facilities outside {{ COUNTRY_NAME }} must not become results.
+
+The future campaign identifies publicly discoverable private or paid inpatient addiction rehabilitation centers in {{ COUNTRY_NAME }}. Inclusion requires all of: private/direct-payment/private-insurance/employer coverage; inpatient or residential treatment lasting at least 24 hours; dedicated residential beds or rooms; a verifiable treatment-delivering street address in {{ COUNTRY_NAME }}; addiction rehabilitation as a primary clinical purpose; and at least one qualifying substance or behavioral addiction treated.
+
+Exclude general psychiatric or mental-health providers where addiction is secondary, outpatient-only or telehealth-only providers, solo practitioners, referral-only services, sober living without formal clinical rehabilitation, non-clinical wellness retreats, coaching, and facilities treating only non-addiction mental-health conditions.
+
+Use local-language terminology and synonyms for substance addictions including alcohol, cocaine, crack, methamphetamine, heroin, prescription opioids, oxycodone, hydrocodone, fentanyl, benzodiazepines, cannabis dependency, synthetic cannabinoids, synthetic stimulants, inhalants, stimulant medications, ketamine, kratom, MDMA/ecstasy, GHB, anabolic steroids, novel psychoactive substances, and research chemicals. Also cover gambling, sex, pornography, gaming, internet use, clinical food or binge-eating addiction, love or relationship addiction, shopping or spending, compulsive exercise, body-dysmorphia-associated compulsive behavior, workaholism, social media, and cryptocurrency trading.
+
+Produce both:
+A. a detailed human-readable blueprint; and
+B. a machine-readable structured blueprint matching the requested schema.
+
+The blueprint must include: country dossier; first-level administrative regions; important cities; official and commonly used languages; local rehabilitation/addiction terminology; national and regional regulators; official healthcare/licensing registries; government/open-data sources; commercial directories/aggregators; dual-track official and marketed discovery; multilingual query matrix; region-by-region coverage; discovery saturation; deep website crawl; robots.txt and sitemap.xml handling; contact/admissions/residential/treatment/licensing/FAQ/staff/footer/structured-data/PDF inspection; JavaScript-rendering fallback recommendations; contact-completeness; verification evidence; country containment; confidence; deduplication; audit/provenance; completion criteria; risks/limitations; expected weak areas; human-review questions; and approval recommendation.
+
+The future campaign must seek phone numbers, admissions phones, emails, admissions emails, contact forms, WhatsApp, physical addresses, contact pages, social profiles, structured metadata, header/footer contacts, PDF brochure contacts, registry contacts, and corroborating directory contacts. Retain the source URL for every contact value. Missing values remain null; never invent contact information.
+
+Enforce country containment during query generation, discovery, candidate extraction, address validation, verification, citation validation, and final publication. Phone prefixes, domains, and language are supporting signals only and never prove a physical treatment location.
+
+Design for future records containing continent, country name and ISO Alpha-3, administrative region, facility name, full address, city, latitude/longitude, website, all contact channels, addictions treated, discovery source, licensing, criterion-level decisions, evidence/citations, contact-completeness and confidence scores, verification status, exclusion reason, and manual-review reason.
+
+Define measurable completion criteria: every identified official source processed; every first-level region and approved language searched; major query groups executed; candidate domains processed or assigned documented failures; relevant PDFs processed or documented; every candidate verified/excluded/reviewed; saturation rounds completed; and known coverage gaps documented.
+
+Return citations and state whether the blueprint is ready for approval. Wait for explicit user approval before any future campaign work.
