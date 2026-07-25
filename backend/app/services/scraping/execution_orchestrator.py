@@ -156,8 +156,9 @@ async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
             "scraping_execution_job_cancelled",
             extra={"execution_id": execution_id, "scraping_execution_event": "job_cancelled"},
         )
+        # Re-queue instead of failing: full census must survive worker time slices.
         cleanup_task = asyncio.create_task(
-            mark_scraping_execution_timeout_failed(execution_id)
+            requeue_scraping_execution_after_job_slice(execution_id)
         )
         try:
             await asyncio.shield(cleanup_task)
@@ -166,6 +167,7 @@ async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
 
 
 async def mark_scraping_execution_timeout_failed(execution_id: str) -> None:
+    """Legacy hard-fail path kept for tests; production CancelledError uses requeue."""
     async with AsyncSessionLocal() as db:
         await SourceDiscoveryExecutionOrchestrator(db)._mark_failed_safely(
             execution_id,
@@ -173,6 +175,56 @@ async def mark_scraping_execution_timeout_failed(execution_id: str) -> None:
             error_message="Source discovery execution failed after the worker job timed out.",
             event_message="Source discovery execution failed after the worker job timed out.",
         )
+
+
+async def requeue_scraping_execution_after_job_slice(execution_id: str) -> None:
+    """Continue a long census after ARQ/Coolify cancels the current job slice."""
+    async with AsyncSessionLocal() as db:
+        execution = await db.get(ScrapingExecution, execution_id)
+        if execution is None:
+            return
+        if execution.status in {
+            ScrapingExecutionStatus.COMPLETED,
+            ScrapingExecutionStatus.FAILED,
+            ScrapingExecutionStatus.CANCELLED,
+            ScrapingExecutionStatus.CANCEL_REQUESTED,
+        }:
+            return
+
+        now = datetime.now(UTC)
+        await db.execute(
+            update(ScrapingTask)
+            .where(
+                ScrapingTask.execution_id == execution_id,
+                ScrapingTask.status == ScrapingTaskStatus.RUNNING,
+            )
+            .values(status=ScrapingTaskStatus.QUEUED, current_action=None)
+        )
+        await db.execute(
+            update(ScrapingExecutionAgent)
+            .where(
+                ScrapingExecutionAgent.execution_id == execution_id,
+                ScrapingExecutionAgent.status == ScrapingExecutionAgentStatus.RUNNING,
+            )
+            .values(
+                status=ScrapingExecutionAgentStatus.QUEUED,
+                current_task_id=None,
+                current_action=None,
+            )
+        )
+        execution.status = ScrapingExecutionStatus.QUEUED
+        execution.error_message = None
+        execution.heartbeat_at = now
+        await execution_service.emit_event(
+            db,
+            execution_id,
+            "worker_job_slice_requeued",
+            "Worker job slice ended; re-queuing to continue the census.",
+            metadata={"reason": "worker_timeout_requeue"},
+        )
+        await db.commit()
+
+    await execution_service.enqueue_execution(execution_id)
 
 
 async def recover_scraping_executions(ctx: dict) -> None:

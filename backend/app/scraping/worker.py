@@ -32,10 +32,17 @@ async def shutdown(ctx: dict) -> None:
     print("scraping-worker: shutdown complete", flush=True)
 
 
+# Full-census runs need multi-hour slices. Never inherit a short Coolify/env override.
+_MIN_JOB_TIMEOUT_SECONDS = 21600
+
+
 class WorkerSettings:
     functions = [run_scraping_execution]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()
     max_jobs = get_settings().scraping_worker_concurrency
-    job_timeout = get_settings().scraping_worker_job_timeout_seconds
+    job_timeout = max(
+        int(get_settings().scraping_worker_job_timeout_seconds or 0),
+        _MIN_JOB_TIMEOUT_SECONDS,
+    )

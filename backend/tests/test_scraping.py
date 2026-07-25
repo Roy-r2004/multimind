@@ -2991,7 +2991,7 @@ async def test_failed_execution_cleanup_terminalizes_active_agents_and_tasks(
 
 
 def test_scraping_worker_timeout_is_explicit_and_above_default():
-    assert WorkerSettings.job_timeout > 300
+    assert WorkerSettings.job_timeout >= 21600
 
 
 def test_worker_uses_real_source_discovery_function():

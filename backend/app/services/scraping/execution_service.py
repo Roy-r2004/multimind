@@ -505,11 +505,16 @@ class ScrapingExecutionService:
         queued_on_redis = False
         if not inline:
             try:
+                from uuid import uuid4
+
+                job_timeout = max(int(settings.scraping_worker_job_timeout_seconds or 0), 21600)
                 redis = await create_pool(_redis_settings())
+                # Unique job id so timeout re-queues are not dropped as duplicates.
                 await redis.enqueue_job(
                     "run_scraping_execution",
                     execution_id,
-                    _job_id=f"scraping-execution:{execution_id}",
+                    _job_id=f"scraping-execution:{execution_id}:{uuid4().hex[:12]}",
+                    _job_timeout=job_timeout,
                 )
                 await redis.close()
                 queued_on_redis = True
