@@ -422,6 +422,23 @@ class ScrapingExecutionService:
             raise NotFoundError("Facility not found")
         return self._facility_detail_response(facility)
 
+    async def requeue_execution(
+        self, db: AsyncSession, auth: AuthContext, execution_id: str
+    ) -> ScrapingExecutionSummary:
+        """Re-publish a stuck queued execution onto the ARQ worker queue."""
+        execution = await self._execution_row(db, auth, execution_id)
+        if execution.status != ScrapingExecutionStatus.QUEUED:
+            raise ConflictError("Only queued executions can be re-queued onto the worker.")
+        await self.emit_event(
+            db,
+            execution.id,
+            "execution_requeued",
+            "Queued execution was re-published to the scraping worker.",
+        )
+        await db.commit()
+        await self.enqueue_execution(execution.id)
+        return self._summary(execution)
+
     async def cancel_execution(
         self, db: AsyncSession, auth: AuthContext, execution_id: str
     ) -> ScrapingExecutionSummary:
@@ -507,14 +524,13 @@ class ScrapingExecutionService:
             try:
                 from uuid import uuid4
 
-                job_timeout = max(int(settings.scraping_worker_job_timeout_seconds or 0), 21600)
                 redis = await create_pool(_redis_settings())
                 # Unique job id so timeout re-queues are not dropped as duplicates.
+                # Note: arq 0.28 has no per-job _job_timeout kwarg; timeout comes from WorkerSettings.
                 await redis.enqueue_job(
                     "run_scraping_execution",
                     execution_id,
                     _job_id=f"scraping-execution:{execution_id}:{uuid4().hex[:12]}",
-                    _job_timeout=job_timeout,
                 )
                 await redis.close()
                 queued_on_redis = True
