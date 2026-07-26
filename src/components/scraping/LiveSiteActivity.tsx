@@ -93,10 +93,10 @@ export function LiveSiteActivity({
       <DreamPanel>
         <div className="flex items-start gap-3">
           <div className="rounded-lg border border-white/15 bg-white/5 p-2">
-            <Globe2 className="size-4 text-[#d4a84b]" />
+            <Globe2 className="size-4 text-sky-300" />
           </div>
           <div>
-            <h2 className="font-display text-lg text-[#f7f1e4]">Sites in the drift</h2>
+            <h2 className="font-display text-lg text-white">Sites in the drift</h2>
             <p className="mt-1 text-sm text-white/50">
               {isTerminal
                 ? "No source websites were opened during this scrape."
@@ -113,11 +113,11 @@ export function LiveSiteActivity({
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="font-display text-lg text-[#f7f1e4]">Sites in the drift</h2>
+            <h2 className="font-display text-lg text-white">Sites in the drift</h2>
             {!isTerminal && activeCount > 0 && (
               <Badge
                 variant="secondary"
-                className="gap-1 border border-[#d4a84b]/35 bg-[#d4a84b]/15 text-[#f3e6c4]"
+                className="gap-1 border border-sky-300/35 bg-sky-400/15 text-sky-100"
               >
                 <Loader2 className="size-3 animate-spin" />
                 {activeCount} active
@@ -156,7 +156,7 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
     <div
       className={cn(
         "flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 transition",
-        active && "dream-float border-[#d4a84b]/35 bg-[#d4a84b]/10",
+        active && "dream-float border-sky-300/35 bg-sky-400/10",
       )}
     >
       <StageDot stage={row.stage} />
@@ -166,7 +166,7 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
             href={row.url}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex max-w-full items-center gap-1 truncate font-medium text-[#f7f1e4] hover:text-[#d4a84b]"
+            className="inline-flex max-w-full items-center gap-1 truncate font-medium text-white hover:text-sky-300"
           >
             <span className="truncate">{row.title}</span>
             <ExternalLink className="size-3 shrink-0 opacity-60" />
@@ -177,8 +177,8 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
               "shrink-0 border border-white/10 bg-white/5 text-white/70",
               row.stage === "extracted" && "border-teal-300/30 bg-teal-400/10 text-teal-100",
               row.stage === "failed" && "border-rose-400/30 bg-rose-500/10 text-rose-100",
-              row.stage === "blocked" && "border-[#d4a84b]/30 bg-[#d4a84b]/10 text-[#f3e6c4]",
-              active && "border-[#d4a84b]/40 bg-[#d4a84b]/15 text-[#f3e6c4]",
+              row.stage === "blocked" && "border-sky-300/30 bg-sky-400/10 text-sky-100",
+              active && "border-sky-300/40 bg-sky-400/15 text-sky-100",
             )}
           >
             {STAGE_LABEL[row.stage]}
@@ -206,7 +206,7 @@ function StageDot({ stage }: { stage: SiteStage }) {
       : stage === "failed"
         ? "bg-rose-400"
         : stage === "blocked"
-          ? "bg-[#d4a84b]"
+          ? "bg-amber-300"
           : stage === "fetched"
             ? "bg-sky-300"
             : stage === "skipped" || stage === "unsupported"
@@ -214,7 +214,7 @@ function StageDot({ stage }: { stage: SiteStage }) {
               : stage === "queued"
                 ? "bg-white/25"
                 : active
-                  ? "bg-[#d4a84b]"
+                  ? "bg-sky-400"
                   : "bg-white/20";
   return (
     <span className={cn("mt-1.5 size-2.5 shrink-0 rounded-full", color, active && "animate-pulse")} />

@@ -33,6 +33,7 @@ import {
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
+import { VendorLogo } from "@/components/chat/VendorLogo";
 import { GlassCard, ModelPill } from "@/components/cinematic/PageChrome";
 import ModelSetModal from "@/components/ModelSetModal";
 import { PromptBuilderModal } from "@/components/chat/PromptBuilderModal";
@@ -651,10 +652,10 @@ export function ChatPage() {
               {set.models.map((id) => {
                 const m = modelById(id);
                 return (
-                  <span
+                  <VendorLogo
                     key={id}
-                    className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
-                    style={{ color: m.color, background: m.color }}
+                    vendor={m.vendor}
+                    className="size-5"
                     title={m.name}
                   />
                 );
@@ -664,7 +665,7 @@ export function ChatPage() {
                 onClick={() => setShowCouncil(true)}
                 className="ml-2 text-xs font-medium text-sky-300 hover:text-sky-200 hover:underline"
               >
-                Edit council ({set.models.length} models)
+                Synthesize · Edit council ({set.models.length} models)
               </button>
               <button
                 onClick={() => setShowStrategy(true)}
@@ -728,14 +729,15 @@ export function ChatPage() {
 
             {empty && set && (
               <div className="animate-fade-up space-y-8 py-10 text-center md:py-14">
-                <h2 className="font-display text-4xl font-semibold tracking-tight text-white md:text-6xl">
-                  Ask once.
-                  <br />
-                  <span className="text-gradient">Decide with clarity.</span>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-sky-300/90">
+                  01 — Chat Council
+                </p>
+                <h2 className="font-display text-4xl tracking-tight text-white md:text-6xl">
+                  Five minds.{" "}
+                  <span className="text-gradient italic">One verdict.</span>
                 </h2>
                 <p className="mx-auto max-w-xl text-sm text-slate-300/85 md:text-base">
-                  {set.models.length} {set.models.length === 1 ? "model answers" : "models answer"}{" "}
-                  in parallel — then Verdict AI synthesizes the final answer using{" "}
+                  Ask once. Compare frontier models. Decide with clarity — Verdict AI uses{" "}
                   <strong className="text-white">{set.strategy}</strong>.
                 </p>
                 <button
@@ -1272,7 +1274,7 @@ function LoadingTurn({
   modelById,
 }: {
   set: ModelSet;
-  modelById: (id: string) => { name: string; color: string };
+  modelById: (id: string) => { name: string; color: string; vendor: string };
 }) {
   return (
     <div className="space-y-4">
@@ -1280,22 +1282,28 @@ function LoadingTurn({
         {set.models.map((id) => {
           const m = modelById(id);
           return (
-            <GlassCard key={id} className="p-4">
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <span className="size-2 rounded-full" style={{ background: m.color }} />
+            <GlassCard key={id} variant="council" className="relative overflow-hidden p-4">
+              <VendorLogo
+                vendor={m.vendor}
+                watermark
+                className="pointer-events-none absolute -right-2 -bottom-2 size-20"
+              />
+              <div className="relative flex items-center gap-2 text-sm font-medium text-white">
+                <VendorLogo vendor={m.vendor} className="size-7" />
                 {m.name}
-                <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
+                <Loader2 className="ml-auto size-3.5 animate-spin text-sky-300" />
               </div>
-              <div className="mt-3 space-y-2">
-                <div className="h-2 animate-pulse rounded bg-muted" />
-                <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+              <div className="relative mt-3 space-y-2">
+                <div className="h-2 animate-pulse rounded bg-white/10" />
+                <div className="h-2 w-10/12 animate-pulse rounded bg-white/10" />
               </div>
             </GlassCard>
           );
         })}
       </div>
-      <GlassCard className="p-4 text-sm text-muted-foreground">
-        <Loader2 className="mr-2 inline size-3.5 animate-spin text-primary" /> Synthesizing verdict…
+      <GlassCard variant="council" className="p-4 text-sm text-slate-300">
+        <Loader2 className="mr-2 inline size-3.5 animate-spin text-sky-300" /> Synthesizing
+        verdict…
       </GlassCard>
     </div>
   );
@@ -1336,7 +1344,7 @@ function AiTurn({
 }: {
   set: ModelSet;
   turn: ApiTurn;
-  modelById: (id: string) => { name: string; color: string };
+  modelById: (id: string) => { name: string; color: string; vendor: string };
   pendingSavedVerdicts: Set<string>;
   pinnedVerdictId?: string | null;
   onTogglePin: (verdictId: string, currentlyPinned: boolean) => void;
@@ -1369,7 +1377,7 @@ function AiTurn({
           <button
             type="button"
             onClick={() => setAnswersCollapsed((value) => !value)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
             aria-expanded={!answersCollapsed}
           >
             <ChevronDown
@@ -1378,9 +1386,7 @@ function AiTurn({
             {answersCollapsed ? "Show AI council answers" : "Hide AI council answers"}
           </button>
           {answersCollapsed && (
-            <span className="text-xs text-muted-foreground">
-              {answerCards.length} answers hidden
-            </span>
+            <span className="text-xs text-slate-500">{answerCards.length} answers hidden</span>
           )}
         </div>
       )}
@@ -1397,47 +1403,53 @@ function AiTurn({
               return (
                 <GlassCard
                   key={id}
+                  variant="council"
                   className={cn(
-                    "p-4",
-                    isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
+                    "relative overflow-hidden p-4",
+                    isTopPick && "ring-2 ring-sky-300/70 shadow-[0_0_40px_rgb(56_189_248_/_0.25)]",
                   )}
                 >
-                  <div className="flex items-center gap-2 text-sm">
-                    <span
-                      className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
-                      style={{ color: m.color, background: m.color }}
-                    />
-                    <span className="font-medium">{m.name}</span>
+                  <VendorLogo
+                    vendor={m.vendor}
+                    watermark
+                    className="pointer-events-none absolute -right-2 -bottom-2 size-24"
+                  />
+                  <div className="relative flex items-start gap-2 text-sm">
+                    <VendorLogo vendor={m.vendor} className="size-8 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[11px] text-slate-400">{m.vendor}</div>
+                      <div className="truncate font-medium text-white">{m.name}</div>
+                    </div>
                     {isTopPick && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
                         <Trophy className="size-3" />
                         Top pick
                       </span>
                     )}
-                    {inProgress && (
-                      <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
-                    )}
-                    {!inProgress && a?.confidence != null && (
+                  </div>
+                  {!inProgress && a?.confidence != null && (
+                    <div className="relative mt-2">
                       <ModelConfidenceBadge
                         confidence={a.confidence}
                         isTopPick={isTopPick}
                         strategy={turnStrategy}
                         modelName={m.name}
                       />
-                    )}
-                  </div>
+                    </div>
+                  )}
                   {failed ? (
-                    <p className="mt-3 text-xs text-destructive">
+                    <p className="relative mt-3 text-xs text-rose-300">
                       <AlertCircle className="mr-1 inline size-3.5" />
                       {a?.error_message ?? "Failed"}
                     </p>
                   ) : inProgress ? (
-                    <div className="mt-3 space-y-2">
-                      <div className="h-2 animate-pulse rounded bg-muted" />
-                      <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+                    <div className="relative mt-3 space-y-2">
+                      <div className="h-2 animate-pulse rounded bg-white/10" />
+                      <div className="h-2 w-10/12 animate-pulse rounded bg-white/10" />
+                      <Loader2 className="size-3.5 animate-spin text-sky-300" />
                     </div>
                   ) : (
-                    <div className="mt-3">
+                    <div className="relative mt-3 text-slate-100/90">
                       <MessageContent compact>{a?.text ?? ""}</MessageContent>
                     </div>
                   )}
@@ -1455,31 +1467,31 @@ function AiTurn({
           data-verdict-synthesis="true"
           className={cn(
             "scroll-mt-28",
-            isPinned && "rounded-2xl ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
+            isPinned && "rounded-2xl ring-2 ring-amber-300/60",
           )}
         >
-          <GlassCard glow className="p-5">
+          <GlassCard glow variant="council" className="p-5">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-                <Gavel className="size-4" />
+              <span className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-sky-400 to-violet-500 text-white">
+                <Sparkles className="size-4" />
               </span>
-              <span className="font-medium">Verdict</span>
+              <span className="font-medium text-white">Verdict</span>
               {isPinned && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
                   <Pin className="size-3 fill-current" /> Pinned
                 </span>
               )}
-              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium text-sky-200">
                 {turn.verdict.strategy}
               </span>
               {judgeModel && (
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
-                  <span className="size-2 rounded-full" style={{ background: judgeModel.color }} />
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-xs font-medium text-slate-200">
+                  <VendorLogo vendor={judgeModel.vendor} className="size-4" />
                   Judge: {judgeModel.name}
                 </span>
               )}
               {topModelId && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/15 px-2 py-0.5 text-xs font-semibold text-emerald-200">
                   <Trophy className="size-3" />
                   Best: {modelById(topModelId).name}
                 </span>
@@ -1493,8 +1505,8 @@ function AiTurn({
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
                     isPinned
-                      ? "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300"
-                      : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                      ? "border-amber-400/40 bg-amber-400/10 text-amber-200"
+                      : "border-white/15 bg-white/5 text-slate-300 hover:bg-white/10",
                   )}
                 >
                   <Pin className={cn("size-3.5", isPinned && "fill-current")} />
@@ -1512,8 +1524,8 @@ function AiTurn({
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
                       bookmarkState.saved
-                        ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
-                        : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                        ? "border-sky-400/40 bg-sky-400/10 text-sky-200"
+                        : "border-white/15 bg-white/5 text-slate-300 hover:bg-white/10",
                     )}
                   >
                     <Bookmark
@@ -1530,7 +1542,7 @@ function AiTurn({
                   <Link
                     to="/lessons/$id"
                     params={{ id: turn.lesson_id }}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 hover:bg-sky-400/15"
                   >
                     <BookOpen className="size-3.5" /> View lesson
                   </Link>
@@ -1538,27 +1550,27 @@ function AiTurn({
                   <button
                     type="button"
                     onClick={openDisagree}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
+                    className="council-glass-cta inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold"
                   >
-                    <Swords className="size-3.5" /> challenge
+                    <Swords className="size-3.5" /> Challenge
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={openDisagree}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary shadow-sm hover:bg-primary/15"
+                    className="council-glass-cta inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold"
                   >
                     <Swords className="size-3.5" /> Challenge
                   </button>
                 )}
               </div>
             </div>
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 space-y-3 text-slate-100">
               <MessageContent>{turn.verdict.text}</MessageContent>
               {turn.verdict.reason && (
                 <MessageContent
                   muted
-                  className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-slate-300"
                 >
                   {turn.verdict.reason}
                 </MessageContent>

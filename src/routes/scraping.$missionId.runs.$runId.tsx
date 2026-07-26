@@ -213,7 +213,7 @@ function ScrapingRunDetailPage() {
             <DreamPanel tone="amber">
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="font-display text-2xl text-[#f7f1e4]">
+                  <h2 className="font-display text-2xl text-white">
                     {activeExecution
                       ? "Vessel in flight"
                       : executions.some((item) => item.status === "completed")
@@ -225,9 +225,9 @@ function ScrapingRunDetailPage() {
                   </p>
                   {!activeExecution && (
                     <p className="mt-2 text-xs text-white/45">
-                      <strong className="text-[#f3e6c4]">Full census</strong> uses much higher
+                      <strong className="text-sky-100">Full census</strong> uses much higher
                       limits (hours, higher cost).{" "}
-                      <strong className="text-[#f3e6c4]">Standard</strong> is faster for demos.
+                      <strong className="text-sky-100">Standard</strong> is faster for demos.
                     </p>
                   )}
                   {!activeExecution && (
@@ -238,7 +238,7 @@ function ScrapingRunDetailPage() {
                         onChange={(event) =>
                           setMissionProfile(event.target.value as ScrapingMissionProfile)
                         }
-                        className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-[#f7f1e4] outline-none"
+                        className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white outline-none"
                       >
                         <option value="full_national_census">Full national census</option>
                         <option value="private_residential">Private residential</option>
@@ -252,7 +252,7 @@ function ScrapingRunDetailPage() {
                       type="button"
                       size="lg"
                       disabled={startingExecution}
-                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                      className="council-glass-cta"
                       onClick={() => void handleStartExecution()}
                     >
                       Watch progress
@@ -264,7 +264,7 @@ function ScrapingRunDetailPage() {
                         size="lg"
                         variant="outline"
                         disabled={startingExecution || run.status !== "planned"}
-                        className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                        className="border-white/20 bg-white/5 text-white hover:bg-white/10"
                         onClick={() => void handleStartExecution("real")}
                       >
                         {startingExecution
@@ -277,7 +277,7 @@ function ScrapingRunDetailPage() {
                         type="button"
                         size="lg"
                         disabled={startingExecution || run.status !== "planned"}
-                        className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                        className="council-glass-cta"
                         onClick={() => void handleStartExecution("full_census")}
                       >
                         {startingExecution ? "Starting…" : "Full census"}
@@ -289,11 +289,11 @@ function ScrapingRunDetailPage() {
             </DreamPanel>
 
             <DreamPanel>
-              <h2 className="font-display text-lg text-[#f7f1e4]">Results</h2>
+              <h2 className="font-display text-lg text-white">Results</h2>
               {executions.length === 0 ? (
                 <p className="mt-3 text-sm text-white/55">
-                  No scrape yet. Choose <strong className="text-[#f3e6c4]">Standard scrape</strong>{" "}
-                  or <strong className="text-[#f3e6c4]">Full census</strong> above.
+                  No scrape yet. Choose <strong className="text-sky-100">Standard scrape</strong>{" "}
+                  or <strong className="text-sky-100">Full census</strong> above.
                 </p>
               ) : (
                 <div className="mt-4 space-y-3">
@@ -312,7 +312,7 @@ function ScrapingRunDetailPage() {
                             <Badge variant="secondary">{execution.status_label}</Badge>
                             <Badge
                               variant="outline"
-                              className="border-[#d4a84b]/35 text-[#f3e6c4]"
+                              className="border-sky-300/35 text-sky-100"
                             >
                               {execution.mode === "full_census" ? "Full census" : "Standard"}
                             </Badge>
@@ -332,7 +332,7 @@ function ScrapingRunDetailPage() {
                         <div className="flex flex-wrap gap-2">
                           <Button
                             type="button"
-                            className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                            className="council-glass-cta"
                             onClick={() =>
                               void navigate({
                                 to: "/scraping/$missionId/executions/$executionId",
@@ -347,7 +347,7 @@ function ScrapingRunDetailPage() {
                               type="button"
                               variant="outline"
                               disabled={deletingExecutionId === execution.id}
-                              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
                               onClick={() => setExecutionToDelete(execution)}
                             >
                               {deletingExecutionId === execution.id ? "Deleting..." : "Delete"}
@@ -387,7 +387,7 @@ function ScrapingRunDetailPage() {
                       type="button"
                       variant="outline"
                       disabled={cancelling}
-                      className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                      className="border-white/20 bg-white/5 text-white hover:bg-white/10"
                       onClick={() => void handleCancel()}
                     >
                       {cancelling ? "Cancelling..." : "Cancel plan"}
@@ -425,7 +425,7 @@ function ScrapingRunDetailPage() {
               type="button"
               variant="outline"
               disabled={deleting}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
               onClick={() => setShowDelete(false)}
             >
               Cancel
@@ -458,7 +458,7 @@ function ScrapingRunDetailPage() {
               type="button"
               variant="outline"
               disabled={deletingExecutionId !== null}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
               onClick={() => setExecutionToDelete(null)}
             >
               Cancel
@@ -496,7 +496,7 @@ function AgentCard({
     <DreamPanel className="p-5">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="secondary">#{agent.sequence}</Badge>
-        <h3 className="font-semibold text-[#f7f1e4]">{agent.name}</h3>
+        <h3 className="font-semibold text-white">{agent.name}</h3>
         <Badge variant="secondary">{agent.status}</Badge>
       </div>
       <dl className="mt-4 space-y-3 text-sm">
@@ -517,7 +517,7 @@ function AgentCard({
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="font-medium text-[#f7f1e4]">{label}</dt>
+      <dt className="font-medium text-white">{label}</dt>
       <dd className="mt-1 whitespace-pre-wrap text-white/50">{value}</dd>
     </div>
   );

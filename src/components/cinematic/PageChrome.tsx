@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Check } from "lucide-react";
+import { VendorLogo } from "@/components/chat/VendorLogo";
 import { cn } from "@/lib/utils";
 
 export function CinematicBackdrop() {
@@ -105,22 +106,14 @@ export function ModelPill({
         </span>
       )}
       <div className="flex items-center gap-3">
-        <span
-          className={cn(
-            "shrink-0 shadow-[0_0_16px_currentColor]",
-            glass
-              ? "size-9 rounded-xl ring-1 ring-white/20"
-              : "size-3 rounded-full",
-          )}
-          style={
-            glass
-              ? {
-                  color,
-                  background: `linear-gradient(145deg, ${color}, color-mix(in srgb, ${color} 40%, #0f172a))`,
-                }
-              : { color, background: color }
-          }
-        />
+        {glass ? (
+          <VendorLogo vendor={vendor} className="size-9 shrink-0 rounded-xl" />
+        ) : (
+          <span
+            className="size-3 shrink-0 rounded-full shadow-[0_0_16px_currentColor]"
+            style={{ color, background: color }}
+          />
+        )}
         <div className="min-w-0">
           <div
             className={cn(
@@ -146,9 +139,10 @@ export function ModelPill({
         </div>
       </div>
       {glass && (
-        <span
-          className="mt-1 size-2 rounded-full shadow-[0_0_8px_currentColor]"
-          style={{ color, background: color }}
+        <VendorLogo
+          vendor={vendor}
+          watermark
+          className="pointer-events-none absolute -right-1 -bottom-1 size-16"
         />
       )}
     </div>

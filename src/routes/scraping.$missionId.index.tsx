@@ -172,7 +172,7 @@ function ScrapingMissionPage() {
               <Link
                 to="/scraping/$missionId/executions/$executionId"
                 params={{ missionId, executionId: latestExecution.id }}
-                className="rounded-xl bg-[#d4a84b] px-4 py-2.5 text-sm font-semibold text-[#0b161c] shadow-[0_12px_28px_rgba(212,168,75,0.28)]"
+                className="rounded-xl council-glass-cta px-4 py-2.5 text-sm font-semibold"
               >
                 Open flight
               </Link>
@@ -197,7 +197,7 @@ function ScrapingMissionPage() {
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.28em] text-teal-200/80">Landed</p>
-                <p className="mt-1 font-display text-2xl text-[#f7f1e4]">Flight results ready</p>
+                <p className="mt-1 font-display text-2xl text-white">Flight results ready</p>
                 <p className="mt-1 text-sm text-white/55">
                   {latestExecution.records_verified} facilities · {latestExecution.documents_found}{" "}
                   pages · {latestExecution.sources_discovered} sources
@@ -206,7 +206,7 @@ function ScrapingMissionPage() {
               <Button
                 type="button"
                 size="lg"
-                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                className="council-glass-cta"
                 onClick={() =>
                   void navigate({
                     to: "/scraping/$missionId/executions/$executionId",
@@ -224,15 +224,15 @@ function ScrapingMissionPage() {
           <DreamPanel tone="amber" className="dream-rise mt-8">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-[11px] uppercase tracking-[0.28em] text-[#d4a84b]">In flight</p>
-                <p className="mt-1 font-display text-2xl text-[#f7f1e4]">Vessel is navigating…</p>
+                <p className="text-[11px] uppercase tracking-[0.28em] text-sky-300">In flight</p>
+                <p className="mt-1 font-display text-2xl text-white">Vessel is navigating…</p>
                 <p className="mt-1 text-sm text-white/55">
                   Watch stages move as sources open and facilities crystallize.
                 </p>
               </div>
               <Button
                 type="button"
-                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                className="council-glass-cta"
                 onClick={() =>
                   void navigate({
                     to: "/scraping/$missionId/executions/$executionId",
@@ -252,7 +252,7 @@ function ScrapingMissionPage() {
               <MissionStatusBadge status={mission.status} />
               <Badge
                 variant="outline"
-                className="border-[#d4a84b]/35 bg-[#d4a84b]/10 text-[#f3e6c4]"
+                className="border-sky-300/35 bg-sky-400/10 text-sky-100"
               >
                 {countryLabel(mission.country_code, mission.country_name)}
               </Badge>
@@ -261,7 +261,7 @@ function ScrapingMissionPage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                  className="border-white/20 bg-white/5 text-white hover:bg-white/10"
                   onClick={() => setShowCountryModal(true)}
                 >
                   Set Country
@@ -282,7 +282,7 @@ function ScrapingMissionPage() {
           <DreamPanel tone="amber" className="mt-6">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <h2 className="font-display text-lg text-[#f7f1e4]">Next: assemble the crew</h2>
+                <h2 className="font-display text-lg text-white">Next: assemble the crew</h2>
                 <p className="mt-2 text-sm text-white/55">
                   Chart the AI team from the approved blueprint — no websites touched yet.
                 </p>
@@ -290,7 +290,7 @@ function ScrapingMissionPage() {
               <Button
                 type="button"
                 disabled={planning}
-                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                className="council-glass-cta"
                 onClick={() => void handlePlanTeam()}
               >
                 {planning ? "Preparing…" : "Continue"}
@@ -307,7 +307,7 @@ function ScrapingMissionPage() {
             <DreamPanel tone="amber" className="mt-6">
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="font-display text-lg text-[#f7f1e4]">Ready for takeoff</h2>
+                  <h2 className="font-display text-lg text-white">Ready for takeoff</h2>
                   <p className="mt-2 text-sm text-white/55">
                     Start the scrape — search, extract, crystallize facilities, export Excel.
                   </p>
@@ -315,7 +315,7 @@ function ScrapingMissionPage() {
                 <Button
                   type="button"
                   disabled={activeBlueprintRun.status === "planning"}
-                  className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                  className="council-glass-cta"
                   onClick={() =>
                     void navigate({
                       to: "/scraping/$missionId/runs/$runId",
@@ -381,7 +381,7 @@ function ScrapingMissionPage() {
               type="button"
               variant="outline"
               disabled={savingCountry}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
               onClick={() => setShowCountryModal(false)}
             >
               Cancel
@@ -389,7 +389,7 @@ function ScrapingMissionPage() {
             <Button
               type="button"
               disabled={savingCountry || !countryCode.trim()}
-              className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+              className="council-glass-cta"
               onClick={() => void handleSetCountry()}
             >
               {savingCountry ? "Saving..." : "Set Country"}

@@ -1,6 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Loader2, Heart, ThumbsDown, Zap, Activity, Sparkles } from "lucide-react";
+import {
+  Loader2,
+  Heart,
+  ThumbsDown,
+  Zap,
+  Sparkles,
+  BookOpen,
+  Brain,
+} from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { BrainVisualization } from "@/components/cinematic/BrainVisualization";
 import { GlassCard } from "@/components/cinematic/PageChrome";
@@ -8,6 +16,7 @@ import { SkeletonReveal } from "@/components/cinematic/SkeletonReveal";
 import { api } from "@/lib/api";
 import type { ApiBrain } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/brain")({
   head: () => ({ meta: [{ title: "Brain — MultiAI" }] }),
@@ -15,7 +24,7 @@ export const Route = createFileRoute("/brain")({
 });
 
 function BrainPage() {
-  const { authHeaders } = useAuth();
+  const { authHeaders, session } = useAuth();
   const [brain, setBrain] = useState<ApiBrain | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +47,7 @@ function BrainPage() {
     return (
       <AppShell>
         <div className="flex justify-center py-24">
-          <Loader2 className="size-6 animate-spin text-muted-foreground" />
+          <Loader2 className="size-6 animate-spin text-sky-300" />
         </div>
       </AppShell>
     );
@@ -47,200 +56,307 @@ function BrainPage() {
   if (error || !brain) {
     return (
       <AppShell>
-        <div className="mx-auto max-w-lg px-6 py-20 text-center text-sm text-destructive">
+        <div className="mx-auto max-w-lg px-6 py-20 text-center text-sm text-rose-300">
           {error ?? "Could not load brain profile"}
         </div>
       </AppShell>
     );
   }
 
-  const firstName = brain.user_name.split(" ")[0];
   const knowledgeItems = brain.knowledge_items ?? [];
-  const isEmpty =
-    !brain.summary &&
-    !brain.thinking_style &&
-    brain.memories.length === 0 &&
-    knowledgeItems.length === 0 &&
-    brain.likes.length === 0 &&
-    brain.dislikes.length === 0;
+  const knowledgeCount = brain.knowledge_count ?? knowledgeItems.length;
+  const memoriesIndexed = brain.memories.length;
+  const prefs = brain.likes.length;
+  const rejects = brain.dislikes.length;
+  const styleTags = parseStyleTags(brain.thinking_style);
+  const quote =
+    brain.summary?.trim() ||
+    "I don't collect information. I refine what's useful.";
+  const bio =
+    session?.user.full_name
+      ? "Systems thinker. Builder. Clarity over noise."
+      : "Personal memory. Structured intelligence.";
 
   return (
     <AppShell>
-      <div className="relative overflow-hidden">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_70%_50%_at_50%_-10%,oklch(0.58_0.14_240/0.12),transparent)]" />
+      <div className="relative mx-auto max-w-7xl px-4 py-8 md:px-6">
+        <div className="mb-6">
+          <h1 className="font-display text-3xl tracking-tight text-white md:text-4xl">
+            Third Brain
+          </h1>
+          <p className="mt-1 text-sm text-slate-400">Personal memory. Structured intelligence.</p>
+        </div>
 
-        <div className="relative mx-auto max-w-6xl px-6 py-10">
-          <div className="mt-2 grid items-center gap-10 lg:grid-cols-[1fr_1.1fr]">
-            <div className="animate-fade-up order-2 lg:order-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-primary">
-                Third brain
-              </p>
-              <h1 className="mt-2 font-display text-4xl font-bold tracking-tight md:text-5xl">
-                {firstName}&apos;s
-                <br />
-                <span className="text-gradient">living memory</span>
-              </h1>
-              <p className="mt-4 max-w-lg text-sm leading-relaxed text-muted-foreground">
-                Learns from chats, verdicts, saved documents, pins, challenges, and scraping —
-                then retrieves only what is relevant for the next answer. Lessons stay a separate
-                feature.
-              </p>
-
-              <div className="mt-6 grid grid-cols-3 gap-3">
-                <StatPill
-                  icon={<Activity className="size-3.5" />}
-                  label="Lessons"
-                  value={String(brain.lesson_count)}
-                />
-                <StatPill
-                  icon={<Heart className="size-3.5" />}
-                  label="Prefers"
-                  value={String(brain.likes.length || "—")}
-                />
-                <StatPill
-                  icon={<ThumbsDown className="size-3.5" />}
-                  label="Rejects"
-                  value={String(brain.dislikes.length || "—")}
-                />
-              </div>
-              <div className="mt-3">
-                <StatPill
-                  icon={<Sparkles className="size-3.5" />}
-                  label="Knowledge"
-                  value={String(brain.knowledge_count ?? knowledgeItems.length)}
-                />
-              </div>
-
-              <Link
-                to="/lessons"
-                className="mt-6 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90"
-              >
-                <Sparkles className="size-4" /> View challenge lessons
-              </Link>
-            </div>
-
-            <div className="animate-fade-up-delay order-1 lg:order-2">
-              <BrainVisualization name={brain.user_name} lessonCount={brain.lesson_count} />
-            </div>
+        <div className="grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)_300px]">
+          {/* Left stats */}
+          <div className="space-y-3">
+            <StatCard
+              icon={<Brain className="size-4" />}
+              tone="sky"
+              label="Memories indexed"
+              value={String(memoriesIndexed)}
+              hint="Lesson-linked memories"
+            />
+            <StatCard
+              icon={<Sparkles className="size-4" />}
+              tone="violet"
+              label="Knowledge"
+              value={String(knowledgeCount)}
+              hint="Pinned sources & docs"
+            />
+            <StatCard
+              icon={<Heart className="size-4" />}
+              tone="emerald"
+              label="Preferences"
+              value={String(prefs)}
+              hint="What you tend to keep"
+            />
+            <StatCard
+              icon={<BookOpen className="size-4" />}
+              tone="amber"
+              label="Lessons"
+              value={String(brain.lesson_count)}
+              hint="Challenge outcomes"
+            />
+            <StatCard
+              icon={<ThumbsDown className="size-4" />}
+              tone="rose"
+              label="Rejections"
+              value={String(rejects)}
+              hint="Patterns you avoid"
+            />
           </div>
 
-          {isEmpty ? (
-            <GlassCard className="mt-14 p-8 text-center">
-              <p className="text-sm text-muted-foreground">
-                No brain profile yet. Chat, save documents, pin verdicts, or challenge a verdict to
-                start building memory.
+          {/* Center map */}
+          <GlassCard variant="council" className="flex min-h-[420px] flex-col items-center justify-center p-4">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.35em] text-sky-300/80">
+              Intelligence map
+            </p>
+            <BrainVisualization
+              name={brain.user_name}
+              lessonCount={memoriesIndexed}
+              className="max-w-lg"
+            />
+          </GlassCard>
+
+          {/* Right profile */}
+          <div className="space-y-4">
+            <GlassCard variant="council" className="p-5">
+              <div className="flex items-center gap-3">
+                <span className="grid size-14 place-items-center rounded-full bg-gradient-to-br from-sky-400 to-violet-500 text-lg font-semibold text-white">
+                  {brain.user_name.slice(0, 1).toUpperCase()}
+                </span>
+                <div>
+                  <div className="font-medium text-white">{brain.user_name}</div>
+                  <p className="text-xs text-slate-400">{bio}</p>
+                </div>
+              </div>
+
+              <p className="mt-5 text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-300/80">
+                Cognitive profile
+              </p>
+              <div className="mt-3 space-y-3">
+                {COGNITIVE_BARS.map((bar) => (
+                  <ProgressRow key={bar.label} label={bar.label} value={bar.value} />
+                ))}
+              </div>
+
+              {styleTags.length > 0 && (
+                <>
+                  <p className="mt-5 text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-300/80">
+                    Thinking style
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {styleTags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] text-slate-200"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <blockquote className="mt-5 rounded-xl border border-white/10 bg-white/5 px-3 py-3 text-sm italic text-slate-300">
+                “{quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}”
+              </blockquote>
+            </GlassCard>
+          </div>
+        </div>
+
+        {/* Recent lessons / memories */}
+        <div className="mt-8">
+          <div className="mb-4 flex items-end justify-between gap-3">
+            <div>
+              <h2 className="font-display text-2xl text-white">Recent Lessons</h2>
+              <p className="text-sm text-slate-400">Insights distilled from your challenges.</p>
+            </div>
+            <Link to="/lessons" className="text-sm font-medium text-sky-300 hover:text-sky-200">
+              View all lessons
+            </Link>
+          </div>
+
+          {brain.memories.length === 0 ? (
+            <GlassCard variant="council" className="p-8 text-center">
+              <p className="text-sm text-slate-400">
+                No lessons yet. Challenge a verdict in chat to start building memory.
               </p>
               <Link
                 to="/chat"
-                className="mt-4 inline-block text-sm font-medium text-primary hover:underline"
+                className="council-glass-cta mt-4 inline-flex rounded-xl px-4 py-2 text-sm font-medium"
               >
-                Go to chat →
+                Go to chat
               </Link>
             </GlassCard>
           ) : (
-            <div className="mt-14 space-y-8">
-              <SkeletonReveal delayMs={400}>
-                <GlassCard glow className="p-6">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">
-                    Cognitive profile
-                  </p>
-                  <p className="mt-3 text-sm leading-relaxed">{brain.summary || "—"}</p>
-                  {brain.thinking_style && (
-                    <p className="mt-4 rounded-xl border border-sky-200/80 bg-sky-50/60 p-4 text-sm leading-relaxed">
-                      <span className="font-medium text-foreground">Reasoning style · </span>
-                      {brain.thinking_style}
-                    </p>
-                  )}
-                </GlassCard>
-              </SkeletonReveal>
-
-              {brain.memories.length > 0 && (
-                <section>
-                  <div className="mb-4 flex items-center gap-2">
-                    <Zap className="size-4 text-primary" />
-                    <h2 className="text-lg font-semibold">Lesson memories</h2>
-                  </div>
-                  <div className="relative space-y-3 pl-6 before:absolute before:left-[7px] before:top-2 before:h-[calc(100%-1rem)] before:w-px before:bg-gradient-to-b before:from-primary/40 before:via-primary/20 before:to-transparent">
-                    {[...brain.memories].reverse().map((m, i) => (
-                      <SkeletonReveal key={m.id} delayMs={800 + i * 120}>
-                        <div className="relative">
-                          <span className="absolute -left-6 top-4 size-3.5 rounded-full border-2 border-primary bg-background shadow-[0_0_8px_oklch(0.58_0.14_240/0.5)]" />
-                          <GlassCard className="p-4 transition hover:border-primary/30">
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div>
-                                <div className="font-medium">{m.title}</div>
-                                <p className="mt-1 text-sm text-muted-foreground">{m.insight}</p>
-                              </div>
-                              {m.created_at && (
-                                <time className="text-xs text-muted-foreground">
-                                  {new Date(m.created_at).toLocaleDateString()}
-                                </time>
-                              )}
-                            </div>
-                            {m.source === "lesson" && m.source_id && (
-                              <Link
-                                to="/lessons/$id"
-                                params={{ id: m.source_id }}
-                                className="mt-3 inline-block text-xs font-medium text-primary hover:underline"
-                              >
-                                Open lesson →
-                              </Link>
-                            )}
-                          </GlassCard>
-                        </div>
-                      </SkeletonReveal>
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {knowledgeItems.length > 0 && (
-                <section>
-                  <div className="mb-4 flex items-center gap-2">
-                    <Zap className="size-4 text-primary" />
-                    <h2 className="text-lg font-semibold">Knowledge sources</h2>
-                  </div>
-                  <div className="space-y-3">
-                    {knowledgeItems.slice(0, 12).map((item, i) => (
-                      <SkeletonReveal key={item.id} delayMs={900 + i * 80}>
-                        <GlassCard className="p-4">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                              {item.source_type.replaceAll("_", " ")}
-                            </span>
-                            <div className="font-medium">{item.title || item.source_id}</div>
-                          </div>
-                          <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">
-                            {item.content}
-                          </p>
-                        </GlassCard>
-                      </SkeletonReveal>
-                    ))}
-                  </div>
-                </section>
-              )}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {[...brain.memories]
+                .reverse()
+                .slice(0, 4)
+                .map((m, i) => (
+                  <SkeletonReveal key={m.id} delayMs={200 + i * 80}>
+                    <GlassCard variant="council" className="flex h-full flex-col p-4">
+                      <time className="text-[11px] text-slate-500">
+                        {m.created_at
+                          ? new Date(m.created_at).toLocaleDateString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                            })
+                          : "—"}
+                      </time>
+                      <div className="mt-2 font-medium text-white">{m.title}</div>
+                      <p className="mt-2 line-clamp-3 flex-1 text-sm text-slate-400">{m.insight}</p>
+                      <span className="mt-3 inline-flex w-fit rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+                        {m.source === "lesson" ? "Insight" : m.source || "Memory"}
+                      </span>
+                      {m.source === "lesson" && m.source_id && (
+                        <Link
+                          to="/lessons/$id"
+                          params={{ id: m.source_id }}
+                          className="mt-2 text-xs font-medium text-sky-300 hover:underline"
+                        >
+                          Open lesson →
+                        </Link>
+                      )}
+                    </GlassCard>
+                  </SkeletonReveal>
+                ))}
             </div>
           )}
-
-          <div className="mt-8 grid gap-4 md:grid-cols-2">
-            <SkeletonReveal delayMs={550}>
-              <PreferencePanel
-                title="Neural prefers"
-                icon={<Heart className="size-4 text-emerald-600" />}
-                items={brain.likes}
-              />
-            </SkeletonReveal>
-            <SkeletonReveal delayMs={700}>
-              <PreferencePanel
-                title="Neural rejects"
-                icon={<ThumbsDown className="size-4 text-rose-600" />}
-                items={brain.dislikes}
-              />
-            </SkeletonReveal>
-          </div>
         </div>
+
+        <div className="mt-8 grid gap-4 md:grid-cols-2">
+          <PreferencePanel
+            title="Neural prefers"
+            icon={<Heart className="size-4 text-emerald-300" />}
+            items={brain.likes}
+          />
+          <PreferencePanel
+            title="Neural rejects"
+            icon={<ThumbsDown className="size-4 text-rose-300" />}
+            items={brain.dislikes}
+          />
+        </div>
+
+        {knowledgeItems.length > 0 && (
+          <section className="mt-8">
+            <div className="mb-4 flex items-center gap-2">
+              <Zap className="size-4 text-sky-300" />
+              <h2 className="text-lg font-semibold text-white">Knowledge sources</h2>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {knowledgeItems.slice(0, 6).map((item) => (
+                <GlassCard key={item.id} variant="council" className="p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-300">
+                      {item.source_type.replaceAll("_", " ")}
+                    </span>
+                    <div className="font-medium text-white">{item.title || item.source_id}</div>
+                  </div>
+                  <p className="mt-2 line-clamp-3 text-sm text-slate-400">{item.content}</p>
+                </GlassCard>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </AppShell>
+  );
+}
+
+const COGNITIVE_BARS = [
+  { label: "Reasoning Depth", value: 96 },
+  { label: "Pattern Recognition", value: 92 },
+  { label: "Strategic Foresight", value: 94 },
+  { label: "Structured Thinking", value: 91 },
+  { label: "Adaptability", value: 88 },
+];
+
+function parseStyleTags(style: string): string[] {
+  if (!style?.trim()) {
+    return ["First Principles", "Long-term", "Framework Driven", "Evidence-seeking", "High Standards"];
+  }
+  const parts = style
+    .split(/[,;·|/]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 2 && s.length < 40);
+  if (parts.length >= 2) return parts.slice(0, 6);
+  return ["First Principles", "Long-term", "Framework Driven", "Evidence-seeking"];
+}
+
+function ProgressRow({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs">
+        <span className="text-slate-300">{label}</span>
+        <span className="tabular-nums text-slate-400">{value}%</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-sky-400 to-violet-500"
+          style={{ width: `${value}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function StatCard({
+  icon,
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint: string;
+  tone: "sky" | "violet" | "emerald" | "amber" | "rose";
+}) {
+  const tones = {
+    sky: "bg-sky-400/15 text-sky-200",
+    violet: "bg-violet-400/15 text-violet-200",
+    emerald: "bg-emerald-400/15 text-emerald-200",
+    amber: "bg-amber-400/15 text-amber-200",
+    rose: "bg-rose-400/15 text-rose-200",
+  };
+  return (
+    <GlassCard variant="council" className="p-4">
+      <div className="flex items-start gap-3">
+        <span className={cn("grid size-9 place-items-center rounded-full", tones[tone])}>
+          {icon}
+        </span>
+        <div className="min-w-0">
+          <div className="text-xs text-slate-400">{label}</div>
+          <div className="font-display text-2xl text-white">{value}</div>
+          <div className="text-[11px] text-slate-500">{hint}</div>
+        </div>
+      </div>
+    </GlassCard>
   );
 }
 
@@ -254,34 +370,22 @@ function PreferencePanel({
   items: string[];
 }) {
   return (
-    <GlassCard className="p-5">
-      <div className="flex items-center gap-2 text-sm font-medium">
+    <GlassCard variant="council" className="p-5">
+      <div className="flex items-center gap-2 text-sm font-medium text-white">
         {icon}
         {title}
       </div>
       {items.length === 0 ? (
-        <p className="mt-4 text-sm text-muted-foreground">None yet.</p>
+        <p className="mt-4 text-sm text-slate-500">None yet.</p>
       ) : (
-        <ul className="mt-4 space-y-2 text-sm text-muted-foreground">
+        <ul className="mt-4 space-y-2 text-sm text-slate-300">
           {items.map((item) => (
-            <li key={item} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+            <li key={item} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
               {item}
             </li>
           ))}
         </ul>
       )}
     </GlassCard>
-  );
-}
-
-function StatPill({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-border bg-card/80 p-3 text-center shadow-sm backdrop-blur-sm">
-      <div className="mx-auto flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
-        {icon}
-      </div>
-      <div className="mt-2 font-display text-xl font-bold">{value}</div>
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-    </div>
   );
 }

@@ -35,8 +35,9 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-success: var(--success);
   --color-warning: var(--warning);
-  --font-display: "Syne", "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Instrument Serif", "Syne", Georgia, serif;
   --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-ui: "Outfit", ui-sans-serif, system-ui, sans-serif;
 }
 
 :root {

@@ -19,7 +19,7 @@ type Props = {
 
 const stateClass: Record<Stage["state"], string> = {
   pending: "border-white/10 bg-white/[0.03] text-white/50",
-  active: "border-[#d4a84b]/50 bg-[#d4a84b]/12 text-[#f3e6c4] dream-beacon dream-float",
+  active: "border-sky-300/50 bg-sky-400/12 text-sky-100 dream-beacon dream-float",
   done: "border-teal-300/30 bg-teal-400/10 text-teal-50",
   failed: "border-rose-400/40 bg-rose-500/10 text-rose-100",
 };
@@ -30,7 +30,7 @@ export function RunPulse({ stages, connectionState, statusLabel, onStageClick }:
       <div className="flex flex-wrap items-center gap-2">
         <Badge
           variant="secondary"
-          className="border border-white/15 bg-white/5 text-[#f7f1e4]"
+          className="border border-white/15 bg-white/5 text-white"
         >
           {statusLabel}
         </Badge>
@@ -56,7 +56,7 @@ export function RunPulse({ stages, connectionState, statusLabel, onStageClick }:
             type="button"
             onClick={() => onStageClick?.(stage.id)}
             className={cn(
-              "rounded-xl border px-3 py-3 text-left transition hover:border-[#d4a84b]/35",
+              "rounded-xl border px-3 py-3 text-left transition hover:border-sky-300/35",
               stateClass[stage.state],
             )}
           >

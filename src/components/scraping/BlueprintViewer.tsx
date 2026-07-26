@@ -48,7 +48,7 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
             <div className="font-medium">Regions</div>
             <List items={content.scope.regions} />
             {regionWarning && (
-              <div className="mt-3 rounded-lg border border-[#d4a84b]/40 bg-[#d4a84b]/10 p-3 text-sm text-[#f3e6c4]">
+              <div className="mt-3 rounded-lg border border-sky-300/40 bg-sky-400/10 p-3 text-sm text-sky-100">
                 {regionWarning}
               </div>
             )}

@@ -383,7 +383,7 @@ function ScrapingExecutionPage() {
             <Link
               to="/scraping/$missionId"
               params={{ missionId }}
-              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-[#f7f1e4] backdrop-blur-sm hover:bg-white/10"
+              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-white backdrop-blur-sm hover:bg-white/10"
             >
               Back to mission
             </Link>
@@ -409,7 +409,7 @@ function ScrapingExecutionPage() {
                   <Button
                     type="button"
                     disabled={!isTerminal || downloadingExcel || facilities.length === 0}
-                    className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                    className="council-glass-cta"
                     onClick={() => void handleDownloadExcel()}
                   >
                     {downloadingExcel ? "Preparing Excel…" : "Download Excel"}
@@ -419,7 +419,7 @@ function ScrapingExecutionPage() {
                       type="button"
                       variant="outline"
                       disabled={acting}
-                      className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                      className="border-white/20 bg-white/5 text-white hover:bg-white/10"
                       onClick={() => void handleCancel()}
                     >
                       {acting ? "Cancelling..." : "Cancel"}
@@ -451,7 +451,7 @@ function ScrapingExecutionPage() {
 
             {facilities.length === 0 ? (
               <DreamPanel>
-                <h2 className="font-display text-lg text-[#f7f1e4]">Facilities</h2>
+                <h2 className="font-display text-lg text-white">Facilities</h2>
                 <p className="mt-2 text-sm text-white/50">
                   {isTerminal
                     ? "No facilities were published from the pages we retrieved."
@@ -476,7 +476,7 @@ function ScrapingExecutionPage() {
                         className={
                           facilityFilter === value
                             ? ""
-                            : "border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                            : "border-white/20 bg-white/5 text-white hover:bg-white/10"
                         }
                         onClick={() =>
                           setFacilityFilter(value as "all" | "verified" | "review" | "excluded")
@@ -504,7 +504,7 @@ function ScrapingExecutionPage() {
             )}
 
             <details className="rounded-2xl border border-white/10 bg-[#0b161c]/60 p-4 backdrop-blur-md">
-              <summary className="cursor-pointer text-sm font-medium text-[#f7f1e4]">
+              <summary className="cursor-pointer text-sm font-medium text-white">
                 Sources & pages (
                 {Math.max(sourceCandidates.length, execution.sources_discovered)} sources ·{" "}
                 {Math.max(sourceDocuments.length, execution.documents_found)} pages)
@@ -527,7 +527,7 @@ function ScrapingExecutionPage() {
                               href={candidate.canonical_url}
                               target="_blank"
                               rel="noreferrer"
-                              className="font-medium text-[#d4a84b] underline-offset-4 hover:underline"
+                              className="font-medium text-sky-300 underline-offset-4 hover:underline"
                             >
                               {candidate.title || candidate.canonical_url}
                             </a>
@@ -550,7 +550,7 @@ function ScrapingExecutionPage() {
             </details>
 
             <details className="rounded-2xl border border-white/10 bg-[#0b161c]/60 p-4 backdrop-blur-md">
-              <summary className="cursor-pointer text-sm font-medium text-[#f7f1e4]">
+              <summary className="cursor-pointer text-sm font-medium text-white">
                 Technical details (agents, tasks, logs)
               </summary>
               <div className="mt-4 space-y-4">
@@ -565,13 +565,13 @@ function ScrapingExecutionPage() {
                 </div>
                 <DreamPanel className="p-4">
                   <div className="mb-3 flex items-center justify-between">
-                    <h3 className="font-medium text-[#f7f1e4]">Agents</h3>
+                    <h3 className="font-medium text-white">Agents</h3>
                     {selectedAgentId && (
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="border-white/20 bg-white/5 text-[#f7f1e4]"
+                        className="border-white/20 bg-white/5 text-white"
                         onClick={() => setSelectedAgentId(null)}
                       >
                         Clear filter
@@ -584,11 +584,11 @@ function ScrapingExecutionPage() {
                         key={agent.id}
                         type="button"
                         onClick={() => setSelectedAgentId(agent.id)}
-                        className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-left text-sm hover:border-[#d4a84b]/35"
+                        className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-left text-sm hover:border-sky-300/35"
                       >
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge variant="secondary">{agent.status}</Badge>
-                          <span className="font-medium text-[#f7f1e4]">{agent.planned_agent_name}</span>
+                          <span className="font-medium text-white">{agent.planned_agent_name}</span>
                         </div>
                         <p className="mt-1 text-white/45">{agent.current_action ?? "Idle"}</p>
                       </button>
@@ -607,7 +607,7 @@ function ScrapingExecutionPage() {
                   rows={sourceDocuments.map((document) => formatDocumentRow(document))}
                 />
                 <DreamPanel className="p-4">
-                  <h3 className="font-medium text-[#f7f1e4]">Live activity</h3>
+                  <h3 className="font-medium text-white">Live activity</h3>
                   <div className="mt-3 max-h-[360px] space-y-2 overflow-auto">
                     {filteredEvents.map((event) => (
                       <div
@@ -617,7 +617,7 @@ function ScrapingExecutionPage() {
                         <span className="text-white/40">
                           {new Date(event.created_at).toLocaleTimeString()}
                         </span>{" "}
-                        <span className="font-medium text-[#f7f1e4]">{event.event_type}</span>
+                        <span className="font-medium text-white">{event.event_type}</span>
                         <p className="text-white/50">{event.message}</p>
                       </div>
                     ))}
@@ -650,7 +650,7 @@ function ScrapingExecutionPage() {
               type="button"
               variant="outline"
               disabled={acting}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
               onClick={() => setShowDelete(false)}
             >
               Cancel
@@ -669,7 +669,7 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
       <p className="text-xs text-white/45">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-[#f7f1e4]">{value}</p>
+      <p className="mt-1 text-lg font-semibold text-white">{value}</p>
     </div>
   );
 }
@@ -677,7 +677,7 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 function GridSection({ title, rows }: { title: string; rows: string[][] }) {
   return (
     <DreamPanel className="p-5">
-      <h2 className="font-display text-lg text-[#f7f1e4]">{title}</h2>
+      <h2 className="font-display text-lg text-white">{title}</h2>
       <div className="mt-4 overflow-auto rounded-xl border border-white/10">
         <table className="w-full min-w-[760px] text-left text-sm text-white/75">
           <tbody>

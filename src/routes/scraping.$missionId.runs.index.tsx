@@ -114,7 +114,7 @@ function ScrapingRunsPage() {
         {!loading && !error && runs.length > 0 && (
           <div className="mt-8 space-y-3">
             {runs.map((run) => (
-              <DreamPanel key={run.id} className="transition hover:border-[#d4a84b]/35">
+              <DreamPanel key={run.id} className="transition hover:border-sky-300/35">
                 <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                   <Link
                     to="/scraping/$missionId/runs/$runId"
@@ -124,7 +124,7 @@ function ScrapingRunsPage() {
                     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-display text-lg text-[#f7f1e4]">
+                          <span className="font-display text-lg text-white">
                             Flight from chart v{run.blueprint_version ?? "unknown"}
                           </span>
                           <Badge variant="secondary">{run.status}</Badge>
@@ -178,7 +178,7 @@ function ScrapingRunsPage() {
               type="button"
               variant="outline"
               disabled={deleting}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
               onClick={() => setDeleteTarget(null)}
             >
               Cancel

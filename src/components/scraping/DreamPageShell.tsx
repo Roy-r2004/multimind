@@ -15,10 +15,6 @@ export function DreamPageShell({
 }) {
   return (
     <div className={cn("relative mx-auto px-6 py-10", maxWidth, className)}>
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 -top-10 h-48 bg-gradient-to-b from-[#0b161c]/55 to-transparent"
-      />
       <div className="relative">{children}</div>
     </div>
   );
@@ -46,15 +42,15 @@ export function DreamHeader({
     >
       <div>
         {eyebrow && (
-          <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-[#d4a84b]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-sky-300/90">
             {eyebrow}
           </p>
         )}
-        <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight text-[#f7f1e4] sm:text-4xl">
+        <h1 className="mt-1 font-display text-3xl tracking-tight text-white sm:text-4xl">
           {title}
         </h1>
         {description && (
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/55">{description}</p>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300/80">{description}</p>
         )}
       </div>
       {action}
@@ -73,10 +69,10 @@ export function DreamPanel({
   tone?: "ink" | "amber" | "teal";
 }) {
   const tones = {
-    ink: "border-white/10 bg-[#0b161c]/75 text-[#f7f1e4] shadow-[0_24px_60px_rgba(0,0,0,0.28)] backdrop-blur-md",
+    ink: "council-glass-panel text-slate-100",
     amber:
-      "border-[#d4a84b]/35 bg-gradient-to-br from-[#2a2416]/95 via-[#1a2218]/90 to-[#0b161c]/90 text-[#f7f1e4] shadow-[0_24px_60px_rgba(212,168,75,0.12)] backdrop-blur-md",
-    teal: "border-teal-300/25 bg-gradient-to-br from-[#16343a]/95 via-[#102229]/90 to-[#0b161c]/90 text-[#f7f1e4] backdrop-blur-md",
+      "border border-sky-300/30 bg-gradient-to-br from-sky-500/15 via-[#0b1224]/85 to-[#020617]/90 text-slate-100 shadow-[0_24px_60px_rgba(56,189,248,0.12)] backdrop-blur-md",
+    teal: "border border-cyan-300/25 bg-gradient-to-br from-cyan-500/10 via-[#0b1224]/85 to-[#020617]/90 text-slate-100 backdrop-blur-md",
   };
   return (
     <div
@@ -89,7 +85,7 @@ export function DreamPanel({
       <div
         aria-hidden
         className="dream-drift pointer-events-none absolute -right-8 top-0 h-32 w-32 rounded-full blur-3xl"
-        style={{ background: "rgba(212,168,75,0.12)" }}
+        style={{ background: "rgba(56,189,248,0.12)" }}
       />
       <div className="relative">{children}</div>
     </div>
@@ -104,8 +100,7 @@ export function DreamCta({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-xl bg-[#d4a84b] px-4 py-2.5 text-sm font-semibold text-[#0b161c]",
-        "shadow-[0_12px_28px_rgba(212,168,75,0.28)] transition hover:bg-[#e0b85c] disabled:opacity-40",
+        "council-glass-cta inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold disabled:opacity-40",
         className,
       )}
       {...props}
@@ -117,12 +112,12 @@ export function DreamCta({
 
 /** Ghost control for secondary actions on dream surfaces. */
 export const dreamGhostClass =
-  "rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-[#f7f1e4] backdrop-blur-sm transition hover:bg-white/10";
+  "rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-white backdrop-blur-sm transition hover:bg-white/10";
 
 export const dreamDetailsClass =
-  "rounded-2xl border border-white/10 bg-[#0b161c]/60 p-4 text-sm text-[#f7f1e4] backdrop-blur-md";
+  "rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-100 backdrop-blur-md";
 
 export const dreamInputClass =
-  "w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-[#f7f1e4] outline-none placeholder:text-white/30 focus:border-[#d4a84b]/50 focus:ring-2 focus:ring-[#d4a84b]/20";
+  "w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 focus:border-sky-300/50 focus:ring-2 focus:ring-sky-400/20";
 
-export const dreamMutedClass = "text-sm text-white/55";
+export const dreamMutedClass = "text-sm text-slate-400";
