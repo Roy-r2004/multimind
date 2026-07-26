@@ -6,8 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.session import get_db
 from app.schemas.api import (
+    MissionCampaignStartRequest,
     ScrapingBlueprintGenerateRequest,
     ScrapingBlueprintResponse,
+    ScrapingEventResponse,
+    ScrapingExecutionDetail,
+    ScrapingExecutionSummary,
     ScrapingMissionCreate,
     ScrapingMissionDetail,
     ScrapingMissionSummary,
@@ -16,6 +20,10 @@ from app.schemas.api import (
     ScrapingRunSummary,
 )
 from app.services.scraping.blueprint_service import blueprint_service
+from app.services.scraping.execution_service import execution_service
+from app.services.scraping.mission_campaign_lifecycle_service import (
+    mission_campaign_lifecycle_service,
+)
 from app.services.scraping.mission_service import mission_service
 from app.services.scraping.run_service import run_service
 
@@ -157,3 +165,99 @@ async def list_scraping_runs(
     db: AsyncSession = Depends(get_db),
 ):
     return await run_service.list_runs(db, auth, mission_id)
+
+
+@router.post(
+    "/{mission_id}/executions",
+    response_model=ScrapingExecutionSummary,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_mission_campaign(
+    mission_id: str,
+    _data: MissionCampaignStartRequest | None = None,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_campaign_lifecycle_service.start(db, auth, mission_id)
+
+
+@router.get(
+    "/{mission_id}/executions",
+    response_model=list[ScrapingExecutionSummary],
+)
+async def list_mission_campaigns(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_campaign_lifecycle_service.list(db, auth, mission_id)
+
+
+@router.get(
+    "/{mission_id}/executions/{execution_id}",
+    response_model=ScrapingExecutionDetail,
+)
+async def get_mission_campaign_status(
+    mission_id: str,
+    execution_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_campaign_lifecycle_service.status(db, auth, mission_id, execution_id)
+
+
+@router.get(
+    "/{mission_id}/executions/{execution_id}/events",
+    response_model=list[ScrapingEventResponse],
+)
+async def list_mission_campaign_events(
+    mission_id: str,
+    execution_id: str,
+    after_sequence: int | None = None,
+    limit: int = 200,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    await execution_service._mission_campaign_row(db, auth, mission_id, execution_id)
+    return await execution_service.list_events(
+        db, auth, execution_id, after_sequence=after_sequence, limit=limit
+    )
+
+
+@router.post(
+    "/{mission_id}/executions/{execution_id}/pause",
+    response_model=ScrapingExecutionSummary,
+)
+async def pause_mission_campaign(
+    mission_id: str,
+    execution_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_campaign_lifecycle_service.pause(db, auth, mission_id, execution_id)
+
+
+@router.post(
+    "/{mission_id}/executions/{execution_id}/resume",
+    response_model=ScrapingExecutionSummary,
+)
+async def resume_mission_campaign(
+    mission_id: str,
+    execution_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_campaign_lifecycle_service.resume(db, auth, mission_id, execution_id)
+
+
+@router.post(
+    "/{mission_id}/executions/{execution_id}/cancel",
+    response_model=ScrapingExecutionSummary,
+)
+async def cancel_mission_campaign(
+    mission_id: str,
+    execution_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mission_campaign_lifecycle_service.cancel(db, auth, mission_id, execution_id)

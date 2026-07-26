@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -604,6 +604,14 @@ class ScrapingExecutionCreate(BaseModel):
     mode: str = "real"
 
 
+class MissionCampaignStartRequest(BaseModel):
+    """Phase 2A campaign starts are local deterministic mock executions only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["mock"] = "mock"
+
+
 class ScrapingExecutionAgentResponse(BaseModel):
     id: str
     execution_id: str
@@ -627,9 +635,12 @@ class ScrapingExecutionSummary(BaseModel):
     organization_id: str
     mission_id: str
     blueprint_id: str
-    team_plan_id: str
+    team_plan_id: str | None = None
     execution_type: str
     mode: str
+    execution_origin: str
+    blueprint_version_snapshot: int | None = None
+    created_by: str | None = None
     status: str
     status_label: str
     country_code: str
@@ -637,6 +648,9 @@ class ScrapingExecutionSummary(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     cancel_requested_at: datetime | None = None
+    pause_requested_at: datetime | None = None
+    paused_at: datetime | None = None
+    resumed_at: datetime | None = None
     heartbeat_at: datetime | None = None
     error_message: str | None = None
     sources_discovered: int
@@ -646,6 +660,32 @@ class ScrapingExecutionSummary(BaseModel):
     duplicates_detected: int
     blocked_sources: int
     coverage_debt: int
+    current_stage: str | None = None
+    current_stage_label: str | None = None
+    current_provider: str | None = None
+    current_model: str | None = None
+    latest_message: str | None = None
+    progress_percent: int = 0
+    regions_total: int = 0
+    regions_completed: int = 0
+    candidates_discovered: int = 0
+    websites_queued: int = 0
+    pages_visited: int = 0
+    pdfs_processed: int = 0
+    verified_facilities: int = 0
+    manual_review_count: int = 0
+    excluded_count: int = 0
+    duplicates_merged: int = 0
+    phones_found: int = 0
+    emails_found: int = 0
+    country_mismatches: int = 0
+    provider_request_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    estimated_cost: float = 0.0
+    campaign_budget: float | None = None
+    budget_used: float = 0.0
+    budget_status: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -804,6 +844,8 @@ class ScrapingExecutionDetail(BaseModel):
     recent_tasks: list[ScrapingTaskResponse]
     recent_events: list[ScrapingEventResponse]
     can_cancel: bool
+    can_pause: bool = False
+    can_resume: bool = False
     can_delete: bool
     mock: bool = False
 

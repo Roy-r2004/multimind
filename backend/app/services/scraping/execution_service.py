@@ -25,6 +25,8 @@ from app.db.models import (
     RehabilitationFacility,
     RehabilitationFacilityContact,
     RehabilitationFacilitySourceLink,
+    ScrapingBlueprint,
+    ScrapingBlueprintStatus,
     ScrapingCoverageCell,
     ScrapingCoverageStatus,
     ScrapingEvent,
@@ -32,6 +34,7 @@ from app.db.models import (
     ScrapingExecutionAgent,
     ScrapingExecutionAgentStatus,
     ScrapingExecutionStatus,
+    ScrapingMission,
     ScrapingRun,
     ScrapingRunStatus,
     ScrapingTask,
@@ -60,6 +63,8 @@ from app.services.scraping.scale_profile import MODE_FULL_CENSUS, SUPPORTED_EXEC
 ACTIVE_EXECUTION_STATUSES = {
     ScrapingExecutionStatus.QUEUED,
     ScrapingExecutionStatus.RUNNING,
+    ScrapingExecutionStatus.PAUSE_REQUESTED,
+    ScrapingExecutionStatus.PAUSED,
     ScrapingExecutionStatus.CANCEL_REQUESTED,
 }
 TERMINAL_EXECUTION_STATUSES = {
@@ -70,6 +75,7 @@ TERMINAL_EXECUTION_STATUSES = {
 DELETABLE_EXECUTION_STATUSES = TERMINAL_EXECUTION_STATUSES
 SUPPORTED_EXECUTION_TYPES = {
     "initial_full_country",
+    "mission_campaign",
     "gap_focused",
     "failed_source_retry",
     "verification_only",
@@ -81,6 +87,66 @@ ACTIVE_EXECUTION_MESSAGE = "An active source discovery execution already exists 
 
 
 class ScrapingExecutionService:
+    async def start_mission_campaign(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str
+    ) -> ScrapingExecutionSummary:
+        """Create the Phase 2A local mock campaign from a mission's current plan."""
+        mission = await self._mission_row(db, auth, mission_id)
+        if not mission.active_blueprint_id:
+            raise ConflictError("An active approved blueprint is required to start a mission campaign.")
+        blueprint = (
+            await db.execute(
+                select(ScrapingBlueprint).where(
+                    ScrapingBlueprint.id == mission.active_blueprint_id,
+                    ScrapingBlueprint.mission_id == mission.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if blueprint is None or blueprint.status != ScrapingBlueprintStatus.APPROVED:
+            raise ConflictError("An active approved blueprint is required to start a mission campaign.")
+        if not mission.country_code or not mission.country_name:
+            raise ConflictError("Set a mission country before starting a mission campaign.")
+
+        execution = ScrapingExecution(
+            organization_id=auth.org_id,
+            mission_id=mission.id,
+            blueprint_id=mission.active_blueprint_id,
+            team_plan_id=None,
+            execution_type="mission_campaign",
+            mode="mock",
+            execution_origin="mission_campaign_mock",
+            blueprint_version_snapshot=blueprint.version,
+            created_by=auth.user.id,
+            status=ScrapingExecutionStatus.QUEUED,
+            country_code=mission.country_code,
+            country_name=mission.country_name,
+        )
+        db.add(execution)
+        try:
+            await db.flush()
+            await db.flush()
+            await self.emit_event(
+                db,
+                execution.id,
+                "mission_campaign_queued",
+                "Deterministic mock mission campaign queued.",
+                metadata={
+                    "mode": "mock",
+                    "worker": "run_mission_campaign_mock",
+                    "blueprint_id": mission.active_blueprint_id,
+                    "blueprint_version_snapshot": blueprint.version,
+                    "provenance": "local_deterministic_mock",
+                    "external_calls": False,
+                    "facility_generation": False,
+                },
+            )
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise ConflictError("An active mission campaign already exists for this mission.") from exc
+        await self.enqueue_execution(execution.id, job_name="run_mission_campaign_mock")
+        return self._summary(execution)
+
     async def create_execution(
         self,
         db: AsyncSession,
@@ -94,7 +160,8 @@ class ScrapingExecutionService:
             raise ValidationError("This execution type is not startable in this phase.")
         if data.mode not in SUPPORTED_MODES:
             raise ValidationError(
-                "Unsupported scrape mode. Use 'real' (standard) or 'full_census'."
+                "Unsupported scrape mode. real source discovery supports 'real' "
+                "(standard) or 'full_census'."
             )
 
         team_plan = await self._team_plan_row(db, auth, team_plan_id)
@@ -167,6 +234,27 @@ class ScrapingExecutionService:
         )
         return [self._summary(execution) for execution in result.scalars().all()]
 
+    async def list_mission_campaigns(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str
+    ) -> list[ScrapingExecutionSummary]:
+        await self._mission_row(db, auth, mission_id)
+        result = await db.execute(
+            select(ScrapingExecution)
+            .where(
+                ScrapingExecution.mission_id == mission_id,
+                ScrapingExecution.organization_id == auth.org_id,
+                ScrapingExecution.execution_type == "mission_campaign",
+            )
+            .order_by(ScrapingExecution.created_at.desc())
+        )
+        return [self._summary(execution) for execution in result.scalars().all()]
+
+    async def get_mission_campaign_detail(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str, execution_id: str
+    ) -> ScrapingExecutionDetail:
+        await self._mission_campaign_row(db, auth, mission_id, execution_id)
+        return await self.get_detail(db, auth, execution_id)
+
     async def get_detail(
         self, db: AsyncSession, auth: AuthContext, execution_id: str
     ) -> ScrapingExecutionDetail:
@@ -194,9 +282,12 @@ class ScrapingExecutionService:
             can_cancel=execution.status in {
                 ScrapingExecutionStatus.QUEUED,
                 ScrapingExecutionStatus.RUNNING,
+                ScrapingExecutionStatus.PAUSED,
             },
+            can_pause=execution.status == ScrapingExecutionStatus.RUNNING,
+            can_resume=execution.status == ScrapingExecutionStatus.PAUSED,
             can_delete=execution.status in DELETABLE_EXECUTION_STATUSES,
-            mock=False,
+            mock=execution.execution_origin == "mission_campaign_mock",
         )
 
     async def list_tasks(
@@ -385,7 +476,10 @@ class ScrapingExecutionService:
                 "execution_cancelled",
                 "Queued source discovery execution was cancelled before work began.",
             )
-        elif execution.status == ScrapingExecutionStatus.RUNNING:
+        elif execution.status in {
+            ScrapingExecutionStatus.RUNNING,
+            ScrapingExecutionStatus.PAUSE_REQUESTED,
+        }:
             execution.status = ScrapingExecutionStatus.CANCEL_REQUESTED
             execution.cancel_requested_at = now
             await self.emit_event(
@@ -394,11 +488,51 @@ class ScrapingExecutionService:
                 "execution_cancel_requested",
                 "Source discovery execution cancellation requested.",
             )
+        elif execution.status == ScrapingExecutionStatus.PAUSED:
+            execution.status = ScrapingExecutionStatus.CANCELLED
+            execution.cancel_requested_at = now
+            execution.completed_at = now
+            await self._cancel_pending_children(db, execution.id)
+            await self.emit_event(
+                db, execution.id, "execution_cancelled", "Paused mission campaign cancelled."
+            )
         elif execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
             pass
         else:
             raise ConflictError("This execution is already terminal.")
         await db.commit()
+        return self._summary(execution)
+
+    async def pause_mission_campaign(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str, execution_id: str
+    ) -> ScrapingExecutionSummary:
+        execution = await self._mission_campaign_row(db, auth, mission_id, execution_id)
+        if execution.status == ScrapingExecutionStatus.RUNNING:
+            execution.status = ScrapingExecutionStatus.PAUSE_REQUESTED
+            execution.pause_requested_at = datetime.now(UTC)
+            await self.emit_event(
+                db, execution.id, "execution_pause_requested", "Mission campaign pause requested."
+            )
+        elif execution.status != ScrapingExecutionStatus.PAUSE_REQUESTED:
+            raise ConflictError("Only a running mission campaign can be paused.")
+        await db.commit()
+        return self._summary(execution)
+
+    async def resume_mission_campaign(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str, execution_id: str
+    ) -> ScrapingExecutionSummary:
+        execution = await self._mission_campaign_row(db, auth, mission_id, execution_id)
+        if execution.status != ScrapingExecutionStatus.PAUSED:
+            raise ConflictError("Only a paused mission campaign can be resumed.")
+        now = datetime.now(UTC)
+        execution.status = ScrapingExecutionStatus.QUEUED
+        execution.resumed_at = now
+        execution.heartbeat_at = None
+        await self.emit_event(
+            db, execution.id, "execution_resumed", "Mission campaign resumed and queued."
+        )
+        await db.commit()
+        await self.enqueue_execution(execution.id, job_name="run_mission_campaign_mock")
         return self._summary(execution)
 
     async def delete_execution(self, db: AsyncSession, auth: AuthContext, execution_id: str) -> None:
@@ -442,7 +576,9 @@ class ScrapingExecutionService:
         await self._publish_event(event)
         return event
 
-    async def enqueue_execution(self, execution_id: str) -> None:
+    async def enqueue_execution(
+        self, execution_id: str, *, job_name: str = "run_scraping_execution"
+    ) -> None:
         settings = get_settings()
         inline = (
             settings.scraping_inline_execution
@@ -454,7 +590,7 @@ class ScrapingExecutionService:
             try:
                 redis = await create_pool(_redis_settings())
                 await redis.enqueue_job(
-                    "run_scraping_execution",
+                    job_name,
                     execution_id,
                     _job_id=f"scraping-execution:{execution_id}",
                 )
@@ -467,7 +603,7 @@ class ScrapingExecutionService:
                     exc_info=True,
                 )
         if inline or not queued_on_redis:
-            asyncio.create_task(_run_execution_inline(execution_id))
+            asyncio.create_task(_run_execution_inline(execution_id, job_name=job_name))
 
     async def _publish_event(self, event: ScrapingEvent) -> None:
         try:
@@ -497,6 +633,19 @@ class ScrapingExecutionService:
             raise NotFoundError("ScrapingRun", team_plan_id)
         return team_plan
 
+    async def _mission_row(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str
+    ) -> ScrapingMission:
+        result = await db.execute(
+            select(ScrapingMission).where(
+                ScrapingMission.id == mission_id, ScrapingMission.org_id == auth.org_id
+            )
+        )
+        mission = result.scalar_one_or_none()
+        if mission is None:
+            raise NotFoundError("ScrapingMission", mission_id)
+        return mission
+
     async def _execution_row(
         self, db: AsyncSession, auth: AuthContext, execution_id: str
     ) -> ScrapingExecution:
@@ -511,6 +660,14 @@ class ScrapingExecutionService:
             raise NotFoundError("ScrapingExecution", execution_id)
         return execution
 
+    async def _mission_campaign_row(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str, execution_id: str
+    ) -> ScrapingExecution:
+        execution = await self._execution_row(db, auth, execution_id)
+        if execution.mission_id != mission_id or execution.execution_type != "mission_campaign":
+            raise NotFoundError("ScrapingExecution", execution_id)
+        return execution
+
     async def _active_execution_for_team_plan(
         self, db: AsyncSession, auth: AuthContext, team_plan_id: str
     ) -> ScrapingExecution | None:
@@ -518,6 +675,19 @@ class ScrapingExecutionService:
             select(ScrapingExecution).where(
                 ScrapingExecution.team_plan_id == team_plan_id,
                 ScrapingExecution.organization_id == auth.org_id,
+                ScrapingExecution.status.in_(list(ACTIVE_EXECUTION_STATUSES)),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def _active_execution_for_mission(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str
+    ) -> ScrapingExecution | None:
+        result = await db.execute(
+            select(ScrapingExecution).where(
+                ScrapingExecution.mission_id == mission_id,
+                ScrapingExecution.organization_id == auth.org_id,
+                ScrapingExecution.execution_type == "mission_campaign",
                 ScrapingExecution.status.in_(list(ACTIVE_EXECUTION_STATUSES)),
             )
         )
@@ -588,6 +758,9 @@ class ScrapingExecutionService:
             team_plan_id=execution.team_plan_id,
             execution_type=execution.execution_type,
             mode=execution.mode,
+            execution_origin=execution.execution_origin,
+            blueprint_version_snapshot=execution.blueprint_version_snapshot,
+            created_by=execution.created_by,
             status=execution.status.value,
             status_label=execution_outcome_label(execution.status, execution.coverage_debt),
             country_code=execution.country_code,
@@ -595,6 +768,9 @@ class ScrapingExecutionService:
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             cancel_requested_at=execution.cancel_requested_at,
+            pause_requested_at=execution.pause_requested_at,
+            paused_at=execution.paused_at,
+            resumed_at=execution.resumed_at,
             heartbeat_at=execution.heartbeat_at,
             error_message=execution.error_message,
             sources_discovered=execution.sources_discovered,
@@ -604,6 +780,32 @@ class ScrapingExecutionService:
             duplicates_detected=execution.duplicates_detected,
             blocked_sources=execution.blocked_sources,
             coverage_debt=execution.coverage_debt,
+            current_stage=execution.current_stage,
+            current_stage_label=execution.current_stage_label,
+            current_provider=execution.current_provider,
+            current_model=execution.current_model,
+            latest_message=execution.latest_message,
+            progress_percent=execution.progress_percent,
+            regions_total=execution.regions_total,
+            regions_completed=execution.regions_completed,
+            candidates_discovered=execution.candidates_discovered,
+            websites_queued=execution.websites_queued,
+            pages_visited=execution.pages_visited,
+            pdfs_processed=execution.pdfs_processed,
+            verified_facilities=execution.verified_facilities,
+            manual_review_count=execution.manual_review_count,
+            excluded_count=execution.excluded_count,
+            duplicates_merged=execution.duplicates_merged,
+            phones_found=execution.phones_found,
+            emails_found=execution.emails_found,
+            country_mismatches=execution.country_mismatches,
+            provider_request_count=execution.provider_request_count,
+            input_tokens=execution.input_tokens,
+            output_tokens=execution.output_tokens,
+            estimated_cost=execution.estimated_cost,
+            campaign_budget=execution.campaign_budget,
+            budget_used=execution.budget_used,
+            budget_status=execution.budget_status,
             created_at=execution.created_at,
             updated_at=execution.updated_at,
         )
@@ -828,12 +1030,18 @@ def _redis_settings() -> RedisSettings:
     )
 
 
-async def _run_execution_inline(execution_id: str) -> None:
+async def _run_execution_inline(execution_id: str, *, job_name: str = "run_scraping_execution") -> None:
     """Run a scrape inside the API process when the ARQ worker is unavailable."""
     from app.services.scraping.execution_orchestrator import run_scraping_execution
+    from app.services.scraping.mission_campaign_mock_worker import run_mission_campaign_mock
 
     try:
-        await run_scraping_execution({}, execution_id)
+        worker = (
+            run_mission_campaign_mock
+            if job_name == "run_mission_campaign_mock"
+            else run_scraping_execution
+        )
+        await worker({}, execution_id)
     except Exception:
         logger.exception("scraping_inline_execution_failed execution_id=%s", execution_id)
 

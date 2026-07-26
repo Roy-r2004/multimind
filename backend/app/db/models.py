@@ -122,6 +122,8 @@ class ScrapingRunAgentStatus(str, enum.Enum):
 class ScrapingExecutionStatus(str, enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSE_REQUESTED = "pause_requested"
+    PAUSED = "paused"
     CANCEL_REQUESTED = "cancel_requested"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -605,8 +607,25 @@ class ScrapingExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "uq_scraping_executions_active_team_plan",
             "team_plan_id",
             unique=True,
-            postgresql_where=text("status in ('queued', 'running', 'cancel_requested')"),
-            sqlite_where=text("status in ('queued', 'running', 'cancel_requested')"),
+            postgresql_where=text(
+                "status in ('queued', 'running', 'pause_requested', 'paused', 'cancel_requested')"
+            ),
+            sqlite_where=text(
+                "status in ('queued', 'running', 'pause_requested', 'paused', 'cancel_requested')"
+            ),
+        ),
+        Index(
+            "uq_scraping_executions_active_mission_campaign",
+            "mission_id",
+            unique=True,
+            postgresql_where=text(
+                "execution_type = 'mission_campaign' and "
+                "status in ('queued', 'running', 'pause_requested', 'paused', 'cancel_requested')"
+            ),
+            sqlite_where=text(
+                "execution_type = 'mission_campaign' and "
+                "status in ('queued', 'running', 'pause_requested', 'paused', 'cancel_requested')"
+            ),
         ),
     )
 
@@ -619,11 +638,14 @@ class ScrapingExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     blueprint_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("scraping_blueprints.id"), nullable=False
     )
-    team_plan_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("scraping_runs.id", ondelete="CASCADE"), nullable=False
+    team_plan_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_runs.id", ondelete="CASCADE"), nullable=True
     )
     execution_type: Mapped[str] = mapped_column(String(64), nullable=False)
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    execution_origin: Mapped[str] = mapped_column(String(32), default="legacy_pipeline", nullable=False)
+    blueprint_version_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     status: Mapped[ScrapingExecutionStatus] = mapped_column(
         Enum(
             ScrapingExecutionStatus,
@@ -641,8 +663,42 @@ class ScrapingExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cancel_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    pause_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_stage_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    current_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    latest_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_region: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_website: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_page: Mapped[str | None] = mapped_column(Text, nullable=True)
+    regions_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    regions_completed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    candidates_discovered: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    websites_queued: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pages_visited: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pdfs_processed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    verified_facilities: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    manual_review_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    excluded_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duplicates_merged: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    phones_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    emails_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    country_mismatches: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    provider_request_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    estimated_cost: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    campaign_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    budget_used: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    budget_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_event_sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     sources_discovered: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     documents_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

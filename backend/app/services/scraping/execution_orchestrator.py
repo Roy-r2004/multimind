@@ -186,7 +186,14 @@ async def recover_scraping_executions(ctx: dict) -> None:
         )
         for execution in result.scalars().all():
             execution.status = ScrapingExecutionStatus.QUEUED
-            await execution_service.enqueue_execution(execution.id)
+            await execution_service.enqueue_execution(
+                execution.id,
+                job_name=(
+                    "run_mission_campaign_mock"
+                    if execution.execution_type == "mission_campaign"
+                    else "run_scraping_execution"
+                ),
+            )
         await db.commit()
 
 

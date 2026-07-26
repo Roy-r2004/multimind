@@ -1,4 +1,4 @@
-"""Real Docker PostgreSQL coverage for mission-scoped blueprint allocation."""
+"""Real PostgreSQL coverage for Phase 1B and Phase 2A concurrency guards."""
 
 import asyncio
 import os
@@ -11,8 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.dependencies import AuthContext
 from app.core.exceptions import ConflictError
-from app.db.models import OrgRole, Organization, ScrapingBlueprint, ScrapingMission, User
+from app.db.models import (
+    Organization,
+    OrgRole,
+    ScrapingBlueprint,
+    ScrapingBlueprintStatus,
+    ScrapingExecution,
+    ScrapingMission,
+    ScrapingRun,
+    ScrapingRunAgent,
+    ScrapingRunStatus,
+    User,
+)
 from app.services.scraping.blueprint_service import blueprint_service
+from app.services.scraping.execution_service import execution_service
 
 
 @pytest.fixture
@@ -25,10 +37,14 @@ async def postgres_sessions():
     await admin.execute(f'CREATE DATABASE "{database}"')
     url = admin_url.rsplit("/", 1)[0] + f"/{database}"
     try:
-        subprocess.run(
+        await asyncio.to_thread(
+            subprocess.run,
             ["alembic", "upgrade", "head"],
             check=True,
-            env={**os.environ, "DATABASE_URL": url.replace("postgresql://", "postgresql+asyncpg://")},
+            env={
+                **os.environ,
+                "DATABASE_URL": url.replace("postgresql://", "postgresql+asyncpg://"),
+            },
         )
         engine = create_async_engine(url.replace("postgresql://", "postgresql+asyncpg://"))
         maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -109,3 +125,81 @@ async def test_different_missions_allocate_independently(postgres_sessions, monk
 
     results = await asyncio.gather(*(allocate(mission.id) for mission in missions))
     assert [result.version for result in results] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_same_mission_concurrent_campaign_starts_are_serialized(
+    postgres_sessions, monkeypatch
+):
+    async with postgres_sessions() as setup:
+        auth = await _make_auth(setup)
+        mission = ScrapingMission(
+            org_id=auth.org_id,
+            created_by=auth.user.id,
+            model_set_id="research-set",
+            title="Austria",
+            original_prompt="Plan",
+            country_code="AT",
+            country_name="Austria",
+            country_iso3="AUT",
+            continent="Europe",
+        )
+        setup.add(mission)
+        await setup.flush()
+        blueprint = ScrapingBlueprint(
+            mission_id=mission.id,
+            version=1,
+            status=ScrapingBlueprintStatus.APPROVED,
+            model_set_id="research-set",
+        )
+        setup.add(blueprint)
+        await setup.flush()
+        mission.active_blueprint_id = blueprint.id
+        team_plan = ScrapingRun(
+            organization_id=auth.org_id,
+            mission_id=mission.id,
+            blueprint_id=blueprint.id,
+            model_set_id="research-set",
+            status=ScrapingRunStatus.PLANNED,
+        )
+        setup.add(team_plan)
+        await setup.flush()
+        setup.add(
+            ScrapingRunAgent(
+                run_id=team_plan.id,
+                sequence=1,
+                name="Planner",
+                role="planner",
+                purpose="Create deterministic checkpoints.",
+                instructions="No external calls.",
+                model_id="gpt-4.1",
+            )
+        )
+        await setup.commit()
+
+    async def no_enqueue(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", no_enqueue)
+
+    async def start_campaign():
+        async with postgres_sessions() as session:
+            return await execution_service.start_mission_campaign(session, auth, mission.id)
+
+    results = await asyncio.gather(
+        start_campaign(), start_campaign(), return_exceptions=True
+    )
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+    assert any(isinstance(result, ConflictError) for result in results)
+
+    async with postgres_sessions() as verify:
+        executions = (
+            await verify.execute(
+                ScrapingExecution.__table__.select().where(
+                    ScrapingExecution.mission_id == mission.id,
+                    ScrapingExecution.execution_type == "mission_campaign",
+                )
+            )
+        ).mappings().all()
+    assert len(executions) == 1
+    assert executions[0]["status"] == "queued"
