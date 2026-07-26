@@ -102,6 +102,38 @@ export function generateScrapingBlueprint(auth: Auth, missionId: string) {
   });
 }
 
+export function queueScrapingBlueprintGeneration(auth: Auth, missionId: string) {
+  return apiRequest<ScrapingBlueprint>(`/scraping/missions/${missionId}/blueprints/generate`, {
+    method: "POST",
+    body: {},
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function getScrapingBlueprintStatus(
+  auth: Auth,
+  missionId: string,
+  blueprintId: string,
+  signal?: AbortSignal,
+) {
+  return apiRequest<ScrapingBlueprint>(
+    `/scraping/missions/${missionId}/blueprints/${blueprintId}/status`,
+    {
+      token: auth.token,
+      orgId: auth.orgId,
+      signal,
+    },
+  );
+}
+
+export function getLatestScrapingBlueprint(auth: Auth, missionId: string) {
+  return apiRequest<ScrapingBlueprint>(`/scraping/missions/${missionId}/blueprints/latest`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
 export function listScrapingBlueprints(auth: Auth, missionId: string) {
   return apiRequest<ScrapingBlueprint[]>(`/scraping/missions/${missionId}/blueprints`, {
     token: auth.token,

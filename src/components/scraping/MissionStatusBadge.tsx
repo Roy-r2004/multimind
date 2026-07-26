@@ -10,6 +10,10 @@ const LABELS: Record<ScrapingMissionStatus | ScrapingBlueprintStatus, string> = 
   failed: "failed",
   cancelled: "cancelled",
   generating: "generating",
+  queued: "queued",
+  running: "running",
+  ready_for_review: "ready for review",
+  discarded: "discarded",
   superseded: "superseded",
 };
 

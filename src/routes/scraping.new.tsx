@@ -15,7 +15,7 @@ function NewScrapingMissionPage() {
         <PageHeader
           eyebrow="Scraping Council"
           title="New Scraping Mission"
-          description="Describe the mission and generate a reviewable blueprint."
+          description="Choose a country and generate a backend-owned, reviewable blueprint."
         />
         <GlassCard className="mt-8 p-6">
           <MissionComposer />

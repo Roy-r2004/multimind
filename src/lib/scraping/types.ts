@@ -10,8 +10,12 @@ export type ScrapingMissionStatus =
 export type ScrapingBlueprintStatus =
   | "generating"
   | "draft"
+  | "queued"
+  | "running"
+  | "ready_for_review"
   | "approved"
   | "rejected"
+  | "discarded"
   | "superseded"
   | "failed";
 
@@ -49,6 +53,8 @@ export type ScrapingMissionSummary = {
   status: ScrapingMissionStatus;
   country_code?: string | null;
   country_name?: string | null;
+  country_iso3?: string | null;
+  continent?: string | null;
   project_id?: string | null;
   project_name?: string | null;
   active_blueprint_id?: string | null;
@@ -119,8 +125,29 @@ export type ScrapingBlueprint = {
   rejection_reason?: string | null;
   change_instructions?: string | null;
   error_message?: string | null;
+  provider?: string | null;
+  provider_model_id?: string | null;
+  prompt_template_version?: string | null;
+  human_readable_blueprint?: string | null;
+  structured_blueprint?: Record<string, unknown> | null;
+  citations?: ScrapingBlueprintCitation[] | null;
+  revision_request?: string | null;
+  generation_error?: string | null;
+  queued_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  failed_at?: string | null;
+  discarded_at?: string | null;
+  campaign_execution_available?: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type ScrapingBlueprintCitation = {
+  url: string;
+  title?: string | null;
+  source_type?: string | null;
+  notes?: string | null;
 };
 
 export type ScrapingMissionCreateInput = {
