@@ -35,9 +35,8 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-success: var(--success);
   --color-warning: var(--warning);
-  --font-display: "Instrument Serif", "Syne", Georgia, serif;
-  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
-  --font-ui: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Syne", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
 :root {
@@ -101,51 +100,6 @@
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
-  }
-
-  .council-glass .text-gradient {
-    background: linear-gradient(120deg, #7dd3fc 0%, #818cf8 45%, #c084fc 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
-
-  .council-glass-panel {
-    border: 1px solid rgb(255 255 255 / 0.12);
-    background: rgb(15 23 42 / 0.45);
-    backdrop-filter: blur(18px);
-    box-shadow:
-      0 0 0 1px rgb(255 255 255 / 0.04) inset,
-      0 20px 50px rgb(2 6 23 / 0.35);
-  }
-
-  .council-glass-chip {
-    border: 1px solid rgb(255 255 255 / 0.14);
-    background: linear-gradient(160deg, rgb(255 255 255 / 0.12), rgb(255 255 255 / 0.04));
-    backdrop-filter: blur(14px);
-    box-shadow:
-      0 0 0 1px rgb(255 255 255 / 0.05) inset,
-      0 12px 40px rgb(56 189 248 / 0.08);
-  }
-
-  .council-glass-input {
-    border: 1px solid rgb(255 255 255 / 0.16);
-    background: rgb(15 23 42 / 0.55);
-    backdrop-filter: blur(20px);
-    box-shadow:
-      0 0 0 1px rgb(255 255 255 / 0.05) inset,
-      0 18px 60px rgb(2 6 23 / 0.45),
-      0 0 40px rgb(99 102 241 / 0.12);
-  }
-
-  .council-glass-cta {
-    background: linear-gradient(135deg, #38bdf8, #6366f1 55%, #a855f7);
-    color: white;
-    box-shadow: 0 10px 30px rgb(99 102 241 / 0.45);
-  }
-
-  .council-glass-cta:hover {
-    filter: brightness(1.06);
   }
   .animate-fade-up {
     animation: fade-up 0.6s ease-out both;
@@ -571,125 +525,6 @@
   .dream-beacon,
   .dream-rise,
   .dream-shard {
-    animation: none !important;
-  }
-}
-
-/* Chat Council — glass sky */
-.council-glass-sky__base {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(ellipse 80% 60% at 50% 35%, rgb(56 189 248 / 0.18), transparent 55%),
-    radial-gradient(ellipse 70% 50% at 70% 70%, rgb(168 85 247 / 0.16), transparent 50%),
-    radial-gradient(ellipse 60% 45% at 20% 80%, rgb(99 102 241 / 0.14), transparent 50%),
-    linear-gradient(180deg, #020617 0%, #0b1224 45%, #111827 100%);
-}
-
-.council-glass-sky__arc {
-  position: absolute;
-  left: 50%;
-  top: 28%;
-  width: min(920px, 90vw);
-  height: min(920px, 90vw);
-  transform: translate(-50%, -42%);
-  border-radius: 9999px;
-  border: 1px solid rgb(186 230 253 / 0.18);
-  box-shadow:
-    0 0 80px rgb(56 189 248 / 0.15),
-    inset 0 0 80px rgb(129 140 248 / 0.08);
-  animation: council-arc-breathe 12s ease-in-out infinite;
-}
-
-.council-glass-sky__waves {
-  position: absolute;
-  inset: 35% 0 0;
-  background:
-    repeating-linear-gradient(
-      180deg,
-      transparent 0,
-      transparent 28px,
-      rgb(148 163 184 / 0.04) 28px,
-      rgb(148 163 184 / 0.04) 29px
-    );
-  mask-image: linear-gradient(180deg, transparent, black 30%, black 70%, transparent);
-  animation: council-wave-drift 18s linear infinite;
-}
-
-.council-glass-sky__orb {
-  position: absolute;
-  border-radius: 9999px;
-  filter: blur(60px);
-}
-
-.council-glass-sky__orb--a {
-  width: 42vw;
-  height: 42vw;
-  left: 28%;
-  top: 18%;
-  background: rgb(56 189 248 / 0.22);
-  animation: council-orb-float 14s ease-in-out infinite;
-}
-
-.council-glass-sky__orb--b {
-  width: 36vw;
-  height: 36vw;
-  right: 8%;
-  top: 40%;
-  background: rgb(168 85 247 / 0.18);
-  animation: council-orb-float 16s ease-in-out infinite reverse;
-}
-
-.council-glass-sky__orb--c {
-  width: 30vw;
-  height: 30vw;
-  left: 10%;
-  bottom: 8%;
-  background: rgb(99 102 241 / 0.16);
-  animation: council-orb-float 18s ease-in-out infinite;
-}
-
-.council-glass-sky__vignette {
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(ellipse at center, transparent 40%, rgb(2 6 23 / 0.65) 100%);
-}
-
-@keyframes council-arc-breathe {
-  0%,
-  100% {
-    opacity: 0.7;
-    transform: translate(-50%, -42%) scale(1);
-  }
-  50% {
-    opacity: 1;
-    transform: translate(-50%, -42%) scale(1.03);
-  }
-}
-
-@keyframes council-wave-drift {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(29px);
-  }
-}
-
-@keyframes council-orb-float {
-  0%,
-  100% {
-    transform: translate(0, 0) scale(1);
-  }
-  50% {
-    transform: translate(3%, -4%) scale(1.06);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .council-glass-sky__arc,
-  .council-glass-sky__waves,
-  .council-glass-sky__orb {
     animation: none !important;
   }
 }

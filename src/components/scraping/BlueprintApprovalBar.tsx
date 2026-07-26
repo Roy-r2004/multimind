@@ -61,9 +61,9 @@ export function BlueprintApprovalBar({
       {blueprint.status === "approved" && (
         <DreamPanel tone="teal" className="space-y-2 text-sm">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-white">Approved</span>
+            <span className="font-semibold text-[#f7f1e4]">Approved</span>
             {isActiveBlueprint && (
-              <span className="rounded-full border border-sky-300/40 bg-sky-400/15 px-2.5 py-0.5 text-xs font-medium text-sky-100">
+              <span className="rounded-full border border-[#d4a84b]/40 bg-[#d4a84b]/15 px-2.5 py-0.5 text-xs font-medium text-[#f3e6c4]">
                 Active chart
               </span>
             )}
@@ -76,10 +76,10 @@ export function BlueprintApprovalBar({
 
       {blueprint.status === "rejected" && (
         <DreamPanel className="space-y-2 text-sm">
-          <div className="font-semibold text-white">Rejected</div>
+          <div className="font-semibold text-[#f7f1e4]">Rejected</div>
           <div className="text-white/55">Rejection date: {formatDate(blueprint.rejected_at)}</div>
           <div>
-            <span className="font-medium text-white">Rejection reason: </span>
+            <span className="font-medium text-[#f7f1e4]">Rejection reason: </span>
             <span className="text-white/55">{blueprint.rejection_reason || "Not provided"}</span>
           </div>
           <div className="text-white/55">This version remains preserved in history.</div>
@@ -88,7 +88,7 @@ export function BlueprintApprovalBar({
 
       {blueprint.status === "superseded" && (
         <DreamPanel className="space-y-2 text-sm">
-          <div className="font-semibold text-white">Superseded</div>
+          <div className="font-semibold text-[#f7f1e4]">Superseded</div>
           <div className="text-white/55">
             This version is preserved in history and is no longer active.
           </div>
@@ -97,7 +97,7 @@ export function BlueprintApprovalBar({
 
       {blueprint.status === "failed" && (
         <DreamPanel className="space-y-3 text-sm">
-          <div className="font-semibold text-white">Generation Failed</div>
+          <div className="font-semibold text-[#f7f1e4]">Generation Failed</div>
           {blueprint.error_message && (
             <div className="text-white/55">{blueprint.error_message}</div>
           )}
@@ -106,7 +106,7 @@ export function BlueprintApprovalBar({
               type="button"
               disabled={busy}
               onClick={() => void run(onGenerateNewVersion)}
-              className="w-fit council-glass-cta"
+              className="w-fit bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
             >
               {busy && <Loader2 className="size-4 animate-spin" />}
               Generate New Version
@@ -122,7 +122,7 @@ export function BlueprintApprovalBar({
               <Button
                 type="button"
                 disabled={busy}
-                className="council-glass-cta"
+                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                 onClick={() => setMode("approve")}
               >
                 Approve chart
@@ -131,7 +131,7 @@ export function BlueprintApprovalBar({
                 type="button"
                 variant="outline"
                 disabled={busy}
-                className="border-white/20 bg-white/5 text-white hover:bg-white/10"
+                className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
                 onClick={() => setMode("reject")}
               >
                 Reject
@@ -143,7 +143,7 @@ export function BlueprintApprovalBar({
               type="button"
               variant="outline"
               disabled={busy}
-              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
               onClick={() => setMode("changes")}
             >
               Request Changes
@@ -173,7 +173,7 @@ export function BlueprintApprovalBar({
             </p>
           ) : (
             <>
-              <label className="text-sm font-medium text-white">
+              <label className="text-sm font-medium text-[#f7f1e4]">
                 {mode === "reject" ? "Rejection Reason" : "Change Instructions"}
               </label>
               <Textarea
@@ -181,7 +181,7 @@ export function BlueprintApprovalBar({
                 onChange={(event) => setText(event.target.value)}
                 rows={6}
                 required
-                className="border-white/15 bg-white/5 text-white placeholder:text-white/30"
+                className="border-white/15 bg-white/5 text-[#f7f1e4] placeholder:text-white/30"
               />
             </>
           )}
@@ -190,7 +190,7 @@ export function BlueprintApprovalBar({
               type="button"
               variant="outline"
               disabled={busy}
-              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
               onClick={closeModal}
             >
               Cancel
@@ -198,7 +198,7 @@ export function BlueprintApprovalBar({
             <Button
               type="button"
               disabled={busy || (mode !== "approve" && !text.trim())}
-              className="council-glass-cta"
+              className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
               onClick={() =>
                 void run(() =>
                   mode === "approve"

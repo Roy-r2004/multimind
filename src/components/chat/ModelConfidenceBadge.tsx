@@ -17,12 +17,12 @@ export function ModelConfidenceBadge({
 }: Props) {
   return (
     <div className="ml-auto flex items-center gap-1">
-      <span className="text-xs font-semibold tabular-nums text-slate-200">{confidence}%</span>
+      <span className="text-xs text-muted-foreground">{confidence}%</span>
       <Popover>
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="rounded p-0.5 text-slate-400 hover:bg-white/10 hover:text-white"
+            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
             aria-label={`Why ${modelName} scored ${confidence}%`}
           >
             <Info className="size-3.5" />

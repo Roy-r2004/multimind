@@ -12,10 +12,10 @@ export function BlueprintSection({
         className="pointer-events-none absolute -left-8 top-0 h-24 w-24 rounded-full blur-3xl"
         style={{ background: "rgba(46,120,130,0.2)" }}
       />
-      <h3 className="relative text-[11px] font-semibold uppercase tracking-[0.28em] text-sky-300/90">
+      <h3 className="relative text-[11px] font-semibold uppercase tracking-[0.28em] text-[#d4a84b]/90">
         {title}
       </h3>
-      <div className="relative mt-4 text-sm leading-6 text-white/90">{children}</div>
+      <div className="relative mt-4 text-sm leading-6 text-[#f7f1e4]/90">{children}</div>
     </section>
   );
 }

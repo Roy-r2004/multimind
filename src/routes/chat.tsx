@@ -33,8 +33,7 @@ import {
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
-import { VendorLogo } from "@/components/chat/VendorLogo";
-import { GlassCard, ModelPill } from "@/components/cinematic/PageChrome";
+import { GlassCard, ModelPill, CinematicBackdrop } from "@/components/cinematic/PageChrome";
 import ModelSetModal from "@/components/ModelSetModal";
 import { PromptBuilderModal } from "@/components/chat/PromptBuilderModal";
 import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/ChatReferenceModal";
@@ -634,42 +633,43 @@ export function ChatPage() {
     <AppShell>
       <div className="relative flex h-[calc(100vh-3.5rem)] flex-col md:h-screen">
         {/* Header */}
-        <div className="flex items-center gap-3 border-b border-white/10 bg-[#020617]/40 px-4 py-3 backdrop-blur-xl md:px-6">
+        <div className="flex items-center gap-3 border-b border-border bg-background px-4 py-3 md:px-6">
           {set ? (
             <button
               onClick={() => setShowSet(true)}
-              className="flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-1.5 text-sm font-medium text-white hover:border-sky-300/40 hover:bg-white/10"
+              className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm font-medium hover:border-primary/40"
             >
-              <Gavel className="size-3.5 text-sky-300" />
+              <Gavel className="size-3.5 text-primary" />
               {set.name}
-              <ChevronDown className="size-3.5 text-slate-400" />
+              <ChevronDown className="size-3.5 text-muted-foreground" />
             </button>
           ) : (
-            <span className="text-sm text-slate-400">Loading model sets…</span>
+            <span className="text-sm text-muted-foreground">Loading model sets…</span>
           )}
           {set && (
             <div className="hidden items-center gap-1.5 sm:flex">
               {set.models.map((id) => {
                 const m = modelById(id);
                 return (
-                  <VendorLogo
+                  <span
                     key={id}
-                    vendor={m.vendor}
-                    className="size-5"
+                    className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
+                    style={{ color: m.color, background: m.color }}
                     title={m.name}
                   />
                 );
               })}
+              <span className="ml-2 text-xs text-muted-foreground">{set.strategy}</span>
               <button
                 type="button"
                 onClick={() => setShowCouncil(true)}
-                className="ml-2 text-xs font-medium text-sky-300 hover:text-sky-200 hover:underline"
+                className="ml-1 text-xs font-medium text-primary hover:underline"
               >
-                Synthesize · Edit council ({set.models.length} models)
+                Edit council ({set.models.length} models)
               </button>
               <button
                 onClick={() => setShowStrategy(true)}
-                className="text-slate-400 hover:text-white"
+                className="text-muted-foreground hover:text-foreground"
               >
                 <Info className="size-3.5" />
               </button>
@@ -680,7 +680,7 @@ export function ChatPage() {
               <button
                 type="button"
                 onClick={scrollToPinnedVerdict}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/40 bg-amber-400/10 px-2.5 py-1.5 text-xs font-semibold text-amber-200"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
               >
                 <Pin className="size-3.5 fill-current" /> Go to pinned verdict
               </button>
@@ -689,7 +689,7 @@ export function ChatPage() {
               <button
                 type="button"
                 onClick={() => setShowDeleteChat(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-destructive hover:bg-destructive/10"
               >
                 <Trash2 className="size-3.5" /> Delete chat
               </button>
@@ -698,7 +698,7 @@ export function ChatPage() {
               type="button"
               onClick={() => void handleShare()}
               disabled={!activeChatId}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs text-slate-100 hover:bg-white/10 disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
             >
               <Share2 className="size-3.5" /> {shareUrl ? "Copied" : "Share"}
             </button>
@@ -709,18 +709,18 @@ export function ChatPage() {
         <div ref={threadRef} className="flex-1 overflow-y-auto px-4 pt-6 pb-16 md:px-6 xl:px-8">
           <div className="mx-auto max-w-6xl space-y-10">
             {!isAuthenticated && (
-              <GlassCard glow variant="council" className="p-10 text-center animate-fade-up">
-                <Sparkles className="mx-auto size-8 text-sky-300" />
-                <h2 className="mt-4 font-display text-2xl font-semibold text-gradient">
+              <GlassCard glow className="p-10 text-center animate-fade-up">
+                <Sparkles className="mx-auto size-8 text-primary" />
+                <h2 className="mt-4 text-2xl font-semibold text-gradient">
                   One question. Many minds.
                 </h2>
-                <p className="mt-2 text-sm text-slate-300/80">
+                <p className="mt-2 text-sm text-muted-foreground">
                   GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro, Grok, DeepSeek V3 — real models via
                   OpenRouter, one verdict.
                 </p>
                 <Link
                   to="/login"
-                  className="council-glass-cta mt-6 inline-flex rounded-xl px-5 py-2.5 text-sm font-medium"
+                  className="mt-6 inline-flex rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
                 >
                   Log in to start
                 </Link>
@@ -728,22 +728,24 @@ export function ChatPage() {
             )}
 
             {empty && set && (
-              <div className="animate-fade-up space-y-8 py-10 text-center md:py-14">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-sky-300/90">
-                  01 — Chat Council
+              <div className="animate-fade-up space-y-8 py-8 text-center">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary/80">
+                  Your council of models
                 </p>
-                <h2 className="font-display text-4xl tracking-tight text-white md:text-6xl">
-                  Five minds.{" "}
-                  <span className="text-gradient italic">One verdict.</span>
+                <h2 className="text-4xl font-semibold tracking-tight md:text-5xl">
+                  Ask once.
+                  <br />
+                  <span className="text-gradient">Decide with clarity.</span>
                 </h2>
-                <p className="mx-auto max-w-xl text-sm text-slate-300/85 md:text-base">
-                  Ask once. Compare frontier models. Decide with clarity — Verdict AI uses{" "}
-                  <strong className="text-white">{set.strategy}</strong>.
+                <p className="mx-auto max-w-lg text-sm text-muted-foreground">
+                  {set.models.length} {set.models.length === 1 ? "model answers" : "models answer"}{" "}
+                  in parallel — then Verdict AI synthesizes the final answer using{" "}
+                  <strong className="text-foreground">{set.strategy}</strong>.
                 </p>
                 <button
                   type="button"
                   onClick={() => setShowCouncil(true)}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/5 px-5 py-2.5 text-sm font-medium text-white shadow-[0_0_30px_rgb(255_255_255_/_0.08)] backdrop-blur-md hover:bg-white/10"
+                  className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10"
                 >
                   Choose your models
                 </button>
@@ -757,7 +759,6 @@ export function ChatPage() {
                         name={model.name}
                         vendor={model.vendor}
                         color={model.color}
-                        variant="council"
                       />
                     );
                   })}
@@ -806,7 +807,7 @@ export function ChatPage() {
                           )}
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-gradient-to-br from-sky-500 to-violet-600 px-4 py-3 text-sm text-white shadow-lg shadow-violet-500/30">
+                      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
                         <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
                       </div>
                     </div>
@@ -857,7 +858,7 @@ export function ChatPage() {
               type="button"
               aria-label="Scroll to latest message"
               onClick={() => scrollThreadToLatest("smooth")}
-              className="pointer-events-auto absolute bottom-3 left-1/2 grid size-9 -translate-x-1/2 place-items-center rounded-full border border-white/20 bg-slate-950/80 text-white shadow-lg shadow-sky-500/20 backdrop-blur transition hover:border-sky-300/40 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-400/50"
+              className="pointer-events-auto absolute bottom-3 left-1/2 grid size-9 -translate-x-1/2 place-items-center rounded-full border border-border/80 bg-card/90 text-foreground shadow-lg shadow-primary/10 backdrop-blur transition hover:border-primary/40 hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
             >
               <ArrowDown className="size-4" />
             </button>
@@ -865,18 +866,18 @@ export function ChatPage() {
         </div>
 
         {/* Composer */}
-        <div className="border-t border-white/10 bg-transparent px-4 py-4 md:px-6 xl:px-8">
+        <div className="border-t border-border bg-background px-4 py-4 md:px-6 xl:px-8">
           <div className="mx-auto max-w-6xl">
             {refChat && (
-              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-sky-400/30 bg-sky-400/10 px-2.5 py-1 text-xs text-sky-100">
-                <Link2 className="size-3 text-sky-300" />
+              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
+                <Link2 className="size-3 text-primary" />
                 <span>
                   Ref: {refChat.title} ({refChat.mode})
                 </span>
                 <button
                   type="button"
                   onClick={() => setRefChat(null)}
-                  className="text-slate-400 hover:text-white"
+                  className="text-muted-foreground hover:text-foreground"
                 >
                   <X className="size-3" />
                 </button>
@@ -887,7 +888,7 @@ export function ChatPage() {
                 {files.map((f) => (
                   <div
                     key={f.localId}
-                    className="flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs text-slate-100"
+                    className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs"
                     title={f.errorMessage}
                   >
                     {f.state === "uploading" && <Loader2 className="size-3 animate-spin" />}
@@ -932,7 +933,7 @@ export function ChatPage() {
                 ))}
               </div>
             )}
-            <div className="council-glass-input rounded-[1.75rem]">
+            <div className="rounded-2xl border border-border bg-card shadow-sm">
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -944,7 +945,7 @@ export function ChatPage() {
                     ? "Ask your model council anything… (Enter for new line; click Send to submit)"
                     : "Log in to chat"
                 }
-                className="block max-h-[280px] min-h-[3.5rem] w-full resize-none overflow-y-auto rounded-[1.75rem] bg-transparent px-4 pt-3 pb-2 text-sm text-white outline-none placeholder:text-slate-400 disabled:opacity-50"
+                className="block max-h-[280px] min-h-[3.5rem] w-full resize-none overflow-y-auto rounded-2xl bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
               />
               <input
                 ref={fileInputRef}
@@ -962,13 +963,13 @@ export function ChatPage() {
                     type="button"
                     onClick={() => setShowPlus((v) => !v)}
                     disabled={!isAuthenticated}
-                    className="rounded-lg p-2 text-slate-300 hover:bg-white/10 disabled:opacity-40"
+                    className="rounded-lg p-2 text-muted-foreground hover:bg-accent disabled:opacity-40"
                     title="Attach"
                   >
                     <Plus className="size-4" />
                   </button>
                   {showPlus && (
-                    <div className="absolute bottom-11 left-0 z-30 w-52 rounded-xl border border-white/15 bg-slate-950/95 p-1 shadow-xl backdrop-blur-xl">
+                    <div className="absolute bottom-11 left-0 z-30 w-52 rounded-xl border border-border bg-popover p-1 shadow-xl">
                       <ComposerMenuItem
                         icon={Upload}
                         label="Upload file"
@@ -1012,7 +1013,7 @@ export function ChatPage() {
                   type="button"
                   onClick={() => setShowPrompt(true)}
                   disabled={!isAuthenticated}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-slate-200 hover:bg-white/10 disabled:opacity-40"
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-40"
                 >
                   <Wand2 className="size-3.5" /> Prompt Builder
                 </button>
@@ -1020,7 +1021,7 @@ export function ChatPage() {
                   type="button"
                   onClick={() => setShowRef(true)}
                   disabled={!isAuthenticated}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-slate-200 hover:bg-white/10 disabled:opacity-40"
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-40"
                 >
                   <Link2 className="size-3.5" /> Reference
                 </button>
@@ -1058,7 +1059,7 @@ export function ChatPage() {
                         !set ||
                         isVoiceActive
                       }
-                      className="council-glass-cta inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium disabled:opacity-40"
+                      className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
                     >
                       <Send className="size-3.5" />
                       Send
@@ -1067,7 +1068,7 @@ export function ChatPage() {
                 </div>
               </div>
             </div>
-            <p className="mt-2 text-center text-[11px] text-slate-500">
+            <p className="mt-2 text-center text-[11px] text-muted-foreground">
               MultiAI may produce inaccurate information. Review important outputs before acting.
             </p>
           </div>
@@ -1274,7 +1275,7 @@ function LoadingTurn({
   modelById,
 }: {
   set: ModelSet;
-  modelById: (id: string) => { name: string; color: string; vendor: string };
+  modelById: (id: string) => { name: string; color: string };
 }) {
   return (
     <div className="space-y-4">
@@ -1282,28 +1283,22 @@ function LoadingTurn({
         {set.models.map((id) => {
           const m = modelById(id);
           return (
-            <GlassCard key={id} variant="council" className="relative overflow-hidden p-4">
-              <VendorLogo
-                vendor={m.vendor}
-                watermark
-                className="pointer-events-none absolute -right-2 -bottom-2 size-20"
-              />
-              <div className="relative flex items-center gap-2 text-sm font-medium text-white">
-                <VendorLogo vendor={m.vendor} className="size-7" />
+            <GlassCard key={id} className="p-4">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <span className="size-2 rounded-full" style={{ background: m.color }} />
                 {m.name}
-                <Loader2 className="ml-auto size-3.5 animate-spin text-sky-300" />
+                <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
               </div>
-              <div className="relative mt-3 space-y-2">
-                <div className="h-2 animate-pulse rounded bg-white/10" />
-                <div className="h-2 w-10/12 animate-pulse rounded bg-white/10" />
+              <div className="mt-3 space-y-2">
+                <div className="h-2 animate-pulse rounded bg-muted" />
+                <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
               </div>
             </GlassCard>
           );
         })}
       </div>
-      <GlassCard variant="council" className="p-4 text-sm text-slate-300">
-        <Loader2 className="mr-2 inline size-3.5 animate-spin text-sky-300" /> Synthesizing
-        verdict…
+      <GlassCard className="p-4 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 inline size-3.5 animate-spin text-primary" /> Synthesizing verdict…
       </GlassCard>
     </div>
   );
@@ -1344,7 +1339,7 @@ function AiTurn({
 }: {
   set: ModelSet;
   turn: ApiTurn;
-  modelById: (id: string) => { name: string; color: string; vendor: string };
+  modelById: (id: string) => { name: string; color: string };
   pendingSavedVerdicts: Set<string>;
   pinnedVerdictId?: string | null;
   onTogglePin: (verdictId: string, currentlyPinned: boolean) => void;
@@ -1377,7 +1372,7 @@ function AiTurn({
           <button
             type="button"
             onClick={() => setAnswersCollapsed((value) => !value)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
             aria-expanded={!answersCollapsed}
           >
             <ChevronDown
@@ -1386,7 +1381,9 @@ function AiTurn({
             {answersCollapsed ? "Show AI council answers" : "Hide AI council answers"}
           </button>
           {answersCollapsed && (
-            <span className="text-xs text-slate-500">{answerCards.length} answers hidden</span>
+            <span className="text-xs text-muted-foreground">
+              {answerCards.length} answers hidden
+            </span>
           )}
         </div>
       )}
@@ -1403,53 +1400,47 @@ function AiTurn({
               return (
                 <GlassCard
                   key={id}
-                  variant="council"
                   className={cn(
-                    "relative overflow-hidden p-4",
-                    isTopPick && "ring-2 ring-sky-300/70 shadow-[0_0_40px_rgb(56_189_248_/_0.25)]",
+                    "p-4",
+                    isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
                   )}
                 >
-                  <VendorLogo
-                    vendor={m.vendor}
-                    watermark
-                    className="pointer-events-none absolute -right-2 -bottom-2 size-24"
-                  />
-                  <div className="relative flex items-start gap-2 text-sm">
-                    <VendorLogo vendor={m.vendor} className="size-8 shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[11px] text-slate-400">{m.vendor}</div>
-                      <div className="truncate font-medium text-white">{m.name}</div>
-                    </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span
+                      className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
+                      style={{ color: m.color, background: m.color }}
+                    />
+                    <span className="font-medium">{m.name}</span>
                     {isTopPick && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
                         <Trophy className="size-3" />
                         Top pick
                       </span>
                     )}
-                  </div>
-                  {!inProgress && a?.confidence != null && (
-                    <div className="relative mt-2">
+                    {inProgress && (
+                      <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
+                    )}
+                    {!inProgress && a?.confidence != null && (
                       <ModelConfidenceBadge
                         confidence={a.confidence}
                         isTopPick={isTopPick}
                         strategy={turnStrategy}
                         modelName={m.name}
                       />
-                    </div>
-                  )}
+                    )}
+                  </div>
                   {failed ? (
-                    <p className="relative mt-3 text-xs text-rose-300">
+                    <p className="mt-3 text-xs text-destructive">
                       <AlertCircle className="mr-1 inline size-3.5" />
                       {a?.error_message ?? "Failed"}
                     </p>
                   ) : inProgress ? (
-                    <div className="relative mt-3 space-y-2">
-                      <div className="h-2 animate-pulse rounded bg-white/10" />
-                      <div className="h-2 w-10/12 animate-pulse rounded bg-white/10" />
-                      <Loader2 className="size-3.5 animate-spin text-sky-300" />
+                    <div className="mt-3 space-y-2">
+                      <div className="h-2 animate-pulse rounded bg-muted" />
+                      <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
                     </div>
                   ) : (
-                    <div className="relative mt-3 text-slate-100/90">
+                    <div className="mt-3">
                       <MessageContent compact>{a?.text ?? ""}</MessageContent>
                     </div>
                   )}
@@ -1467,31 +1458,31 @@ function AiTurn({
           data-verdict-synthesis="true"
           className={cn(
             "scroll-mt-28",
-            isPinned && "rounded-2xl ring-2 ring-amber-300/60",
+            isPinned && "rounded-2xl ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
           )}
         >
-          <GlassCard glow variant="council" className="p-5">
+          <GlassCard glow className="p-5">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-sky-400 to-violet-500 text-white">
-                <Sparkles className="size-4" />
+              <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+                <Gavel className="size-4" />
               </span>
-              <span className="font-medium text-white">Verdict</span>
+              <span className="font-medium">Verdict</span>
               {isPinned && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
                   <Pin className="size-3 fill-current" /> Pinned
                 </span>
               )}
-              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium text-sky-200">
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
                 {turn.verdict.strategy}
               </span>
               {judgeModel && (
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-xs font-medium text-slate-200">
-                  <VendorLogo vendor={judgeModel.vendor} className="size-4" />
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
+                  <span className="size-2 rounded-full" style={{ background: judgeModel.color }} />
                   Judge: {judgeModel.name}
                 </span>
               )}
               {topModelId && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/15 px-2 py-0.5 text-xs font-semibold text-emerald-200">
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
                   <Trophy className="size-3" />
                   Best: {modelById(topModelId).name}
                 </span>
@@ -1505,8 +1496,8 @@ function AiTurn({
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
                     isPinned
-                      ? "border-amber-400/40 bg-amber-400/10 text-amber-200"
-                      : "border-white/15 bg-white/5 text-slate-300 hover:bg-white/10",
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+                      : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
                   )}
                 >
                   <Pin className={cn("size-3.5", isPinned && "fill-current")} />
@@ -1524,8 +1515,8 @@ function AiTurn({
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
                       bookmarkState.saved
-                        ? "border-sky-400/40 bg-sky-400/10 text-sky-200"
-                        : "border-white/15 bg-white/5 text-slate-300 hover:bg-white/10",
+                        ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                        : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
                     )}
                   >
                     <Bookmark
@@ -1542,7 +1533,7 @@ function AiTurn({
                   <Link
                     to="/lessons/$id"
                     params={{ id: turn.lesson_id }}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 hover:bg-sky-400/15"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
                   >
                     <BookOpen className="size-3.5" /> View lesson
                   </Link>
@@ -1550,27 +1541,27 @@ function AiTurn({
                   <button
                     type="button"
                     onClick={openDisagree}
-                    className="council-glass-cta inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
                   >
-                    <Swords className="size-3.5" /> Challenge
+                    <Swords className="size-3.5" /> challenge
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={openDisagree}
-                    className="council-glass-cta inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary shadow-sm hover:bg-primary/15"
                   >
                     <Swords className="size-3.5" /> Challenge
                   </button>
                 )}
               </div>
             </div>
-            <div className="mt-4 space-y-3 text-slate-100">
+            <div className="mt-4 space-y-3">
               <MessageContent>{turn.verdict.text}</MessageContent>
               {turn.verdict.reason && (
                 <MessageContent
                   muted
-                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-slate-300"
+                  className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
                 >
                   {turn.verdict.reason}
                 </MessageContent>

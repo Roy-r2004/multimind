@@ -17,9 +17,9 @@ const TONE: Partial<Record<ScrapingMissionStatus | ScrapingBlueprintStatus, stri
   approved: "border-teal-300/40 bg-teal-400/10 text-teal-100",
   rejected: "border-rose-400/40 bg-rose-500/10 text-rose-100",
   failed: "border-rose-400/40 bg-rose-500/10 text-rose-100",
-  awaiting_approval: "border-sky-300/40 bg-sky-400/15 text-sky-100",
-  blueprint_generating: "border-sky-300/40 bg-sky-400/15 text-sky-100 dream-twinkle",
-  generating: "border-sky-300/40 bg-sky-400/15 text-sky-100 dream-twinkle",
+  awaiting_approval: "border-[#d4a84b]/40 bg-[#d4a84b]/15 text-[#f3e6c4]",
+  blueprint_generating: "border-[#d4a84b]/40 bg-[#d4a84b]/15 text-[#f3e6c4] dream-twinkle",
+  generating: "border-[#d4a84b]/40 bg-[#d4a84b]/15 text-[#f3e6c4] dream-twinkle",
   cancelled: "border-white/20 bg-white/5 text-white/60",
   superseded: "border-white/15 bg-white/5 text-white/50",
 };

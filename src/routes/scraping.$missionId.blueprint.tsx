@@ -185,7 +185,7 @@ function ScrapingBlueprintPage() {
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div className="space-y-2 text-sm">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-display text-lg text-white">
+                    <span className="font-display text-lg text-[#f7f1e4]">
                       {blueprintDisplayName(selected)}
                     </span>
                     <span className="text-xs text-white/45">Version {selected.version}</span>
@@ -231,7 +231,7 @@ function ScrapingBlueprintPage() {
                 <DreamPanel tone="amber">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
-                      <h2 className="font-display text-lg text-white">Assemble AI crew</h2>
+                      <h2 className="font-display text-lg text-[#f7f1e4]">Assemble AI crew</h2>
                       <p className="mt-2 text-sm text-white/55">
                         The orchestrator reads the approved chart and chooses agents. No websites
                         scraped yet.
@@ -240,7 +240,7 @@ function ScrapingBlueprintPage() {
                     <Button
                       type="button"
                       disabled={planning}
-                      className="council-glass-cta"
+                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                       onClick={() => void handlePlanTeam()}
                     >
                       {planning ? "Planning AI Team..." : "Plan AI Scraping Team"}
@@ -254,7 +254,7 @@ function ScrapingBlueprintPage() {
                 <DreamPanel tone="teal">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
-                      <h2 className="font-display text-lg text-white">Crew already charted</h2>
+                      <h2 className="font-display text-lg text-[#f7f1e4]">Crew already charted</h2>
                       <p className="mt-2 text-sm text-white/55">
                         This approved chart already has a persisted AI team plan.
                       </p>
@@ -262,7 +262,7 @@ function ScrapingBlueprintPage() {
                     <Button
                       type="button"
                       disabled={selectedRun.status === "planning"}
-                      className="council-glass-cta"
+                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
                       onClick={() =>
                         void navigate({
                           to: "/scraping/$missionId/runs/$runId",

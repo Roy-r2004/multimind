@@ -104,7 +104,7 @@ export function MissionComposer() {
       )}
 
       <div className="dream-rise space-y-3">
-        <Label htmlFor="mission-title" className="text-[11px] uppercase tracking-[0.28em] text-sky-300/90">
+        <Label htmlFor="mission-title" className="text-[11px] uppercase tracking-[0.28em] text-[#d4a84b]/90">
           Mission name
         </Label>
         <input
@@ -113,14 +113,14 @@ export function MissionComposer() {
           onChange={(event) => setTitle(event.target.value)}
           required
           placeholder="Estonia Christian rehab census"
-          className="w-full border-0 border-b border-white/20 bg-transparent pb-3 font-display text-3xl tracking-tight text-white outline-none placeholder:text-white/25 focus:border-sky-300/70 sm:text-4xl"
+          className="w-full border-0 border-b border-white/20 bg-transparent pb-3 font-display text-3xl tracking-tight text-[#f7f1e4] outline-none placeholder:text-white/25 focus:border-[#d4a84b]/70 sm:text-4xl"
         />
       </div>
 
       <div className="dream-rise dream-rise-delay-1 space-y-3">
         <Label
           htmlFor="mission-country"
-          className="text-[11px] uppercase tracking-[0.28em] text-sky-300/90"
+          className="text-[11px] uppercase tracking-[0.28em] text-[#d4a84b]/90"
         >
           Destination
         </Label>
@@ -131,7 +131,7 @@ export function MissionComposer() {
           onChange={(event) => setCountryCode(event.target.value.toUpperCase())}
           placeholder="Search country or code — EE, Estonia…"
           required
-          className="w-full rounded-2xl border border-white/15 bg-white/5 px-4 py-3.5 text-lg text-white outline-none backdrop-blur-sm placeholder:text-white/30 focus:border-sky-300/50 focus:ring-2 focus:ring-sky-400/20"
+          className="w-full rounded-2xl border border-white/15 bg-white/5 px-4 py-3.5 text-lg text-[#f7f1e4] outline-none backdrop-blur-sm placeholder:text-white/30 focus:border-[#d4a84b]/50 focus:ring-2 focus:ring-[#d4a84b]/20"
         />
         <datalist id="scraping-country-options">
           {SCRAPING_COUNTRIES.map((country) => (
@@ -142,7 +142,7 @@ export function MissionComposer() {
         </datalist>
         {countryName && (
           <p className="dream-float text-sm text-white/55">
-            Flight path locked on <span className="text-sky-100">{countryName}</span>
+            Flight path locked on <span className="text-[#f3e6c4]">{countryName}</span>
           </p>
         )}
       </div>
@@ -152,8 +152,8 @@ export function MissionComposer() {
         disabled={!canLaunch}
         className={cn(
           "dream-rise dream-rise-delay-2 group relative inline-flex w-full items-center justify-center gap-2 overflow-hidden rounded-2xl px-5 py-4 text-sm font-semibold tracking-wide transition",
-          "council-glass-cta",
-          " disabled:cursor-not-allowed disabled:opacity-40",
+          "bg-[#d4a84b] text-[#0b161c] shadow-[0_16px_40px_rgba(212,168,75,0.28)]",
+          "hover:bg-[#e0b85c] disabled:cursor-not-allowed disabled:opacity-40",
         )}
       >
         <span className="dream-pulse-ring absolute size-24 rounded-full border border-[#0b161c]/20 opacity-0 group-hover:opacity-100" />
@@ -184,7 +184,7 @@ export function MissionComposer() {
                   setPrompt(event.target.value);
                 }}
                 rows={8}
-                className="resize-y border-white/15 bg-white/5 text-white placeholder:text-white/30"
+                className="resize-y border-white/15 bg-white/5 text-[#f7f1e4] placeholder:text-white/30"
               />
               <p className="text-xs text-white/40">
                 Auto-written from title + country. Edit only if you need a custom brief.
@@ -194,7 +194,7 @@ export function MissionComposer() {
               <div className="space-y-2">
                 <Label className="text-white/70">Model set</Label>
                 <Select value={modelSetId} onValueChange={setModelSetId} required>
-                  <SelectTrigger className="border-white/15 bg-white/5 text-white">
+                  <SelectTrigger className="border-white/15 bg-white/5 text-[#f7f1e4]">
                     <SelectValue placeholder="Select model set" />
                   </SelectTrigger>
                   <SelectContent>
@@ -209,7 +209,7 @@ export function MissionComposer() {
               <div className="space-y-2">
                 <Label className="text-white/70">Project</Label>
                 <Select value={projectId} onValueChange={setProjectId}>
-                  <SelectTrigger className="border-white/15 bg-white/5 text-white">
+                  <SelectTrigger className="border-white/15 bg-white/5 text-[#f7f1e4]">
                     <SelectValue placeholder="No project" />
                   </SelectTrigger>
                   <SelectContent>

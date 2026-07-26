@@ -34,13 +34,13 @@ export function BlueprintVersionList({ blueprints, mission, selectedId, onSelect
             className={cn(
               "flex w-full cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition",
               selected
-                ? "border-sky-300/50 bg-sky-400/12 shadow-[0_0_24px_rgba(56,189,248,0.12)]"
+                ? "border-[#d4a84b]/50 bg-[#d4a84b]/12 shadow-[0_0_24px_rgba(212,168,75,0.12)]"
                 : "border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.06]",
             )}
           >
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-center gap-2">
-                <span className="truncate font-medium text-white">
+                <span className="truncate font-medium text-[#f7f1e4]">
                   {blueprintDisplayName(blueprint)}
                 </span>
                 <span className="shrink-0 text-xs text-white/40">v{blueprint.version}</span>

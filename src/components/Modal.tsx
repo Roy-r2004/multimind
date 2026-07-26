@@ -49,7 +49,7 @@ export function Modal({
         className={cn(
           "relative max-h-[min(90vh,720px)] w-full overflow-hidden rounded-2xl border shadow-2xl animate-fade-up",
           dream
-            ? "border-white/10 bg-[#020617]/95 text-slate-100 shadow-[0_30px_80px_rgba(0,0,0,0.55)] backdrop-blur-xl"
+            ? "border-white/10 bg-[#0b161c] text-[#f7f1e4] shadow-[0_30px_80px_rgba(0,0,0,0.55)]"
             : "border-border bg-card",
           size === "sm" && "max-w-sm",
           size === "md" && "max-w-lg",
@@ -67,7 +67,7 @@ export function Modal({
             <h3
               className={cn(
                 "text-base font-semibold",
-                dream && "font-display tracking-tight text-white",
+                dream && "font-display tracking-tight text-[#f7f1e4]",
               )}
             >
               {title}
@@ -77,7 +77,7 @@ export function Modal({
               onClick={onClose}
               className={cn(
                 "cursor-pointer rounded-md p-1.5",
-                dream ? "text-slate-400 hover:bg-white/10 hover:text-white" : "hover:bg-accent",
+                dream ? "text-white/60 hover:bg-white/10 hover:text-[#f7f1e4]" : "hover:bg-accent",
               )}
             >
               <X className="size-4" />

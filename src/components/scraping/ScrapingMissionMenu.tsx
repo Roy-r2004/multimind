@@ -44,7 +44,7 @@ export function ScrapingMissionMenu({
 
       <DropdownMenuContent
         align="end"
-        className="z-[100] w-44 border-white/10 bg-[#0b161c] text-white"
+        className="z-[100] w-44 border-white/10 bg-[#0b161c] text-[#f7f1e4]"
         onClick={(event) => event.stopPropagation()}
       >
         <DropdownMenuItem onSelect={() => runAfterMenuCloses(onAddOrChangeProject)}>

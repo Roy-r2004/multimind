@@ -65,8 +65,8 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
   if (!detail) {
     return (
       <Panel>
-        <p className="text-[11px] uppercase tracking-[0.28em] text-sky-300/90">Dossier</p>
-        <p className="mt-2 font-display text-xl text-white">Pick a facility</p>
+        <p className="text-[11px] uppercase tracking-[0.28em] text-[#d4a84b]/90">Dossier</p>
+        <p className="mt-2 font-display text-xl text-[#f7f1e4]">Pick a facility</p>
         <p className="mt-2 text-sm text-white/50">
           Inspect locations, contacts, services, and evidence as they crystallize.
         </p>
@@ -97,7 +97,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
         <button
           type="button"
           onClick={onBack}
-          className="mb-3 text-sm text-white/50 hover:text-sky-100 lg:hidden"
+          className="mb-3 text-sm text-white/50 hover:text-[#f3e6c4] lg:hidden"
         >
           ← Back to list
         </button>
@@ -106,7 +106,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
       <div className="space-y-3 border-b border-white/10 pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="font-display text-2xl tracking-tight text-white">
+            <h2 className="font-display text-2xl tracking-tight text-[#f7f1e4]">
               {detail.canonical_name}
             </h2>
             <p className="mt-1 text-sm text-white/50">
@@ -118,7 +118,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
           <div className="flex flex-wrap gap-2">
             <Badge
               variant="secondary"
-              className="border border-sky-300/35 bg-sky-400/15 text-sky-100"
+              className="border border-[#d4a84b]/35 bg-[#d4a84b]/15 text-[#f3e6c4]"
             >
               {(detail.confidence_score * 100).toFixed(0)}% confidence
             </Badge>
@@ -136,7 +136,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
               asChild
               size="sm"
               variant="outline"
-              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
+              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
             >
               <a href={website} target="_blank" rel="noreferrer">
                 Open website
@@ -148,7 +148,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
             size="sm"
             variant="outline"
             disabled={!detail.primary_contact}
-            className="border-white/20 bg-white/5 text-white hover:bg-white/10"
+            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
             onClick={() => void copyContact()}
           >
             {copied ? "Copied" : "Copy contact"}
@@ -157,7 +157,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
             type="button"
             size="sm"
             variant="ghost"
-            className="text-white/60 hover:bg-white/10 hover:text-sky-100"
+            className="text-white/60 hover:bg-white/10 hover:text-[#f3e6c4]"
             onClick={() => setTab("Sources & Evidence")}
           >
             Jump to sources
@@ -174,7 +174,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
             className={cn(
               "shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition",
               tab === name
-                ? "council-glass-cta"
+                ? "bg-[#d4a84b] text-[#0b161c]"
                 : "bg-white/5 text-white/55 hover:bg-white/10",
             )}
           >
@@ -202,7 +202,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
         {tab === "Sources & Evidence" ? (
           <div className="space-y-4">
             <section>
-              <h3 className="mb-2 text-sm font-medium text-white">Sources</h3>
+              <h3 className="mb-2 text-sm font-medium text-[#f7f1e4]">Sources</h3>
               <ListOrEmpty
                 items={detail.sources.map((source) => ({
                   title: source.title || source.url,
@@ -212,7 +212,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
               />
             </section>
             <section>
-              <h3 className="mb-2 text-sm font-medium text-white">Field evidence</h3>
+              <h3 className="mb-2 text-sm font-medium text-[#f7f1e4]">Field evidence</h3>
               <ListOrEmpty
                 items={detail.evidence.map((row) => ({
                   title: row.field_path,
@@ -266,7 +266,7 @@ function Overview({ detail }: { detail: ScrapingFacilityDetail }) {
       {rows.map(([label, value]) => (
         <div key={label} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
           <dt className="text-[11px] uppercase tracking-wide text-white/40">{label}</dt>
-          <dd className="mt-1 break-words text-sm text-white/90">{value || EMPTY}</dd>
+          <dd className="mt-1 break-words text-sm text-[#f7f1e4]/90">{value || EMPTY}</dd>
         </div>
       ))}
     </dl>
@@ -296,7 +296,7 @@ function LocationCards({
           >
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
-                <p className="font-medium text-white">{location.location_name}</p>
+                <p className="font-medium text-[#f7f1e4]">{location.location_name}</p>
                 <p className="mt-1 text-sm text-white/50">
                   {[location.location_type, location.city, location.region, location.country_name]
                     .filter(Boolean)
@@ -340,7 +340,7 @@ function ContactCards({ detail }: { detail: ScrapingFacilityDetail }) {
         >
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
-              <p className="font-medium text-white">
+              <p className="font-medium text-[#f7f1e4]">
                 {contact.contact_type}
                 {contact.label ? ` · ${contact.label}` : ""}
               </p>
@@ -382,12 +382,12 @@ function ListOrEmpty({
               href={item.href}
               target="_blank"
               rel="noreferrer"
-              className="font-medium text-sky-300 underline-offset-2 hover:underline"
+              className="font-medium text-[#d4a84b] underline-offset-2 hover:underline"
             >
               {item.title}
             </a>
           ) : (
-            <p className="font-medium text-white">{item.title}</p>
+            <p className="font-medium text-[#f7f1e4]">{item.title}</p>
           )}
           {item.body && item.body !== item.title ? (
             <p className="mt-1 break-words text-sm text-white/50">{item.body}</p>

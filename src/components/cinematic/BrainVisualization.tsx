@@ -119,13 +119,9 @@ export function BrainVisualization({
 
       {/* Center label */}
       <div className="absolute inset-0 z-20 flex flex-col items-center justify-center text-center">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.35em] text-sky-300/80">
-          Neural map
-        </p>
-        <p className="mt-1 font-display text-2xl font-bold tracking-tight text-gradient">
-          {firstName}
-        </p>
-        <p className="mt-1 text-xs text-slate-400">Living memory · {lessonCount} indexed</p>
+        <p className="text-[10px] font-semibold uppercase tracking-[0.35em] text-primary/80">Neural map</p>
+        <p className="mt-1 font-display text-2xl font-bold tracking-tight text-gradient">{firstName}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{lessonCount} memories indexed</p>
       </div>
 
       {/* Orbiting memory chips */}

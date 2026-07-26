@@ -27,7 +27,7 @@ const ICONS = {
 
 const STATE_RING: Record<FlightStage["state"], string> = {
   pending: "border-white/15 bg-white/5 text-white/55",
-  active: "border-sky-300/70 bg-sky-400/15 text-sky-100 dream-beacon",
+  active: "border-[#d4a84b]/70 bg-[#d4a84b]/15 text-[#f3e6c4] dream-beacon",
   done: "border-teal-300/40 bg-teal-400/10 text-teal-50",
   failed: "border-rose-400/50 bg-rose-500/10 text-rose-100",
 };
@@ -55,16 +55,16 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
       />
       <div
         className="dream-drift absolute -right-10 top-0 h-56 w-56 rounded-full blur-3xl"
-        style={{ background: "rgba(56,189,248,0.18)" }}
+        style={{ background: "rgba(212,168,75,0.18)" }}
       />
 
       <div className="relative px-5 pb-6 pt-5 sm:px-8 sm:pt-7">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="dream-rise">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-sky-300/90">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-[#d4a84b]/90">
               Scraping Council · Flight
             </p>
-            <h2 className="mt-1 font-display text-2xl tracking-tight text-white sm:text-3xl">
+            <h2 className="mt-1 font-display text-2xl tracking-tight text-[#f7f1e4] sm:text-3xl">
               {countryName ? `Navigating ${countryName}` : "In flight"}
             </h2>
             <p className="mt-1 text-sm text-white/60">
@@ -105,13 +105,13 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
             <path
               className="dream-flight-path"
               d="M40 80 C 220 20, 380 120, 500 55 S 780 10, 960 70"
-              stroke="rgba(56,189,248,0.75)"
+              stroke="rgba(212,168,75,0.75)"
               strokeWidth="2.5"
             />
             {/* moving vessel */}
             <circle
               r="7"
-              fill="#38bdf8"
+              fill="#d4a84b"
               className="dream-float"
               cx={40 + progress * 920}
               cy={80 - Math.sin(progress * Math.PI) * 35}
@@ -140,7 +140,7 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
                 )}
               >
                 {stage.state === "active" && (
-                  <span className="dream-pulse-ring absolute left-1/2 top-1/2 size-24 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-300/40" />
+                  <span className="dream-pulse-ring absolute left-1/2 top-1/2 size-24 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#d4a84b]/40" />
                 )}
                 <div className="relative flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2">
@@ -163,7 +163,7 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
                 </p>
                 <p className="relative mt-1 text-xs opacity-70">{stage.hint}</p>
                 {index === activeIndex && stage.state === "active" && (
-                  <p className="relative mt-3 text-[11px] uppercase tracking-[0.18em] text-sky-300">
+                  <p className="relative mt-3 text-[11px] uppercase tracking-[0.18em] text-[#d4a84b]">
                     Vessel is here
                   </p>
                 )}

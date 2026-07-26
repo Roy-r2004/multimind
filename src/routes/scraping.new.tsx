@@ -15,17 +15,17 @@ function NewScrapingMissionPage() {
       <DreamPageShell maxWidth="max-w-3xl" className="flex min-h-[calc(100vh-3.5rem)] flex-col justify-center md:min-h-screen">
         <Link
           to="/scraping"
-          className="dream-rise mb-10 inline-flex w-fit items-center gap-2 text-sm text-white/55 transition hover:text-sky-100"
+          className="dream-rise mb-10 inline-flex w-fit items-center gap-2 text-sm text-white/55 transition hover:text-[#f3e6c4]"
         >
           <ArrowLeft className="size-3.5" />
           All missions
         </Link>
 
         <div className="dream-rise dream-rise-delay-1 mb-10">
-          <p className="font-display text-[11px] font-semibold uppercase tracking-[0.42em] text-sky-300">
+          <p className="font-display text-[11px] font-semibold uppercase tracking-[0.42em] text-[#d4a84b]">
             Multimind
           </p>
-          <h1 className="mt-3 font-display text-5xl font-semibold tracking-tight text-white sm:text-6xl">
+          <h1 className="mt-3 font-display text-5xl font-semibold tracking-tight text-[#f7f1e4] sm:text-6xl">
             Scraping Council
           </h1>
           <p className="mt-4 max-w-md text-base leading-relaxed text-white/55">

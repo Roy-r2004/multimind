@@ -40,8 +40,8 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
       <div className="border-b border-white/10 p-4">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-sky-300/90">Crystallized</p>
-            <h2 className="font-display text-lg text-white">Facilities</h2>
+            <p className="text-[11px] uppercase tracking-[0.28em] text-[#d4a84b]/90">Crystallized</p>
+            <h2 className="font-display text-lg text-[#f7f1e4]">Facilities</h2>
           </div>
           <span className="rounded-full border border-white/15 bg-white/5 px-2.5 py-0.5 text-xs text-white/70">
             {filtered.length}
@@ -52,12 +52,12 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search name, city, contact…"
-            className="w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white outline-none placeholder:text-white/30 focus:border-sky-300/50"
+            className="w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-[#f7f1e4] outline-none placeholder:text-white/30 focus:border-[#d4a84b]/50"
           />
           <select
             value={typeFilter}
             onChange={(event) => setTypeFilter(event.target.value)}
-            className="w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-sky-300/50"
+            className="w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-[#f7f1e4] outline-none focus:border-[#d4a84b]/50"
           >
             <option value="all">All types</option>
             {types.map((type) => (
@@ -86,13 +86,13 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
                     className={cn(
                       "w-full px-4 py-3 text-left transition",
                       selected
-                        ? "bg-sky-400/12"
+                        ? "bg-[#d4a84b]/12"
                         : "hover:bg-white/[0.04]",
                     )}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="truncate font-medium text-white">
+                        <p className="truncate font-medium text-[#f7f1e4]">
                           {facility.canonical_name}
                         </p>
                         <p className="mt-0.5 text-xs text-white/45">
@@ -110,7 +110,7 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
                           <Chip label={`${facility.treatment_service_count ?? 0} services`} />
                         </div>
                       </div>
-                      <span className="shrink-0 text-sm font-semibold tabular-nums text-sky-300">
+                      <span className="shrink-0 text-sm font-semibold tabular-nums text-[#d4a84b]">
                         {(facility.confidence_score * 100).toFixed(0)}%
                       </span>
                     </div>
