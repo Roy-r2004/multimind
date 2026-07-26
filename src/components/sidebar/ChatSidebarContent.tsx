@@ -22,7 +22,14 @@ import type { Chat } from "@/lib/mock";
 import { useChatStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
+export function ChatSidebarContent({
+  onNavigate,
+  tone = "light",
+}: {
+  onNavigate: () => void;
+  tone?: "light" | "glass";
+}) {
+  const glass = tone === "glass";
   const { chats, projectById, renameChat, assignChatToProject, setActiveChatId, refreshAll } =
     useChatStore();
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
@@ -50,21 +57,39 @@ export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
             setActiveChatId(null);
             onNavigate();
           }}
-          className="flex w-full items-center gap-2 rounded-xl bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+          className={cn(
+            "flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium shadow-sm",
+            glass
+              ? "council-glass-cta"
+              : "bg-primary text-primary-foreground hover:bg-primary/90",
+          )}
         >
           <MessageSquarePlus className="size-4" /> New chat
         </Link>
       </div>
       <div className="mt-4 flex-1 overflow-hidden px-3">
-        <div className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+        <div
+          className={cn(
+            "flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.2em]",
+            glass ? "text-slate-400" : "text-muted-foreground",
+          )}
+        >
           <History className="size-3.5" /> Recent
         </div>
         <div className="mt-2 max-h-[38vh] space-y-0.5 overflow-y-auto">
           {chats.length === 0 ? (
-            <p className="px-2 py-3 text-xs text-muted-foreground">No chats yet</p>
+            <p className={cn("px-2 py-3 text-xs", glass ? "text-slate-500" : "text-muted-foreground")}>
+              No chats yet
+            </p>
           ) : (
             chats.map((c) => (
-              <div key={c.id} className="group relative rounded-lg hover:bg-accent">
+              <div
+                key={c.id}
+                className={cn(
+                  "group relative rounded-lg",
+                  glass ? "hover:bg-white/5" : "hover:bg-accent",
+                )}
+              >
                 {editingChatId === c.id ? (
                   <input
                     autoFocus
@@ -75,7 +100,12 @@ export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
                       if (e.key === "Enter") saveRename(c.id);
                       if (e.key === "Escape") setEditingChatId(null);
                     }}
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                    className={cn(
+                      "w-full rounded-lg border px-3 py-2 text-sm outline-none",
+                      glass
+                        ? "border-white/15 bg-white/5 text-white"
+                        : "border-border bg-background",
+                    )}
                   />
                 ) : (
                   <Link
@@ -84,11 +114,19 @@ export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
                       setActiveChatId(c.id);
                       onNavigate();
                     }}
-                    className="block truncate px-3 py-2 pr-8 text-sm text-sidebar-foreground/85"
+                    className={cn(
+                      "block truncate px-3 py-2 pr-8 text-sm",
+                      glass ? "text-slate-200/90" : "text-sidebar-foreground/85",
+                    )}
                   >
                     {c.title}
                     {projectById(c.projectId) && (
-                      <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                      <span
+                        className={cn(
+                          "mt-0.5 block truncate text-[10px]",
+                          glass ? "text-slate-500" : "text-muted-foreground",
+                        )}
+                      >
                         {projectById(c.projectId)?.name}
                       </span>
                     )}
@@ -103,7 +141,12 @@ export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
                         onClick={(e) => e.stopPropagation()}
                         className="absolute right-1 top-1.5 z-10 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100"
                       >
-                        <MoreHorizontal className="size-4 text-muted-foreground" />
+                        <MoreHorizontal
+                          className={cn(
+                            "size-4",
+                            glass ? "text-slate-400" : "text-muted-foreground",
+                          )}
+                        />
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-40">
