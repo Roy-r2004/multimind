@@ -1,6 +1,12 @@
 /** API types — mirror backend Pydantic schemas */
 
-export type Strategy = "Reconcile" | "Synthesize" | "Rank" | "Pick Best" | "Debate";
+export type Strategy =
+  | "Reconcile"
+  | "Synthesize"
+  | "Rank"
+  | "Pick Best"
+  | "Debate"
+  | "Referee";
 
 export type ApiModelPricing = {
   input_per_1k: number;

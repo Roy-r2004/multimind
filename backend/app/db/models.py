@@ -61,6 +61,7 @@ class Strategy(str, enum.Enum):
     RANK = "Rank"
     PICK_BEST = "Pick Best"
     DEBATE = "Debate"
+    REFEREE = "Referee"
 
 
 class UsageKind(str, enum.Enum):

@@ -12,7 +12,13 @@ export type ModelSet = {
   customInstructions?: string;
 };
 
-export type Strategy = "Reconcile" | "Synthesize" | "Rank" | "Pick Best" | "Debate";
+export type Strategy =
+  | "Reconcile"
+  | "Synthesize"
+  | "Rank"
+  | "Pick Best"
+  | "Debate"
+  | "Referee";
 
 export const STRATEGIES: { name: Strategy; desc: string }[] = [
   { name: "Reconcile", desc: "Finds agreements and disagreements, then writes a balanced answer." },
@@ -20,6 +26,10 @@ export const STRATEGIES: { name: Strategy; desc: string }[] = [
   { name: "Rank", desc: "Ranks every answer from strongest to weakest with reasons." },
   { name: "Pick Best", desc: "Chooses the single best answer and explains why." },
   { name: "Debate", desc: "Shows the disagreement and decides which argument is stronger." },
+  {
+    name: "Referee",
+    desc: "Chafiq Referee — merges council answers into one authoritative, evidence-first verdict.",
+  },
 ];
 
 export type Chat = {

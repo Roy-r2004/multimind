@@ -13,6 +13,7 @@ class StrategyEnum(str, Enum):
     RANK = "Rank"
     PICK_BEST = "Pick Best"
     DEBATE = "Debate"
+    REFEREE = "Referee"
 
 
 # --- Auth ---

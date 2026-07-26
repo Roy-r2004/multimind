@@ -3,6 +3,7 @@ import { Modal } from "@/components/Modal";
 import { Plus, Loader2, X } from "lucide-react";
 import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
+import { REFEREE_CUSTOM_INSTRUCTIONS } from "@/lib/refereePrompt";
 import { useModels } from "@/lib/models";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
@@ -379,7 +380,13 @@ export function ModelSetModal({
               <button
                 key={s.name}
                 type="button"
-                onClick={() => setStrategy(s.name)}
+                onClick={() => {
+                  setStrategy(s.name);
+                  if (s.name === "Referee") {
+                    setCustom(REFEREE_CUSTOM_INSTRUCTIONS);
+                    setSelectedTemplateName("Chafiq Referee");
+                  }
+                }}
                 className={cn(
                   "rounded-2xl border px-3 py-3 text-left text-sm transition",
                   strategy === s.name

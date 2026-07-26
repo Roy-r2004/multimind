@@ -60,7 +60,7 @@ SYSTEM_MODEL_SETS = [
         "description": "Expert referee synthesizer — merges council answers into a single authoritative verdict.",
         "models": ["gpt-4.1", "claude", "gemini", "grok", "deepseek"],
         "verdict_model": "gpt-4.1",
-        "strategy": Strategy.SYNTHESIZE,
+        "strategy": Strategy.REFEREE,
         "best_for": "General questions, everyday use, authoritative synthesis",
         "custom_instructions": REFEREE_CUSTOM_INSTRUCTIONS,
     },

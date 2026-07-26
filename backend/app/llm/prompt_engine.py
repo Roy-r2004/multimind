@@ -16,6 +16,7 @@ STRATEGY_TEMPLATE_MAP = {
     "Rank": "system/verdict.j2",
     "Pick Best": "system/verdict.j2",
     "Debate": "system/verdict.j2",
+    "Referee": "system/verdict.j2",
 }
 
 # Included by base.j2 — must always exist when using StrictUndefined.
