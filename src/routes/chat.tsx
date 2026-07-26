@@ -33,6 +33,7 @@ import {
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
+import { VendorLogo } from "@/components/chat/VendorLogo";
 import { GlassCard, ModelPill, CinematicBackdrop } from "@/components/cinematic/PageChrome";
 import ModelSetModal from "@/components/ModelSetModal";
 import { PromptBuilderModal } from "@/components/chat/PromptBuilderModal";
@@ -651,11 +652,11 @@ export function ChatPage() {
               {set.models.map((id) => {
                 const m = modelById(id);
                 return (
-                  <span
+                  <VendorLogo
                     key={id}
-                    className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
-                    style={{ color: m.color, background: m.color }}
+                    vendor={m.vendor}
                     title={m.name}
+                    className="size-5"
                   />
                 );
               })}
@@ -728,38 +729,42 @@ export function ChatPage() {
             )}
 
             {empty && set && (
-              <div className="animate-fade-up space-y-8 py-8 text-center">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary/80">
-                  Your council of models
+              <div className="elevate-hero space-y-8 py-10 text-center md:py-14">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-primary">
+                  01 — Chat Council
                 </p>
-                <h2 className="text-4xl font-semibold tracking-tight md:text-5xl">
-                  Ask once.
-                  <br />
-                  <span className="text-gradient">Decide with clarity.</span>
+                <h2 className="font-display text-4xl tracking-tight md:text-6xl">
+                  Five minds.{" "}
+                  <span className="text-gradient italic">One verdict.</span>
                 </h2>
-                <p className="mx-auto max-w-lg text-sm text-muted-foreground">
-                  {set.models.length} {set.models.length === 1 ? "model answers" : "models answer"}{" "}
-                  in parallel — then Verdict AI synthesizes the final answer using{" "}
+                <p className="mx-auto max-w-xl text-sm text-muted-foreground md:text-base">
+                  Ask once. Compare frontier models. Decide with clarity — Verdict AI uses{" "}
                   <strong className="text-foreground">{set.strategy}</strong>.
                 </p>
                 <button
                   type="button"
                   onClick={() => setShowCouncil(true)}
-                  className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10"
+                  className="inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/5 px-5 py-2.5 text-sm font-medium text-primary shadow-sm hover:bg-primary/10"
                 >
                   Choose your models
                 </button>
                 <div className="mx-auto grid max-w-5xl gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  {set.models.map((id) => {
+                  {set.models.map((id, index) => {
                     const model = modelById(id);
-
                     return (
-                      <ModelPill
+                      <div
                         key={id}
-                        name={model.name}
-                        vendor={model.vendor}
-                        color={model.color}
-                      />
+                        className={cn(
+                          "elevate-card",
+                          index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
+                        )}
+                      >
+                        <ModelPill
+                          name={model.name}
+                          vendor={model.vendor}
+                          color={model.color}
+                        />
+                      </div>
                     );
                   })}
                 </div>
@@ -933,7 +938,7 @@ export function ChatPage() {
                 ))}
               </div>
             )}
-            <div className="rounded-2xl border border-border bg-card shadow-sm">
+            <div className="rounded-[1.35rem] border border-border/90 bg-card/95 shadow-[0_8px_28px_oklch(0.45_0.04_240/0.08)] ring-1 ring-primary/5">
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -942,10 +947,10 @@ export function ChatPage() {
                 disabled={!isAuthenticated || !set}
                 placeholder={
                   isAuthenticated
-                    ? "Ask your model council anything… (Enter for new line; click Send to submit)"
+                    ? "Ask your model council anything… (Enter for new line; ⌘↵ / Ctrl+Enter to send)"
                     : "Log in to chat"
                 }
-                className="block max-h-[280px] min-h-[3.5rem] w-full resize-none overflow-y-auto rounded-2xl bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                className="block max-h-[280px] min-h-[3.5rem] w-full resize-none overflow-y-auto rounded-[1.35rem] bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
               />
               <input
                 ref={fileInputRef}
@@ -1275,7 +1280,7 @@ function LoadingTurn({
   modelById,
 }: {
   set: ModelSet;
-  modelById: (id: string) => { name: string; color: string };
+  modelById: (id: string) => { name: string; color: string; vendor: string };
 }) {
   return (
     <div className="space-y-4">
@@ -1283,13 +1288,18 @@ function LoadingTurn({
         {set.models.map((id) => {
           const m = modelById(id);
           return (
-            <GlassCard key={id} className="p-4">
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <span className="size-2 rounded-full" style={{ background: m.color }} />
-                {m.name}
+            <GlassCard key={id} className="relative min-h-[140px] overflow-hidden p-4">
+              <VendorLogo
+                vendor={m.vendor}
+                watermark
+                className="pointer-events-none absolute -right-2 -bottom-2 size-20"
+              />
+              <div className="relative flex items-center gap-2 text-sm font-medium">
+                <VendorLogo vendor={m.vendor} className="size-7" title={m.name} />
+                <span className="truncate">{m.name}</span>
                 <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
               </div>
-              <div className="mt-3 space-y-2">
+              <div className="relative mt-3 space-y-2">
                 <div className="h-2 animate-pulse rounded bg-muted" />
                 <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
               </div>
@@ -1297,8 +1307,9 @@ function LoadingTurn({
           );
         })}
       </div>
-      <GlassCard className="p-4 text-sm text-muted-foreground">
-        <Loader2 className="mr-2 inline size-3.5 animate-spin text-primary" /> Synthesizing verdict…
+      <GlassCard glow className="p-4 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 inline size-3.5 animate-spin text-primary" /> Synthesizing
+        verdict…
       </GlassCard>
     </div>
   );
@@ -1339,7 +1350,7 @@ function AiTurn({
 }: {
   set: ModelSet;
   turn: ApiTurn;
-  modelById: (id: string) => { name: string; color: string };
+  modelById: (id: string) => { name: string; color: string; vendor: string };
   pendingSavedVerdicts: Set<string>;
   pinnedVerdictId?: string | null;
   onTogglePin: (verdictId: string, currentlyPinned: boolean) => void;
@@ -1391,56 +1402,64 @@ function AiTurn({
       {!answersCollapsed && (
         <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            {answerCards.map(({ modelId: id, answer: a, status }) => {
+            {answerCards.map(({ modelId: id, answer: a, status }, index) => {
               const baseModel = modelById(id);
-              const m = a?.model_name ? { ...baseModel, name: a.model_name } : baseModel;
+              const m = a?.model_name
+                ? { ...baseModel, name: a.model_name }
+                : baseModel;
               const failed = status === "failed";
               const inProgress = status === "pending" || status === "running";
               const isTopPick = topModelId === id;
               return (
                 <GlassCard
                   key={id}
+                  featured={isTopPick}
                   className={cn(
-                    "p-4",
-                    isTopPick && "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
+                    "elevate-card relative min-h-[180px] overflow-hidden p-4",
+                    index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
                   )}
                 >
-                  <div className="flex items-center gap-2 text-sm">
-                    <span
-                      className="size-2 rounded-full shadow-[0_0_8px_currentColor]"
-                      style={{ color: m.color, background: m.color }}
-                    />
-                    <span className="font-medium">{m.name}</span>
+                  <VendorLogo
+                    vendor={m.vendor}
+                    watermark
+                    className="pointer-events-none absolute -right-2 -bottom-2 size-24"
+                  />
+                  <div className="relative flex items-start gap-2 text-sm">
+                    <VendorLogo vendor={m.vendor} className="size-8 shrink-0" title={m.name} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[11px] text-muted-foreground">{m.vendor}</div>
+                      <div className="truncate font-medium">{m.name}</div>
+                    </div>
                     {isTopPick && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
                         <Trophy className="size-3" />
                         Top pick
                       </span>
                     )}
-                    {inProgress && (
-                      <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
-                    )}
-                    {!inProgress && a?.confidence != null && (
+                  </div>
+                  {!inProgress && a?.confidence != null && (
+                    <div className="relative mt-2 flex justify-end">
                       <ModelConfidenceBadge
                         confidence={a.confidence}
                         isTopPick={isTopPick}
                         strategy={turnStrategy}
                         modelName={m.name}
                       />
-                    )}
-                  </div>
+                    </div>
+                  )}
                   {failed ? (
-                    <p className="mt-3 text-xs text-destructive">
+                    <p className="relative mt-3 text-xs text-destructive">
                       <AlertCircle className="mr-1 inline size-3.5" />
                       {a?.error_message ?? "Failed"}
                     </p>
                   ) : inProgress ? (
-                    <div className="mt-3 space-y-2">
+                    <div className="relative mt-3 space-y-2">
                       <div className="h-2 animate-pulse rounded bg-muted" />
                       <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+                      <Loader2 className="size-3.5 animate-spin text-primary" />
                     </div>
                   ) : (
-                    <div className="mt-3">
+                    <div className="relative mt-3">
                       <MessageContent compact>{a?.text ?? ""}</MessageContent>
                     </div>
                   )}
@@ -1457,18 +1476,18 @@ function AiTurn({
           id={`verdict-${turn.verdict.id}`}
           data-verdict-synthesis="true"
           className={cn(
-            "scroll-mt-28",
-            isPinned && "rounded-2xl ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background",
+            "elevate-verdict scroll-mt-28",
+            isPinned && "rounded-2xl ring-2 ring-amber-400/60 ring-offset-2 ring-offset-background",
           )}
         >
           <GlassCard glow className="p-5">
             <div className="flex flex-wrap items-center gap-2">
               <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-                <Gavel className="size-4" />
+                <Sparkles className="size-4" />
               </span>
               <span className="font-medium">Verdict</span>
               {isPinned && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
                   <Pin className="size-3 fill-current" /> Pinned
                 </span>
               )}
@@ -1477,12 +1496,12 @@ function AiTurn({
               </span>
               {judgeModel && (
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
-                  <span className="size-2 rounded-full" style={{ background: judgeModel.color }} />
+                  <VendorLogo vendor={judgeModel.vendor} className="size-4" />
                   Judge: {judgeModel.name}
                 </span>
               )}
               {topModelId && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800">
                   <Trophy className="size-3" />
                   Best: {modelById(topModelId).name}
                 </span>
@@ -1496,7 +1515,7 @@ function AiTurn({
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
                     isPinned
-                      ? "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
                       : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
                   )}
                 >
@@ -1537,19 +1556,11 @@ function AiTurn({
                   >
                     <BookOpen className="size-3.5" /> View lesson
                   </Link>
-                ) : turn.lesson_id && turn.lesson_status === "discussing" ? (
-                  <button
-                    type="button"
-                    onClick={openDisagree}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
-                  >
-                    <Swords className="size-3.5" /> challenge
-                  </button>
                 ) : (
                   <button
                     type="button"
                     onClick={openDisagree}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary shadow-sm hover:bg-primary/15"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
                   >
                     <Swords className="size-3.5" /> Challenge
                   </button>

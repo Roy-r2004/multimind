@@ -166,16 +166,16 @@ function ScrapingBlueprintPage() {
           }
         />
         {loading && (
-          <DreamPanel className="mt-8 text-sm text-white/60">Loading chart…</DreamPanel>
+          <DreamPanel className="mt-8 text-sm text-muted-foreground">Loading chart…</DreamPanel>
         )}
-        {error && <DreamPanel className="mt-8 text-sm text-rose-200">{error}</DreamPanel>}
+        {error && <DreamPanel className="mt-8 text-sm text-rose-600">{error}</DreamPanel>}
         {success && !error && (
-          <DreamPanel tone="teal" className="mt-8 text-sm text-teal-100">
+          <DreamPanel tone="teal" className="mt-8 text-sm text-teal-800">
             {success}
           </DreamPanel>
         )}
         {!loading && !error && !selected && (
-          <DreamPanel className="mt-8 p-12 text-center text-sm text-white/55">
+          <DreamPanel className="mt-8 p-12 text-center text-sm text-muted-foreground">
             No blueprint versions yet.
           </DreamPanel>
         )}
@@ -185,7 +185,7 @@ function ScrapingBlueprintPage() {
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div className="space-y-2 text-sm">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-display text-lg text-[#f7f1e4]">
+                    <span className="font-display text-lg text-foreground">
                       {blueprintDisplayName(selected)}
                     </span>
                     <span className="text-xs text-white/45">Version {selected.version}</span>
@@ -205,7 +205,7 @@ function ScrapingBlueprintPage() {
                     </div>
                   )}
                   {selected.rejection_reason && (
-                    <div className="text-rose-200">Reason: {selected.rejection_reason}</div>
+                    <div className="text-rose-600">Reason: {selected.rejection_reason}</div>
                   )}
                 </div>
                 {mission && (
@@ -221,7 +221,7 @@ function ScrapingBlueprintPage() {
             {selected.blueprint_json ? (
               <BlueprintViewer content={selected.blueprint_json} />
             ) : (
-              <DreamPanel className="text-sm text-white/55">
+              <DreamPanel className="text-sm text-muted-foreground">
                 Blueprint content is not available.
               </DreamPanel>
             )}
@@ -231,8 +231,8 @@ function ScrapingBlueprintPage() {
                 <DreamPanel tone="amber">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
-                      <h2 className="font-display text-lg text-[#f7f1e4]">Assemble AI crew</h2>
-                      <p className="mt-2 text-sm text-white/55">
+                      <h2 className="font-display text-lg text-foreground">Assemble AI crew</h2>
+                      <p className="mt-2 text-sm text-muted-foreground">
                         The orchestrator reads the approved chart and chooses agents. No websites
                         scraped yet.
                       </p>
@@ -240,7 +240,7 @@ function ScrapingBlueprintPage() {
                     <Button
                       type="button"
                       disabled={planning}
-                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
                       onClick={() => void handlePlanTeam()}
                     >
                       {planning ? "Planning AI Team..." : "Plan AI Scraping Team"}
@@ -254,15 +254,15 @@ function ScrapingBlueprintPage() {
                 <DreamPanel tone="teal">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
-                      <h2 className="font-display text-lg text-[#f7f1e4]">Crew already charted</h2>
-                      <p className="mt-2 text-sm text-white/55">
+                      <h2 className="font-display text-lg text-foreground">Crew already charted</h2>
+                      <p className="mt-2 text-sm text-muted-foreground">
                         This approved chart already has a persisted AI team plan.
                       </p>
                     </div>
                     <Button
                       type="button"
                       disabled={selectedRun.status === "planning"}
-                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
                       onClick={() =>
                         void navigate({
                           to: "/scraping/$missionId/runs/$runId",

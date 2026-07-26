@@ -383,14 +383,14 @@ function ScrapingExecutionPage() {
             <Link
               to="/scraping/$missionId"
               params={{ missionId }}
-              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-[#f7f1e4] backdrop-blur-sm hover:bg-white/10"
+              className="rounded-xl border border-border bg-muted/40 px-4 py-2.5 text-sm font-medium text-foreground backdrop-blur-sm hover:bg-accent"
             >
               Back to mission
             </Link>
           }
         />
-        {loading && <DreamPanel className="mt-8 text-sm text-white/60">Loading results…</DreamPanel>}
-        {error && <DreamPanel className="mt-8 text-sm text-rose-200">{error}</DreamPanel>}
+        {loading && <DreamPanel className="mt-8 text-sm text-muted-foreground">Loading results…</DreamPanel>}
+        {error && <DreamPanel className="mt-8 text-sm text-rose-600">{error}</DreamPanel>}
         {detail && execution && (
           <div className="mt-8 space-y-5">
             <StageFlight
@@ -402,14 +402,14 @@ function ScrapingExecutionPage() {
 
             <DreamPanel>
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <p className="text-sm text-white/55">
+                <p className="text-sm text-muted-foreground">
                   Export when the vessel lands — or abort mid-flight.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
                     disabled={!isTerminal || downloadingExcel || facilities.length === 0}
-                    className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
                     onClick={() => void handleDownloadExcel()}
                   >
                     {downloadingExcel ? "Preparing Excel…" : "Download Excel"}
@@ -419,7 +419,7 @@ function ScrapingExecutionPage() {
                       type="button"
                       variant="outline"
                       disabled={acting}
-                      className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                      className="border-border bg-muted/40 text-foreground hover:bg-accent"
                       onClick={() => void handleCancel()}
                     >
                       {acting ? "Cancelling..." : "Cancel"}
@@ -451,8 +451,8 @@ function ScrapingExecutionPage() {
 
             {facilities.length === 0 ? (
               <DreamPanel>
-                <h2 className="font-display text-lg text-[#f7f1e4]">Facilities</h2>
-                <p className="mt-2 text-sm text-white/50">
+                <h2 className="font-display text-lg text-foreground">Facilities</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
                   {isTerminal
                     ? "No facilities were published from the pages we retrieved."
                     : "Still running… facilities crystallize here when extraction finishes."}
@@ -476,7 +476,7 @@ function ScrapingExecutionPage() {
                         className={
                           facilityFilter === value
                             ? ""
-                            : "border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                            : "border-border bg-muted/40 text-foreground hover:bg-accent"
                         }
                         onClick={() =>
                           setFacilityFilter(value as "all" | "verified" | "review" | "excluded")
@@ -503,15 +503,15 @@ function ScrapingExecutionPage() {
               </div>
             )}
 
-            <details className="rounded-2xl border border-white/10 bg-[#0b161c]/60 p-4 backdrop-blur-md">
-              <summary className="cursor-pointer text-sm font-medium text-[#f7f1e4]">
+            <details className="rounded-2xl border border-border bg-card/60 p-4 backdrop-blur-md">
+              <summary className="cursor-pointer text-sm font-medium text-foreground">
                 Sources & pages (
                 {Math.max(sourceCandidates.length, execution.sources_discovered)} sources ·{" "}
                 {Math.max(sourceDocuments.length, execution.documents_found)} pages)
               </summary>
               <div className="mt-4 space-y-4">
-                <div className="max-h-[28rem] overflow-auto rounded-xl border border-white/10">
-                  <table className="w-full min-w-[720px] text-left text-sm text-white/80">
+                <div className="max-h-[28rem] overflow-auto rounded-xl border border-border">
+                  <table className="w-full min-w-[720px] text-left text-sm text-foreground">
                     <thead className="sticky top-0 bg-[#102229]">
                       <tr>
                         <th className="px-3 py-2 font-medium">Source</th>
@@ -521,13 +521,13 @@ function ScrapingExecutionPage() {
                     </thead>
                     <tbody>
                       {sourceCandidates.map((candidate) => (
-                        <tr key={candidate.id} className="border-t border-white/10">
+                        <tr key={candidate.id} className="border-t border-border">
                           <td className="px-3 py-2 align-top">
                             <a
                               href={candidate.canonical_url}
                               target="_blank"
                               rel="noreferrer"
-                              className="font-medium text-[#d4a84b] underline-offset-4 hover:underline"
+                              className="font-medium text-primary underline-offset-4 hover:underline"
                             >
                               {candidate.title || candidate.canonical_url}
                             </a>
@@ -539,7 +539,7 @@ function ScrapingExecutionPage() {
                     </tbody>
                   </table>
                 </div>
-                <p className="text-xs text-white/40">
+                <p className="text-xs text-muted-foreground">
                   Loaded {sourceCandidates.length} sources
                   {execution.sources_discovered > sourceCandidates.length
                     ? ` (execution reports ${execution.sources_discovered})`
@@ -549,8 +549,8 @@ function ScrapingExecutionPage() {
               </div>
             </details>
 
-            <details className="rounded-2xl border border-white/10 bg-[#0b161c]/60 p-4 backdrop-blur-md">
-              <summary className="cursor-pointer text-sm font-medium text-[#f7f1e4]">
+            <details className="rounded-2xl border border-border bg-card/60 p-4 backdrop-blur-md">
+              <summary className="cursor-pointer text-sm font-medium text-foreground">
                 Technical details (agents, tasks, logs)
               </summary>
               <div className="mt-4 space-y-4">
@@ -565,13 +565,13 @@ function ScrapingExecutionPage() {
                 </div>
                 <DreamPanel className="p-4">
                   <div className="mb-3 flex items-center justify-between">
-                    <h3 className="font-medium text-[#f7f1e4]">Agents</h3>
+                    <h3 className="font-medium text-foreground">Agents</h3>
                     {selectedAgentId && (
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="border-white/20 bg-white/5 text-[#f7f1e4]"
+                        className="border-border bg-muted/40 text-foreground"
                         onClick={() => setSelectedAgentId(null)}
                       >
                         Clear filter
@@ -584,11 +584,11 @@ function ScrapingExecutionPage() {
                         key={agent.id}
                         type="button"
                         onClick={() => setSelectedAgentId(agent.id)}
-                        className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-left text-sm hover:border-[#d4a84b]/35"
+                        className="rounded-xl border border-border bg-white/[0.03] p-3 text-left text-sm hover:border-primary/35"
                       >
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge variant="secondary">{agent.status}</Badge>
-                          <span className="font-medium text-[#f7f1e4]">{agent.planned_agent_name}</span>
+                          <span className="font-medium text-foreground">{agent.planned_agent_name}</span>
                         </div>
                         <p className="mt-1 text-white/45">{agent.current_action ?? "Idle"}</p>
                       </button>
@@ -607,18 +607,18 @@ function ScrapingExecutionPage() {
                   rows={sourceDocuments.map((document) => formatDocumentRow(document))}
                 />
                 <DreamPanel className="p-4">
-                  <h3 className="font-medium text-[#f7f1e4]">Live activity</h3>
+                  <h3 className="font-medium text-foreground">Live activity</h3>
                   <div className="mt-3 max-h-[360px] space-y-2 overflow-auto">
                     {filteredEvents.map((event) => (
                       <div
                         key={event.id}
-                        className="rounded-lg border border-white/10 bg-white/[0.03] p-2 text-sm"
+                        className="rounded-lg border border-border bg-white/[0.03] p-2 text-sm"
                       >
-                        <span className="text-white/40">
+                        <span className="text-muted-foreground">
                           {new Date(event.created_at).toLocaleTimeString()}
                         </span>{" "}
-                        <span className="font-medium text-[#f7f1e4]">{event.event_type}</span>
-                        <p className="text-white/50">{event.message}</p>
+                        <span className="font-medium text-foreground">{event.event_type}</span>
+                        <p className="text-muted-foreground">{event.message}</p>
                       </div>
                     ))}
                   </div>
@@ -650,7 +650,7 @@ function ScrapingExecutionPage() {
               type="button"
               variant="outline"
               disabled={acting}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-border bg-muted/40 text-foreground hover:bg-accent"
               onClick={() => setShowDelete(false)}
             >
               Cancel
@@ -667,9 +667,9 @@ function ScrapingExecutionPage() {
 
 function Metric({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+    <div className="rounded-xl border border-border bg-white/[0.03] p-3">
       <p className="text-xs text-white/45">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-[#f7f1e4]">{value}</p>
+      <p className="mt-1 text-lg font-semibold text-foreground">{value}</p>
     </div>
   );
 }
@@ -677,12 +677,12 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 function GridSection({ title, rows }: { title: string; rows: string[][] }) {
   return (
     <DreamPanel className="p-5">
-      <h2 className="font-display text-lg text-[#f7f1e4]">{title}</h2>
-      <div className="mt-4 overflow-auto rounded-xl border border-white/10">
+      <h2 className="font-display text-lg text-foreground">{title}</h2>
+      <div className="mt-4 overflow-auto rounded-xl border border-border">
         <table className="w-full min-w-[760px] text-left text-sm text-white/75">
           <tbody>
             {rows.map((row, index) => (
-              <tr key={`${title}-${index}`} className="border-b border-white/10 last:border-0">
+              <tr key={`${title}-${index}`} className="border-b border-border last:border-0">
                 {row.map((cell, cellIndex) => (
                   <td key={cellIndex} className="px-3 py-2 align-top">
                     {cell}

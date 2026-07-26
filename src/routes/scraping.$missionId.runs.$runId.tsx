@@ -206,39 +206,39 @@ function ScrapingRunDetailPage() {
             </Link>
           }
         />
-        {loading && <DreamPanel className="mt-8 text-sm text-white/60">Loading…</DreamPanel>}
-        {error && <DreamPanel className="mt-8 text-sm text-rose-200">{error}</DreamPanel>}
+        {loading && <DreamPanel className="mt-8 text-sm text-muted-foreground">Loading…</DreamPanel>}
+        {error && <DreamPanel className="mt-8 text-sm text-rose-600">{error}</DreamPanel>}
         {run && (
           <div className="mt-8 space-y-5">
             <DreamPanel tone="amber">
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="font-display text-2xl text-[#f7f1e4]">
+                  <h2 className="font-display text-2xl text-foreground">
                     {activeExecution
                       ? "Vessel in flight"
                       : executions.some((item) => item.status === "completed")
                         ? "Flights landed"
                         : "Ready for takeoff"}
                   </h2>
-                  <p className="mt-1 text-sm text-white/55">
+                  <p className="mt-1 text-sm text-muted-foreground">
                     Search → open pages → crystallize facilities → Excel.
                   </p>
                   {!activeExecution && (
                     <p className="mt-2 text-xs text-white/45">
-                      <strong className="text-[#f3e6c4]">Full census</strong> uses much higher
+                      <strong className="text-primary">Full census</strong> uses much higher
                       limits (hours, higher cost).{" "}
-                      <strong className="text-[#f3e6c4]">Standard</strong> is faster for demos.
+                      <strong className="text-primary">Standard</strong> is faster for demos.
                     </p>
                   )}
                   {!activeExecution && (
-                    <label className="mt-3 block text-sm text-white/65">
+                    <label className="mt-3 block text-sm text-muted-foreground">
                       Mission profile
                       <select
                         value={missionProfile}
                         onChange={(event) =>
                           setMissionProfile(event.target.value as ScrapingMissionProfile)
                         }
-                        className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-[#f7f1e4] outline-none"
+                        className="mt-2 w-full rounded-xl border border-border bg-muted/40 px-3 py-2 text-sm text-foreground outline-none"
                       >
                         <option value="full_national_census">Full national census</option>
                         <option value="private_residential">Private residential</option>
@@ -252,7 +252,7 @@ function ScrapingRunDetailPage() {
                       type="button"
                       size="lg"
                       disabled={startingExecution}
-                      className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
                       onClick={() => void handleStartExecution()}
                     >
                       Watch progress
@@ -264,7 +264,7 @@ function ScrapingRunDetailPage() {
                         size="lg"
                         variant="outline"
                         disabled={startingExecution || run.status !== "planned"}
-                        className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                        className="border-border bg-muted/40 text-foreground hover:bg-accent"
                         onClick={() => void handleStartExecution("real")}
                       >
                         {startingExecution
@@ -277,7 +277,7 @@ function ScrapingRunDetailPage() {
                         type="button"
                         size="lg"
                         disabled={startingExecution || run.status !== "planned"}
-                        className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                        className="bg-primary text-primary-foreground hover:bg-primary/90"
                         onClick={() => void handleStartExecution("full_census")}
                       >
                         {startingExecution ? "Starting…" : "Full census"}
@@ -289,11 +289,11 @@ function ScrapingRunDetailPage() {
             </DreamPanel>
 
             <DreamPanel>
-              <h2 className="font-display text-lg text-[#f7f1e4]">Results</h2>
+              <h2 className="font-display text-lg text-foreground">Results</h2>
               {executions.length === 0 ? (
-                <p className="mt-3 text-sm text-white/55">
-                  No scrape yet. Choose <strong className="text-[#f3e6c4]">Standard scrape</strong>{" "}
-                  or <strong className="text-[#f3e6c4]">Full census</strong> above.
+                <p className="mt-3 text-sm text-muted-foreground">
+                  No scrape yet. Choose <strong className="text-primary">Standard scrape</strong>{" "}
+                  or <strong className="text-primary">Full census</strong> above.
                 </p>
               ) : (
                 <div className="mt-4 space-y-3">
@@ -305,34 +305,34 @@ function ScrapingRunDetailPage() {
                     return (
                       <div
                         key={execution.id}
-                        className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 md:flex-row md:items-center md:justify-between"
+                        className="flex flex-col gap-3 rounded-xl border border-border bg-white/[0.03] p-4 md:flex-row md:items-center md:justify-between"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge variant="secondary">{execution.status_label}</Badge>
                             <Badge
                               variant="outline"
-                              className="border-[#d4a84b]/35 text-[#f3e6c4]"
+                              className="border-primary/35 text-primary"
                             >
                               {execution.mode === "full_census" ? "Full census" : "Standard"}
                             </Badge>
-                            <span className="text-sm text-white/50">{execution.country_name}</span>
+                            <span className="text-sm text-muted-foreground">{execution.country_name}</span>
                           </div>
-                          <p className="mt-2 text-sm text-white/55">
+                          <p className="mt-2 text-sm text-muted-foreground">
                             {execution.records_verified} facilities · {execution.documents_found}{" "}
                             pages · {execution.sources_discovered} sources
                           </p>
-                          <p className="mt-1 text-xs text-white/40">
+                          <p className="mt-1 text-xs text-muted-foreground">
                             Profile: {(execution.mission_profile ?? "full_national_census").replaceAll("_", " ")}
                           </p>
-                          <p className="mt-1 text-xs text-white/40">
+                          <p className="mt-1 text-xs text-muted-foreground">
                             {new Date(execution.created_at).toLocaleString()}
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button
                             type="button"
-                            className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                            className="bg-primary text-primary-foreground hover:bg-primary/90"
                             onClick={() =>
                               void navigate({
                                 to: "/scraping/$missionId/executions/$executionId",
@@ -347,7 +347,7 @@ function ScrapingRunDetailPage() {
                               type="button"
                               variant="outline"
                               disabled={deletingExecutionId === execution.id}
-                              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                              className="border-border bg-muted/40 text-foreground hover:bg-accent"
                               onClick={() => setExecutionToDelete(execution)}
                             >
                               {deletingExecutionId === execution.id ? "Deleting..." : "Delete"}
@@ -367,7 +367,7 @@ function ScrapingRunDetailPage() {
               </summary>
               <div className="mt-4 space-y-3">
                 {run.error_message && (
-                  <p className="text-sm text-rose-200">{run.error_message}</p>
+                  <p className="text-sm text-rose-600">{run.error_message}</p>
                 )}
                 {run.planner_rationale && (
                   <p className={dreamMutedClass}>{run.planner_rationale}</p>
@@ -387,7 +387,7 @@ function ScrapingRunDetailPage() {
                       type="button"
                       variant="outline"
                       disabled={cancelling}
-                      className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                      className="border-border bg-muted/40 text-foreground hover:bg-accent"
                       onClick={() => void handleCancel()}
                     >
                       {cancelling ? "Cancelling..." : "Cancel plan"}
@@ -425,7 +425,7 @@ function ScrapingRunDetailPage() {
               type="button"
               variant="outline"
               disabled={deleting}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-border bg-muted/40 text-foreground hover:bg-accent"
               onClick={() => setShowDelete(false)}
             >
               Cancel
@@ -458,7 +458,7 @@ function ScrapingRunDetailPage() {
               type="button"
               variant="outline"
               disabled={deletingExecutionId !== null}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-border bg-muted/40 text-foreground hover:bg-accent"
               onClick={() => setExecutionToDelete(null)}
             >
               Cancel
@@ -496,7 +496,7 @@ function AgentCard({
     <DreamPanel className="p-5">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="secondary">#{agent.sequence}</Badge>
-        <h3 className="font-semibold text-[#f7f1e4]">{agent.name}</h3>
+        <h3 className="font-semibold text-foreground">{agent.name}</h3>
         <Badge variant="secondary">{agent.status}</Badge>
       </div>
       <dl className="mt-4 space-y-3 text-sm">
@@ -517,8 +517,8 @@ function AgentCard({
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="font-medium text-[#f7f1e4]">{label}</dt>
-      <dd className="mt-1 whitespace-pre-wrap text-white/50">{value}</dd>
+      <dt className="font-medium text-foreground">{label}</dt>
+      <dd className="mt-1 whitespace-pre-wrap text-muted-foreground">{value}</dd>
     </div>
   );
 }

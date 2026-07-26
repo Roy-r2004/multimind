@@ -63,37 +63,37 @@ export function ScrapingSidebarContent({ onNavigate }: { onNavigate: () => void 
         <Link
           to="/scraping/new"
           onClick={onNavigate}
-          className="flex w-full items-center gap-2 rounded-xl bg-[#d4a84b] px-3 py-2.5 text-sm font-semibold text-[#0b161c] shadow-[0_10px_24px_rgba(212,168,75,0.25)] hover:bg-[#e0b85c]"
+          className="flex w-full items-center gap-2 rounded-xl bg-primary px-3 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
         >
-          <Plus className="size-4" /> New flight
+          <Plus className="size-4" /> New mission
         </Link>
       </div>
       <div className="mt-4 flex-1 overflow-hidden px-3">
-        <div className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-[#d4a84b]/80">
-          <History className="size-3.5" /> Recent flights
+        <div className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-primary/80">
+          <History className="size-3.5" /> Recent missions
         </div>
-        {message && <p className="mt-2 px-2 text-xs text-teal-200">{message}</p>}
-        {error && <p className="mt-2 px-2 text-xs text-rose-300">{error}</p>}
+        {message && <p className="mt-2 px-2 text-xs text-teal-700">{message}</p>}
+        {error && <p className="mt-2 px-2 text-xs text-destructive">{error}</p>}
         <div className="mt-2 max-h-[38vh] space-y-0.5 overflow-y-auto">
           {missions.length === 0 ? (
-            <p className="px-2 py-3 text-xs text-white/40">No flights yet</p>
+            <p className="px-2 py-3 text-xs text-muted-foreground">No missions yet</p>
           ) : (
             missions.map((mission) => (
-              <div key={mission.id} className="group relative rounded-lg hover:bg-white/5">
+              <div key={mission.id} className="group relative rounded-lg hover:bg-muted/40">
                 <Link
                   to="/scraping/$missionId"
                   params={{ missionId: mission.id }}
                   onClick={onNavigate}
-                  className="flex items-start gap-2 rounded-lg px-3 py-2 pr-9 text-sm text-white/80"
+                  className="flex items-start gap-2 rounded-lg px-3 py-2 pr-9 text-sm text-foreground"
                 >
-                  <ClipboardList className="mt-0.5 size-4 shrink-0 text-[#d4a84b]/80" />
+                  <ClipboardList className="mt-0.5 size-4 shrink-0 text-primary/80" />
                   <span className="min-w-0">
                     <span className="block truncate">{mission.title}</span>
-                    <span className="block truncate text-[10px] text-white/40">
+                    <span className="block truncate text-[10px] text-muted-foreground">
                       {mission.status}
                     </span>
                     {mission.project_name && (
-                      <span className="block truncate text-[10px] text-white/35">
+                      <span className="block truncate text-[10px] text-muted-foreground">
                         {mission.project_name}
                       </span>
                     )}
@@ -238,12 +238,12 @@ function AssignMissionProjectModal({
     >
       <div className="space-y-4">
         <div className="space-y-2">
-          <Label className="text-[#f7f1e4]">Project</Label>
+          <Label className="text-foreground">Project</Label>
           <Select value={projectId} onValueChange={setProjectId}>
-            <SelectTrigger className="border-white/15 bg-white/5 text-[#f7f1e4]">
+            <SelectTrigger className="border-border bg-muted/40 text-foreground">
               <SelectValue placeholder="Select a project" />
             </SelectTrigger>
-            <SelectContent className="z-[200] border-white/10 bg-[#0b161c] text-[#f7f1e4]">
+            <SelectContent className="z-[200] border-border bg-card text-foreground">
               {projects.map((project) => (
                 <SelectItem key={project.id} value={project.id}>
                   {project.name}
@@ -257,7 +257,7 @@ function AssignMissionProjectModal({
             type="button"
             variant="outline"
             disabled={submitting}
-            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+            className="border-border bg-muted/40 text-foreground hover:bg-accent"
             onClick={onClose}
           >
             Cancel
@@ -265,7 +265,7 @@ function AssignMissionProjectModal({
           <Button
             type="button"
             disabled={!projectId || submitting}
-            className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
             onClick={() => void submit()}
           >
             {submitting ? "Saving..." : "Save"}
@@ -320,7 +320,7 @@ function RemoveMissionProjectModal({
             type="button"
             variant="outline"
             disabled={submitting}
-            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+            className="border-border bg-muted/40 text-foreground hover:bg-accent"
             onClick={onClose}
           >
             Cancel
@@ -382,7 +382,7 @@ function RenameMissionModal({
     >
       <div className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="mission-name" className="text-[#f7f1e4]">
+          <Label htmlFor="mission-name" className="text-foreground">
             Mission Name
           </Label>
           <Input
@@ -398,7 +398,7 @@ function RenameMissionModal({
             type="button"
             variant="outline"
             disabled={submitting}
-            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+            className="border-border bg-muted/40 text-foreground hover:bg-accent"
             onClick={onClose}
           >
             Cancel
@@ -406,7 +406,7 @@ function RenameMissionModal({
           <Button
             type="button"
             disabled={!title.trim() || submitting}
-            className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
             onClick={() => void submit()}
           >
             Save Name
@@ -457,13 +457,13 @@ function DeleteMissionModal({
             Permanently delete “{mission.title}”? This will delete the mission and all of its
             blueprint versions.
           </p>
-          <p className="text-sm font-medium text-rose-200">This action cannot be undone.</p>
+          <p className="text-sm font-medium text-rose-600">This action cannot be undone.</p>
           <div className="flex justify-end gap-2">
             <Button
               type="button"
               variant="outline"
               disabled={submitting}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-border bg-muted/40 text-foreground hover:bg-accent"
               onClick={onClose}
             >
               Cancel

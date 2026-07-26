@@ -26,10 +26,10 @@ const ICONS = {
 } as const;
 
 const STATE_RING: Record<FlightStage["state"], string> = {
-  pending: "border-white/15 bg-white/5 text-white/55",
-  active: "border-[#d4a84b]/70 bg-[#d4a84b]/15 text-[#f3e6c4] dream-beacon",
-  done: "border-teal-300/40 bg-teal-400/10 text-teal-50",
-  failed: "border-rose-400/50 bg-rose-500/10 text-rose-100",
+  pending: "border-border bg-muted/40 text-muted-foreground",
+  active: "border-primary/70 bg-primary/15 text-primary dream-beacon",
+  done: "border-teal-300/40 bg-teal-400/10 text-teal-800",
+  failed: "border-rose-400/50 bg-rose-500/10 text-rose-700",
 };
 
 export function StageFlight({ stages, statusLabel, connectionState, countryName }: Props) {
@@ -45,7 +45,7 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
         (stages.length - 0.001);
 
   return (
-    <section className="relative overflow-hidden rounded-[1.75rem] border border-white/10 text-white shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
+    <section className="relative overflow-hidden rounded-[1.75rem] border border-border text-white shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
       <div
         className="absolute inset-0"
         style={{
@@ -61,26 +61,26 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
       <div className="relative px-5 pb-6 pt-5 sm:px-8 sm:pt-7">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="dream-rise">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-[#d4a84b]/90">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-primary/90">
               Scraping Council · Flight
             </p>
-            <h2 className="mt-1 font-display text-2xl tracking-tight text-[#f7f1e4] sm:text-3xl">
+            <h2 className="mt-1 font-display text-2xl tracking-tight text-foreground sm:text-3xl">
               {countryName ? `Navigating ${countryName}` : "In flight"}
             </h2>
-            <p className="mt-1 text-sm text-white/60">
+            <p className="mt-1 text-sm text-muted-foreground">
               Stages move as sources open, evidence lands, and facilities crystallize.
             </p>
           </div>
           <div className="dream-rise dream-rise-delay-1 flex items-center gap-2 text-xs">
-            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-white/80">
+            <span className="rounded-full border border-border bg-muted/40 px-3 py-1 text-foreground">
               {statusLabel}
             </span>
             <span
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full border px-3 py-1",
                 connectionState === "Live"
-                  ? "border-teal-300/40 bg-teal-400/10 text-teal-100"
-                  : "border-white/15 bg-white/5 text-white/60",
+                  ? "border-teal-300/40 bg-teal-400/10 text-teal-800"
+                  : "border-border bg-muted/40 text-muted-foreground",
               )}
             >
               <span
@@ -111,7 +111,7 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
             {/* moving vessel */}
             <circle
               r="7"
-              fill="#d4a84b"
+              fill="oklch(0.58 0.14 240)"
               className="dream-float"
               cx={40 + progress * 920}
               cy={80 - Math.sin(progress * Math.PI) * 35}
@@ -140,7 +140,7 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
                 )}
               >
                 {stage.state === "active" && (
-                  <span className="dream-pulse-ring absolute left-1/2 top-1/2 size-24 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#d4a84b]/40" />
+                  <span className="dream-pulse-ring absolute left-1/2 top-1/2 size-24 -translate-x-1/2 -translate-y-1/2 rounded-full border border-primary/40" />
                 )}
                 <div className="relative flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2">
@@ -163,7 +163,7 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
                 </p>
                 <p className="relative mt-1 text-xs opacity-70">{stage.hint}</p>
                 {index === activeIndex && stage.state === "active" && (
-                  <p className="relative mt-3 text-[11px] uppercase tracking-[0.18em] text-[#d4a84b]">
+                  <p className="relative mt-3 text-[11px] uppercase tracking-[0.18em] text-primary">
                     Vessel is here
                   </p>
                 )}

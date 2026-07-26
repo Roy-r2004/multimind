@@ -61,35 +61,35 @@ export function BlueprintApprovalBar({
       {blueprint.status === "approved" && (
         <DreamPanel tone="teal" className="space-y-2 text-sm">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-[#f7f1e4]">Approved</span>
+            <span className="font-semibold text-foreground">Approved</span>
             {isActiveBlueprint && (
-              <span className="rounded-full border border-[#d4a84b]/40 bg-[#d4a84b]/15 px-2.5 py-0.5 text-xs font-medium text-[#f3e6c4]">
+              <span className="rounded-full border border-primary/40 bg-primary/15 px-2.5 py-0.5 text-xs font-medium text-primary">
                 Active chart
               </span>
             )}
           </div>
-          <div className="text-white/55">Approved date: {formatDate(blueprint.approved_at)}</div>
-          <div className="text-white/55">This chart version is locked and read-only.</div>
-          <div className="text-white/55">Approval does not start scraping.</div>
+          <div className="text-muted-foreground">Approved date: {formatDate(blueprint.approved_at)}</div>
+          <div className="text-muted-foreground">This chart version is locked and read-only.</div>
+          <div className="text-muted-foreground">Approval does not start scraping.</div>
         </DreamPanel>
       )}
 
       {blueprint.status === "rejected" && (
         <DreamPanel className="space-y-2 text-sm">
-          <div className="font-semibold text-[#f7f1e4]">Rejected</div>
-          <div className="text-white/55">Rejection date: {formatDate(blueprint.rejected_at)}</div>
+          <div className="font-semibold text-foreground">Rejected</div>
+          <div className="text-muted-foreground">Rejection date: {formatDate(blueprint.rejected_at)}</div>
           <div>
-            <span className="font-medium text-[#f7f1e4]">Rejection reason: </span>
-            <span className="text-white/55">{blueprint.rejection_reason || "Not provided"}</span>
+            <span className="font-medium text-foreground">Rejection reason: </span>
+            <span className="text-muted-foreground">{blueprint.rejection_reason || "Not provided"}</span>
           </div>
-          <div className="text-white/55">This version remains preserved in history.</div>
+          <div className="text-muted-foreground">This version remains preserved in history.</div>
         </DreamPanel>
       )}
 
       {blueprint.status === "superseded" && (
         <DreamPanel className="space-y-2 text-sm">
-          <div className="font-semibold text-[#f7f1e4]">Superseded</div>
-          <div className="text-white/55">
+          <div className="font-semibold text-foreground">Superseded</div>
+          <div className="text-muted-foreground">
             This version is preserved in history and is no longer active.
           </div>
         </DreamPanel>
@@ -97,16 +97,16 @@ export function BlueprintApprovalBar({
 
       {blueprint.status === "failed" && (
         <DreamPanel className="space-y-3 text-sm">
-          <div className="font-semibold text-[#f7f1e4]">Generation Failed</div>
+          <div className="font-semibold text-foreground">Generation Failed</div>
           {blueprint.error_message && (
-            <div className="text-white/55">{blueprint.error_message}</div>
+            <div className="text-muted-foreground">{blueprint.error_message}</div>
           )}
           {onGenerateNewVersion && (
             <Button
               type="button"
               disabled={busy}
               onClick={() => void run(onGenerateNewVersion)}
-              className="w-fit bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+              className="w-fit bg-primary text-primary-foreground hover:bg-primary/90"
             >
               {busy && <Loader2 className="size-4 animate-spin" />}
               Generate New Version
@@ -116,13 +116,13 @@ export function BlueprintApprovalBar({
       )}
 
       {(canApproveOrReject || canRequestChanges) && (
-        <div className="sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-white/15 bg-[#0b161c]/90 p-3 shadow-[0_16px_40px_rgba(0,0,0,0.35)] backdrop-blur-md">
+        <div className="sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-card/90 p-3 shadow-[0_16px_40px_rgba(0,0,0,0.35)] backdrop-blur-md">
           {canApproveOrReject && (
             <>
               <Button
                 type="button"
                 disabled={busy}
-                className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
                 onClick={() => setMode("approve")}
               >
                 Approve chart
@@ -131,7 +131,7 @@ export function BlueprintApprovalBar({
                 type="button"
                 variant="outline"
                 disabled={busy}
-                className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+                className="border-border bg-muted/40 text-foreground hover:bg-accent"
                 onClick={() => setMode("reject")}
               >
                 Reject
@@ -143,7 +143,7 @@ export function BlueprintApprovalBar({
               type="button"
               variant="outline"
               disabled={busy}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-border bg-muted/40 text-foreground hover:bg-accent"
               onClick={() => setMode("changes")}
             >
               Request Changes
@@ -173,7 +173,7 @@ export function BlueprintApprovalBar({
             </p>
           ) : (
             <>
-              <label className="text-sm font-medium text-[#f7f1e4]">
+              <label className="text-sm font-medium text-foreground">
                 {mode === "reject" ? "Rejection Reason" : "Change Instructions"}
               </label>
               <Textarea
@@ -181,7 +181,7 @@ export function BlueprintApprovalBar({
                 onChange={(event) => setText(event.target.value)}
                 rows={6}
                 required
-                className="border-white/15 bg-white/5 text-[#f7f1e4] placeholder:text-white/30"
+                className="border-border bg-muted/40 text-foreground placeholder:text-muted-foreground"
               />
             </>
           )}
@@ -190,7 +190,7 @@ export function BlueprintApprovalBar({
               type="button"
               variant="outline"
               disabled={busy}
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-border bg-muted/40 text-foreground hover:bg-accent"
               onClick={closeModal}
             >
               Cancel
@@ -198,7 +198,7 @@ export function BlueprintApprovalBar({
             <Button
               type="button"
               disabled={busy || (mode !== "approve" && !text.trim())}
-              className="bg-[#d4a84b] text-[#0b161c] hover:bg-[#e0b85c]"
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
               onClick={() =>
                 void run(() =>
                   mode === "approve"

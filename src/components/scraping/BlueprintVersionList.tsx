@@ -34,24 +34,24 @@ export function BlueprintVersionList({ blueprints, mission, selectedId, onSelect
             className={cn(
               "flex w-full cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition",
               selected
-                ? "border-[#d4a84b]/50 bg-[#d4a84b]/12 shadow-[0_0_24px_rgba(212,168,75,0.12)]"
-                : "border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.06]",
+                ? "border-primary/50 bg-primary/12 shadow-sm"
+                : "border-border bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.06]",
             )}
           >
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-center gap-2">
-                <span className="truncate font-medium text-[#f7f1e4]">
+                <span className="truncate font-medium text-foreground">
                   {blueprintDisplayName(blueprint)}
                 </span>
-                <span className="shrink-0 text-xs text-white/40">v{blueprint.version}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">v{blueprint.version}</span>
                 <MissionStatusBadge status={blueprint.status} />
                 {active && (
-                  <span className="rounded-full border border-teal-300/40 bg-teal-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-teal-100">
+                  <span className="rounded-full border border-teal-300/40 bg-teal-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-teal-800">
                     Active
                   </span>
                 )}
               </span>
-              <span className="mt-1 block text-xs text-white/40">
+              <span className="mt-1 block text-xs text-muted-foreground">
                 Created {new Date(blueprint.created_at).toLocaleString()}
               </span>
             </span>

@@ -92,12 +92,12 @@ export function LiveSiteActivity({
     return (
       <DreamPanel>
         <div className="flex items-start gap-3">
-          <div className="rounded-lg border border-white/15 bg-white/5 p-2">
-            <Globe2 className="size-4 text-[#d4a84b]" />
+          <div className="rounded-lg border border-border bg-muted/40 p-2">
+            <Globe2 className="size-4 text-primary" />
           </div>
           <div>
-            <h2 className="font-display text-lg text-[#f7f1e4]">Sites in the drift</h2>
-            <p className="mt-1 text-sm text-white/50">
+            <h2 className="font-display text-lg text-foreground">Sites in the drift</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
               {isTerminal
                 ? "No source websites were opened during this scrape."
                 : "Waiting for discovery… URLs surface here as the vessel opens and extracts pages."}
@@ -113,18 +113,18 @@ export function LiveSiteActivity({
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="font-display text-lg text-[#f7f1e4]">Sites in the drift</h2>
+            <h2 className="font-display text-lg text-foreground">Sites in the drift</h2>
             {!isTerminal && activeCount > 0 && (
               <Badge
                 variant="secondary"
-                className="gap-1 border border-[#d4a84b]/35 bg-[#d4a84b]/15 text-[#f3e6c4]"
+                className="gap-1 border border-primary/35 bg-primary/15 text-primary"
               >
                 <Loader2 className="size-3 animate-spin" />
                 {activeCount} active
               </Badge>
             )}
           </div>
-          <p className="mt-1 text-sm text-white/50">
+          <p className="mt-1 text-sm text-muted-foreground">
             Pages opening and crystallizing as evidence in real time.
           </p>
         </div>
@@ -155,8 +155,8 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
   return (
     <div
       className={cn(
-        "flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 transition",
-        active && "dream-float border-[#d4a84b]/35 bg-[#d4a84b]/10",
+        "flex items-start gap-3 rounded-xl border border-border bg-white/[0.03] px-3 py-2.5 transition",
+        active && "dream-float border-primary/35 bg-primary/10",
       )}
     >
       <StageDot stage={row.stage} />
@@ -166,7 +166,7 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
             href={row.url}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex max-w-full items-center gap-1 truncate font-medium text-[#f7f1e4] hover:text-[#d4a84b]"
+            className="inline-flex max-w-full items-center gap-1 truncate font-medium text-foreground hover:text-primary"
           >
             <span className="truncate">{row.title}</span>
             <ExternalLink className="size-3 shrink-0 opacity-60" />
@@ -174,23 +174,23 @@ function SiteRow({ row }: { row: SiteActivityRow }) {
           <Badge
             variant="secondary"
             className={cn(
-              "shrink-0 border border-white/10 bg-white/5 text-white/70",
-              row.stage === "extracted" && "border-teal-300/30 bg-teal-400/10 text-teal-100",
-              row.stage === "failed" && "border-rose-400/30 bg-rose-500/10 text-rose-100",
-              row.stage === "blocked" && "border-[#d4a84b]/30 bg-[#d4a84b]/10 text-[#f3e6c4]",
-              active && "border-[#d4a84b]/40 bg-[#d4a84b]/15 text-[#f3e6c4]",
+              "shrink-0 border border-border bg-muted/40 text-foreground/80",
+              row.stage === "extracted" && "border-teal-300/30 bg-teal-400/10 text-teal-800",
+              row.stage === "failed" && "border-rose-400/30 bg-rose-500/10 text-rose-700",
+              row.stage === "blocked" && "border-primary/30 bg-primary/10 text-primary",
+              active && "border-primary/40 bg-primary/15 text-primary",
             )}
           >
             {STAGE_LABEL[row.stage]}
           </Badge>
         </div>
-        <p className="mt-0.5 truncate text-xs text-white/40">
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
           {row.domain}
           {row.detail ? ` · ${row.detail}` : ""}
         </p>
       </div>
       {row.updatedAt && (
-        <time className="shrink-0 text-[11px] text-white/35">
+        <time className="shrink-0 text-[11px] text-muted-foreground">
           {new Date(row.updatedAt).toLocaleTimeString()}
         </time>
       )}
@@ -206,7 +206,7 @@ function StageDot({ stage }: { stage: SiteStage }) {
       : stage === "failed"
         ? "bg-rose-400"
         : stage === "blocked"
-          ? "bg-[#d4a84b]"
+          ? "bg-primary"
           : stage === "fetched"
             ? "bg-sky-300"
             : stage === "skipped" || stage === "unsupported"
@@ -214,7 +214,7 @@ function StageDot({ stage }: { stage: SiteStage }) {
               : stage === "queued"
                 ? "bg-white/25"
                 : active
-                  ? "bg-[#d4a84b]"
+                  ? "bg-primary"
                   : "bg-white/20";
   return (
     <span className={cn("mt-1.5 size-2.5 shrink-0 rounded-full", color, active && "animate-pulse")} />

@@ -9,7 +9,7 @@ function List({ items }: { items: string[] }) {
       ))}
     </ul>
   ) : (
-    <span className="text-white/40">None</span>
+    <span className="text-muted-foreground">None</span>
   );
 }
 
@@ -48,7 +48,7 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
             <div className="font-medium">Regions</div>
             <List items={content.scope.regions} />
             {regionWarning && (
-              <div className="mt-3 rounded-lg border border-[#d4a84b]/40 bg-[#d4a84b]/10 p-3 text-sm text-[#f3e6c4]">
+              <div className="mt-3 rounded-lg border border-primary/40 bg-primary/10 p-3 text-sm text-primary">
                 {regionWarning}
               </div>
             )}
@@ -63,7 +63,7 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
           {content.search_terms.map((item, index) => (
             <div
               key={`${item.language}-${item.term}-${index}`}
-              className="rounded-lg border border-white/10 bg-white/[0.03] p-3"
+              className="rounded-lg border border-border bg-white/[0.03] p-3"
             >
               <div className="font-medium">{item.term}</div>
               <div className="text-xs text-white/45">
@@ -78,7 +78,7 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
           {content.source_strategy.map((item, index) => (
             <div
               key={`${item.source_type}-${index}`}
-              className="rounded-lg border border-white/10 bg-white/[0.03] p-3"
+              className="rounded-lg border border-border bg-white/[0.03] p-3"
             >
               <div className="font-medium">{item.source_type}</div>
               <div className="text-xs text-white/45">
@@ -95,7 +95,7 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
           {content.data_schema.map((item) => (
             <div
               key={item.field_name}
-              className="rounded-lg border border-white/10 bg-white/[0.03] p-3"
+              className="rounded-lg border border-border bg-white/[0.03] p-3"
             >
               <div className="font-medium">{item.field_name}</div>
               <div className="text-xs text-white/45">
@@ -123,7 +123,7 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
           {content.task_plan.map((item) => (
             <div
               key={item.order}
-              className="rounded-lg border border-white/10 bg-white/[0.03] p-3"
+              className="rounded-lg border border-border bg-white/[0.03] p-3"
             >
               <div className="font-medium">
                 {item.order}. {item.task}
@@ -154,7 +154,7 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
           {content.agent_assignments.map((item) => (
             <div
               key={`${item.role}-${item.model_id}`}
-              className="rounded-lg border border-white/10 bg-white/[0.03] p-3"
+              className="rounded-lg border border-border bg-white/[0.03] p-3"
             >
               <div className="font-medium">{item.role}</div>
               <div className="text-xs text-white/45">{item.model_id}</div>

@@ -80,7 +80,7 @@ function LessonsPage() {
         <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(ellipse_60%_80%_at_50%_-20%,oklch(0.58_0.14_240/0.1),transparent)]" />
 
         <PageHeader
-          className="relative animate-fade-up"
+          className="relative elevate-hero"
           eyebrow="Learning"
           title="Verdict lessons"
           description="Every challenge becomes a detailed comparison — you vs the model — and feeds your brain."

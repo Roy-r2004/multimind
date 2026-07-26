@@ -109,13 +109,15 @@ function SavedDocumentsPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-6xl px-6 py-10">
-        <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="elevate-hero flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-primary">
               Library
             </p>
-            <h1 className="mt-1 font-display text-3xl font-bold tracking-tight">Saved documents</h1>
-            <p className="mt-2 max-w-xl text-sm text-muted-foreground">
+            <h1 className="mt-1.5 font-display text-3xl font-semibold tracking-tight sm:text-[2.75rem] sm:leading-[1.1]">
+              Saved documents
+            </h1>
+            <p className="mt-2.5 max-w-xl text-sm text-muted-foreground sm:text-[15px]">
               Full chat turns you saved under labels. Separate from bookmark Saved Verdicts and from
               Challenge Lessons.
             </p>

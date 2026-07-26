@@ -18,10 +18,10 @@ type Props = {
 };
 
 const stateClass: Record<Stage["state"], string> = {
-  pending: "border-white/10 bg-white/[0.03] text-white/50",
-  active: "border-[#d4a84b]/50 bg-[#d4a84b]/12 text-[#f3e6c4] dream-beacon dream-float",
-  done: "border-teal-300/30 bg-teal-400/10 text-teal-50",
-  failed: "border-rose-400/40 bg-rose-500/10 text-rose-100",
+  pending: "border-border bg-muted/30 text-muted-foreground",
+  active: "border-primary/50 bg-primary/10 text-primary dream-beacon dream-float",
+  done: "border-teal-300/40 bg-teal-50 text-teal-800",
+  failed: "border-rose-300/50 bg-rose-50 text-rose-700",
 };
 
 export function RunPulse({ stages, connectionState, statusLabel, onStageClick }: Props) {
@@ -30,14 +30,14 @@ export function RunPulse({ stages, connectionState, statusLabel, onStageClick }:
       <div className="flex flex-wrap items-center gap-2">
         <Badge
           variant="secondary"
-          className="border border-white/15 bg-white/5 text-[#f7f1e4]"
+          className="border border-border bg-muted/40 text-foreground"
         >
           {statusLabel}
         </Badge>
         <span
           className={cn(
             "inline-flex items-center gap-1.5 text-sm",
-            connectionState === "Live" ? "text-teal-200" : "text-white/50",
+            connectionState === "Live" ? "text-teal-700" : "text-muted-foreground",
           )}
         >
           <span
@@ -56,7 +56,7 @@ export function RunPulse({ stages, connectionState, statusLabel, onStageClick }:
             type="button"
             onClick={() => onStageClick?.(stage.id)}
             className={cn(
-              "rounded-xl border px-3 py-3 text-left transition hover:border-[#d4a84b]/35",
+              "rounded-xl border px-3 py-3 text-left transition hover:border-primary/35",
               stateClass[stage.state],
             )}
           >

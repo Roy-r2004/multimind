@@ -87,7 +87,7 @@ function SavedVerdictsPage() {
     <AppShell>
       <div className="relative mx-auto max-w-5xl px-6 py-10">
         <PageHeader
-          className="animate-fade-up"
+          className="elevate-hero"
           eyebrow="Library"
           title="Saved Verdicts"
           description="Personal snapshots of completed verdicts you bookmarked."

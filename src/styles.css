@@ -107,6 +107,27 @@
   .animate-fade-up-delay {
     animation: fade-up 0.7s ease-out 0.12s both;
   }
+  .elevate-card {
+    animation: elevate-card 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .elevate-card-delay-1 {
+    animation-delay: 0.06s;
+  }
+  .elevate-card-delay-2 {
+    animation-delay: 0.12s;
+  }
+  .elevate-card-delay-3 {
+    animation-delay: 0.18s;
+  }
+  .elevate-card-delay-4 {
+    animation-delay: 0.24s;
+  }
+  .elevate-verdict {
+    animation: elevate-verdict 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .elevate-hero {
+    animation: elevate-hero 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
 
   .skeleton-shimmer {
     background: linear-gradient(
@@ -349,6 +370,39 @@
   from {
     opacity: 0;
     transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes elevate-hero {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes elevate-card {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes elevate-verdict {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
   }
   to {
     opacity: 1;

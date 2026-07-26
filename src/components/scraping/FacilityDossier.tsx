@@ -49,7 +49,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
   if (loading) {
     return (
       <Panel>
-        <p className="text-sm text-white/50">Loading facility dossier…</p>
+        <p className="text-sm text-muted-foreground">Loading facility dossier…</p>
       </Panel>
     );
   }
@@ -57,7 +57,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
   if (error) {
     return (
       <Panel>
-        <p className="text-sm text-rose-200">{error}</p>
+        <p className="text-sm text-rose-600">{error}</p>
       </Panel>
     );
   }
@@ -65,9 +65,9 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
   if (!detail) {
     return (
       <Panel>
-        <p className="text-[11px] uppercase tracking-[0.28em] text-[#d4a84b]/90">Dossier</p>
-        <p className="mt-2 font-display text-xl text-[#f7f1e4]">Pick a facility</p>
-        <p className="mt-2 text-sm text-white/50">
+        <p className="text-[11px] uppercase tracking-[0.28em] text-primary/90">Dossier</p>
+        <p className="mt-2 font-display text-xl text-foreground">Pick a facility</p>
+        <p className="mt-2 text-sm text-muted-foreground">
           Inspect locations, contacts, services, and evidence as they crystallize.
         </p>
       </Panel>
@@ -97,19 +97,19 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
         <button
           type="button"
           onClick={onBack}
-          className="mb-3 text-sm text-white/50 hover:text-[#f3e6c4] lg:hidden"
+          className="mb-3 text-sm text-muted-foreground hover:text-primary lg:hidden"
         >
           ← Back to list
         </button>
       ) : null}
 
-      <div className="space-y-3 border-b border-white/10 pb-4">
+      <div className="space-y-3 border-b border-border pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="font-display text-2xl tracking-tight text-[#f7f1e4]">
+            <h2 className="font-display text-2xl tracking-tight text-foreground">
               {detail.canonical_name}
             </h2>
-            <p className="mt-1 text-sm text-white/50">
+            <p className="mt-1 text-sm text-muted-foreground">
               {[detail.facility_type, detail.primary_city, detail.primary_region, detail.country_name]
                 .filter(Boolean)
                 .join(" · ")}
@@ -118,14 +118,14 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
           <div className="flex flex-wrap gap-2">
             <Badge
               variant="secondary"
-              className="border border-[#d4a84b]/35 bg-[#d4a84b]/15 text-[#f3e6c4]"
+              className="border border-primary/35 bg-primary/15 text-primary"
             >
               {(detail.confidence_score * 100).toFixed(0)}% confidence
             </Badge>
-            <Badge variant="outline" className="border-white/20 text-white/70">
+            <Badge variant="outline" className="border-border text-foreground/80">
               {detail.human_review_status}
             </Badge>
-            <Badge variant="outline" className="border-white/20 text-white/70">
+            <Badge variant="outline" className="border-border text-foreground/80">
               {detail.publication_class}
             </Badge>
           </div>
@@ -136,7 +136,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
               asChild
               size="sm"
               variant="outline"
-              className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+              className="border-border bg-muted/40 text-foreground hover:bg-accent"
             >
               <a href={website} target="_blank" rel="noreferrer">
                 Open website
@@ -148,7 +148,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
             size="sm"
             variant="outline"
             disabled={!detail.primary_contact}
-            className="border-white/20 bg-white/5 text-[#f7f1e4] hover:bg-white/10"
+            className="border-border bg-muted/40 text-foreground hover:bg-accent"
             onClick={() => void copyContact()}
           >
             {copied ? "Copied" : "Copy contact"}
@@ -157,7 +157,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
             type="button"
             size="sm"
             variant="ghost"
-            className="text-white/60 hover:bg-white/10 hover:text-[#f3e6c4]"
+            className="text-muted-foreground hover:bg-accent hover:text-primary"
             onClick={() => setTab("Sources & Evidence")}
           >
             Jump to sources
@@ -174,8 +174,8 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
             className={cn(
               "shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition",
               tab === name
-                ? "bg-[#d4a84b] text-[#0b161c]"
-                : "bg-white/5 text-white/55 hover:bg-white/10",
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted/40 text-muted-foreground hover:bg-accent",
             )}
           >
             {name}
@@ -202,7 +202,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
         {tab === "Sources & Evidence" ? (
           <div className="space-y-4">
             <section>
-              <h3 className="mb-2 text-sm font-medium text-[#f7f1e4]">Sources</h3>
+              <h3 className="mb-2 text-sm font-medium text-foreground">Sources</h3>
               <ListOrEmpty
                 items={detail.sources.map((source) => ({
                   title: source.title || source.url,
@@ -212,7 +212,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
               />
             </section>
             <section>
-              <h3 className="mb-2 text-sm font-medium text-[#f7f1e4]">Field evidence</h3>
+              <h3 className="mb-2 text-sm font-medium text-foreground">Field evidence</h3>
               <ListOrEmpty
                 items={detail.evidence.map((row) => ({
                   title: row.field_path,
@@ -229,7 +229,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
 
 function Panel({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-full min-h-[28rem] flex-col rounded-[1.5rem] border border-white/10 bg-[#0b161c]/75 p-4 shadow-[0_20px_50px_rgba(0,0,0,0.25)] backdrop-blur-md md:p-5">
+    <div className="flex h-full min-h-[28rem] flex-col rounded-[1.5rem] border border-border bg-card/75 p-4 shadow-[0_20px_50px_rgba(0,0,0,0.25)] backdrop-blur-md md:p-5">
       {children}
     </div>
   );
@@ -264,9 +264,9 @@ function Overview({ detail }: { detail: ScrapingFacilityDetail }) {
   return (
     <dl className="grid gap-3 sm:grid-cols-2">
       {rows.map(([label, value]) => (
-        <div key={label} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-          <dt className="text-[11px] uppercase tracking-wide text-white/40">{label}</dt>
-          <dd className="mt-1 break-words text-sm text-[#f7f1e4]/90">{value || EMPTY}</dd>
+        <div key={label} className="rounded-lg border border-border bg-white/[0.03] px-3 py-2">
+          <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+          <dd className="mt-1 break-words text-sm text-foreground/90">{value || EMPTY}</dd>
         </div>
       ))}
     </dl>
@@ -292,12 +292,12 @@ function LocationCards({
         return (
           <div
             key={location.id}
-            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-3"
+            className="rounded-lg border border-border bg-white/[0.03] px-3 py-3"
           >
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
-                <p className="font-medium text-[#f7f1e4]">{location.location_name}</p>
-                <p className="mt-1 text-sm text-white/50">
+                <p className="font-medium text-foreground">{location.location_name}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
                   {[location.location_type, location.city, location.region, location.country_name]
                     .filter(Boolean)
                     .join(" · ")}
@@ -308,7 +308,7 @@ function LocationCards({
                 <span>{location.location_completeness_status}</span>
               </div>
             </div>
-            <div className="mt-3 space-y-2 text-sm text-white/70">
+            <div className="mt-3 space-y-2 text-sm text-foreground/80">
               <p>{location.full_address || EMPTY}</p>
               <p>Phone: {phones.join(" · ") || EMPTY}</p>
               <p>
@@ -336,15 +336,15 @@ function ContactCards({ detail }: { detail: ScrapingFacilityDetail }) {
       {detail.contacts.map((contact) => (
         <li
           key={contact.id}
-          className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+          className="rounded-lg border border-border bg-white/[0.03] px-3 py-2"
         >
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
-              <p className="font-medium text-[#f7f1e4]">
+              <p className="font-medium text-foreground">
                 {contact.contact_type}
                 {contact.label ? ` · ${contact.label}` : ""}
               </p>
-              <p className="mt-1 break-words text-sm text-white/60">{contact.value}</p>
+              <p className="mt-1 break-words text-sm text-muted-foreground">{contact.value}</p>
             </div>
             <div className="text-right text-xs text-white/45">
               <p>{contact.verification_status}</p>
@@ -375,22 +375,22 @@ function ListOrEmpty({
       {items.map((item, index) => (
         <li
           key={`${item.title}-${index}`}
-          className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+          className="rounded-lg border border-border bg-white/[0.03] px-3 py-2"
         >
           {item.href ? (
             <a
               href={item.href}
               target="_blank"
               rel="noreferrer"
-              className="font-medium text-[#d4a84b] underline-offset-2 hover:underline"
+              className="font-medium text-primary underline-offset-2 hover:underline"
             >
               {item.title}
             </a>
           ) : (
-            <p className="font-medium text-[#f7f1e4]">{item.title}</p>
+            <p className="font-medium text-foreground">{item.title}</p>
           )}
           {item.body && item.body !== item.title ? (
-            <p className="mt-1 break-words text-sm text-white/50">{item.body}</p>
+            <p className="mt-1 break-words text-sm text-muted-foreground">{item.body}</p>
           ) : null}
         </li>
       ))}

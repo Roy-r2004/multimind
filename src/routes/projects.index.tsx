@@ -18,19 +18,21 @@ function ProjectsPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-5xl px-6 py-10">
-        <PageHeader
-          eyebrow="Organization"
-          title="Projects"
-          description="Group related chats for context and cost tracking."
-          action={
-            <button
-              onClick={() => setShowCreate(true)}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground"
-            >
-              <Plus className="size-4" /> New project
-            </button>
-          }
-        />
+        <div className="elevate-hero">
+          <PageHeader
+            eyebrow="Organization"
+            title="Projects"
+            description="Group related chats for context and cost tracking."
+            action={
+              <button
+                onClick={() => setShowCreate(true)}
+                className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+              >
+                <Plus className="size-4" /> New project
+              </button>
+            }
+          />
+        </div>
 
         <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {projects.length === 0 ? (
@@ -45,7 +47,7 @@ function ProjectsPage() {
                 params={{ id: p.id }}
                 className="block cursor-pointer rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
               >
-                <GlassCard className="h-full p-5 transition hover:border-primary/40 hover:shadow-sm">
+                <GlassCard className="elevate-card h-full p-5 transition hover:border-primary/40 hover:shadow-md">
                   <div className="flex items-center gap-3">
                     <span className="grid size-10 place-items-center rounded-xl bg-primary/15 text-primary">
                       <FolderKanban className="size-5" />

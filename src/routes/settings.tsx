@@ -21,14 +21,16 @@ function SettingsPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-4xl px-6 py-10">
-        <PageHeader
-          eyebrow="Account"
-          title="Settings"
-          description="Profile, defaults, and the live models available through OpenRouter."
-        />
+        <div className="elevate-hero">
+          <PageHeader
+            eyebrow="Account"
+            title="Settings"
+            description="Profile, defaults, and the live models available through OpenRouter."
+          />
+        </div>
 
         <div className="mt-10 space-y-6">
-          <GlassCard className="p-6">
+          <GlassCard glow className="p-6">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Profile</h2>
             <div className="mt-4 flex items-center gap-4">
               <div className="grid size-14 place-items-center rounded-full bg-primary/15 text-lg font-semibold text-primary">
