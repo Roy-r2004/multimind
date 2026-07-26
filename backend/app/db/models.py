@@ -487,6 +487,9 @@ class ScrapingBlueprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_operation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_execution_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     mission: Mapped["ScrapingMission"] = relationship(
         back_populates="blueprints",

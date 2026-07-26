@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     scraping_worker_job_timeout_seconds: int = 21600
     # When true (default in development), run scrapes inside the API process if Redis/worker is down
     scraping_inline_execution: bool | None = None
+    scraping_inline_blueprint_generation: bool | None = None
 
     # LLM — OpenRouter (single key for all models)
     openrouter_api_key: str | None = None
@@ -51,11 +52,11 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 120.0
     llm_max_retries: int = 2
 
-    # Gemini blueprint generation (Phase 1A defines configuration only; no live calls)
-    gemini_api_key: str | None = None
-    gemini_blueprint_model: str = "gemini-2.5-pro"
-    gemini_blueprint_timeout_seconds: float = 900.0
-    gemini_blueprint_poll_interval_seconds: float = 10.0
+    # OpenRouter country-blueprint generation; worker owns lifecycle and retries.
+    openrouter_blueprint_research_model: str = "openai/o3-deep-research"
+    openrouter_blueprint_structuring_model: str = "gpt-4.1-mini"
+    openrouter_blueprint_timeout_seconds: float = 900.0
+    openrouter_blueprint_max_output_tokens: int = 16_000
 
     # Real source discovery
     source_discovery_provider: str = "serper"

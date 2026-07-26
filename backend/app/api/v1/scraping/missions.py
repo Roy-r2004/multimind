@@ -82,6 +82,38 @@ async def generate_blueprint(
     return await blueprint_service.generate_blueprint(db, auth, mission_id)
 
 
+@router.post(
+    "/{mission_id}/blueprints/generate",
+    response_model=ScrapingBlueprintResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def queue_blueprint_generation(
+    mission_id: str,
+    _data: ScrapingBlueprintGenerateRequest | None = None,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await blueprint_service.generate_blueprint(db, auth, mission_id)
+
+
+@router.get(
+    "/{mission_id}/blueprints/{blueprint_id}/status",
+    response_model=ScrapingBlueprintResponse,
+)
+async def get_blueprint_generation_status(
+    mission_id: str,
+    blueprint_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    blueprint = await blueprint_service.get_blueprint_row(db, auth, blueprint_id)
+    if blueprint.mission_id != mission_id:
+        from app.core.exceptions import NotFoundError
+
+        raise NotFoundError("ScrapingBlueprint", blueprint_id)
+    return blueprint_service._response(blueprint)
+
+
 @router.get("/{mission_id}/blueprints", response_model=list[ScrapingBlueprintResponse])
 async def list_blueprints(
     mission_id: str,
@@ -89,6 +121,24 @@ async def list_blueprints(
     db: AsyncSession = Depends(get_db),
 ):
     return await blueprint_service.list_blueprints(db, auth, mission_id)
+
+
+@router.get("/{mission_id}/blueprints/latest", response_model=ScrapingBlueprintResponse)
+async def latest_blueprint(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await blueprint_service.latest_blueprint(db, auth, mission_id)
+
+
+@router.get("/{mission_id}/blueprints/active", response_model=ScrapingBlueprintResponse)
+async def active_blueprint(
+    mission_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await blueprint_service.active_blueprint(db, auth, mission_id)
 
 
 @router.post("/{mission_id}/runs/plan", response_model=ScrapingRunDetail)

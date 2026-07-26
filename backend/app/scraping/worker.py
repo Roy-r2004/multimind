@@ -11,6 +11,10 @@ from app.services.scraping.execution_orchestrator import (
     recover_scraping_executions,
     run_scraping_execution,
 )
+from app.services.scraping.blueprint_generation_orchestrator import (
+    recover_blueprint_generations,
+    run_blueprint_generation,
+)
 
 
 def _redis_settings() -> RedisSettings:
@@ -26,6 +30,7 @@ def _redis_settings() -> RedisSettings:
 async def startup(ctx: dict) -> None:
     print("scraping-worker: starting country-aware source discovery worker", flush=True)
     await recover_scraping_executions(ctx)
+    await recover_blueprint_generations(ctx)
 
 
 async def shutdown(ctx: dict) -> None:
@@ -33,7 +38,7 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
-    functions = [run_scraping_execution]
+    functions = [run_scraping_execution, run_blueprint_generation]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()

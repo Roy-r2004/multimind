@@ -1,12 +1,17 @@
 """Scraping blueprint business logic."""
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from arq import create_pool
+from redis.exceptions import RedisError
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.models import (
@@ -18,53 +23,124 @@ from app.db.models import (
 from app.schemas.api import (
     ScrapingBlueprintChangeRequest,
     ScrapingBlueprintContent,
+    ScrapingBlueprintRejectRequest,
     ScrapingBlueprintRenameRequest,
     ScrapingBlueprintResponse,
-    ScrapingBlueprintRejectRequest,
 )
-from app.scraping.blueprint_orchestrator import get_blueprint_orchestrator
+from app.scraping.worker import _redis_settings
+from app.services.scraping.blueprint_prompt_service import blueprint_prompt_service
+from app.services.scraping.blueprint_state_service import blueprint_state_service
 from app.services.scraping.mission_service import mission_service
+from app.services.scraping.countries import resolve_country
 
 
 class ScrapingBlueprintService:
+    async def _create_queued_version(
+        self,
+        db: AsyncSession,
+        mission: ScrapingMission,
+        *,
+        revision_request: str | None = None,
+        source: ScrapingBlueprint | None = None,
+    ) -> ScrapingBlueprint:
+        # PostgreSQL serializes allocations per mission; SQLite ignores FOR UPDATE
+        # and is protected by the unique constraint plus the bounded retry below.
+        await db.execute(
+            select(ScrapingMission.id)
+            .where(ScrapingMission.id == mission.id)
+            .with_for_update()
+        )
+        if source is None:
+            active = await db.scalar(
+                select(func.count(ScrapingBlueprint.id)).where(
+                    ScrapingBlueprint.mission_id == mission.id,
+                    ScrapingBlueprint.status.in_(
+                        [ScrapingBlueprintStatus.QUEUED, ScrapingBlueprintStatus.RUNNING]
+                    ),
+                )
+            )
+            if active:
+                raise ConflictError("Blueprint generation is already in progress.")
+        country = resolve_country(mission.country_code or mission.country_iso3 or "")
+        prompt = blueprint_prompt_service.render_country_maximum_coverage(
+            mission_title=mission.title, country=country
+        )
+        rendered_prompt = prompt.rendered_prompt
+        if source is not None:
+            rendered_prompt += (
+                "\n\nPrevious human blueprint:\n"
+                f"{source.human_readable_blueprint or ''}\n\nPrevious structured blueprint:\n"
+                f"{source.structured_blueprint or {}}\n\nRevision instruction:\n{revision_request or ''}"
+            )
+        settings = get_settings()
+        blueprint = ScrapingBlueprint(
+            mission_id=mission.id,
+            version=await self._next_version(db, mission.id),
+            status=ScrapingBlueprintStatus.QUEUED,
+            model_set_id=mission.model_set_id,
+            country_name_snapshot=country.name,
+            country_iso3_snapshot=country.iso3,
+            continent_snapshot=country.continent,
+            provider="openrouter",
+            provider_model_id=settings.openrouter_blueprint_research_model,
+            prompt_template_version=prompt.template_version,
+            rendered_prompt_snapshot=rendered_prompt,
+            revision_request=revision_request,
+            queued_at=datetime.now(UTC),
+        )
+        db.add(blueprint)
+        mission.status = ScrapingMissionStatus.BLUEPRINT_GENERATING
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise ConflictError(
+                "A concurrent blueprint version was created. Retry the request."
+            ) from exc
+        await db.refresh(blueprint)
+        await self.enqueue_blueprint(blueprint.id)
+        return blueprint
+
     async def generate_blueprint(
         self, db: AsyncSession, auth: AuthContext, mission_id: str
     ) -> ScrapingBlueprintResponse:
         mission = await mission_service.get_mission_row(db, auth, mission_id)
-        if mission.status == ScrapingMissionStatus.BLUEPRINT_GENERATING:
-            raise ValidationError("Blueprint generation is already in progress")
-
-        model_set = await mission_service.resolve_model_set(db, auth, mission.model_set_id)
-        version = await self._next_version(db, mission.id)
-        blueprint = ScrapingBlueprint(
-            mission_id=mission.id,
-            version=version,
-            status=ScrapingBlueprintStatus.GENERATING,
-            model_set_id=model_set.slug,
-            judge_model_id=self._judge_model_id(model_set),
+        active = await db.scalar(
+            select(func.count(ScrapingBlueprint.id)).where(
+                ScrapingBlueprint.mission_id == mission.id,
+                ScrapingBlueprint.status.in_(
+                    [ScrapingBlueprintStatus.QUEUED, ScrapingBlueprintStatus.RUNNING]
+                ),
+            )
         )
-        mission.status = ScrapingMissionStatus.BLUEPRINT_GENERATING
-        db.add(blueprint)
-        await db.commit()
-        await db.refresh(blueprint)
+        if active:
+            raise ConflictError("Blueprint generation is already in progress.")
+        blueprint = await self._create_queued_version(db, mission)
+        return self._response(blueprint)
 
-        try:
-            content = await get_blueprint_orchestrator().generate(mission, model_set)
-            validated = content.model_dump(mode="json")
-            blueprint.blueprint_json = validated
-            blueprint.status = ScrapingBlueprintStatus.DRAFT
-            mission.status = ScrapingMissionStatus.AWAITING_APPROVAL
-            await db.commit()
-            await db.refresh(blueprint)
-            return self._response(blueprint)
-        except Exception:
-            blueprint.status = ScrapingBlueprintStatus.FAILED
-            blueprint.blueprint_json = None
-            blueprint.error_message = "Blueprint generation failed"
-            mission.status = ScrapingMissionStatus.FAILED
-            await db.commit()
-            await db.refresh(blueprint)
-            return self._response(blueprint)
+    async def enqueue_blueprint(self, blueprint_id: str) -> None:
+        settings = get_settings()
+        inline = (
+            settings.scraping_inline_blueprint_generation
+            if settings.scraping_inline_blueprint_generation is not None
+            else settings.environment == "development"
+        )
+        if not inline:
+            try:
+                redis = await create_pool(_redis_settings())
+                await redis.enqueue_job(
+                    "run_blueprint_generation",
+                    blueprint_id,
+                    _job_id=f"scraping-blueprint:{blueprint_id}",
+                )
+                await redis.close()
+                return
+            except (OSError, RedisError, TimeoutError):
+                # Local development deliberately falls back to the in-process task.
+                pass
+        from app.services.scraping.blueprint_generation_orchestrator import run_blueprint_generation
+
+        asyncio.create_task(run_blueprint_generation({}, blueprint_id))
 
     async def list_blueprints(
         self, db: AsyncSession, auth: AuthContext, mission_id: str
@@ -127,8 +203,13 @@ class ScrapingBlueprintService:
         self, db: AsyncSession, auth: AuthContext, blueprint_id: str
     ) -> ScrapingBlueprintResponse:
         blueprint = await self.get_blueprint_row(db, auth, blueprint_id)
-        if blueprint.status != ScrapingBlueprintStatus.DRAFT:
-            raise ValidationError("Only draft blueprints can be approved")
+        if blueprint.status != ScrapingBlueprintStatus.READY_FOR_REVIEW:
+            raise ValidationError("Only review-ready blueprints can be approved")
+        if blueprint.structured_blueprint is None:
+            raise ValidationError("A structured blueprint is required before approval")
+        from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+
+        CountryMaximumCoverageStructuredBlueprint.model_validate(blueprint.structured_blueprint)
 
         await db.execute(
             update(ScrapingBlueprint)
@@ -136,13 +217,13 @@ class ScrapingBlueprintService:
                 ScrapingBlueprint.mission_id == blueprint.mission_id,
                 ScrapingBlueprint.id != blueprint.id,
                 ScrapingBlueprint.status.in_(
-                    [ScrapingBlueprintStatus.APPROVED, ScrapingBlueprintStatus.DRAFT]
+                    [ScrapingBlueprintStatus.APPROVED]
                 ),
             )
             .values(status=ScrapingBlueprintStatus.SUPERSEDED)
         )
         now = datetime.now(UTC)
-        blueprint.status = ScrapingBlueprintStatus.APPROVED
+        blueprint_state_service.transition(blueprint, ScrapingBlueprintStatus.APPROVED)
         blueprint.approved_by = auth.user.id
         blueprint.approved_at = now
         blueprint.mission.active_blueprint_id = blueprint.id
@@ -162,10 +243,10 @@ class ScrapingBlueprintService:
         if not reason:
             raise ValidationError("Rejection reason is required")
         blueprint = await self.get_blueprint_row(db, auth, blueprint_id)
-        if blueprint.status != ScrapingBlueprintStatus.DRAFT:
-            raise ValidationError("Only draft blueprints can be rejected")
+        if blueprint.status != ScrapingBlueprintStatus.READY_FOR_REVIEW:
+            raise ValidationError("Only review-ready blueprints can be rejected")
 
-        blueprint.status = ScrapingBlueprintStatus.REJECTED
+        blueprint_state_service.transition(blueprint, ScrapingBlueprintStatus.REJECTED)
         blueprint.rejected_by = auth.user.id
         blueprint.rejected_at = datetime.now(UTC)
         blueprint.rejection_reason = reason
@@ -187,47 +268,15 @@ class ScrapingBlueprintService:
             raise ValidationError("Change instructions are required")
         source = await self.get_blueprint_row(db, auth, blueprint_id)
         if source.status not in (
-            ScrapingBlueprintStatus.DRAFT,
+            ScrapingBlueprintStatus.READY_FOR_REVIEW,
             ScrapingBlueprintStatus.APPROVED,
-            ScrapingBlueprintStatus.REJECTED,
+            ScrapingBlueprintStatus.FAILED,
         ):
-            raise ValidationError("Only draft, approved, or rejected blueprints can be revised")
-
-        model_set = await mission_service.resolve_model_set(db, auth, source.model_set_id)
-        new_blueprint = ScrapingBlueprint(
-            mission_id=source.mission_id,
-            version=await self._next_version(db, source.mission_id),
-            status=ScrapingBlueprintStatus.GENERATING,
-            model_set_id=source.model_set_id,
-            judge_model_id=self._judge_model_id(model_set),
-            change_instructions=change_instructions,
+            raise ValidationError("Only review-ready, approved, or failed blueprints can be revised")
+        new_blueprint = await self._create_queued_version(
+            db, source.mission, revision_request=change_instructions, source=source
         )
-        source.mission.status = ScrapingMissionStatus.BLUEPRINT_GENERATING
-        db.add(new_blueprint)
-        await db.commit()
-        await db.refresh(new_blueprint)
-
-        try:
-            content = await get_blueprint_orchestrator().generate(
-                source.mission,
-                model_set,
-                previous_blueprint=source.blueprint_json,
-                change_instructions=change_instructions,
-            )
-            new_blueprint.blueprint_json = content.model_dump(mode="json")
-            new_blueprint.status = ScrapingBlueprintStatus.DRAFT
-            source.mission.status = ScrapingMissionStatus.AWAITING_APPROVAL
-            await db.commit()
-            await db.refresh(new_blueprint)
-            return self._response(new_blueprint)
-        except Exception:
-            new_blueprint.status = ScrapingBlueprintStatus.FAILED
-            new_blueprint.blueprint_json = None
-            new_blueprint.error_message = "Blueprint generation failed"
-            source.mission.status = ScrapingMissionStatus.FAILED
-            await db.commit()
-            await db.refresh(new_blueprint)
-            return self._response(new_blueprint)
+        return self._response(new_blueprint)
 
     async def get_blueprint_row(
         self, db: AsyncSession, auth: AuthContext, blueprint_id: str
@@ -242,6 +291,76 @@ class ScrapingBlueprintService:
         if blueprint is None:
             raise NotFoundError("ScrapingBlueprint", blueprint_id)
         return blueprint
+
+    async def regenerate_blueprint(
+        self, db: AsyncSession, auth: AuthContext, blueprint_id: str
+    ) -> ScrapingBlueprintResponse:
+        source = await self.get_blueprint_row(db, auth, blueprint_id)
+        if source.status in (ScrapingBlueprintStatus.QUEUED, ScrapingBlueprintStatus.RUNNING):
+            raise ConflictError("A queued or running blueprint cannot be regenerated.")
+        return self._response(await self._create_queued_version(db, source.mission, source=source))
+
+    async def discard_blueprint(
+        self, db: AsyncSession, auth: AuthContext, blueprint_id: str
+    ) -> ScrapingBlueprintResponse:
+        blueprint = await self.get_blueprint_row(db, auth, blueprint_id)
+        if blueprint.status not in (
+            ScrapingBlueprintStatus.DRAFT,
+            ScrapingBlueprintStatus.READY_FOR_REVIEW,
+        ):
+            raise ValidationError("Only draft or review-ready blueprints can be discarded.")
+        blueprint_state_service.transition(blueprint, ScrapingBlueprintStatus.DISCARDED)
+        blueprint.discarded_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(blueprint)
+        return self._response(blueprint)
+
+    async def latest_blueprint(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str
+    ) -> ScrapingBlueprintResponse:
+        mission = await mission_service.get_mission_row(db, auth, mission_id)
+        row = await db.scalar(
+            select(ScrapingBlueprint)
+            .where(ScrapingBlueprint.mission_id == mission.id)
+            .order_by(ScrapingBlueprint.version.desc())
+            .limit(1)
+        )
+        if row is None:
+            raise NotFoundError("ScrapingBlueprint")
+        return self._response(row)
+
+    async def active_blueprint(
+        self, db: AsyncSession, auth: AuthContext, mission_id: str
+    ) -> ScrapingBlueprintResponse:
+        mission = await mission_service.get_mission_row(db, auth, mission_id)
+        if not mission.active_blueprint_id:
+            raise NotFoundError("ScrapingBlueprint")
+        return self._response(await self.get_blueprint_row(db, auth, mission.active_blueprint_id))
+
+    async def edit_blueprint(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        blueprint_id: str,
+        *,
+        human_readable_blueprint: str,
+        structured_blueprint: dict[str, Any],
+    ) -> ScrapingBlueprintResponse:
+        blueprint = await self.get_blueprint_row(db, auth, blueprint_id)
+        if blueprint.status not in (
+            ScrapingBlueprintStatus.DRAFT,
+            ScrapingBlueprintStatus.READY_FOR_REVIEW,
+        ):
+            raise ValidationError("Only draft or review-ready blueprints can be edited.")
+        from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+
+        validated = CountryMaximumCoverageStructuredBlueprint.model_validate(structured_blueprint)
+        blueprint.human_readable_blueprint = human_readable_blueprint.strip()
+        blueprint.structured_blueprint = validated.model_dump(mode="json")
+        blueprint.citations = [item.model_dump(mode="json") for item in validated.citations]
+        await db.commit()
+        await db.refresh(blueprint)
+        return self._response(blueprint)
 
     async def _next_version(self, db: AsyncSession, mission_id: str) -> int:
         result = await db.execute(
@@ -258,6 +377,16 @@ class ScrapingBlueprintService:
         content = None
         if blueprint.blueprint_json is not None:
             content = ScrapingBlueprintContent.model_validate(blueprint.blueprint_json)
+        structured = None
+        if blueprint.structured_blueprint is not None:
+            from app.schemas.api import BlueprintCitation, CountryMaximumCoverageStructuredBlueprint
+
+            structured = CountryMaximumCoverageStructuredBlueprint.model_validate(
+                blueprint.structured_blueprint
+            )
+            citations = [BlueprintCitation.model_validate(item) for item in blueprint.citations or []]
+        else:
+            citations = None
         return ScrapingBlueprintResponse(
             id=blueprint.id,
             mission_id=blueprint.mission_id,
@@ -274,6 +403,19 @@ class ScrapingBlueprintService:
             rejection_reason=blueprint.rejection_reason,
             change_instructions=blueprint.change_instructions,
             error_message=blueprint.error_message,
+            provider=blueprint.provider,
+            provider_model_id=blueprint.provider_model_id,
+            prompt_template_version=blueprint.prompt_template_version,
+            human_readable_blueprint=blueprint.human_readable_blueprint,
+            structured_blueprint=structured,
+            citations=citations,
+            revision_request=blueprint.revision_request,
+            generation_error=blueprint.generation_error,
+            queued_at=blueprint.queued_at,
+            started_at=blueprint.started_at,
+            completed_at=blueprint.completed_at,
+            failed_at=blueprint.failed_at,
+            discarded_at=blueprint.discarded_at,
             created_at=blueprint.created_at,
             updated_at=blueprint.updated_at,
         )

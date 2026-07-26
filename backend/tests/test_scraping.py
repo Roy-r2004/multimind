@@ -61,7 +61,7 @@ from app.services.scraping.source_discovery_service import SourceDiscoverySummar
 from app.services.scraping.source_retrieval_service import (
     SourceRetrievalSummary,
 )
-from app.scraping.worker import WorkerSettings, run_scraping_execution
+from app.scraping.worker import WorkerSettings, run_blueprint_generation, run_scraping_execution
 from app.scraping.blueprint_orchestrator import BlueprintOrchestrator
 from app.services.domain_service import project_service
 from app.services.scraping.blueprint_service import blueprint_service
@@ -2994,8 +2994,8 @@ def test_scraping_worker_timeout_is_explicit_and_above_default():
     assert WorkerSettings.job_timeout > 300
 
 
-def test_worker_uses_real_source_discovery_function():
-    assert WorkerSettings.functions == [run_scraping_execution]
+def test_worker_registers_source_discovery_and_blueprint_generation_functions():
+    assert WorkerSettings.functions == [run_scraping_execution, run_blueprint_generation]
 
 
 @pytest.mark.asyncio

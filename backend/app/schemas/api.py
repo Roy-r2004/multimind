@@ -215,6 +215,12 @@ class ScrapingBlueprintGenerateRequest(BaseModel):
     pass
 
 
+class ScrapingBlueprintRevisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision_instruction: str = Field(min_length=1)
+
+
 class ScrapingBlueprintApproveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -441,6 +447,13 @@ class CountryMaximumCoverageStructuredBlueprint(BaseModel):
     approval_recommendation: BlueprintApprovalRecommendation
 
 
+class ScrapingBlueprintEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    human_readable_blueprint: str = Field(min_length=1)
+    structured_blueprint: CountryMaximumCoverageStructuredBlueprint
+
+
 class ScrapingBlueprintVersionResponse(BaseModel):
     """Phase 1A persistence contract for a versioned provider blueprint."""
 
@@ -484,6 +497,20 @@ class ScrapingBlueprintResponse(BaseModel):
     rejection_reason: str | None = None
     change_instructions: str | None = None
     error_message: str | None = None
+    provider: str | None = None
+    provider_model_id: str | None = None
+    prompt_template_version: str | None = None
+    human_readable_blueprint: str | None = None
+    structured_blueprint: CountryMaximumCoverageStructuredBlueprint | None = None
+    citations: list[BlueprintCitation] | None = None
+    revision_request: str | None = None
+    generation_error: str | None = None
+    queued_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    failed_at: datetime | None = None
+    discarded_at: datetime | None = None
+    campaign_execution_available: bool = False
     created_at: datetime
     updated_at: datetime
 

@@ -10,7 +10,7 @@ from app.schemas.api import (
     ScrapingMissionCreate,
 )
 from app.services.scraping.blueprint_prompt_service import BlueprintPromptService
-from app.services.scraping.blueprint_provider import GeminiBlueprintProvider
+from app.services.scraping.blueprint_provider import BlueprintProviderError, OpenRouterBlueprintProvider
 from app.services.scraping.countries import resolve_country
 
 
@@ -123,11 +123,11 @@ def test_blueprint_statuses_include_phase_one_foundation_values() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gemini_provider_validates_configuration_without_network() -> None:
-    provider = GeminiBlueprintProvider(Settings(gemini_api_key=None))
-    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+async def test_openrouter_provider_validates_configuration_without_network() -> None:
+    provider = OpenRouterBlueprintProvider(Settings(openrouter_api_key=None))
+    with pytest.raises(BlueprintProviderError, match="not configured"):
         provider.validate_configuration()
-    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+    with pytest.raises(BlueprintProviderError, match="not configured"):
         await provider.generate_blueprint(
             mission=object(),
             rendered_prompt="local test",
