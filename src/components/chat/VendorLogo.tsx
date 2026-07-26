@@ -24,7 +24,7 @@ export function VendorLogo({ vendor, className, watermark, title }: Props) {
     <span
       className={cn(
         "inline-grid place-items-center rounded-full",
-        watermark ? "opacity-20" : "ring-1 ring-white/15",
+        watermark ? "opacity-20" : "ring-1 ring-black/10",
         className,
       )}
       style={{ background: watermark ? "transparent" : mark.bg }}

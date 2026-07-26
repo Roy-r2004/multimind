@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { Plus, Pencil, Trash2, Gavel } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { VendorLogo } from "@/components/chat/VendorLogo";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import ModelSetModal from "@/components/ModelSetModal";
 import { Modal } from "@/components/Modal";
@@ -79,29 +80,31 @@ function ModelSetsPage() {
                   </div>
                 </div>
 
-                <div className="mt-4 flex flex-wrap gap-2">
+                <div className="mt-4 space-y-2">
                   {s.models.map((id) => {
                     const model = modelById(id);
 
                     return (
-                      <span
+                      <div
                         key={id}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs"
+                        className="flex items-center gap-2.5 text-sm text-foreground"
                       >
-                        <span
-                          className="size-1.5 rounded-full"
-                          style={{ background: model.color }}
+                        <VendorLogo
+                          vendor={model.vendor}
+                          title={model.name}
+                          className="size-6"
                         />
-
-                        {model.name}
-                      </span>
+                        <span className="text-muted-foreground">{model.vendor}:</span>
+                        <span className="truncate font-medium">{model.name}</span>
+                      </div>
                     );
                   })}
                 </div>
 
-                <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <div className="mt-3 flex items-center gap-1.5 border-t border-border/70 pt-3 text-xs text-muted-foreground">
                   <Gavel className="size-3.5" />
-                  {s.strategy} · Verdict: {modelById(s.verdictModel).name}
+                  {s.strategy} · Verdict: {modelById(s.verdictModel).vendor}:{" "}
+                  {modelById(s.verdictModel).name}
                 </div>
               </GlassCard>
             );
