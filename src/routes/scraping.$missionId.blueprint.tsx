@@ -1,12 +1,11 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
 import { BlueprintApprovalBar } from "@/components/scraping/BlueprintApprovalBar";
 import { BlueprintEditModal } from "@/components/scraping/BlueprintEditModal";
 import { BlueprintVersionList } from "@/components/scraping/BlueprintVersionList";
-import { BlueprintViewer } from "@/components/scraping/BlueprintViewer";
 import { GeneratedBlueprintContent } from "@/components/scraping/GeneratedBlueprintContent";
 import { MissionStatusBadge } from "@/components/scraping/MissionStatusBadge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +20,7 @@ import {
   regenerateScrapingBlueprint,
   rejectScrapingBlueprint,
   requestScrapingBlueprintChanges,
+  startMissionCampaign,
 } from "@/lib/scraping/api";
 import {
   activeApprovedBlueprint,
@@ -31,7 +31,9 @@ import {
 } from "@/lib/scraping/blueprintActions";
 import {
   isBlueprintPollingStatus,
+  mergeBlueprintPollState,
   pollBlueprintUntilSettled,
+  resolveFollowedBlueprintSelection,
 } from "@/lib/scraping/blueprintPolling";
 import { countryLabel } from "@/lib/scraping/countries";
 import type { ScrapingBlueprint, ScrapingMissionDetail } from "@/lib/scraping/types";
@@ -41,7 +43,7 @@ function blueprintDisplayName(blueprint: ScrapingBlueprint): string {
 }
 
 export const Route = createFileRoute("/scraping/$missionId/blueprint")({
-  head: () => ({ meta: [{ title: "Scraping Blueprint - MultiAI" }] }),
+  head: () => ({ meta: [{ title: "Country Blueprint - MultiAI" }] }),
   component: ScrapingBlueprintPage,
 });
 
@@ -57,14 +59,23 @@ function ScrapingBlueprintPage() {
   const [actionBusy, setActionBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"regenerate" | "discard" | null>(null);
-  const [phaseTwoMessage, setPhaseTwoMessage] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const pollSequenceRef = useRef(0);
+  const followBlueprintIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const selected = useMemo(
     () => blueprints.find((blueprint) => blueprint.id === selectedId) ?? blueprints[0] ?? null,
     [blueprints, selectedId],
   );
   const selectedBlueprintId = selected?.id;
-  const selectedBlueprintStatus = selected?.status;
+  const shouldPollSelected = Boolean(selected && isBlueprintPollingStatus(selected.status));
 
   const load = useCallback(
     async (preferredBlueprintId?: string) => {
@@ -80,21 +91,24 @@ function ScrapingBlueprintPage() {
           getScrapingMission(auth, missionId),
           listScrapingBlueprints(auth, missionId),
         ]);
+        if (!mountedRef.current) return blueprintResult;
         setMission(missionResult);
         setBlueprints(blueprintResult);
-        setSelectedId((currentId) => {
-          const preferredId = preferredBlueprintId ?? currentId;
-          if (preferredId && blueprintResult.some((blueprint) => blueprint.id === preferredId)) {
-            return preferredId;
-          }
-          return blueprintResult[0]?.id ?? "";
-        });
+        setSelectedId((currentId) =>
+          resolveFollowedBlueprintSelection(
+            blueprintResult,
+            preferredBlueprintId ?? currentId,
+            preferredBlueprintId ?? followBlueprintIdRef.current,
+          ),
+        );
         return blueprintResult;
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load blueprint");
+        if (mountedRef.current) {
+          setError(err instanceof Error ? err.message : "Failed to load blueprint");
+        }
         return [];
       } finally {
-        setLoading(false);
+        if (mountedRef.current) setLoading(false);
       }
     },
     [authHeaders, missionId, navigate],
@@ -113,11 +127,7 @@ function ScrapingBlueprintPage() {
   }, [load, selectedId]);
 
   useEffect(() => {
-    if (
-      !selectedBlueprintId ||
-      !selectedBlueprintStatus ||
-      !isBlueprintPollingStatus(selectedBlueprintStatus)
-    ) {
+    if (!selectedBlueprintId || !shouldPollSelected) {
       return;
     }
     const auth = authHeaders();
@@ -126,18 +136,45 @@ function ScrapingBlueprintPage() {
       return;
     }
     const controller = new AbortController();
+    const watchedId = selectedBlueprintId;
+
     void pollBlueprintUntilSettled(
-      (signal) => getScrapingBlueprintStatus(auth, missionId, selectedBlueprintId, signal),
-      (blueprint) =>
-        setBlueprints((current) =>
-          current.map((item) => (item.id === blueprint.id ? blueprint : item)),
-        ),
+      async (signal) => {
+        const sequence = ++pollSequenceRef.current;
+        const [polled, listed] = await Promise.all([
+          getScrapingBlueprintStatus(auth, missionId, watchedId, signal),
+          listScrapingBlueprints(auth, missionId, signal),
+        ]);
+        if (signal.aborted || !mountedRef.current || sequence !== pollSequenceRef.current) {
+          return polled;
+        }
+        setBlueprints((current) => mergeBlueprintPollState(current, listed, polled));
+        setSelectedId((currentId) =>
+          resolveFollowedBlueprintSelection(listed, currentId, followBlueprintIdRef.current),
+        );
+        const followedId = followBlueprintIdRef.current;
+        if (followedId) {
+          const followed = listed.find((blueprint) => blueprint.id === followedId);
+          if (followed && !isBlueprintPollingStatus(followed.status)) {
+            followBlueprintIdRef.current = null;
+          }
+        }
+        return polled;
+      },
+      () => {
+        // State is applied inside fetchStatus so list + selected detail stay in sync.
+      },
       { signal: controller.signal },
-    ).catch((err: unknown) =>
-      setError(err instanceof Error ? err.message : "Failed to refresh blueprint status"),
-    );
-    return () => controller.abort();
-  }, [authHeaders, missionId, navigate, selectedBlueprintId, selectedBlueprintStatus]);
+    ).catch((err: unknown) => {
+      if (!mountedRef.current || controller.signal.aborted) return;
+      setError(err instanceof Error ? err.message : "Failed to refresh blueprint status");
+    });
+
+    return () => {
+      pollSequenceRef.current += 1;
+      controller.abort();
+    };
+  }, [authHeaders, missionId, navigate, selectedBlueprintId, shouldPollSelected]);
 
   const activeApproved = useMemo(
     () => activeApprovedBlueprint(blueprints, mission?.active_blueprint_id),
@@ -146,7 +183,7 @@ function ScrapingBlueprintPage() {
 
   async function act(
     action: (auth: { token: string; orgId: string }) => Promise<ScrapingBlueprint>,
-    preferredId?: string,
+    options?: { preferredId?: string; follow?: boolean },
   ) {
     const auth = authHeaders();
     if (!auth) {
@@ -157,7 +194,10 @@ function ScrapingBlueprintPage() {
     setError(null);
     try {
       const blueprint = await action(auth);
-      await load(preferredId ?? blueprint.id);
+      if (options?.follow) {
+        followBlueprintIdRef.current = blueprint.id;
+      }
+      await load(options?.preferredId ?? blueprint.id);
       window.dispatchEvent(new CustomEvent("scraping-missions-updated"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Blueprint action failed.");
@@ -167,19 +207,51 @@ function ScrapingBlueprintPage() {
     }
   }
 
+  async function startCampaign() {
+    const auth = authHeaders();
+    if (!auth || !activeApproved || actionBusy) {
+      if (!auth) void navigate({ to: "/login" });
+      return;
+    }
+    setActionBusy(true);
+    setError(null);
+    try {
+      const campaign = await startMissionCampaign(auth, missionId);
+      void navigate({
+        to: "/scraping/$missionId/campaigns/$executionId",
+        params: { missionId, executionId: campaign.id },
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start the campaign.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  function selectVersion(blueprintId: string) {
+    followBlueprintIdRef.current = null;
+    setSelectedId(blueprintId);
+  }
+
+  const showReviewContent =
+    selected &&
+    !isBlueprintPollingStatus(selected.status) &&
+    selected.status !== "failed" &&
+    Boolean(selected.structured_blueprint || selected.human_readable_blueprint);
+
   return (
     <AppShell>
       <div className="mx-auto max-w-5xl px-6 py-10">
         <PageHeader
-          eyebrow="Scraping Council"
-          title={mission?.title ?? "Blueprint"}
+          eyebrow="Scraping Mission"
+          title={mission?.title ?? "Country Blueprint"}
           description={
             mission
-              ? `Review the generated blueprint before approval. ${countryLabel(
+              ? `Review the Country Blueprint before approval. ${countryLabel(
                   mission.country_code,
                   mission.country_name,
                 )}.`
-              : "Review the generated blueprint before approval."
+              : "Review the Country Blueprint before approval."
           }
         />
         {loading && (
@@ -204,7 +276,7 @@ function ScrapingBlueprintPage() {
                   blueprints={blueprints}
                   mission={mission}
                   selectedId={selected.id}
-                  onSelect={setSelectedId}
+                  onSelect={selectVersion}
                 />
               </GlassCard>
             )}
@@ -221,31 +293,17 @@ function ScrapingBlueprintPage() {
                   <div className="text-muted-foreground">
                     Created {new Date(selected.created_at).toLocaleString()}
                   </div>
-                  {mission?.country_iso3 && (
+                  {mission?.country_name && (
                     <div className="text-muted-foreground">
-                      Country: {mission.country_name} · {mission.country_iso3}
+                      Country: {mission.country_name}
+                      {mission.country_code ? ` · ${mission.country_code}` : ""}
+                      {mission.country_iso3 ? ` · ${mission.country_iso3}` : ""}
                       {mission.continent ? ` · ${mission.continent}` : ""}
-                    </div>
-                  )}
-                  {selected.queued_at && (
-                    <div className="text-muted-foreground">
-                      Queued {new Date(selected.queued_at).toLocaleString()}
-                    </div>
-                  )}
-                  {selected.started_at && (
-                    <div className="text-muted-foreground">
-                      Started {new Date(selected.started_at).toLocaleString()}
                     </div>
                   )}
                   {selected.completed_at && (
                     <div className="text-muted-foreground">
                       Completed {new Date(selected.completed_at).toLocaleString()}
-                    </div>
-                  )}
-                  {selected.provider && (
-                    <div className="text-muted-foreground">
-                      Provider: {selected.provider}
-                      {selected.provider_model_id ? ` · ${selected.provider_model_id}` : ""}
                     </div>
                   )}
                   {selected.approved_at && (
@@ -278,45 +336,11 @@ function ScrapingBlueprintPage() {
                 </Link>
               </div>
             </GlassCard>
-            {isBlueprintPollingStatus(selected.status) && (
-              <GlassCard className="p-6 text-sm text-muted-foreground">
-                <div className="font-medium text-foreground">
-                  {selected.status === "queued"
-                    ? "Blueprint generation is queued."
-                    : "Blueprint generation is running."}
-                </div>
-                <p className="mt-2">
-                  This page refreshes automatically while generation is active.
-                </p>
-              </GlassCard>
-            )}
-            {selected.status === "failed" && (
-              <GlassCard className="p-6 text-sm">
-                <div className="font-medium">Blueprint generation failed.</div>
-                <p className="mt-2 text-muted-foreground">
-                  {selected.generation_error ||
-                    selected.error_message ||
-                    "No additional details are available."}
-                </p>
-              </GlassCard>
-            )}
-            {selected.human_readable_blueprint || selected.structured_blueprint ? (
-              <GeneratedBlueprintContent
-                humanReadable={selected.human_readable_blueprint}
-                structured={selected.structured_blueprint}
-                citations={selected.citations}
-              />
-            ) : selected.blueprint_json ? (
-              <BlueprintViewer content={selected.blueprint_json} />
-            ) : !isBlueprintPollingStatus(selected.status) && selected.status !== "failed" ? (
-              <GlassCard className="p-8 text-sm text-muted-foreground">
-                Blueprint content is not available.
-              </GlassCard>
-            ) : null}
+
             <div className="flex flex-wrap gap-2">
               {canEditBlueprint(selected.status) && (
                 <Button type="button" variant="outline" onClick={() => setEditOpen(true)}>
-                  Edit Blueprint
+                  Edit
                 </Button>
               )}
               {canRegenerateBlueprint(selected.status) && (
@@ -340,23 +364,65 @@ function ScrapingBlueprintPage() {
                 </Button>
               )}
             </div>
+
+            {isBlueprintPollingStatus(selected.status) && (
+              <GlassCard className="p-6 text-sm text-muted-foreground">
+                <div className="font-medium text-foreground">
+                  {selected.status === "queued"
+                    ? "Country Blueprint generation is queued."
+                    : "Country Blueprint generation is running."}
+                </div>
+                <p className="mt-2">
+                  Research Pipeline progress refreshes automatically. Completed review content
+                  appears here when status becomes ready for review.
+                </p>
+              </GlassCard>
+            )}
+            {selected.status === "failed" && (
+              <GlassCard className="p-6 text-sm">
+                <div className="font-medium">Country Blueprint generation failed.</div>
+                <p className="mt-2 text-muted-foreground">
+                  {selected.generation_error ||
+                    selected.error_message ||
+                    "No additional details are available."}
+                </p>
+              </GlassCard>
+            )}
+            {showReviewContent && (
+              <GeneratedBlueprintContent
+                structured={selected.structured_blueprint}
+                citations={selected.citations}
+                countryIso2={mission?.country_code}
+              />
+            )}
+            {!showReviewContent &&
+              !isBlueprintPollingStatus(selected.status) &&
+              selected.status !== "failed" && (
+                <GlassCard className="p-8 text-sm text-muted-foreground">
+                  Blueprint content is not available.
+                </GlassCard>
+              )}
+
             <BlueprintApprovalBar
               blueprint={selected}
               activeBlueprintId={mission?.active_blueprint_id}
               onApprove={() =>
-                act((auth) => approveScrapingBlueprint(auth, selected.id), selected.id)
+                act((auth) => approveScrapingBlueprint(auth, selected.id), {
+                  preferredId: selected.id,
+                })
               }
               onReject={(reason) =>
-                act((auth) => rejectScrapingBlueprint(auth, selected.id, reason), selected.id)
+                act((auth) => rejectScrapingBlueprint(auth, selected.id, reason), {
+                  preferredId: selected.id,
+                })
               }
               onRequestChanges={(instructions) =>
-                act(
-                  (auth) => requestScrapingBlueprintChanges(auth, selected.id, instructions),
-                  undefined,
-                )
+                act((auth) => requestScrapingBlueprintChanges(auth, selected.id, instructions), {
+                  follow: true,
+                })
               }
               onGenerateNewVersion={() =>
-                act((auth) => regenerateScrapingBlueprint(auth, selected.id), undefined)
+                act((auth) => regenerateScrapingBlueprint(auth, selected.id), { follow: true })
               }
             />
             <GlassCard className="p-5">
@@ -366,24 +432,18 @@ function ScrapingBlueprintPage() {
                   <p className="mt-2 text-sm text-muted-foreground">
                     {activeApproved
                       ? scrapingCtaMessage(activeApproved)
-                      : "Approve a blueprint before campaign execution becomes available."}
+                      : "Approve a Country Blueprint before campaign execution becomes available."}
                   </p>
                 </div>
                 <Button
                   type="button"
-                  disabled={!activeApproved}
-                  onClick={() =>
-                    activeApproved &&
-                    setPhaseTwoMessage("Campaign execution will be added in Phase 2.")
-                  }
+                  disabled={!activeApproved || actionBusy}
+                  onClick={() => void startCampaign()}
                 >
-                  Start Maximum-Coverage Scraping
+                  {actionBusy ? "Starting…" : "Start Maximum-Coverage Scraping"}
                 </Button>
               </div>
             </GlassCard>
-            {phaseTwoMessage && (
-              <GlassCard className="p-4 text-sm text-muted-foreground">{phaseTwoMessage}</GlassCard>
-            )}
             <BlueprintEditModal
               blueprint={selected}
               open={editOpen}
@@ -396,7 +456,7 @@ function ScrapingBlueprintPage() {
                       human_readable_blueprint: humanReadable,
                       structured_blueprint: structured,
                     }),
-                  selected.id,
+                  { preferredId: selected.id },
                 );
                 setEditOpen(false);
               }}
@@ -410,7 +470,7 @@ function ScrapingBlueprintPage() {
                 <p>
                   {confirmAction === "discard"
                     ? "This version will remain in audit history and cannot become the active approved blueprint."
-                    : "A new blueprint version will be generated. The current version will be preserved."}
+                    : "A new Country Blueprint version will be generated. The current version will be preserved."}
                 </p>
                 <div className="flex justify-end gap-2">
                   <Button
@@ -427,11 +487,12 @@ function ScrapingBlueprintPage() {
                     disabled={actionBusy}
                     onClick={() =>
                       confirmAction === "discard"
-                        ? void act(
-                            (auth) => discardScrapingBlueprint(auth, selected.id),
-                            selected.id,
-                          )
-                        : void act((auth) => regenerateScrapingBlueprint(auth, selected.id))
+                        ? void act((auth) => discardScrapingBlueprint(auth, selected.id), {
+                            preferredId: selected.id,
+                          })
+                        : void act((auth) => regenerateScrapingBlueprint(auth, selected.id), {
+                            follow: true,
+                          })
                     }
                   >
                     Confirm

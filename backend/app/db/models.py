@@ -454,6 +454,7 @@ class ScrapingBlueprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             ScrapingBlueprintStatus,
             values_callable=lambda enum: [item.value for item in enum],
             native_enum=False,
+            length=32,
         ),
         default=ScrapingBlueprintStatus.GENERATING,
         nullable=False,

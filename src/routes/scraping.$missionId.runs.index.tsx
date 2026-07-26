@@ -80,9 +80,9 @@ function ScrapingRunsPage() {
     <AppShell>
       <div className="mx-auto max-w-5xl px-6 py-10">
         <PageHeader
-          eyebrow="Scraping Council"
-          title="AI Scraping Team Runs"
-          description="Historical team plans created from approved blueprints."
+          eyebrow="Scraping Mission"
+          title="Research Pipeline Runs"
+          description="Historical research pipeline plans created from approved blueprints."
           action={
             <Link
               to="/scraping/$missionId"
@@ -102,7 +102,7 @@ function ScrapingRunsPage() {
         )}
         {!loading && !error && runs.length === 0 && (
           <GlassCard className="mt-8 p-12 text-center text-sm text-muted-foreground">
-            No AI scraping team plans have been created yet.
+            No research pipeline plans have been created yet.
           </GlassCard>
         )}
         {!loading && !error && runs.length > 0 && (
@@ -162,8 +162,8 @@ function ScrapingRunsPage() {
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Delete this run? This permanently deletes the saved AI team plan and all planned agents.
-            This action cannot be undone.
+            Delete this run? This permanently deletes the saved research pipeline plan and all
+            planned agents. This action cannot be undone.
           </p>
           {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
           <div className="flex justify-end gap-2">

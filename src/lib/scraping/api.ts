@@ -5,6 +5,7 @@ import type {
   ScrapingEvent,
   ScrapingExecutionDetail,
   ScrapingExecutionSummary,
+  MissionCampaignStartInput,
   ScrapingFacilityDetail,
   ScrapingFacilitySummary,
   ScrapingMissionCreateInput,
@@ -34,13 +35,10 @@ async function listAllPages<T>(
   let offset = 0;
   for (;;) {
     const separator = path.includes("?") ? "&" : "?";
-    const page = await apiRequest<T[]>(
-      `${path}${separator}limit=${pageSize}&offset=${offset}`,
-      {
-        token: auth.token,
-        orgId: auth.orgId,
-      },
-    );
+    const page = await apiRequest<T[]>(`${path}${separator}limit=${pageSize}&offset=${offset}`, {
+      token: auth.token,
+      orgId: auth.orgId,
+    });
     all.push(...page);
     if (page.length < pageSize) break;
     offset += pageSize;
@@ -141,10 +139,11 @@ export function getActiveScrapingBlueprint(auth: Auth, missionId: string) {
   });
 }
 
-export function listScrapingBlueprints(auth: Auth, missionId: string) {
+export function listScrapingBlueprints(auth: Auth, missionId: string, signal?: AbortSignal) {
   return apiRequest<ScrapingBlueprint[]>(`/scraping/missions/${missionId}/blueprints`, {
     token: auth.token,
     orgId: auth.orgId,
+    signal,
   });
 }
 
@@ -252,6 +251,86 @@ export function listScrapingRuns(auth: Auth, missionId: string) {
   });
 }
 
+/** Phase 2A mission-direct, deterministic mock campaign APIs. */
+export function startMissionCampaign(auth: Auth, missionId: string) {
+  const data: MissionCampaignStartInput = { mode: "mock" };
+  return apiRequest<ScrapingExecutionSummary>(`/scraping/missions/${missionId}/executions`, {
+    method: "POST",
+    body: data,
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function listMissionCampaigns(auth: Auth, missionId: string) {
+  return apiRequest<ScrapingExecutionSummary[]>(`/scraping/missions/${missionId}/executions`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function getMissionCampaign(auth: Auth, missionId: string, executionId: string) {
+  return apiRequest<ScrapingExecutionDetail>(
+    `/scraping/missions/${missionId}/executions/${executionId}`,
+    {
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
+}
+
+export function listMissionCampaignEvents(
+  auth: Auth,
+  missionId: string,
+  executionId: string,
+  afterSequence?: number,
+) {
+  const query = afterSequence === undefined ? "" : `?after_sequence=${afterSequence}`;
+  return apiRequest<ScrapingEvent[]>(
+    `/scraping/missions/${missionId}/executions/${executionId}/events${query}`,
+    {
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
+}
+
+export function pauseMissionCampaign(auth: Auth, missionId: string, executionId: string) {
+  return apiRequest<ScrapingExecutionSummary>(
+    `/scraping/missions/${missionId}/executions/${executionId}/pause`,
+    {
+      method: "POST",
+      body: {},
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
+}
+
+export function resumeMissionCampaign(auth: Auth, missionId: string, executionId: string) {
+  return apiRequest<ScrapingExecutionSummary>(
+    `/scraping/missions/${missionId}/executions/${executionId}/resume`,
+    {
+      method: "POST",
+      body: {},
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
+}
+
+export function cancelMissionCampaign(auth: Auth, missionId: string, executionId: string) {
+  return apiRequest<ScrapingExecutionSummary>(
+    `/scraping/missions/${missionId}/executions/${executionId}/cancel`,
+    {
+      method: "POST",
+      body: {},
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
+}
+
 export function getScrapingRun(auth: Auth, runId: string) {
   return apiRequest<ScrapingRunDetail>(`/scraping/runs/${runId}`, {
     token: auth.token,
@@ -310,10 +389,7 @@ export function listScrapingExecutionTasks(auth: Auth, executionId: string) {
 }
 
 export function listScrapingExecutionCoverage(auth: Auth, executionId: string) {
-  return listAllPages<ScrapingCoverageCell>(
-    auth,
-    `/scraping/executions/${executionId}/coverage`,
-  );
+  return listAllPages<ScrapingCoverageCell>(auth, `/scraping/executions/${executionId}/coverage`);
 }
 
 export function listScrapingExecutionEvents(
@@ -339,11 +415,7 @@ export function listScrapingExecutionFacilities(auth: Auth, executionId: string)
   );
 }
 
-export function getScrapingExecutionFacility(
-  auth: Auth,
-  executionId: string,
-  facilityId: string,
-) {
+export function getScrapingExecutionFacility(auth: Auth, executionId: string, facilityId: string) {
   return apiRequest<ScrapingFacilityDetail>(
     `/scraping/executions/${executionId}/facilities/${facilityId}`,
     {
@@ -375,10 +447,7 @@ export function listScrapingSourceRetrievalAttempts(auth: Auth, executionId: str
 }
 
 export function listScrapingSourceDocuments(auth: Auth, executionId: string) {
-  return listAllPages<SourceDocument>(
-    auth,
-    `/scraping/executions/${executionId}/source-documents`,
-  );
+  return listAllPages<SourceDocument>(auth, `/scraping/executions/${executionId}/source-documents`);
 }
 
 export async function downloadScrapingExecutionWorkbook(auth: Auth, executionId: string) {

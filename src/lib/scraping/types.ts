@@ -144,7 +144,7 @@ export type ScrapingBlueprint = {
 };
 
 export type ScrapingBlueprintCitation = {
-  url: string;
+  url?: string | null;
   title?: string | null;
   source_type?: string | null;
   notes?: string | null;
@@ -153,9 +153,6 @@ export type ScrapingBlueprintCitation = {
 export type ScrapingMissionCreateInput = {
   title: string;
   country_code: string;
-  original_prompt: string;
-  model_set_id: string;
-  project_id?: string | null;
 };
 
 export type ScrapingMissionUpdateInput = {
@@ -224,10 +221,17 @@ export type ScrapingRunDetail = ScrapingRunSummary & {
 export type ScrapingExecutionStatus =
   | "queued"
   | "running"
+  | "pause_requested"
+  | "paused"
   | "cancel_requested"
   | "completed"
   | "failed"
   | "cancelled";
+
+/** Phase 2A deliberately permits only a local deterministic campaign. */
+export type MissionCampaignStartInput = {
+  mode: "mock";
+};
 
 export type ScrapingExecutionConflictDetails = {
   message: string;
@@ -240,9 +244,12 @@ export type ScrapingExecutionSummary = {
   organization_id: string;
   mission_id: string;
   blueprint_id: string;
-  team_plan_id: string;
+  team_plan_id?: string | null;
   execution_type: string;
   mode: string;
+  execution_origin?: string;
+  blueprint_version_snapshot?: number | null;
+  created_by?: string | null;
   status: ScrapingExecutionStatus;
   status_label: string;
   country_code: string;
@@ -250,6 +257,9 @@ export type ScrapingExecutionSummary = {
   started_at?: string | null;
   completed_at?: string | null;
   cancel_requested_at?: string | null;
+  pause_requested_at?: string | null;
+  paused_at?: string | null;
+  resumed_at?: string | null;
   heartbeat_at?: string | null;
   error_message?: string | null;
   sources_discovered: number;
@@ -259,6 +269,32 @@ export type ScrapingExecutionSummary = {
   duplicates_detected: number;
   blocked_sources: number;
   coverage_debt: number;
+  current_stage?: string | null;
+  current_stage_label?: string | null;
+  current_provider?: string | null;
+  current_model?: string | null;
+  latest_message?: string | null;
+  progress_percent?: number;
+  regions_total?: number;
+  regions_completed?: number;
+  candidates_discovered?: number;
+  websites_queued?: number;
+  pages_visited?: number;
+  pdfs_processed?: number;
+  verified_facilities?: number;
+  manual_review_count?: number;
+  excluded_count?: number;
+  duplicates_merged?: number;
+  phones_found?: number;
+  emails_found?: number;
+  country_mismatches?: number;
+  provider_request_count?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  estimated_cost?: number;
+  campaign_budget?: number | null;
+  budget_used?: number;
+  budget_status?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -532,6 +568,8 @@ export type ScrapingExecutionDetail = {
   recent_tasks: ScrapingTask[];
   recent_events: ScrapingEvent[];
   can_cancel: boolean;
+  can_pause?: boolean;
+  can_resume?: boolean;
   can_delete: boolean;
   mock: boolean;
 };

@@ -125,7 +125,7 @@ function ScrapingMissionPage() {
         });
         return;
       }
-      setError(err instanceof Error ? err.message : "Failed to plan AI scraping team");
+      setError(err instanceof Error ? err.message : "Failed to prepare the research pipeline");
     } finally {
       setPlanning(false);
     }
@@ -154,7 +154,7 @@ function ScrapingMissionPage() {
     <AppShell>
       <div className="mx-auto max-w-4xl px-6 py-10">
         <PageHeader
-          eyebrow="Scraping Council"
+          eyebrow="Scraping Mission"
           title={mission?.title ?? "Scraping Mission"}
           description="Your scrape job — results first, setup second."
           action={
@@ -253,15 +253,11 @@ function ScrapingMissionPage() {
                 </Button>
               )}
             </div>
-            <p className="mt-4 whitespace-pre-wrap text-sm text-muted-foreground">
-              {mission.original_prompt}
-            </p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Model set: {mission.model_set_name ?? mission.model_set_id}
-              {mission.active_blueprint_version
-                ? ` · Blueprint v${mission.active_blueprint_version}`
-                : ""}
-            </p>
+            {mission.active_blueprint_version ? (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Blueprint v{mission.active_blueprint_version}
+              </p>
+            ) : null}
           </GlassCard>
         )}
 
@@ -271,7 +267,7 @@ function ScrapingMissionPage() {
               <div>
                 <h2 className="text-base font-semibold">Next: prepare scrape</h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Create the AI team, then start the scrape to get facility results.
+                  Prepare the research pipeline, then start the campaign to get facility results.
                 </p>
               </div>
               <Button type="button" disabled={planning} onClick={() => void handlePlanTeam()}>

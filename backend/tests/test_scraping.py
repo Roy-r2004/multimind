@@ -49,7 +49,6 @@ from app.llm.providers import LLMResponse
 from app.main import create_app
 from app.schemas.api import (
     ScrapingBlueprintChangeRequest,
-    ScrapingBlueprintContent,
     ScrapingBlueprintRejectRequest,
     ScrapingBlueprintRenameRequest,
     ScrapingExecutionCreate,
@@ -79,23 +78,19 @@ from app.services.scraping.mock_facility_generator import (
     _typed_attribute_values,
     mock_facility_generator,
 )
-from app.services.scraping.mission_service import mission_service
+from app.services.scraping.mission_service import (
+    BACKEND_OWNED_MISSION_PROMPT,
+    SCRAPER_FIXED_MODEL_SET_ID,
+    mission_service,
+)
 from app.services.scraping.run_service import run_service
 from app.services.scraping.team_planner_service import TeamPlannerService, team_planner_service
 from conftest import create_model_set, create_other_auth, create_project, valid_blueprint
+from test_country_blueprint_foundation import valid_structured_blueprint
 
 
-class FakeOrchestrator:
-    def __init__(self, payload: dict | None = None, should_fail: bool = False) -> None:
-        self.payload = payload or valid_blueprint()
-        self.should_fail = should_fail
-        self.calls = []
-
-    async def generate(self, mission, model_set, previous_blueprint=None, change_instructions=None):
-        self.calls.append((mission, model_set, previous_blueprint, change_instructions))
-        if self.should_fail:
-            raise RuntimeError("provider failed")
-        return ScrapingBlueprintContent.model_validate(self.payload)
+async def noop_enqueue_blueprint(_blueprint_id: str) -> None:
+    return None
 
 
 def logged_execution_reason(caplog, reason: str) -> bool:
@@ -134,13 +129,26 @@ async def create_blueprint_version(
 ) -> ScrapingBlueprint:
     if mission_id is None:
         mission_id = await create_mission(db, auth)
+    reviewable = status in {
+        ScrapingBlueprintStatus.READY_FOR_REVIEW,
+        ScrapingBlueprintStatus.APPROVED,
+    }
+    structured = valid_structured_blueprint() if reviewable else None
     blueprint = ScrapingBlueprint(
         mission_id=mission_id,
         version=version,
         status=status,
         blueprint_json=None if status == ScrapingBlueprintStatus.GENERATING else valid_blueprint(),
-        model_set_id="research-set",
-        judge_model_id="gpt-4.1",
+        model_set_id=SCRAPER_FIXED_MODEL_SET_ID,
+        judge_model_id=None,
+        human_readable_blueprint="Country maximum-coverage blueprint" if reviewable else None,
+        structured_blueprint=structured,
+        citations=structured.get("citations") if structured else None,
+        country_name_snapshot="Lebanon",
+        country_iso3_snapshot="LBN",
+        continent_snapshot="Asia",
+        provider="openrouter",
+        provider_model_id="openai/gpt-5.5",
     )
     db.add(blueprint)
     await db.flush()
@@ -149,9 +157,16 @@ async def create_blueprint_version(
     if active:
         mission.active_blueprint_id = blueprint.id
         mission.status = ScrapingMissionStatus.APPROVED
-    elif status == ScrapingBlueprintStatus.GENERATING:
+    elif status in {
+        ScrapingBlueprintStatus.GENERATING,
+        ScrapingBlueprintStatus.QUEUED,
+        ScrapingBlueprintStatus.RUNNING,
+    }:
         mission.status = ScrapingMissionStatus.BLUEPRINT_GENERATING
-    elif status == ScrapingBlueprintStatus.DRAFT:
+    elif status in {
+        ScrapingBlueprintStatus.DRAFT,
+        ScrapingBlueprintStatus.READY_FOR_REVIEW,
+    }:
         mission.status = ScrapingMissionStatus.AWAITING_APPROVAL
     elif status == ScrapingBlueprintStatus.FAILED:
         mission.status = ScrapingMissionStatus.FAILED
@@ -183,16 +198,13 @@ async def test_mission_creation_succeeds(db: AsyncSession, auth: AuthContext):
     mission = await mission_service.create_mission(
         db,
         auth,
-        ScrapingMissionCreate(
-            title=" Mission ",
-            country_code="LB",
-            original_prompt=" Prompt ",
-            model_set_id="research-set",
-        ),
+        ScrapingMissionCreate(title=" Mission ", country_code="LB"),
     )
     assert mission.title == "Mission"
-    assert mission.original_prompt == "Prompt"
+    assert mission.original_prompt == BACKEND_OWNED_MISSION_PROMPT
     assert mission.status == "draft"
+    assert mission.model_set_id == SCRAPER_FIXED_MODEL_SET_ID
+    assert mission.model_set_name is None
 
 
 @pytest.mark.asyncio
@@ -212,36 +224,41 @@ async def test_mission_creation_rejects_empty_title(db: AsyncSession, auth: Auth
 
 
 @pytest.mark.asyncio
-async def test_mission_creation_rejects_empty_prompt(db: AsyncSession, auth: AuthContext):
-    await create_model_set(db, auth)
-    with pytest.raises(Exception, match="Mission prompt is required"):
-        await mission_service.create_mission(
-            db,
-            auth,
-            ScrapingMissionCreate(
-                title="Mission",
-                country_code="LB",
-                original_prompt=" ",
-                model_set_id="research-set",
-            ),
-        )
+async def test_mission_creation_does_not_require_a_prompt_or_model_set(
+    db: AsyncSession, auth: AuthContext
+):
+    mission = await mission_service.create_mission(
+        db,
+        auth,
+        ScrapingMissionCreate(title="Mission", country_code="LB"),
+    )
+    assert mission.original_prompt == BACKEND_OWNED_MISSION_PROMPT
+    assert mission.model_set_id == SCRAPER_FIXED_MODEL_SET_ID
 
 
 @pytest.mark.asyncio
-async def test_mission_creation_rejects_another_organizations_model_set(db: AsyncSession, auth: AuthContext):
+async def test_mission_creation_ignores_a_submitted_model_set(db: AsyncSession, auth: AuthContext):
     other = await create_other_auth(db)
     await create_model_set(db, other, slug="other-set")
-    with pytest.raises(Exception, match="ModelSet not found"):
-        await mission_service.create_mission(
-            db,
-            auth,
-            ScrapingMissionCreate(
-                title="Mission",
-                country_code="LB",
-                original_prompt="Prompt",
-                model_set_id="other-set",
-            ),
-        )
+    mission = await mission_service.create_mission(
+        db,
+        auth,
+        ScrapingMissionCreate(
+            title="Mission",
+            country_code="LB",
+            model_set_id="other-set",
+        ),
+    )
+    assert mission.model_set_id == SCRAPER_FIXED_MODEL_SET_ID
+
+
+@pytest.mark.asyncio
+async def test_legacy_model_set_placeholder_resolves_the_default_set(
+    db: AsyncSession, auth: AuthContext
+):
+    await create_model_set(db, auth)
+    model_set = await mission_service.resolve_model_set(db, auth, SCRAPER_FIXED_MODEL_SET_ID)
+    assert model_set.slug != SCRAPER_FIXED_MODEL_SET_ID
 
 
 @pytest.mark.asyncio
@@ -281,45 +298,56 @@ async def test_mission_detail_rejects_another_organization(db: AsyncSession, aut
 
 
 @pytest.mark.asyncio
-async def test_blueprint_generation_creates_version_1_and_uses_selected_model_set(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_blueprint_generation_queues_version_1_with_fixed_scraper_model_set(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
     mission_id = await create_mission(db, auth)
-    fake = FakeOrchestrator()
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: fake)
+    monkeypatch.setattr(blueprint_service, "enqueue_blueprint", noop_enqueue_blueprint)
     blueprint = await blueprint_service.generate_blueprint(db, auth, mission_id)
     assert blueprint.version == 1
-    assert blueprint.model_set_id == "research-set"
-    assert fake.calls[0][1].slug == "research-set"
+    assert blueprint.status == "queued"
+    assert blueprint.model_set_id == SCRAPER_FIXED_MODEL_SET_ID
+    assert blueprint.structured_blueprint is None
 
 
 @pytest.mark.asyncio
-async def test_second_blueprint_generation_creates_version_2(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_second_blueprint_generation_creates_version_2(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
     mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
-    first = await blueprint_service.generate_blueprint(db, auth, mission_id)
-    await blueprint_service.reject_blueprint(db, auth, first.id, ScrapingBlueprintRejectRequest(reason="No"))
+    first = await create_blueprint_version(
+        db, auth, mission_id=mission_id, status=ScrapingBlueprintStatus.READY_FOR_REVIEW
+    )
+    await blueprint_service.reject_blueprint(
+        db, auth, first.id, ScrapingBlueprintRejectRequest(reason="No")
+    )
+    monkeypatch.setattr(blueprint_service, "enqueue_blueprint", noop_enqueue_blueprint)
     second = await blueprint_service.generate_blueprint(db, auth, mission_id)
     assert second.version == 2
+    assert second.status == "queued"
 
 
 @pytest.mark.asyncio
-async def test_valid_mocked_judge_json_is_saved(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_queued_blueprint_has_no_structured_content_until_worker_finishes(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
     mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
+    monkeypatch.setattr(blueprint_service, "enqueue_blueprint", noop_enqueue_blueprint)
     blueprint = await blueprint_service.generate_blueprint(db, auth, mission_id)
-    assert blueprint.blueprint_json is not None
-    assert blueprint.status == "draft"
+    assert blueprint.status == "queued"
+    assert blueprint.structured_blueprint is None
+    assert blueprint.human_readable_blueprint is None
 
 
 @pytest.mark.asyncio
-async def test_invalid_repair_output_marks_blueprint_failed(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_active_queued_generation_blocks_a_second_generate(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
     mission_id = await create_mission(db, auth)
-    monkeypatch.setattr(
-        "app.services.scraping.blueprint_service.get_blueprint_orchestrator",
-        lambda: FakeOrchestrator(should_fail=True),
-    )
-    blueprint = await blueprint_service.generate_blueprint(db, auth, mission_id)
-    assert blueprint.status == "failed"
-    assert blueprint.blueprint_json is None
+    monkeypatch.setattr(blueprint_service, "enqueue_blueprint", noop_enqueue_blueprint)
+    await blueprint_service.generate_blueprint(db, auth, mission_id)
+    with pytest.raises(Exception, match="already in progress"):
+        await blueprint_service.generate_blueprint(db, auth, mission_id)
 
 
 @pytest.mark.asyncio
@@ -346,12 +374,23 @@ async def test_invalid_judge_json_triggers_one_repair_call():
 
 
 @pytest.mark.asyncio
-async def test_approve_draft_blueprint_succeeds_sets_active_status_and_supersedes(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_approve_review_ready_blueprint_succeeds_sets_active_status_and_supersedes(
+    db: AsyncSession, auth: AuthContext
+):
     mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
-    older = await blueprint_service.generate_blueprint(db, auth, mission_id)
-    await blueprint_service.reject_blueprint(db, auth, older.id, ScrapingBlueprintRejectRequest(reason="Change"))
-    newer = await blueprint_service.generate_blueprint(db, auth, mission_id)
+    older = await create_blueprint_version(
+        db, auth, mission_id=mission_id, status=ScrapingBlueprintStatus.READY_FOR_REVIEW
+    )
+    await blueprint_service.reject_blueprint(
+        db, auth, older.id, ScrapingBlueprintRejectRequest(reason="Change")
+    )
+    newer = await create_blueprint_version(
+        db,
+        auth,
+        mission_id=mission_id,
+        version=2,
+        status=ScrapingBlueprintStatus.READY_FOR_REVIEW,
+    )
     approved = await blueprint_service.approve_blueprint(db, auth, newer.id)
     mission = await mission_service.get_mission(db, auth, mission_id)
     assert approved.status == "approved"
@@ -360,46 +399,65 @@ async def test_approve_draft_blueprint_succeeds_sets_active_status_and_supersede
 
 
 @pytest.mark.asyncio
-async def test_approve_non_draft_blueprint_fails(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_approve_non_review_ready_blueprint_fails(db: AsyncSession, auth: AuthContext, monkeypatch):
     mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
+    monkeypatch.setattr(blueprint_service, "enqueue_blueprint", noop_enqueue_blueprint)
     blueprint = await blueprint_service.generate_blueprint(db, auth, mission_id)
-    await blueprint_service.approve_blueprint(db, auth, blueprint.id)
-    with pytest.raises(Exception, match="Only draft blueprints can be approved"):
+    with pytest.raises(Exception, match="Only review-ready blueprints can be approved"):
         await blueprint_service.approve_blueprint(db, auth, blueprint.id)
 
 
 @pytest.mark.asyncio
-async def test_approval_supersedes_older_versions_and_does_not_start_scraping(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_approval_supersedes_older_versions_and_does_not_start_scraping(
+    db: AsyncSession, auth: AuthContext
+):
     mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
-    first = await blueprint_service.generate_blueprint(db, auth, mission_id)
+    first = await create_blueprint_version(
+        db, auth, mission_id=mission_id, status=ScrapingBlueprintStatus.READY_FOR_REVIEW
+    )
     await blueprint_service.approve_blueprint(db, auth, first.id)
-    second = await blueprint_service.generate_blueprint(db, auth, mission_id)
+    second = await create_blueprint_version(
+        db,
+        auth,
+        mission_id=mission_id,
+        version=2,
+        status=ScrapingBlueprintStatus.READY_FOR_REVIEW,
+    )
     await blueprint_service.approve_blueprint(db, auth, second.id)
     rows = (await db.execute(select(ScrapingBlueprint).order_by(ScrapingBlueprint.version))).scalars().all()
     assert rows[0].status == ScrapingBlueprintStatus.SUPERSEDED
     assert rows[1].status == ScrapingBlueprintStatus.APPROVED
     assert (await db.get(ScrapingMission, mission_id)).status == ScrapingMissionStatus.APPROVED
+    assert (await db.execute(select(func.count(ScrapingExecution.id)))).scalar_one() == 0
 
 
 @pytest.mark.asyncio
-async def test_reject_draft_blueprint_succeeds_and_requires_reason(db: AsyncSession, auth: AuthContext, monkeypatch):
-    mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
-    blueprint = await blueprint_service.generate_blueprint(db, auth, mission_id)
+async def test_reject_review_ready_blueprint_succeeds_and_requires_reason(
+    db: AsyncSession, auth: AuthContext
+):
+    blueprint = await create_blueprint_version(
+        db, auth, status=ScrapingBlueprintStatus.READY_FOR_REVIEW
+    )
     with pytest.raises(Exception, match="Rejection reason is required"):
-        await blueprint_service.reject_blueprint(db, auth, blueprint.id, ScrapingBlueprintRejectRequest(reason=" "))
-    rejected = await blueprint_service.reject_blueprint(db, auth, blueprint.id, ScrapingBlueprintRejectRequest(reason="Bad scope"))
+        await blueprint_service.reject_blueprint(
+            db, auth, blueprint.id, ScrapingBlueprintRejectRequest(reason=" ")
+        )
+    rejected = await blueprint_service.reject_blueprint(
+        db, auth, blueprint.id, ScrapingBlueprintRejectRequest(reason="Bad scope")
+    )
     assert rejected.status == "rejected"
 
 
 @pytest.mark.asyncio
-async def test_request_changes_creates_new_version_preserves_previous_and_does_not_replace_active(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_request_changes_creates_new_version_preserves_previous_and_does_not_replace_active(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
     mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
-    original = await blueprint_service.generate_blueprint(db, auth, mission_id)
+    original = await create_blueprint_version(
+        db, auth, mission_id=mission_id, status=ScrapingBlueprintStatus.READY_FOR_REVIEW
+    )
     await blueprint_service.approve_blueprint(db, auth, original.id)
+    monkeypatch.setattr(blueprint_service, "enqueue_blueprint", noop_enqueue_blueprint)
     created = await blueprint_service.request_changes(
         db,
         auth,
@@ -408,37 +466,47 @@ async def test_request_changes_creates_new_version_preserves_previous_and_does_n
     )
     mission = await mission_service.get_mission(db, auth, mission_id)
     assert created.version == 2
-    assert created.status == "draft"
+    assert created.status == "queued"
     assert mission.active_blueprint_id == original.id
     previous = await blueprint_service.get_blueprint(db, auth, original.id)
     assert previous.status == "approved"
 
 
 @pytest.mark.asyncio
-async def test_another_organization_cannot_approve_a_blueprint(db: AsyncSession, auth: AuthContext, monkeypatch):
-    mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
-    blueprint = await blueprint_service.generate_blueprint(db, auth, mission_id)
+async def test_another_organization_cannot_approve_a_blueprint(db: AsyncSession, auth: AuthContext):
+    blueprint = await create_blueprint_version(
+        db, auth, status=ScrapingBlueprintStatus.READY_FOR_REVIEW
+    )
     other = await create_other_auth(db)
     with pytest.raises(Exception, match="ScrapingBlueprint not found"):
         await blueprint_service.approve_blueprint(db, other, blueprint.id)
 
 
 @pytest.mark.asyncio
-async def test_approved_blueprint_cannot_be_modified(db: AsyncSession, auth: AuthContext, monkeypatch):
-    mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
-    blueprint = await blueprint_service.generate_blueprint(db, auth, mission_id)
+async def test_approved_blueprint_cannot_be_rejected(db: AsyncSession, auth: AuthContext):
+    blueprint = await create_blueprint_version(
+        db, auth, status=ScrapingBlueprintStatus.READY_FOR_REVIEW
+    )
     approved = await blueprint_service.approve_blueprint(db, auth, blueprint.id)
-    with pytest.raises(Exception, match="Only draft blueprints can be rejected"):
-        await blueprint_service.reject_blueprint(db, auth, approved.id, ScrapingBlueprintRejectRequest(reason="No"))
+    with pytest.raises(Exception, match="Only review-ready blueprints can be rejected"):
+        await blueprint_service.reject_blueprint(
+            db, auth, approved.id, ScrapingBlueprintRejectRequest(reason="No")
+        )
 
 
 @pytest.mark.asyncio
-async def test_mission_deletion_deletes_blueprint_history(db: AsyncSession, auth: AuthContext, monkeypatch):
+async def test_mission_deletion_deletes_blueprint_history(db: AsyncSession, auth: AuthContext):
     mission_id = await create_mission(db, auth)
-    monkeypatch.setattr("app.services.scraping.blueprint_service.get_blueprint_orchestrator", lambda: FakeOrchestrator())
-    await blueprint_service.generate_blueprint(db, auth, mission_id)
+    await create_blueprint_version(
+        db, auth, mission_id=mission_id, status=ScrapingBlueprintStatus.READY_FOR_REVIEW
+    )
+    await create_blueprint_version(
+        db,
+        auth,
+        mission_id=mission_id,
+        version=2,
+        status=ScrapingBlueprintStatus.REJECTED,
+    )
     await mission_service.delete_mission(db, auth, mission_id)
     rows = (await db.execute(select(ScrapingBlueprint))).scalars().all()
     assert rows == []

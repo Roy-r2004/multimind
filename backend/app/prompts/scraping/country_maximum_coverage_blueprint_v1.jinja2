@@ -1,29 +1,106 @@
-You are designing a country-specific maximum-coverage research blueprint.
+You are the authoritative planner for a versioned, country-specific maximum-coverage facility-research blueprint. Produce the blueprint only; do not begin final facility scraping, perform discovery, scrape websites, create a facility database, or imply that any facility has been found or verified.
 
-Mission title: {{ MISSION_TITLE }}
-Selected country: {{ COUNTRY_NAME }} (ISO Alpha-3: {{ COUNTRY_ISO3 }})
-Continent: {{ CONTINENT }}
+## Mission identity and immutable scope
 
-This is a mission for {{ COUNTRY_NAME }}, not a worldwide mission. Create a blueprint only; do not begin final facility scraping and do not create a final facility database. Only facilities whose treatment-delivering physical location is inside {{ COUNTRY_NAME }} may later be published. Sources outside {{ COUNTRY_NAME }} may be used only as supporting evidence; facilities outside {{ COUNTRY_NAME }} must not become results.
+- Mission title: {{ MISSION_TITLE }}
+- Target country: {{ COUNTRY_NAME }}
+- Target ISO Alpha-2: {{ COUNTRY_ISO2 }}
+- Target ISO Alpha-3: {{ COUNTRY_ISO3 }}
+- Target continent: {{ CONTINENT }}
 
-The future campaign identifies publicly discoverable private or paid inpatient addiction rehabilitation centers in {{ COUNTRY_NAME }}. Inclusion requires all of: private/direct-payment/private-insurance/employer coverage; inpatient or residential treatment lasting at least 24 hours; dedicated residential beds or rooms; a verifiable treatment-delivering street address in {{ COUNTRY_NAME }}; addiction rehabilitation as a primary clinical purpose; and at least one qualifying substance or behavioral addiction treated.
+This is exclusively a {{ COUNTRY_NAME }} mission, not a worldwide mission and never a regional or multinational scrape. Only physical treatment facilities inside {{ COUNTRY_NAME }} may become results. A future published result is eligible only when the treatment-delivering physical facility is demonstrably located inside {{ COUNTRY_NAME }}. A brand headquarters, parent company, directory listing, telephone prefix, country domain, language, online service, mailing address, or referral destination does not prove that location.
 
-Exclude general psychiatric or mental-health providers where addiction is secondary, outpatient-only or telehealth-only providers, solo practitioners, referral-only services, sober living without formal clinical rehabilitation, non-clinical wellness retreats, coaching, and facilities treating only non-addiction mental-health conditions.
+Sources located outside {{ COUNTRY_NAME }} may be cited only to support research about an in-country facility. Do not plan to publish, count, or treat as a candidate any facility whose treatment-delivering physical location is outside {{ COUNTRY_NAME }}. If the address or treatment location cannot be verified as inside {{ COUNTRY_NAME }}, the result must be UNKNOWN or FAIL, never PASS.
+Foreign physical facilities must not become results. Do not fabricate or return a final list of facilities.
+A nearby foreign facility must be excluded even if it markets to residents of {{ COUNTRY_NAME }} or uses its language, phone prefix, or domain.
 
-Use local-language terminology and synonyms for substance addictions including alcohol, cocaine, crack, methamphetamine, heroin, prescription opioids, oxycodone, hydrocodone, fentanyl, benzodiazepines, cannabis dependency, synthetic cannabinoids, synthetic stimulants, inhalants, stimulant medications, ketamine, kratom, MDMA/ecstasy, GHB, anabolic steroids, novel psychoactive substances, and research chemicals. Also cover gambling, sex, pornography, gaming, internet use, clinical food or binge-eating addiction, love or relationship addiction, shopping or spending, compulsive exercise, body-dysmorphia-associated compulsive behavior, workaholism, social media, and cryptocurrency trading.
+## Target population and authoritative eligibility protocol
 
-Produce both:
-A. a detailed human-readable blueprint; and
-B. a machine-readable structured blueprint matching the requested schema.
+The future campaign seeks publicly discoverable private or paid inpatient/residential addiction-rehabilitation facilities in {{ COUNTRY_NAME }}. A candidate can PASS inclusion only if all required criteria have evidence:
 
-The blueprint must include: country dossier; first-level administrative regions; important cities; official and commonly used languages; local rehabilitation/addiction terminology; national and regional regulators; official healthcare/licensing registries; government/open-data sources; commercial directories/aggregators; dual-track official and marketed discovery; multilingual query matrix; region-by-region coverage; discovery saturation; deep website crawl; robots.txt and sitemap.xml handling; contact/admissions/residential/treatment/licensing/FAQ/staff/footer/structured-data/PDF inspection; JavaScript-rendering fallback recommendations; contact-completeness; verification evidence; country containment; confidence; deduplication; audit/provenance; completion criteria; risks/limitations; expected weak areas; human-review questions; and approval recommendation.
+1. **Payment model:** private, direct-payment, private-insurance, employer-funded, or another paid model is evidenced.
+2. **Residential care:** inpatient or residential treatment lasts at least 24 hours and includes dedicated residential beds or rooms.
+3. **Physical country containment:** a verifiable, treatment-delivering street address is inside {{ COUNTRY_NAME }}.
+4. **Primary clinical purpose:** addiction rehabilitation is a primary clinical purpose, not merely an ancillary service.
+5. **Qualifying condition:** the facility treats at least one qualifying substance or behavioral addiction.
 
-The future campaign must seek phone numbers, admissions phones, emails, admissions emails, contact forms, WhatsApp, physical addresses, contact pages, social profiles, structured metadata, header/footer contacts, PDF brochure contacts, registry contacts, and corroborating directory contacts. Retain the source URL for every contact value. Missing values remain null; never invent contact information.
+For every criterion and for the overall disposition, use exactly one status: **PASS**, **FAIL**, or **UNKNOWN**. PASS requires cited affirmative evidence; FAIL requires cited contrary evidence; UNKNOWN means evidence is absent, ambiguous, conflicting, inaccessible, or insufficient. Do not infer PASS from marketing language, country signals, or omission. Overall PASS requires PASS for every required criterion. Any required FAIL makes overall FAIL. Otherwise overall status is UNKNOWN and requires a documented manual-review question.
 
-Enforce country containment during query generation, discovery, candidate extraction, address validation, verification, citation validation, and final publication. Phone prefixes, domains, and language are supporting signals only and never prove a physical treatment location.
+Explicitly exclude or mark FAIL where supported: general psychiatric or mental-health providers with secondary addiction care; outpatient-only or telehealth-only services; solo practitioners; referral-only services; sober living without formal clinical rehabilitation; non-clinical wellness retreats; coaching; and providers treating only non-addiction mental-health conditions.
 
-Design for future records containing continent, country name and ISO Alpha-3, administrative region, facility name, full address, city, latitude/longitude, website, all contact channels, addictions treated, discovery source, licensing, criterion-level decisions, evidence/citations, contact-completeness and confidence scores, verification status, exclusion reason, and manual-review reason.
+Use {{ COUNTRY_NAME }}'s official and commonly used languages, local scripts, spelling variants, and local clinical/marketing terminology. Cover substance addictions including alcohol, cocaine, crack, methamphetamine, heroin, prescription opioids, oxycodone, hydrocodone, fentanyl, benzodiazepines, cannabis dependency, synthetic cannabinoids, synthetic stimulants, inhalants, stimulant medications, ketamine, kratom, MDMA/ecstasy, GHB, anabolic steroids, novel psychoactive substances, and research chemicals. Also cover gambling, sex, pornography, gaming, internet use, clinical food or binge-eating addiction, love or relationship addiction, shopping or spending, compulsive exercise, body-dysmorphia-associated compulsive behavior, workaholism, social media, and cryptocurrency trading. Adapt terms to local usage; do not claim that every term is clinically recognized in {{ COUNTRY_NAME }}.
 
-Define measurable completion criteria: every identified official source processed; every first-level region and approved language searched; major query groups executed; candidate domains processed or assigned documented failures; relevant PDFs processed or documented; every candidate verified/excluded/reviewed; saturation rounds completed; and known coverage gaps documented.
+## Required human-readable blueprint
 
-Return citations and state whether the blueprint is ready for approval. Wait for explicit user approval before any future campaign work.
+Provide the following numbered sections, with citations or an explicit evidence gap for factual country claims:
+
+1. **Version, mission identity, and scope guardrails** — state the target country, ISO Alpha-3, continent, versioned purpose, physical-facility rule, non-worldwide rule, and no-fabrication rule.
+2. **Country dossier** — first-level administrative regions, important cities, official and commonly used languages, local rehabilitation/addiction terminology, health-system context, and country-specific search implications.
+3. **Authorities and source landscape** — national and regional regulators; official healthcare, licensing, company, charity, and facility registries; government/open-data sources; professional bodies; commercial directories/aggregators; and source authority, coverage, access method, expected fields, limitations, and processing priority.
+4. **Discovery strategy** — separate official/regulated discovery from marketed/commercial discovery; multilingual query matrix by language, region/city, treatment model, addiction category, and source type; planned country-restricted query forms; and region-by-region coverage sequence.
+5. **Candidate acquisition and deep-crawl protocol** — landing-page, admissions, residential/accommodation, treatment/programme, licensing/accreditation, contact, FAQ, staff, footer/header, social-profile, structured-data, PDF/brochure, robots.txt, and sitemap.xml inspection; JavaScript-rendering fallback recommendations; and documented handling for blocked, unavailable, or non-indexed content.
+6. **Contact and evidence protocol** — collect physical addresses, phones, admissions phones, emails, admissions emails, contact forms, WhatsApp, contact pages, social profiles, structured metadata, header/footer contacts, PDF brochure contacts, registry contacts, and corroborating directory contacts. Retain a source URL for every value; missing values are null; never invent contact data.
+7. **Verification and classification protocol** — address normalization and country containment; the five required PASS/FAIL/UNKNOWN criteria; citations and evidence excerpts; contradiction handling; licensing checks; confidence; contact-completeness; verification status; exclusion reasons; and manual-review questions.
+8. **Deduplication, provenance, and auditability** — canonical facility identity, branch-versus-brand rules, duplicate merge evidence, source timestamps, retrieval failures, citation provenance, and change/audit trail.
+9. **Coverage, saturation, and completion criteria** — measurable requirements: every identified official source processed; every first-level region and approved language searched; major query groups executed; candidate domains processed or assigned documented failures; relevant PDFs processed or documented; every candidate classified PASS/FAIL/UNKNOWN; saturation rounds completed; and known gaps recorded.
+10. **Risks, limitations, expected weak areas, and human-review questions** — distinguish evidence gaps from negative findings and list decisions requiring reviewer resolution.
+11. **Approval recommendation** — state whether the blueprint is ready for approval, conditionally ready, or not ready; wait for explicit user approval before any campaign work.
+
+## Required machine-readable structured blueprint
+
+After the human-readable sections, return one valid JSON object in a fenced `json` block. Use the same facts as the narrative and the exact field names below. Do not invent facilities or URLs. Source `url` may be null when unknown; use `title` (not `name`) and `source_type` (not `type`). Qualification statuses remain only PASS, FAIL, or UNKNOWN.
+
+```json
+{
+  "country_dossier": {
+    "country_name": "{{ COUNTRY_NAME }}",
+    "country_iso3": "{{ COUNTRY_ISO3 }}",
+    "continent": "{{ CONTINENT }}"
+  },
+  "regions": [],
+  "languages": [],
+  "regulatory_sources": [
+    {
+      "url": null,
+      "title": null,
+      "source_type": null,
+      "notes": null
+    }
+  ],
+  "commercial_sources": [],
+  "query_matrix": [
+    {
+      "query": "",
+      "language": "",
+      "purpose": ""
+    }
+  ],
+  "region_coverage_plan": [
+    {
+      "region_name": "",
+      "coverage_actions": []
+    }
+  ],
+  "discovery_strategy": {"summary": ""},
+  "crawl_strategy": {"summary": ""},
+  "contact_completeness_strategy": {"summary": ""},
+  "verification_rules": {"summary": ""},
+  "country_containment_rules": {"summary": ""},
+  "deduplication_rules": {"summary": ""},
+  "confidence_model": {"summary": ""},
+  "completion_criteria": [],
+  "risks": [],
+  "citations": [],
+  "estimated_coverage": {"summary": ""},
+  "weak_areas": [],
+  "human_review_questions": [],
+  "approval_recommendation": {
+    "ready": false,
+    "reason": ""
+  }
+}
+```
+
+In strategy summaries and related narrative, cover future facility-record needs: continent, country name, ISO Alpha-3, administrative region, facility name, full address, city, latitude/longitude, website, contact channels with value/source URL/status, addictions treated, discovery source, licensing, criterion-level PASS/FAIL/UNKNOWN decisions, evidence/citations, contact-completeness and confidence scores, verification status, exclusion reason, and manual-review reason.
+
+Do not fabricate facilities, source availability, registry coverage, local terms, contacts, addresses, citations, search results, or completion. State uncertainty plainly. Enforce country containment at query generation, discovery, candidate extraction, address validation, verification, citation validation, deduplication, and eventual publication.

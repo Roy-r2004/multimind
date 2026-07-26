@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
 
     # OpenRouter country-blueprint generation; worker owns lifecycle and retries.
-    openrouter_blueprint_research_model: str = "openai/o3-deep-research"
-    openrouter_blueprint_structuring_model: str = "gpt-4.1-mini"
+    openrouter_blueprint_research_model: str = "openai/gpt-5.5"
+    openrouter_blueprint_structuring_model: str = "openai/gpt-4.1-mini"
     openrouter_blueprint_timeout_seconds: float = 900.0
     openrouter_blueprint_max_output_tokens: int = 16_000
 

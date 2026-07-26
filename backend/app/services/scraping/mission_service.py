@@ -22,20 +22,25 @@ from app.schemas.api import (
 )
 from app.services.scraping.countries import resolve_country
 
+# Legacy compatibility only: scraping_missions.model_set_id and scraping_blueprints.model_set_id
+# are plain non-null String(64) columns with no foreign key to model_sets. Country-blueprint
+# missions store this placeholder so the legacy columns stay satisfiable while the scraper stays
+# independent of Chat model sets; it is never resolved, displayed, or used to pick an AI model.
+SCRAPER_FIXED_MODEL_SET_ID = "scraper-fixed"
+# Legacy compatibility only: scraping_missions.original_prompt is non-null, and the mission
+# instruction is now owned by the backend blueprint prompt template instead of user input.
+BACKEND_OWNED_MISSION_PROMPT = "Generate the backend-owned country-specific blueprint."
+
 
 class ScrapingMissionService:
     async def create_mission(
         self, db: AsyncSession, auth: AuthContext, data: ScrapingMissionCreate
     ) -> ScrapingMissionDetail:
         title = data.title.strip()
-        prompt = data.original_prompt.strip()
         if not title:
             raise ValidationError("Mission title is required")
-        if not prompt:
-            raise ValidationError("Mission prompt is required")
         country = resolve_country(data.country or data.country_code or "")
 
-        model_set = await self.resolve_model_set(db, auth, data.model_set_id)
         if data.project_id is not None:
             await self.resolve_project(db, auth, data.project_id)
 
@@ -43,9 +48,11 @@ class ScrapingMissionService:
             org_id=auth.org_id,
             created_by=auth.user.id,
             project_id=data.project_id,
-            model_set_id=model_set.slug,
+            # Legacy non-null column retained for historical scraper records.
+            # New country-blueprint missions never resolve or use Chat model sets.
+            model_set_id=SCRAPER_FIXED_MODEL_SET_ID,
             title=title,
-            original_prompt=prompt,
+            original_prompt=BACKEND_OWNED_MISSION_PROMPT,
             country_code=country.code,
             country_name=country.name,
             country_iso3=country.iso3,
@@ -100,7 +107,6 @@ class ScrapingMissionService:
                 )
             )
             active_version = result.scalar_one_or_none()
-        model_set = await self.resolve_model_set(db, auth, mission.model_set_id)
         return ScrapingMissionDetail(
             id=mission.id,
             title=mission.title,
@@ -118,7 +124,7 @@ class ScrapingMissionService:
             project_id=mission.project_id,
             project_name=mission.project.name if mission.project else None,
             model_set_id=mission.model_set_id,
-            model_set_name=model_set.name,
+            model_set_name=None,
         )
 
     async def update_mission(
@@ -171,6 +177,10 @@ class ScrapingMissionService:
     async def resolve_model_set(
         self, db: AsyncSession, auth: AuthContext, model_set_id: str | None
     ) -> ModelSet:
+        # SCRAPER_FIXED_MODEL_SET_ID is a legacy placeholder, never a Chat model-set slug,
+        # so historical callers resolve their default set instead of a non-existent row.
+        if model_set_id == SCRAPER_FIXED_MODEL_SET_ID:
+            model_set_id = None
         query = select(ModelSet).where(
             (ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True))
         )

@@ -13,11 +13,13 @@ export function MissionCard({ mission }: { mission: ScrapingMissionSummary }) {
             <h2 className="truncate text-lg font-semibold">{mission.title}</h2>
             <MissionStatusBadge status={mission.status} />
           </div>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            {mission.original_prompt.slice(0, 160)}
-            {mission.original_prompt.length > 160 ? "..." : ""}
-          </p>
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            {mission.country_name || mission.country_code ? (
+              <span>
+                {mission.country_name ?? mission.country_code}
+                {mission.country_code ? ` (${mission.country_code})` : ""}
+              </span>
+            ) : null}
             <span>
               Active blueprint:{" "}
               {mission.active_blueprint_version ? `v${mission.active_blueprint_version}` : "None"}

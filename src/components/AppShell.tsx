@@ -32,7 +32,7 @@ const NAV = [
 
 const WORKSPACES = [
   { to: "/chat", label: "Chat Council", icon: MessageSquare },
-  { to: "/scraping", label: "Scraping Council", icon: Search },
+  { to: "/scraping", label: "Scraping Missions", icon: Search },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

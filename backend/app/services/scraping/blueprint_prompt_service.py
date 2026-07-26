@@ -29,6 +29,7 @@ class BlueprintPromptService:
             COUNTRY_MAXIMUM_COVERAGE_TEMPLATE,
             MISSION_TITLE=title,
             COUNTRY_NAME=country.name,
+            COUNTRY_ISO2=country.code,
             COUNTRY_ISO3=country.iso3,
             CONTINENT=country.continent,
         )

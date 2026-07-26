@@ -17,7 +17,7 @@ from app.schemas.api import (
     ScrapingMissionCreate,
 )
 from app.services.scraping.blueprint_service import blueprint_service
-from app.services.scraping.mission_service import mission_service
+from app.services.scraping.mission_service import SCRAPER_FIXED_MODEL_SET_ID, mission_service
 
 
 async def mission_and_blueprint(db, auth, status=ScrapingBlueprintStatus.READY_FOR_REVIEW):
@@ -46,6 +46,15 @@ async def mission_and_blueprint(db, auth, status=ScrapingBlueprintStatus.READY_F
     db.add(blueprint)
     await db.flush()
     return mission, blueprint
+
+
+@pytest.mark.asyncio
+async def test_country_mission_creation_needs_no_chat_model_selection(db, auth):
+    mission = await mission_service.create_mission(
+        db, auth, ScrapingMissionCreate(title="Austria coverage", country_code="AT")
+    )
+    assert mission.model_set_id == SCRAPER_FIXED_MODEL_SET_ID
+    assert mission.model_set_name is None
 
 
 @pytest.mark.asyncio

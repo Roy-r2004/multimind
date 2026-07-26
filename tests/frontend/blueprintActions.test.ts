@@ -36,6 +36,8 @@ test("review-ready blueprint exposes review actions", () => {
   assert.equal(canRejectBlueprint("ready_for_review"), true);
   assert.equal(canEditBlueprint("ready_for_review"), true);
   assert.equal(canDiscardBlueprint("ready_for_review"), true);
+  assert.equal(canRequestBlueprintChanges("ready_for_review"), true);
+  assert.equal(canRegenerateBlueprint("ready_for_review"), true);
 });
 
 test("approved blueprint is immutable but can request a new version", () => {
@@ -89,8 +91,11 @@ test("active approved blueprint can differ from latest version", () => {
   assert.equal(activeApprovedBlueprint([latest, approved], latest.id), undefined);
 });
 
-test("scraping CTA only provides Phase 2 information after approval", () => {
+test("scraping CTA enables campaign starts after approval", () => {
   const approved = blueprint("approved", 1, "approved");
   assert.equal(scrapingCtaMessage(undefined), "Approval is required.");
-  assert.equal(scrapingCtaMessage(approved), "Campaign execution will be added in Phase 2.");
+  assert.equal(
+    scrapingCtaMessage(approved),
+    "Start a test campaign from this approved Country Blueprint.",
+  );
 });

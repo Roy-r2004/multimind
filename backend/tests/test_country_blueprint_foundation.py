@@ -69,16 +69,12 @@ def test_mission_schema_rejects_empty_title_and_requires_one_country_input() -> 
         ScrapingMissionCreate(
             title=" ",
             country="Austria",
-            original_prompt="Find facilities",
-            model_set_id="test",
         )
     with pytest.raises(PydanticValidationError, match="exactly one"):
         ScrapingMissionCreate(
             title="Austria coverage",
             country="Austria",
             country_code="AT",
-            original_prompt="Find facilities",
-            model_set_id="test",
         )
 
 
@@ -94,6 +90,20 @@ def test_prompt_rendering_is_country_specific_and_never_starts_scraping() -> Non
     assert "must not become results" in rendered.rendered_prompt
     assert "do not begin final facility scraping" in rendered.rendered_prompt
     assert "not a worldwide mission" in rendered.rendered_prompt
+
+
+def test_prompt_injects_iso2_and_excludes_nearby_foreign_facilities() -> None:
+    austria = BlueprintPromptService().render_country_maximum_coverage(
+        mission_title="Austria coverage", country=resolve_country("AT")
+    ).rendered_prompt
+    monaco = BlueprintPromptService().render_country_maximum_coverage(
+        mission_title="Monaco coverage", country=resolve_country("MC")
+    ).rendered_prompt
+    assert "ISO Alpha-2: AT" in austria
+    assert "Only physical treatment facilities inside Austria" in austria
+    assert "Do not fabricate or return a final list" in austria
+    assert "Only physical treatment facilities inside Monaco" in monaco
+    assert "nearby foreign facility" in monaco
 
 
 def test_structured_blueprint_validation_and_country_specific_extras() -> None:

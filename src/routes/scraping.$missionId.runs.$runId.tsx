@@ -183,7 +183,7 @@ function ScrapingRunDetailPage() {
     <AppShell>
       <div className="mx-auto max-w-6xl px-6 py-10">
         <PageHeader
-          eyebrow="Scraping Council"
+          eyebrow="Scraping Mission"
           title={run ? `Scrape: ${run.mission_title}` : "Scrape"}
           description="Start a scrape or open finished results. Agents are optional detail."
           action={
@@ -217,7 +217,7 @@ function ScrapingRunDetailPage() {
                   </p>
                   {!activeExecution && (
                     <p className="mt-2 text-xs text-muted-foreground">
-                      <strong>Full census</strong> uses much higher limits (hours, higher cost) for
+                      <strong>Full census</strong> uses much higher limits (longer runtime) for
                       broader country coverage. <strong>Standard</strong> is faster for demos.
                     </p>
                   )}
@@ -308,11 +308,7 @@ function ScrapingRunDetailPage() {
                               })
                             }
                           >
-                            {isLive
-                              ? "Watch progress"
-                              : isDone
-                                ? "View results"
-                                : "Open"}
+                            {isLive ? "Watch progress" : isDone ? "View results" : "Open"}
                           </Button>
                           {isDone && (
                             <Button
@@ -385,9 +381,9 @@ function ScrapingRunDetailPage() {
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Delete this AI team plan? This permanently deletes its planned agents, terminal
-            execution campaigns, tasks, coverage history, and event history. This action cannot be
-            undone.
+            Delete this research pipeline plan? This permanently deletes its planned agents,
+            terminal execution campaigns, tasks, coverage history, and event history. This action
+            cannot be undone.
           </p>
           <div className="flex justify-end gap-2">
             <Button
@@ -417,8 +413,8 @@ function ScrapingRunDetailPage() {
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Delete this terminal source discovery execution campaign? This permanently deletes its tasks,
-            coverage history, and event history. This action cannot be undone.
+            Delete this terminal source discovery execution campaign? This permanently deletes its
+            tasks, coverage history, and event history. This action cannot be undone.
           </p>
           <div className="flex justify-end gap-2">
             <Button

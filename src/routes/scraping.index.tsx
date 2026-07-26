@@ -9,7 +9,7 @@ import { listScrapingMissions } from "@/lib/scraping/api";
 import type { ScrapingMissionSummary } from "@/lib/scraping/types";
 
 export const Route = createFileRoute("/scraping/")({
-  head: () => ({ meta: [{ title: "Scraping Council - MultiAI" }] }),
+  head: () => ({ meta: [{ title: "Scraping Missions - MultiAI" }] }),
   component: ScrapingPage,
 });
 
@@ -39,7 +39,7 @@ function ScrapingPage() {
       <div className="mx-auto max-w-5xl px-6 py-10">
         <PageHeader
           eyebrow="Workspace"
-          title="Scraping Council"
+          title="Scraping Missions"
           description="Create scraping missions, generate structured blueprints, and review them before approval."
           action={
             <Link

@@ -180,8 +180,8 @@ class ScrapingMissionCreate(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     country: str | None = Field(default=None, min_length=1, max_length=120)
     country_code: str | None = Field(default=None, min_length=2, max_length=3)
-    original_prompt: str
-    model_set_id: str
+    original_prompt: str = ""
+    model_set_id: str | None = None
     project_id: str | None = None
 
     @field_validator("title", mode="before")
@@ -371,9 +371,15 @@ class ScrapingBlueprintContent(BaseModel):
 
 
 class BlueprintCitation(BaseModel):
+    """A researched source reference.
+
+    URL is optional because a blueprint may know a regulator or directory by name
+    and type before an exact source URL is available. Do not fabricate URLs.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    url: str = Field(min_length=1)
+    url: str | None = Field(default=None, min_length=1)
     title: str | None = None
     source_type: str | None = None
     notes: str | None = None

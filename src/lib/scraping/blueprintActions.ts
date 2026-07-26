@@ -49,5 +49,7 @@ export function activeApprovedBlueprint(
 }
 
 export function scrapingCtaMessage(active: ScrapingBlueprint | undefined) {
-  return active ? "Campaign execution will be added in Phase 2." : "Approval is required.";
+  return active
+    ? "Start a test campaign from this approved Country Blueprint."
+    : "Approval is required.";
 }

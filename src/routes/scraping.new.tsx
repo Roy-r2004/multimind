@@ -13,7 +13,7 @@ function NewScrapingMissionPage() {
     <AppShell>
       <div className="mx-auto max-w-4xl px-6 py-10">
         <PageHeader
-          eyebrow="Scraping Council"
+          eyebrow="Scraping Mission"
           title="New Scraping Mission"
           description="Choose a country and generate a backend-owned, reviewable blueprint."
         />

@@ -135,9 +135,6 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
           <div>Expected queries: {content.estimated_workload.expected_queries ?? "Unknown"}</div>
           <div>Expected pages: {content.estimated_workload.expected_pages ?? "Unknown"}</div>
           <div>Expected AI calls: {content.estimated_workload.expected_ai_calls ?? "Unknown"}</div>
-          <div>
-            Estimated cost USD: {content.estimated_workload.estimated_cost_usd ?? "Unknown"}
-          </div>
         </div>
         <div className="mt-3">
           <List items={content.estimated_workload.notes} />
@@ -147,11 +144,10 @@ export function BlueprintViewer({ content }: { content: ScrapingBlueprintContent
         <div className="space-y-2">
           {content.agent_assignments.map((item) => (
             <div
-              key={`${item.role}-${item.model_id}`}
+              key={`${item.role}-${item.responsibility}`}
               className="rounded-lg border border-border p-3"
             >
               <div className="font-medium">{item.role}</div>
-              <div className="text-xs text-muted-foreground">{item.model_id}</div>
               <p className="mt-2">{item.responsibility}</p>
             </div>
           ))}

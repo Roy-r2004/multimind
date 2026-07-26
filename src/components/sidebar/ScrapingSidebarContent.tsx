@@ -299,7 +299,7 @@ function RemoveMissionProjectModal({
       <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Remove this scraping mission from its current project? The mission and all blueprint
-          versions will remain available in Scraping Council.
+          versions will remain available under Scraping Missions.
         </p>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
