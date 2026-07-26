@@ -19,6 +19,9 @@ export function BlueprintVersionList({ blueprints, mission, selectedId, onSelect
       {blueprints.map((blueprint) => {
         const selected = blueprint.id === selectedId;
         const active = blueprint.id === mission.active_blueprint_id;
+        const latest = blueprint.id === blueprints[0]?.id;
+        const lifecycleDate =
+          blueprint.approved_at ?? blueprint.rejected_at ?? blueprint.discarded_at ?? null;
         return (
           <div
             key={blueprint.id}
@@ -48,10 +51,20 @@ export function BlueprintVersionList({ blueprints, mission, selectedId, onSelect
                     Active
                   </span>
                 )}
+                {latest && (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                    Latest
+                  </span>
+                )}
               </span>
               <span className="mt-1 block text-xs text-muted-foreground">
                 Created {new Date(blueprint.created_at).toLocaleString()}
               </span>
+              {lifecycleDate && (
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  Updated {new Date(lifecycleDate).toLocaleString()}
+                </span>
+              )}
             </span>
           </div>
         );

@@ -134,6 +134,13 @@ export function getLatestScrapingBlueprint(auth: Auth, missionId: string) {
   });
 }
 
+export function getActiveScrapingBlueprint(auth: Auth, missionId: string) {
+  return apiRequest<ScrapingBlueprint>(`/scraping/missions/${missionId}/blueprints/active`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
 export function listScrapingBlueprints(auth: Auth, missionId: string) {
   return apiRequest<ScrapingBlueprint[]>(`/scraping/missions/${missionId}/blueprints`, {
     token: auth.token,
@@ -178,6 +185,37 @@ export function rejectScrapingBlueprint(auth: Auth, blueprintId: string, reason:
   return apiRequest<ScrapingBlueprint>(`/scraping/blueprints/${blueprintId}/reject`, {
     method: "POST",
     body: { reason },
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function editScrapingBlueprint(
+  auth: Auth,
+  blueprintId: string,
+  data: { human_readable_blueprint: string; structured_blueprint: Record<string, unknown> },
+) {
+  return apiRequest<ScrapingBlueprint>(`/scraping/blueprints/${blueprintId}`, {
+    method: "PATCH",
+    body: data,
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function regenerateScrapingBlueprint(auth: Auth, blueprintId: string) {
+  return apiRequest<ScrapingBlueprint>(`/scraping/blueprints/${blueprintId}/regenerate`, {
+    method: "POST",
+    body: {},
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function discardScrapingBlueprint(auth: Auth, blueprintId: string) {
+  return apiRequest<ScrapingBlueprint>(`/scraping/blueprints/${blueprintId}/discard`, {
+    method: "POST",
+    body: {},
     token: auth.token,
     orgId: auth.orgId,
   });

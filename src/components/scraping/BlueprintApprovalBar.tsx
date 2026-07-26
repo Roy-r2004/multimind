@@ -4,6 +4,11 @@ import { Modal } from "@/components/Modal";
 import { GlassCard } from "@/components/cinematic/PageChrome";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  canApproveBlueprint,
+  canRejectBlueprint,
+  canRequestBlueprintChanges,
+} from "@/lib/scraping/blueprintActions";
 import type { ScrapingBlueprint } from "@/lib/scraping/types";
 
 export function BlueprintApprovalBar({
@@ -25,11 +30,9 @@ export function BlueprintApprovalBar({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const canApproveOrReject = blueprint.status === "draft";
-  const canRequestChanges =
-    blueprint.status === "draft" ||
-    blueprint.status === "approved" ||
-    blueprint.status === "rejected";
+  const canApprove = canApproveBlueprint(blueprint.status);
+  const canReject = canRejectBlueprint(blueprint.status);
+  const canRequestChanges = canRequestBlueprintChanges(blueprint.status);
   const isActiveBlueprint = blueprint.id === activeBlueprintId;
 
   async function run(action: () => Promise<void>) {
@@ -123,21 +126,25 @@ export function BlueprintApprovalBar({
         </GlassCard>
       )}
 
-      {(canApproveOrReject || canRequestChanges) && (
+      {(canApprove || canReject || canRequestChanges) && (
         <div className="sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-card p-3 shadow-sm">
-          {canApproveOrReject && (
+          {(canApprove || canReject) && (
             <>
-              <Button type="button" disabled={busy} onClick={() => setMode("approve")}>
-                Approve Blueprint
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={() => setMode("reject")}
-              >
-                Reject Blueprint
-              </Button>
+              {canApprove && (
+                <Button type="button" disabled={busy} onClick={() => setMode("approve")}>
+                  Approve Blueprint
+                </Button>
+              )}
+              {canReject && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setMode("reject")}
+                >
+                  Reject Blueprint
+                </Button>
+              )}
             </>
           )}
           {canRequestChanges && (
