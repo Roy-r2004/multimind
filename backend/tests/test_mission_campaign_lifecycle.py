@@ -3,9 +3,13 @@ from conftest import create_model_set, valid_blueprint
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from test_country_blueprint_foundation import valid_structured_blueprint
+from test_country_blueprint_foundation import (
+    valid_structured_blueprint,
+    valid_structured_blueprint_v2,
+)
 
 from app.core.dependencies import AuthContext
+from app.core.exceptions import ValidationError
 from app.db.models import (
     RehabilitationFacility,
     ScrapingBlueprint,
@@ -19,37 +23,46 @@ from app.db.models import (
     ScrapingRunStatus,
 )
 from app.schemas.api import MissionCampaignStartRequest, ScrapingMissionCreate
-from app.schemas.scraping_execution_plan import FrozenExecutionPlan
+from app.schemas.scraping_execution_plan import FrozenExecutionPlanV2, parse_frozen_execution_plan
 from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.mission_service import mission_service
 
 
 def lebanon_structured_blueprint() -> dict:
-    payload = valid_structured_blueprint()
+    payload = valid_structured_blueprint_v2()
     payload["country_dossier"] = {
         "country_name": "Lebanon",
         "country_iso3": "LBN",
         "continent": "Asia",
-        "local_term": "rehabilitation",
     }
     payload["regions"] = ["Beirut"]
     payload["languages"] = ["Arabic", "English"]
-    payload["regulatory_sources"] = [
-        {"url": "https://example.test/lebanon-regulatory", "title": "Lebanon regulatory"}
+    payload["language_profiles"] = [
+        {"name": "Arabic", "code": "ar", "script": "Arab"},
+        {"name": "English", "code": "en", "script": "Latn"},
     ]
-    payload["commercial_sources"] = [
-        {"url": "https://example.test/lebanon-commercial", "title": "Lebanon commercial"}
-    ]
+    payload["important_cities"] = [{"name": "Beirut", "region_name": "Beirut"}]
+    payload["local_terminology"] = ["rehabilitation", "علاج الإدمان"]
+    payload["inpatient_residential_terminology"] = ["inpatient", "residential"]
+    payload["private_paid_terminology"] = ["private", "paid"]
+    payload["addiction_categories"] = ["alcohol", "opioids"]
     payload["query_matrix"] = [
         {
             "query": "Lebanon inpatient addiction rehabilitation",
-            "language": "Arabic",
+            "language": "English",
             "purpose": "discovery",
         }
     ]
     payload["region_coverage_plan"] = [
         {"region_name": "Beirut", "coverage_actions": ["Search registry"]}
+    ]
+    # Distinct regulatory/commercial URLs avoid Step 2 source-category conflicts.
+    payload["regulatory_sources"] = [
+        {"url": "https://example.test/lb-reg", "title": "LB Regulatory"}
+    ]
+    payload["commercial_sources"] = [
+        {"url": "https://example.test/lb-com", "title": "LB Commercial"}
     ]
     return payload
 
@@ -123,7 +136,7 @@ async def test_mission_campaign_start_snapshots_approved_blueprint_provenance(
     assert summary.mode == "mock"
     assert summary.execution_origin == "mission_campaign_mock"
     assert summary.blueprint_version_snapshot == blueprint.version
-    assert summary.execution_plan_schema_version == "1"
+    assert summary.execution_plan_schema_version == "2"
     assert summary.execution_plan_hash
     assert summary.execution_plan_compiled_at is not None
     assert summary.created_by == auth.user.id
@@ -132,7 +145,8 @@ async def test_mission_campaign_start_snapshots_approved_blueprint_provenance(
     assert execution is not None
     assert execution.blueprint_snapshot_json is not None
     assert execution.frozen_execution_plan_json is not None
-    plan = FrozenExecutionPlan.model_validate(execution.frozen_execution_plan_json)
+    plan = parse_frozen_execution_plan(execution.frozen_execution_plan_json)
+    assert isinstance(plan, FrozenExecutionPlanV2)
     assert sha256_hex(plan.model_dump(mode="json")) == execution.execution_plan_hash
     event = (
         await db.execute(
@@ -188,7 +202,7 @@ async def test_mission_campaign_compilation_failure_creates_no_execution(
         raise AssertionError("Compilation failure must not enqueue a worker.")
 
     monkeypatch.setattr(execution_service, "enqueue_execution", unexpected_enqueue)
-    with pytest.raises(Exception, match="region"):
+    with pytest.raises(ValidationError):
         await execution_service.start_mission_campaign(db, auth, mission.id)
     count = (
         await db.execute(
@@ -196,6 +210,80 @@ async def test_mission_campaign_compilation_failure_creates_no_execution(
         )
     ).scalars().all()
     assert count == []
+
+
+@pytest.mark.asyncio
+async def test_mission_campaign_rejects_approved_v1_before_persistence(
+    db: AsyncSession, auth: AuthContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mission, blueprint = await _approved_mission_with_team_plan(db, auth)
+    v1 = valid_structured_blueprint()
+    v1["country_dossier"] = {
+        "country_name": "Lebanon",
+        "country_iso3": "LBN",
+        "continent": "Asia",
+    }
+    v1["regions"] = ["Beirut"]
+    v1["languages"] = ["Arabic", "English"]
+    v1["query_matrix"] = [
+        {
+            "query": "Lebanon inpatient addiction rehabilitation",
+            "language": "English",
+            "purpose": "discovery",
+        }
+    ]
+    v1["region_coverage_plan"] = [
+        {"region_name": "Beirut", "coverage_actions": ["Search registry"]}
+    ]
+    blueprint.structured_blueprint = v1
+    await db.commit()
+
+    async def unexpected_enqueue(*args, **kwargs) -> None:
+        raise AssertionError("v1 campaign must not enqueue.")
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", unexpected_enqueue)
+    with pytest.raises(ValidationError, match="schema version 2"):
+        await execution_service.start_mission_campaign(db, auth, mission.id)
+    executions = (
+        await db.execute(
+            select(ScrapingExecution).where(ScrapingExecution.mission_id == mission.id)
+        )
+    ).scalars().all()
+    assert executions == []
+    events = (
+        await db.execute(
+            select(ScrapingEvent).where(
+                ScrapingEvent.execution_id.in_(
+                    select(ScrapingExecution.id).where(ScrapingExecution.mission_id == mission.id)
+                )
+            )
+        )
+    ).scalars().all()
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_mission_campaign_rejects_incomplete_v2_before_persistence(
+    db: AsyncSession, auth: AuthContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mission, blueprint = await _approved_mission_with_team_plan(db, auth)
+    incomplete = lebanon_structured_blueprint()
+    incomplete["addiction_categories"] = []
+    blueprint.structured_blueprint = incomplete
+    await db.commit()
+
+    async def unexpected_enqueue(*args, **kwargs) -> None:
+        raise AssertionError("incomplete v2 campaign must not enqueue.")
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", unexpected_enqueue)
+    with pytest.raises(ValidationError):
+        await execution_service.start_mission_campaign(db, auth, mission.id)
+    executions = (
+        await db.execute(
+            select(ScrapingExecution).where(ScrapingExecution.mission_id == mission.id)
+        )
+    ).scalars().all()
+    assert executions == []
 
 
 def test_mission_campaign_start_schema_allows_mock_only() -> None:

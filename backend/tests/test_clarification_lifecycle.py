@@ -21,7 +21,7 @@ from app.schemas.scraping_clarification import (
     ClarificationProviderResponse,
     ClarificationStatus,
 )
-from app.schemas.scraping_execution_plan import FrozenExecutionPlan
+from app.schemas.scraping_execution_plan import parse_frozen_execution_plan
 from app.services.scraping import mission_campaign_mock_worker
 from app.services.scraping.blueprint_execution_plan_service import (
     BlueprintExecutionPlanService,
@@ -105,8 +105,8 @@ async def test_no_typed_ambiguity_means_zero_provider_calls_and_mock_continues(
     assert execution.clarification_status == ClarificationStatus.NOT_REQUIRED.value
     assert execution.resolved_execution_plan_hash
     assert factory_calls == []
-    frozen = FrozenExecutionPlan.model_validate(execution.frozen_execution_plan_json)
-    resolved = FrozenExecutionPlan.model_validate(
+    frozen = parse_frozen_execution_plan(execution.frozen_execution_plan_json)
+    resolved = parse_frozen_execution_plan(
         execution.resolved_execution_plan_json["plan"]
     )
     assert frozen.model_dump(mode="json") == resolved.model_dump(mode="json")
@@ -119,19 +119,29 @@ async def test_typed_candidate_without_model_config_fails_closed(
     mission, blueprint = await _approved_mission_with_team_plan(db, auth)
     payload = lebanon_structured_blueprint()
     payload["regions"] = ["Lower Beirut", "Upper Beirut"]
+    payload["important_cities"] = [
+        {"name": "Beirut City", "region_name": "Lower Beirut"},
+        {"name": "Northern Beirut", "region_name": "Upper Beirut"},
+    ]
     payload["region_coverage_plan"] = [
         {"region_name": "Beirut", "coverage_actions": ["Search registry"]}
     ]
     blueprint.structured_blueprint = payload
     await db.commit()
 
+    empty_clarification_settings = Settings(
+        openrouter_api_key="test-key",
+        openrouter_scraper_clarification_model="",
+        openrouter_scraper_clarification_max_attempts=2,
+    )
+    # Provider factory reads get_settings from clarification_provider, not the orchestrator module.
     monkeypatch.setattr(
         "app.services.scraping.clarification_orchestrator.get_settings",
-        lambda: Settings(
-            openrouter_api_key="test-key",
-            openrouter_scraper_clarification_model="",
-            openrouter_scraper_clarification_max_attempts=2,
-        ),
+        lambda: empty_clarification_settings,
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.clarification_provider.get_settings",
+        lambda: empty_clarification_settings,
     )
     monkeypatch.setattr(
         "app.services.scraping.mission_campaign_mock_worker.clarification_orchestrator",
@@ -160,6 +170,10 @@ async def test_safe_clarification_completes_with_test_local_provider(
     mission, blueprint = await _approved_mission_with_team_plan(db, auth)
     payload = lebanon_structured_blueprint()
     payload["regions"] = ["Lower Beirut", "Upper Beirut"]
+    payload["important_cities"] = [
+        {"name": "Beirut City", "region_name": "Lower Beirut"},
+        {"name": "Northern Beirut", "region_name": "Upper Beirut"},
+    ]
     payload["region_coverage_plan"] = [
         {"region_name": "Beirut", "coverage_actions": ["Search registry"]}
     ]
@@ -264,6 +278,10 @@ async def test_partial_decisions_resume_from_stored_state(
     # are NOT used — those do not substring-match and become human review.
     payload = lebanon_structured_blueprint()
     payload["regions"] = ["Lower Beirut", "Upper Beirut", "Lower Sidon", "Upper Sidon"]
+    payload["important_cities"] = [
+        {"name": "Beirut City", "region_name": "Lower Beirut"},
+        {"name": "Sidon City", "region_name": "Lower Sidon"},
+    ]
     payload["region_coverage_plan"] = [
         {"region_name": "Beirut", "coverage_actions": ["Search A"]},
         {"region_name": "Sidon", "coverage_actions": ["Search B"]},
@@ -277,7 +295,7 @@ async def test_partial_decisions_resume_from_stored_state(
     frozen_before = copy.deepcopy(execution.frozen_execution_plan_json)
     hash_before = execution.execution_plan_hash
     analysis = ClarificationPolicyService().analyze(
-        FrozenExecutionPlan.model_validate(execution.frozen_execution_plan_json)
+        parse_frozen_execution_plan(execution.frozen_execution_plan_json)
     )
     assert analysis.human_review_findings == []
     assert len(analysis.safe_candidates) >= 2
@@ -349,6 +367,10 @@ async def test_provider_failure_stores_safe_failure(db: AsyncSession, auth, monk
     mission, blueprint = await _approved_mission_with_team_plan(db, auth)
     payload = lebanon_structured_blueprint()
     payload["regions"] = ["Lower Beirut", "Upper Beirut"]
+    payload["important_cities"] = [
+        {"name": "Beirut City", "region_name": "Lower Beirut"},
+        {"name": "Northern Beirut", "region_name": "Upper Beirut"},
+    ]
     payload["region_coverage_plan"] = [
         {"region_name": "Beirut", "coverage_actions": ["Search registry"]}
     ]
@@ -380,6 +402,10 @@ async def test_pause_and_cancel_checked_before_provider_calls(
     mission, blueprint = await _approved_mission_with_team_plan(db, auth)
     payload = lebanon_structured_blueprint()
     payload["regions"] = ["Lower Beirut", "Upper Beirut"]
+    payload["important_cities"] = [
+        {"name": "Beirut City", "region_name": "Lower Beirut"},
+        {"name": "Northern Beirut", "region_name": "Upper Beirut"},
+    ]
     payload["region_coverage_plan"] = [
         {"region_name": "Beirut", "coverage_actions": ["Search registry"]}
     ]

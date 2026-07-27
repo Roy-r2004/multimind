@@ -3,12 +3,12 @@
 import json
 
 import pytest
-from test_country_blueprint_foundation import valid_structured_blueprint
+from test_country_blueprint_foundation import valid_structured_blueprint_v2
 
 from app.core.config import Settings
 from app.llm import providers as llm_providers
 from app.llm.providers import LLMResponse, OpenRouterProvider, OpenRouterProviderError
-from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+from app.schemas.api import CountryMaximumCoverageStructuredBlueprintV2
 from app.services.scraping.blueprint_provider import (
     BLUEPRINT_RESEARCH_SYSTEM_PROMPT,
     BLUEPRINT_RESEARCH_WEB_SEARCH_TOOL,
@@ -35,8 +35,8 @@ class StubClient:
 
 
 def _valid_structured_json() -> str:
-    return CountryMaximumCoverageStructuredBlueprint.model_validate(
-        valid_structured_blueprint()
+    return CountryMaximumCoverageStructuredBlueprintV2.model_validate(
+        valid_structured_blueprint_v2()
     ).model_dump_json()
 
 
@@ -263,7 +263,7 @@ async def test_provider_research_then_structures_with_json_object_and_retains_ci
     result = await OpenRouterBlueprintProvider(settings, client=client).generate_blueprint(
         mission=object(),
         rendered_prompt="Austria coverage",
-        structured_output_schema=CountryMaximumCoverageStructuredBlueprint,
+        structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
     )
 
     assert [call["model"] for call in client.calls] == ["openai/gpt-5.5", "openai/gpt-4.1-mini"]
@@ -275,6 +275,7 @@ async def test_provider_research_then_structures_with_json_object_and_retains_ci
     assert "country_containment_rules" in client.calls[1]["user"]
     assert "do not invent facilities" in client.calls[1]["user"]
     assert result.human_readable_blueprint == research.text
+    assert result.structured_blueprint.schema_version == "2"
     assert result.citations == [
         {
             "url": "https://registry.example/a",
@@ -299,7 +300,7 @@ async def test_malformed_json_triggers_one_correction_and_succeeds() -> None:
     ).generate_blueprint(
         mission=object(),
         rendered_prompt="Austria coverage",
-        structured_output_schema=CountryMaximumCoverageStructuredBlueprint,
+        structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
     )
 
     assert len(client.calls) == 3
@@ -309,6 +310,7 @@ async def test_malformed_json_triggers_one_correction_and_succeeds() -> None:
     assert "{not json" in client.calls[2]["user"]
     assert result.execution_metadata["structuring_correction_attempted"] is True
     assert result.human_readable_blueprint == "Research report"
+    assert result.structured_blueprint.schema_version == "2"
 
 
 @pytest.mark.asyncio
@@ -326,13 +328,14 @@ async def test_schema_invalid_json_triggers_one_correction_and_succeeds() -> Non
     ).generate_blueprint(
         mission=object(),
         rendered_prompt="Austria coverage",
-        structured_output_schema=CountryMaximumCoverageStructuredBlueprint,
+        structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
     )
 
     assert len(client.calls) == 3
     assert "Validation errors:" in client.calls[2]["user"]
     assert invalid in client.calls[2]["user"]
     assert result.structured_blueprint.country_dossier.country_name == "Austria"
+    assert result.structured_blueprint.schema_version == "2"
     assert result.execution_metadata["structuring_correction_attempted"] is True
 
 
@@ -357,7 +360,7 @@ async def test_failed_correction_persists_safe_structuring_failure_without_parti
         ).generate_blueprint(
             mission=object(),
             rendered_prompt="Austria coverage",
-            structured_output_schema=CountryMaximumCoverageStructuredBlueprint,
+            structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
         )
 
     assert len(client.calls) == 3
@@ -398,7 +401,7 @@ async def test_provider_records_safe_research_failure_diagnostics() -> None:
         await provider.generate_blueprint(
             mission=object(),
             rendered_prompt="local prompt must not leak",
-            structured_output_schema=CountryMaximumCoverageStructuredBlueprint,
+            structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
         )
 
     assert exc.value.safe_diagnostics() == {
@@ -437,7 +440,7 @@ async def test_provider_records_safe_structuring_failure_diagnostics() -> None:
         await provider.generate_blueprint(
             mission=object(),
             rendered_prompt="local test",
-            structured_output_schema=CountryMaximumCoverageStructuredBlueprint,
+            structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
         )
 
     assert exc.value.safe_diagnostics() == {
@@ -463,6 +466,111 @@ async def test_provider_rejects_empty_research() -> None:
         await empty_provider.generate_blueprint(
             mission=object(),
             rendered_prompt="local test",
-            structured_output_schema=CountryMaximumCoverageStructuredBlueprint,
+            structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
         )
     assert empty_error.value.category == "empty_research"
+
+
+@pytest.mark.asyncio
+async def test_initial_output_missing_schema_version_is_rejected_without_synthesis() -> None:
+    payload = valid_structured_blueprint_v2()
+    del payload["schema_version"]
+    client = StubClient(
+        [
+            LLMResponse(text="Research report", tokens_input=1, tokens_output=1),
+            LLMResponse(text=json.dumps(payload), tokens_input=1, tokens_output=1),
+            LLMResponse(text=_valid_structured_json(), tokens_input=1, tokens_output=1),
+        ]
+    )
+    result = await OpenRouterBlueprintProvider(
+        Settings(openrouter_api_key="test-key"), client=client
+    ).generate_blueprint(
+        mission=object(),
+        rendered_prompt="Austria coverage",
+        structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
+    )
+    assert len(client.calls) == 3
+    assert "schema_version" in client.calls[2]["user"]
+    assert '"schema_version": "2"' in client.calls[2]["user"]
+    assert result.structured_blueprint.schema_version == "2"
+    assert result.execution_metadata["structuring_correction_attempted"] is True
+
+
+@pytest.mark.asyncio
+async def test_missing_required_v2_list_is_not_filled_with_empty_and_triggers_one_repair() -> None:
+    payload = valid_structured_blueprint_v2()
+    del payload["addiction_categories"]
+    assert "addiction_categories" not in payload
+    client = StubClient(
+        [
+            LLMResponse(text="Research report", tokens_input=1, tokens_output=1),
+            LLMResponse(text=json.dumps(payload), tokens_input=1, tokens_output=1),
+            LLMResponse(text=_valid_structured_json(), tokens_input=1, tokens_output=1),
+        ]
+    )
+    result = await OpenRouterBlueprintProvider(
+        Settings(openrouter_api_key="test-key"), client=client
+    ).generate_blueprint(
+        mission=object(),
+        rendered_prompt="Austria coverage",
+        structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
+    )
+    assert len(client.calls) == 3
+    assert "addiction_categories" in client.calls[2]["user"]
+    assert result.structured_blueprint.addiction_categories
+    assert result.execution_metadata["structuring_correction_attempted"] is True
+
+
+@pytest.mark.asyncio
+async def test_repair_must_explicitly_contain_schema_version_two_and_required_lists() -> None:
+    incomplete = valid_structured_blueprint_v2()
+    del incomplete["schema_version"]
+    del incomplete["important_cities"]
+    still_missing_version = valid_structured_blueprint_v2()
+    del still_missing_version["schema_version"]
+    client = StubClient(
+        [
+            LLMResponse(text="Research report", tokens_input=1, tokens_output=1),
+            LLMResponse(text=json.dumps(incomplete), tokens_input=1, tokens_output=1),
+            LLMResponse(text=json.dumps(still_missing_version), tokens_input=1, tokens_output=1),
+        ]
+    )
+    with pytest.raises(BlueprintProviderError) as exc:
+        await OpenRouterBlueprintProvider(
+            Settings(openrouter_api_key="test-key"), client=client
+        ).generate_blueprint(
+            mission=object(),
+            rendered_prompt="Austria coverage",
+            structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
+        )
+    assert len(client.calls) == 3
+    assert exc.value.category == "structured_output"
+    assert exc.value.stage == "structuring"
+
+
+def test_validate_structured_rejects_missing_version_and_does_not_invent_lists() -> None:
+    from app.services.scraping.blueprint_structured_contract import (
+        normalize_structured_blueprint_payload,
+    )
+
+    payload = valid_structured_blueprint_v2()
+    del payload["schema_version"]
+    with pytest.raises(ValueError, match='string "2"'):
+        OpenRouterBlueprintProvider._validate_structured(
+            json.dumps(payload), CountryMaximumCoverageStructuredBlueprintV2
+        )
+    missing_list = valid_structured_blueprint_v2()
+    del missing_list["local_terminology"]
+    with pytest.raises(Exception):
+        OpenRouterBlueprintProvider._validate_structured(
+            json.dumps(missing_list), CountryMaximumCoverageStructuredBlueprintV2
+        )
+    normalized = normalize_structured_blueprint_payload(missing_list)
+    assert "local_terminology" not in normalized
+
+
+def test_v2_model_requires_explicit_schema_version_without_default() -> None:
+    payload = valid_structured_blueprint_v2()
+    del payload["schema_version"]
+    with pytest.raises(Exception):
+        CountryMaximumCoverageStructuredBlueprintV2.model_validate(payload)

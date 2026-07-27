@@ -47,6 +47,23 @@ def valid_structured_blueprint() -> dict:
     }
 
 
+def valid_structured_blueprint_v2() -> dict:
+    """Complete Step-3-capable structured blueprint (schema version 2)."""
+    payload = valid_structured_blueprint()
+    payload["schema_version"] = "2"
+    payload["language_profiles"] = [
+        {"name": "German", "code": "de", "script": "Latn"},
+    ]
+    payload["important_cities"] = [
+        {"name": "Vienna", "region_name": "Vienna"},
+    ]
+    payload["local_terminology"] = ["Suchtbehandlung", "Entzug"]
+    payload["inpatient_residential_terminology"] = ["stationär", "Wohnbehandlung"]
+    payload["private_paid_terminology"] = ["privat", "selbstzahler"]
+    payload["addiction_categories"] = ["alcohol", "opioids", "gambling"]
+    return payload
+
+
 def test_country_metadata_resolves_name_and_normalizes_codes() -> None:
     by_name = resolve_country("Austria")
     assert (by_name.name, by_name.iso2, by_name.iso3, by_name.continent) == (
@@ -83,7 +100,7 @@ def test_prompt_rendering_is_country_specific_and_never_starts_scraping() -> Non
         mission_title="Austria Private Rehab Coverage",
         country=resolve_country("AUT"),
     )
-    assert rendered.template_version == "country_maximum_coverage_blueprint_v1"
+    assert rendered.template_version == "country_maximum_coverage_blueprint_v2"
     assert "Austria" in rendered.rendered_prompt
     assert "AUT" in rendered.rendered_prompt
     assert "Europe" in rendered.rendered_prompt

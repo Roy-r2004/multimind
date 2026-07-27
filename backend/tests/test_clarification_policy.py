@@ -39,6 +39,7 @@ def _austria_plan(**mutate):
             continent="Europe",
         ),
         structured_blueprint=payload,
+        require_v2=False,
     )
     return compiled.frozen_execution_plan
 

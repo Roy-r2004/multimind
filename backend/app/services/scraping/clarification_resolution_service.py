@@ -13,7 +13,13 @@ from app.schemas.scraping_clarification import (
     ResolvedExecutionPlanEnvelope,
     ValidatedClarificationDecision,
 )
-from app.schemas.scraping_execution_plan import FrozenExecutionPlan, FrozenSourceEntry
+from app.schemas.scraping_execution_plan import (
+    FrozenExecutionPlan,
+    FrozenExecutionPlanAny,
+    FrozenExecutionPlanV2,
+    FrozenSourceEntry,
+    parse_frozen_execution_plan,
+)
 from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 
 _REGION_PATH = re.compile(r"^crawl_policy\.region_coverage_actions\[(\d+)\]\.region_name$")
@@ -24,7 +30,7 @@ _SOURCE_CATEGORY_PATH = re.compile(r"^source_plan\.category:[0-9a-f]{16}$")
 class ClarificationResolutionService:
     def build_no_clarification_envelope(
         self,
-        plan: FrozenExecutionPlan | dict[str, Any],
+        plan: FrozenExecutionPlanAny | dict[str, Any],
         *,
         source_execution_plan_hash: str,
     ) -> tuple[ResolvedExecutionPlanEnvelope, str]:
@@ -39,13 +45,14 @@ class ClarificationResolutionService:
 
     def apply(
         self,
-        plan: FrozenExecutionPlan | dict[str, Any],
+        plan: FrozenExecutionPlanAny | dict[str, Any],
         decisions: list[ValidatedClarificationDecision],
         *,
         source_execution_plan_hash: str,
     ) -> tuple[ResolvedExecutionPlanEnvelope, str]:
         original = self._validated_plan(plan)
-        working = FrozenExecutionPlan.model_validate(original.model_dump(mode="json"))
+        # Copy within the same schema version only — never upgrade v1 → v2.
+        working = parse_frozen_execution_plan(original.model_dump(mode="json"))
         applied: list[str] = []
         seen_ids: set[str] = set()
 
@@ -73,15 +80,17 @@ class ClarificationResolutionService:
         payload = envelope.model_dump(mode="json")
         return envelope, sha256_hex(payload)
 
-    def _validated_plan(self, plan: FrozenExecutionPlan | dict[str, Any]) -> FrozenExecutionPlan:
-        if isinstance(plan, FrozenExecutionPlan):
-            return FrozenExecutionPlan.model_validate(plan.model_dump(mode="json"))
-        return FrozenExecutionPlan.model_validate(copy.deepcopy(plan))
+    def _validated_plan(
+        self, plan: FrozenExecutionPlanAny | dict[str, Any]
+    ) -> FrozenExecutionPlanAny:
+        if isinstance(plan, (FrozenExecutionPlan, FrozenExecutionPlanV2)):
+            return parse_frozen_execution_plan(plan.model_dump(mode="json"))
+        return parse_frozen_execution_plan(copy.deepcopy(plan))
 
     def _apply_one(
         self,
-        working: FrozenExecutionPlan,
-        original: FrozenExecutionPlan,
+        working: FrozenExecutionPlanAny,
+        original: FrozenExecutionPlanAny,
         decision: ValidatedClarificationDecision,
     ) -> None:
         selected = decision.selected_value
@@ -124,7 +133,7 @@ class ClarificationResolutionService:
         raise ValidationError("Unsupported clarification type.")
 
     def _apply_source_category(
-        self, working: FrozenExecutionPlan, field_path: str, selected: str
+        self, working: FrozenExecutionPlanAny, field_path: str, selected: str
     ) -> None:
         from app.services.scraping.blueprint_execution_plan_service import sha256_hex as _hash
 
@@ -185,8 +194,12 @@ class ClarificationResolutionService:
         working.source_plan.commercial_sources = kept_commercial
 
     def _assert_immutable_core(
-        self, original: FrozenExecutionPlan, working: FrozenExecutionPlan
+        self, original: FrozenExecutionPlanAny, working: FrozenExecutionPlanAny
     ) -> None:
+        if type(original) is not type(working):
+            raise ValidationError("Clarification cannot change execution-plan schema version.")
+        if working.schema_version != original.schema_version:
+            raise ValidationError("Clarification cannot change execution-plan schema version.")
         if working.country != original.country:
             raise ValidationError("Country identity cannot change during clarification.")
         if set(working.regions) - set(original.regions):
@@ -199,6 +212,23 @@ class ClarificationResolutionService:
             raise ValidationError("Country-containment policy cannot change during clarification.")
         if working.completion_policy != original.completion_policy:
             raise ValidationError("Completion policy cannot change during clarification.")
+        if isinstance(original, FrozenExecutionPlanV2) and isinstance(working, FrozenExecutionPlanV2):
+            if working.important_cities != original.important_cities:
+                raise ValidationError("Important cities cannot change during clarification.")
+            if working.language_profiles != original.language_profiles:
+                raise ValidationError("Language profiles cannot change during clarification.")
+            if working.local_terminology != original.local_terminology:
+                raise ValidationError("Local terminology cannot change during clarification.")
+            if working.terminology != original.terminology:
+                raise ValidationError("Terminology cannot change during clarification.")
+            if working.inpatient_residential_terminology != original.inpatient_residential_terminology:
+                raise ValidationError(
+                    "Inpatient/residential terminology cannot change during clarification."
+                )
+            if working.private_paid_terminology != original.private_paid_terminology:
+                raise ValidationError("Private/paid terminology cannot change during clarification.")
+            if working.addiction_categories != original.addiction_categories:
+                raise ValidationError("Addiction categories cannot change during clarification.")
         original_urls = {
             entry.url
             for entry in (

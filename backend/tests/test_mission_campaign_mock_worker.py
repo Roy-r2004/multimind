@@ -172,6 +172,10 @@ async def test_mock_worker_uses_v3_snapshot_after_v4_supersedes(
     blueprint_v3.status = ScrapingBlueprintStatus.SUPERSEDED
     v4_payload = lebanon_structured_blueprint()
     v4_payload["regions"] = ["Beirut", "Mount Lebanon"]
+    v4_payload["important_cities"] = [
+        {"name": "Beirut", "region_name": "Beirut"},
+        {"name": "Jounieh", "region_name": "Mount Lebanon"},
+    ]
     v4_payload["weak_areas"] = ["Completely different weak area for v4"]
     blueprint_v4 = ScrapingBlueprint(
         mission_id=mission.id,

@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models import ScrapingBlueprint, ScrapingBlueprintStatus
 from app.db.session import AsyncSessionLocal
-from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+from app.schemas.api import CountryMaximumCoverageStructuredBlueprintV2
 from app.services.scraping.blueprint_provider import (
     BlueprintProviderError,
     OpenRouterBlueprintProvider,
@@ -41,7 +41,7 @@ async def run_blueprint_generation(_ctx: dict, blueprint_id: str) -> None:
             result = await OpenRouterBlueprintProvider(get_settings()).generate_blueprint(
                 mission=blueprint.mission,
                 rendered_prompt=blueprint.rendered_prompt_snapshot or "",
-                structured_output_schema=CountryMaximumCoverageStructuredBlueprint,
+                structured_output_schema=CountryMaximumCoverageStructuredBlueprintV2,
             )
             blueprint.structured_blueprint = result.structured_blueprint.model_dump(mode="json")
             blueprint.human_readable_blueprint = result.human_readable_blueprint

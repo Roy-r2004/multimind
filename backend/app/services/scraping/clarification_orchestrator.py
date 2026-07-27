@@ -20,7 +20,7 @@ from app.schemas.scraping_clarification import (
     TypedClarificationCandidate,
     ValidatedClarificationDecision,
 )
-from app.schemas.scraping_execution_plan import FrozenExecutionPlan
+from app.schemas.scraping_execution_plan import FrozenExecutionPlanAny, parse_frozen_execution_plan
 from app.services.scraping.clarification_policy_service import clarification_policy_service
 from app.services.scraping.clarification_provider import (
     ClarificationProvider,
@@ -84,7 +84,7 @@ class ClarificationOrchestrator:
                 },
             )
 
-        plan = FrozenExecutionPlan.model_validate(execution.frozen_execution_plan_json)
+        plan = parse_frozen_execution_plan(execution.frozen_execution_plan_json)
         analysis = clarification_policy_service.analyze(plan)
 
         if analysis.human_review_findings:
@@ -121,7 +121,7 @@ class ClarificationOrchestrator:
         db: AsyncSession,
         execution: ScrapingExecution,
         analysis: ClarificationAnalysis,
-        plan: FrozenExecutionPlan,
+        plan: FrozenExecutionPlanAny,
         *,
         check_interrupt,
     ) -> ClarificationPhaseResult:
@@ -351,7 +351,7 @@ class ClarificationOrchestrator:
         db: AsyncSession,
         execution: ScrapingExecution,
         analysis: ClarificationAnalysis,
-        plan: FrozenExecutionPlan,
+        plan: FrozenExecutionPlanAny,
     ) -> None:
         envelope, resolved_hash = clarification_resolution_service.build_no_clarification_envelope(
             plan, source_execution_plan_hash=execution.execution_plan_hash or ""
@@ -387,7 +387,7 @@ class ClarificationOrchestrator:
         db: AsyncSession,
         execution: ScrapingExecution,
         analysis: ClarificationAnalysis,
-        plan: FrozenExecutionPlan,
+        plan: FrozenExecutionPlanAny,
         decisions: list[ValidatedClarificationDecision],
         *,
         calls: int,

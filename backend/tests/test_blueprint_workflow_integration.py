@@ -4,7 +4,7 @@
 import pytest
 from conftest import create_model_set, create_other_auth
 from httpx import ASGITransport, AsyncClient
-from test_country_blueprint_foundation import valid_structured_blueprint
+from test_country_blueprint_foundation import valid_structured_blueprint_v2
 
 from app.core.dependencies import get_auth_context
 from app.core.exceptions import NotFoundError, ValidationError
@@ -40,7 +40,7 @@ async def mission_and_blueprint(db, auth, status=ScrapingBlueprintStatus.READY_F
         provider="openrouter",
         provider_model_id="test-model",
         human_readable_blueprint="Original",
-        structured_blueprint=valid_structured_blueprint(),
+        structured_blueprint=valid_structured_blueprint_v2(),
         citations=[],
     )
     db.add(blueprint)
@@ -66,9 +66,11 @@ async def test_review_blueprint_edit_persists_only_editable_content(db, auth):
         auth,
         blueprint.id,
         human_readable_blueprint="Updated",
-        structured_blueprint=valid_structured_blueprint(),
+        structured_blueprint=valid_structured_blueprint_v2(),
     )
     assert response.human_readable_blueprint == "Updated"
+    assert response.structured_blueprint is not None
+    assert response.structured_blueprint.schema_version == "2"
     assert (blueprint.mission_id, blueprint.version, blueprint.provider, blueprint.country_iso3_snapshot) == original
 
 
@@ -109,9 +111,75 @@ async def test_approval_sets_active_and_preserves_previous_version(db, auth):
     mission, first = await mission_and_blueprint(db, auth)
     approved = await blueprint_service.approve_blueprint(db, auth, first.id)
     assert approved.status == "approved"
+    assert approved.structured_blueprint is not None
+    assert approved.structured_blueprint.schema_version == "2"
     assert approved.campaign_execution_available is False
     refreshed = await mission_service.get_mission(db, auth, mission.id)
     assert refreshed.active_blueprint_id == first.id
+
+
+@pytest.mark.asyncio
+async def test_historical_v1_blueprint_response_does_not_inject_v2_fields(db, auth):
+    from test_country_blueprint_foundation import valid_structured_blueprint
+
+    await create_model_set(db, auth)
+    mission = await mission_service.create_mission(
+        db,
+        auth,
+        ScrapingMissionCreate(
+            title="Austria v1", country="Austria", original_prompt="Plan", model_set_id="research-set"
+        ),
+    )
+    payload = valid_structured_blueprint()
+    assert "schema_version" not in payload
+    blueprint = ScrapingBlueprint(
+        mission_id=mission.id,
+        version=1,
+        status=ScrapingBlueprintStatus.READY_FOR_REVIEW,
+        model_set_id="research-set",
+        country_name_snapshot="Austria",
+        country_iso3_snapshot="AUT",
+        continent_snapshot="Europe",
+        human_readable_blueprint="Historical v1",
+        structured_blueprint=payload,
+        citations=[],
+    )
+    db.add(blueprint)
+    await db.flush()
+    response = blueprint_service._response(blueprint)
+    assert response.structured_blueprint is not None
+    dumped = response.structured_blueprint.model_dump(mode="json", exclude_none=True)
+    dumped.pop("schema_version", None)
+    assert "important_cities" not in dumped
+    assert "language_profiles" not in dumped
+    assert "addiction_categories" not in dumped
+    assert payload == valid_structured_blueprint()
+
+
+@pytest.mark.asyncio
+async def test_v2_blueprint_get_response_preserves_dimensions(db, auth):
+    _, blueprint = await mission_and_blueprint(db, auth)
+    response = await blueprint_service.get_blueprint(db, auth, blueprint.id)
+    assert response.structured_blueprint is not None
+    assert response.structured_blueprint.schema_version == "2"
+    assert response.structured_blueprint.important_cities
+    assert response.structured_blueprint.language_profiles
+    assert response.structured_blueprint.local_terminology
+    assert response.structured_blueprint.inpatient_residential_terminology
+    assert response.structured_blueprint.private_paid_terminology
+    assert response.structured_blueprint.addiction_categories
+
+
+@pytest.mark.asyncio
+async def test_unsupported_stored_schema_version_fails_explicitly_on_response(db, auth):
+    _, blueprint = await mission_and_blueprint(db, auth)
+    stored = dict(blueprint.structured_blueprint or {})
+    stored["schema_version"] = "3"
+    blueprint.structured_blueprint = stored
+    await db.flush()
+    with pytest.raises(ValidationError, match="Unsupported structured blueprint schema version"):
+        blueprint_service._response(blueprint)
+    assert blueprint.structured_blueprint["schema_version"] == "3"
 
 
 @pytest.mark.asyncio

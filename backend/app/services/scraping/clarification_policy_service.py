@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import re
 from typing import Any
 
@@ -18,7 +17,11 @@ from app.schemas.scraping_clarification import (
     TypedClarificationCandidate,
     ValidatedClarificationDecision,
 )
-from app.schemas.scraping_execution_plan import FrozenExecutionPlan, FrozenSourceEntry
+from app.schemas.scraping_execution_plan import (
+    FrozenExecutionPlanAny,
+    FrozenSourceEntry,
+    parse_frozen_execution_plan,
+)
 from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 
 
@@ -61,11 +64,11 @@ def _plausible_matches(reference: str, options: list[str]) -> list[str]:
 class ClarificationPolicyService:
     """Analyze a frozen plan without mutating it or calling providers."""
 
-    def analyze(self, plan: FrozenExecutionPlan | dict[str, Any]) -> ClarificationAnalysis:
+    def analyze(self, plan: FrozenExecutionPlanAny | dict[str, Any]) -> ClarificationAnalysis:
         validated = (
-            plan
-            if isinstance(plan, FrozenExecutionPlan)
-            else FrozenExecutionPlan.model_validate(copy.deepcopy(plan))
+            parse_frozen_execution_plan(plan)
+            if isinstance(plan, dict)
+            else parse_frozen_execution_plan(plan.model_dump(mode="json"))
         )
         informational = self._informational_notes(validated)
         deterministic: list[ValidatedClarificationDecision] = []
@@ -103,7 +106,7 @@ class ClarificationPolicyService:
             human.append(item)
 
     def _informational_notes(
-        self, plan: FrozenExecutionPlan
+        self, plan: FrozenExecutionPlanAny
     ) -> list[ClarificationInformationalNote]:
         notes: list[ClarificationInformationalNote] = []
         for index, warning in enumerate(plan.compiler_warnings):
@@ -131,7 +134,7 @@ class ClarificationPolicyService:
         return notes
 
     def _region_findings(
-        self, plan: FrozenExecutionPlan
+        self, plan: FrozenExecutionPlanAny
     ) -> list[ValidatedClarificationDecision | TypedClarificationCandidate]:
         findings: list[ValidatedClarificationDecision | TypedClarificationCandidate] = []
         regions = list(plan.regions)
@@ -208,7 +211,7 @@ class ClarificationPolicyService:
         return findings
 
     def _language_findings(
-        self, plan: FrozenExecutionPlan
+        self, plan: FrozenExecutionPlanAny
     ) -> list[ValidatedClarificationDecision | TypedClarificationCandidate]:
         findings: list[ValidatedClarificationDecision | TypedClarificationCandidate] = []
         languages = list(plan.languages)
@@ -286,7 +289,7 @@ class ClarificationPolicyService:
         return findings
 
     def _source_category_findings(
-        self, plan: FrozenExecutionPlan
+        self, plan: FrozenExecutionPlanAny
     ) -> list[TypedClarificationCandidate]:
         findings: list[TypedClarificationCandidate] = []
         regulatory_keys = {

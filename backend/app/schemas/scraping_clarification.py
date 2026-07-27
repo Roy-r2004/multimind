@@ -7,7 +7,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.schemas.scraping_execution_plan import FrozenExecutionPlan, FrozenPlanCountry
+from app.schemas.scraping_execution_plan import (
+    FrozenExecutionPlanAny,
+    FrozenPlanCountry,
+    parse_frozen_execution_plan,
+)
 
 CLARIFICATION_SCHEMA_VERSION = "1"
 
@@ -151,4 +155,4 @@ class ResolvedExecutionPlanEnvelope(BaseModel):
     schema_version: Literal["1"] = "1"
     source_execution_plan_hash: str = Field(min_length=64, max_length=64)
     applied_clarification_ids: list[str] = Field(default_factory=list)
-    plan: FrozenExecutionPlan
+    plan: FrozenExecutionPlanAny

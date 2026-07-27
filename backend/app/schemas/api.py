@@ -425,11 +425,33 @@ class BlueprintQueryMatrixItem(BaseModel):
     purpose: str = Field(min_length=1)
 
 
-class CountryMaximumCoverageStructuredBlueprint(BaseModel):
-    """Future Gemini output contract for country-specific campaign planning."""
+class BlueprintImportantCity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    region_name: str = Field(min_length=1)
+
+
+class BlueprintLanguageProfile(BaseModel):
+    """Typed language profile. Code and script are optional and never inferred."""
 
     model_config = ConfigDict(extra="forbid")
 
+    name: str = Field(min_length=1)
+    code: str | None = None
+    script: str | None = None
+
+
+STRUCTURED_BLUEPRINT_SCHEMA_VERSION_V1 = "1"
+STRUCTURED_BLUEPRINT_SCHEMA_VERSION_V2 = "2"
+
+
+class CountryMaximumCoverageStructuredBlueprint(BaseModel):
+    """v1 structured blueprint contract. Absence of schema_version means v1."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1"] | None = None
     country_dossier: BlueprintCountryDossier
     regions: list[str]
     languages: list[str]
@@ -453,11 +475,56 @@ class CountryMaximumCoverageStructuredBlueprint(BaseModel):
     approval_recommendation: BlueprintApprovalRecommendation
 
 
+class CountryMaximumCoverageStructuredBlueprintV2(BaseModel):
+    """v2 structured blueprint with Step 3 query dimensions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["2"]
+    country_dossier: BlueprintCountryDossier
+    regions: list[str] = Field(min_length=1)
+    languages: list[str] = Field(min_length=1)
+    language_profiles: list[BlueprintLanguageProfile] = Field(min_length=1)
+    important_cities: list[BlueprintImportantCity] = Field(min_length=1)
+    local_terminology: list[str] = Field(min_length=1)
+    inpatient_residential_terminology: list[str] = Field(min_length=1)
+    private_paid_terminology: list[str] = Field(min_length=1)
+    addiction_categories: list[str] = Field(min_length=1)
+    regulatory_sources: list[BlueprintCitation]
+    commercial_sources: list[BlueprintCitation]
+    query_matrix: list[BlueprintQueryMatrixItem]
+    region_coverage_plan: list[BlueprintRegionCoveragePlanItem]
+    discovery_strategy: BlueprintStrategySection
+    crawl_strategy: BlueprintStrategySection
+    contact_completeness_strategy: BlueprintStrategySection
+    verification_rules: BlueprintStrategySection
+    country_containment_rules: BlueprintStrategySection
+    deduplication_rules: BlueprintStrategySection
+    confidence_model: BlueprintStrategySection
+    completion_criteria: list[str]
+    risks: list[str]
+    citations: list[BlueprintCitation]
+    estimated_coverage: BlueprintStrategySection
+    weak_areas: list[str]
+    human_review_questions: list[str]
+    approval_recommendation: BlueprintApprovalRecommendation
+
+
+StructuredBlueprintAny = (
+    CountryMaximumCoverageStructuredBlueprint | CountryMaximumCoverageStructuredBlueprintV2
+)
+
+
 class ScrapingBlueprintEditRequest(BaseModel):
+    """Edit payload uses a raw dict so missing schema_version can still mean historical v1
+    at the transport boundary; service-layer parsing enforces the active contract before
+    persistence (new edits/approvals require complete v2).
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     human_readable_blueprint: str = Field(min_length=1)
-    structured_blueprint: CountryMaximumCoverageStructuredBlueprint
+    structured_blueprint: dict[str, Any]
 
 
 class ScrapingBlueprintVersionResponse(BaseModel):
@@ -473,7 +540,7 @@ class ScrapingBlueprintVersionResponse(BaseModel):
     model_id: str | None = None
     prompt_template_version: str | None = None
     human_readable_blueprint: str | None = None
-    structured_blueprint: CountryMaximumCoverageStructuredBlueprint | None = None
+    structured_blueprint: StructuredBlueprintAny | None = None
     citations: list[BlueprintCitation] | None = None
     revision_request: str | None = None
     generation_error: str | None = None
@@ -507,7 +574,7 @@ class ScrapingBlueprintResponse(BaseModel):
     provider_model_id: str | None = None
     prompt_template_version: str | None = None
     human_readable_blueprint: str | None = None
-    structured_blueprint: CountryMaximumCoverageStructuredBlueprint | None = None
+    structured_blueprint: StructuredBlueprintAny | None = None
     citations: list[BlueprintCitation] | None = None
     revision_request: str | None = None
     generation_error: str | None = None

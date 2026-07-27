@@ -207,9 +207,20 @@ class ScrapingBlueprintService:
             raise ValidationError("Only review-ready blueprints can be approved")
         if blueprint.structured_blueprint is None:
             raise ValidationError("A structured blueprint is required before approval")
-        from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+        from app.services.scraping.blueprint_structured_contract import (
+            validate_structured_blueprint_for_campaign,
+        )
+        from pydantic import ValidationError as PydanticValidationError
 
-        CountryMaximumCoverageStructuredBlueprint.model_validate(blueprint.structured_blueprint)
+        try:
+            # Newly approved blueprints must be complete Step-3-capable v2.
+            validate_structured_blueprint_for_campaign(blueprint.structured_blueprint)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        except PydanticValidationError as exc:
+            raise ValidationError(
+                "Structured blueprint v2 failed validation and cannot be approved."
+            ) from exc
 
         await db.execute(
             update(ScrapingBlueprint)
@@ -352,9 +363,20 @@ class ScrapingBlueprintService:
             ScrapingBlueprintStatus.READY_FOR_REVIEW,
         ):
             raise ValidationError("Only draft or review-ready blueprints can be edited.")
-        from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+        from app.services.scraping.blueprint_structured_contract import (
+            validate_structured_blueprint_for_campaign,
+        )
+        from pydantic import ValidationError as PydanticValidationError
 
-        validated = CountryMaximumCoverageStructuredBlueprint.model_validate(structured_blueprint)
+        try:
+            # Edits intended for future campaigns must persist a complete v2 contract.
+            validated = validate_structured_blueprint_for_campaign(structured_blueprint)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        except PydanticValidationError as exc:
+            raise ValidationError(
+                "Structured blueprint v2 failed validation and cannot be saved."
+            ) from exc
         blueprint.human_readable_blueprint = human_readable_blueprint.strip()
         blueprint.structured_blueprint = validated.model_dump(mode="json")
         blueprint.citations = [item.model_dump(mode="json") for item in validated.citations]
@@ -379,11 +401,20 @@ class ScrapingBlueprintService:
             content = ScrapingBlueprintContent.model_validate(blueprint.blueprint_json)
         structured = None
         if blueprint.structured_blueprint is not None:
-            from app.schemas.api import BlueprintCitation, CountryMaximumCoverageStructuredBlueprint
+            from pydantic import ValidationError as PydanticValidationError
 
-            structured = CountryMaximumCoverageStructuredBlueprint.model_validate(
-                blueprint.structured_blueprint
+            from app.schemas.api import BlueprintCitation
+            from app.services.scraping.blueprint_structured_contract import (
+                parse_structured_blueprint,
             )
+
+            # Version-aware: historical v1 and complete v2 both serialize without mutation.
+            try:
+                structured = parse_structured_blueprint(blueprint.structured_blueprint)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+            except PydanticValidationError as exc:
+                raise ValidationError("Structured blueprint failed validation.") from exc
             citations = [BlueprintCitation.model_validate(item) for item in blueprint.citations or []]
         else:
             citations = None

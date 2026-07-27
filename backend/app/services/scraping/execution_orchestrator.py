@@ -309,13 +309,16 @@ class SourceDiscoveryExecutionOrchestrator:
         await self.db.commit()
 
         try:
+            self.current_stage = "ensure_profile_matrix_and_tasks"
             await self._ensure_profile_matrix_and_tasks(execution, execution_agents)
+            self.current_stage = "process_tasks"
             await self._process_tasks(execution)
             await self._check_cancelled(execution)
             await self._run_facility_extraction_phase(execution)
             await self._check_cancelled(execution)
             await self._run_facility_publication_phase(execution)
             await self._check_cancelled(execution)
+            self.current_stage = "refresh_final_metrics"
             await self._refresh_metrics(execution)
             if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
                 await self._finish_cancelled(execution)
@@ -390,17 +393,19 @@ class SourceDiscoveryExecutionOrchestrator:
                     "attempted_coverage_cell_count": self.attempted_coverage_cell_count,
                 },
             )
+            # Public/persisted messages stay generic. Stage, exception type, and
+            # coverage counts belong in server logs and bounded event metadata only.
             await self._mark_failed_safely(
                 safe_execution_id,
                 failure_category,
-                error_message=(
-                    f"Source discovery execution failed during {self.current_stage}: "
-                    f"{failure_detail}"
-                ),
-                event_message=(
-                    f"Source discovery execution failed during {self.current_stage}: "
-                    f"{failure_detail}"
-                ),
+                event_metadata={
+                    "stage": self.current_stage,
+                    "exception_type": failure_category,
+                    "region_count": self.coverage_region_count,
+                    "language_count": self.coverage_language_count,
+                    "source_category_count": self.coverage_source_category_count,
+                    "attempted_coverage_cell_count": self.attempted_coverage_cell_count,
+                },
             )
 
     async def _ensure_profile_matrix_and_tasks(
@@ -602,17 +607,22 @@ class SourceDiscoveryExecutionOrchestrator:
             )
 
     async def _process_tasks(self, execution: ScrapingExecution) -> None:
-        processed_count = 0
+        # Interval refreshes are keyed to discovery-task progress only. Retrieval and
+        # audit work must not multiply refreshes beyond the configured batch cadence.
+        discovery_processed_count = 0
         while True:
             tasks = await self._queued_tasks(execution.id)
             if not tasks:
                 break
             for task in tasks:
-                processed_count += 1
                 execution = await self._load_execution(execution.id)
                 await self._check_cancelled(execution)
                 if task.task_type == "discover_sources":
                     await self._process_discovery_task(execution, task)
+                    discovery_processed_count += 1
+                    if discovery_processed_count % METRIC_REFRESH_TASK_INTERVAL == 0:
+                        await self._refresh_metrics(execution)
+                        await self.db.commit()
                 elif task.task_type == "retrieve_source":
                     await self._process_retrieval_task(execution, task)
                 elif task.task_type == "audit_coverage":
@@ -623,13 +633,13 @@ class SourceDiscoveryExecutionOrchestrator:
                     task.error_message = f"Unsupported scraping task type: {task.task_type}"
                     await self.db.commit()
                 execution.heartbeat_at = datetime.now(UTC)
-                if processed_count % METRIC_REFRESH_TASK_INTERVAL == 0:
-                    await self._refresh_metrics(execution)
-                    await self.db.commit()
 
+        self.current_stage = "reconcile_coverage_after_retrieval"
         await self._reconcile_coverage_after_retrieval(execution)
+        self.current_stage = "refresh_metrics_after_tasks"
         await self._refresh_metrics(execution)
         await self.db.commit()
+        self.current_stage = "create_gap_audit_task"
         await self._create_gap_audit_task(execution)
 
     async def _run_facility_extraction_phase(self, execution: ScrapingExecution) -> None:
@@ -1014,6 +1024,7 @@ class SourceDiscoveryExecutionOrchestrator:
     async def _process_retrieval_task(
         self, execution: ScrapingExecution, task: ScrapingTask
     ) -> None:
+        self.current_stage = "retrieve_source"
         agent = task.execution_agent
         source_candidate_id = (task.input_json or {}).get("source_candidate_id")
         if not isinstance(source_candidate_id, str) or not source_candidate_id:
@@ -1105,6 +1116,7 @@ class SourceDiscoveryExecutionOrchestrator:
     async def _process_audit_task(
         self, execution: ScrapingExecution, task: ScrapingTask
     ) -> None:
+        self.current_stage = "audit_coverage"
         task.status = ScrapingTaskStatus.COMPLETED
         task.started_at = task.started_at or datetime.now(UTC)
         task.completed_at = task.completed_at or datetime.now(UTC)
@@ -1929,8 +1941,10 @@ class SourceDiscoveryExecutionOrchestrator:
         *,
         error_message: str = "Source discovery execution failed.",
         event_message: str = "Source discovery execution failed.",
+        event_metadata: dict[str, Any] | None = None,
     ) -> None:
         try:
+            # Always clear a failed/pending transaction before writing terminal state.
             await self.db.rollback()
             execution = await self._load_execution(execution_id)
             if execution is None:
@@ -1956,6 +1970,7 @@ class SourceDiscoveryExecutionOrchestrator:
                 return
             execution.status = ScrapingExecutionStatus.FAILED
             execution.error_message = error_message
+            execution.current_stage = self.current_stage
             execution.completed_at = datetime.now(UTC)
             await self._terminalize_failed_children(execution_id, error_message)
             execution.coverage_debt = await self._coverage_debt(execution_id)
@@ -1966,11 +1981,26 @@ class SourceDiscoveryExecutionOrchestrator:
                 )
             )
             if existing_event.scalar_one_or_none() is None:
+                safe_metadata = {
+                    key: value
+                    for key, value in (event_metadata or {}).items()
+                    if key
+                    in {
+                        "stage",
+                        "exception_type",
+                        "error_code",
+                        "region_count",
+                        "language_count",
+                        "source_category_count",
+                        "attempted_coverage_cell_count",
+                    }
+                }
                 await execution_service.emit_event(
                     self.db,
                     execution_id,
                     "execution_failed",
                     event_message,
+                    metadata=safe_metadata or None,
                 )
             await self.db.commit()
             self._log(
@@ -1978,6 +2008,7 @@ class SourceDiscoveryExecutionOrchestrator:
                 execution_id=execution_id,
                 terminal_status=ScrapingExecutionStatus.FAILED.value,
                 failure_category=failure_category,
+                stage=self.current_stage,
             )
         except Exception:
             try:

@@ -6,7 +6,10 @@ import pytest
 from pydantic import ValidationError
 from test_country_blueprint_foundation import valid_structured_blueprint
 
-from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+from app.schemas.api import (
+    CountryMaximumCoverageStructuredBlueprint,
+    CountryMaximumCoverageStructuredBlueprintV2,
+)
 from app.services.scraping.blueprint_prompt_service import BlueprintPromptService
 from app.services.scraping.blueprint_provider import OpenRouterBlueprintProvider
 from app.services.scraping.blueprint_structured_contract import (
@@ -18,8 +21,8 @@ from app.services.scraping.countries import resolve_country
 
 
 def test_canonical_skeleton_matches_pydantic_required_top_level_fields() -> None:
-    skeleton = canonical_structured_blueprint_skeleton()
-    validated = CountryMaximumCoverageStructuredBlueprint.model_validate(
+    skeleton = canonical_structured_blueprint_skeleton(schema_version="2")
+    validated = CountryMaximumCoverageStructuredBlueprintV2.model_validate(
         {
             **skeleton,
             "country_dossier": {
@@ -29,6 +32,12 @@ def test_canonical_skeleton_matches_pydantic_required_top_level_fields() -> None
             },
             "regions": ["Vienna"],
             "languages": ["German"],
+            "language_profiles": [{"name": "German", "code": "de", "script": "Latn"}],
+            "important_cities": [{"name": "Vienna", "region_name": "Vienna"}],
+            "local_terminology": ["Suchtbehandlung"],
+            "inpatient_residential_terminology": ["stationär"],
+            "private_paid_terminology": ["privat"],
+            "addiction_categories": ["alcohol"],
             "regulatory_sources": [{"url": None, "title": "Ministry", "source_type": "regulator"}],
             "commercial_sources": [],
             "query_matrix": [
@@ -63,6 +72,11 @@ def test_prompt_skeleton_uses_canonical_pydantic_field_names() -> None:
     ).rendered_prompt
     assert '"regions": []' in prompt
     assert '"languages": []' in prompt
+    assert '"schema_version": "2"' in prompt
+    assert '"important_cities"' in prompt
+    assert '"language_profiles"' in prompt
+    assert '"local_terminology"' in prompt
+    assert '"addiction_categories"' in prompt
     assert '"regulatory_sources"' in prompt
     assert '"region_coverage_plan"' in prompt
     assert '"country_containment_rules"' in prompt

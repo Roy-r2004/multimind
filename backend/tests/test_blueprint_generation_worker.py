@@ -114,15 +114,15 @@ async def test_commit_failure_marks_running_blueprint_failed(db, auth, monkeypat
             pass
 
         async def generate_blueprint(self, **_kwargs):
-            from test_country_blueprint_foundation import valid_structured_blueprint
+            from test_country_blueprint_foundation import valid_structured_blueprint_v2
 
-            from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+            from app.schemas.api import CountryMaximumCoverageStructuredBlueprintV2
             from app.services.scraping.blueprint_provider import BlueprintProviderResult
 
             return BlueprintProviderResult(
                 human_readable_blueprint="Research",
-                structured_blueprint=CountryMaximumCoverageStructuredBlueprint.model_validate(
-                    valid_structured_blueprint()
+                structured_blueprint=CountryMaximumCoverageStructuredBlueprintV2.model_validate(
+                    valid_structured_blueprint_v2()
                 ),
                 citations=[],
                 provider="openrouter",

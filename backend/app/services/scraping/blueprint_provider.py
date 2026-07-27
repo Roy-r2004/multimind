@@ -10,10 +10,15 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.llm.providers import LLMProvider, LLMResponse, OpenRouterProvider, OpenRouterProviderError
-from app.schemas.api import CountryMaximumCoverageStructuredBlueprint
+from app.schemas.api import (
+    CountryMaximumCoverageStructuredBlueprint,
+    CountryMaximumCoverageStructuredBlueprintV2,
+    StructuredBlueprintAny,
+)
 from app.services.scraping.blueprint_structured_contract import (
     canonical_structured_blueprint_skeleton,
     describe_validation_contract_gap,
+    detect_structured_blueprint_schema_version,
     normalize_structured_blueprint_payload,
 )
 
@@ -37,7 +42,7 @@ BLUEPRINT_STRUCTURING_RESPONSE_FORMAT: dict[str, str] = {"type": "json_object"}
 BLUEPRINT_STRUCTURING_SYSTEM_PROMPT = (
     "You convert a country-specific research blueprint into machine-readable JSON. "
     "Return JSON only with no Markdown fences and no surrounding commentary. "
-    "Use exactly the CountryMaximumCoverageStructuredBlueprint field names provided "
+    "Use exactly the CountryMaximumCoverageStructuredBlueprintV2 field names provided "
     "in the canonical JSON skeleton. Preserve the Stage 1 research strategy, keep "
     "physical-country containment, do not invent facilities or URLs, and do not "
     "change the selected country. Use null for unknown optional scalar fields and "
@@ -99,7 +104,7 @@ class BlueprintProviderError(RuntimeError):
 @dataclass(frozen=True)
 class BlueprintProviderResult:
     human_readable_blueprint: str
-    structured_blueprint: CountryMaximumCoverageStructuredBlueprint
+    structured_blueprint: StructuredBlueprintAny
     citations: list[dict[str, Any]]
     provider: str
     model_id: str
@@ -112,7 +117,7 @@ class BlueprintProviderResult:
 class BlueprintProvider(Protocol):
     async def generate_blueprint(
         self, *, mission: Any, rendered_prompt: str,
-        structured_output_schema: type[CountryMaximumCoverageStructuredBlueprint],
+        structured_output_schema: type[StructuredBlueprintAny],
     ) -> BlueprintProviderResult: ...
 
 
@@ -133,7 +138,7 @@ class OpenRouterBlueprintProvider:
 
     async def generate_blueprint(
         self, *, mission: Any, rendered_prompt: str,
-        structured_output_schema: type[CountryMaximumCoverageStructuredBlueprint],
+        structured_output_schema: type[StructuredBlueprintAny] = CountryMaximumCoverageStructuredBlueprintV2,
     ) -> BlueprintProviderResult:
         self.validate_configuration()
         started_at = datetime.now(UTC)
@@ -199,8 +204,8 @@ class OpenRouterBlueprintProvider:
         self,
         *,
         research_text: str,
-        structured_output_schema: type[CountryMaximumCoverageStructuredBlueprint],
-    ) -> tuple[CountryMaximumCoverageStructuredBlueprint, bool]:
+        structured_output_schema: type[StructuredBlueprintAny],
+    ) -> tuple[StructuredBlueprintAny, bool]:
         model = self._settings.openrouter_blueprint_structuring_model
         try:
             first = await self._client.complete(
@@ -216,7 +221,7 @@ class OpenRouterBlueprintProvider:
 
         try:
             return self._validate_structured(first.text, structured_output_schema), False
-        except (json.JSONDecodeError, ValidationError) as first_exc:
+        except (json.JSONDecodeError, ValidationError, ValueError) as first_exc:
             try:
                 correction = await self._client.complete(
                     system=BLUEPRINT_STRUCTURING_CORRECTION_SYSTEM_PROMPT,
@@ -230,7 +235,7 @@ class OpenRouterBlueprintProvider:
                 raise self._map_error(exc, stage="structuring", model=model) from exc
             try:
                 return self._validate_structured(correction.text, structured_output_schema), True
-            except (json.JSONDecodeError, ValidationError) as second_exc:
+            except (json.JSONDecodeError, ValidationError, ValueError) as second_exc:
                 raise BlueprintProviderError(
                     "structured_output",
                     "OpenRouter returned invalid structured output.",
@@ -264,7 +269,9 @@ class OpenRouterBlueprintProvider:
             payload = OpenRouterBlueprintProvider._parse_json_object(invalid_text)
         except (json.JSONDecodeError, TypeError, ValueError):
             payload = None
-        gap = describe_validation_contract_gap(payload, exc)
+        gap = describe_validation_contract_gap(
+            payload, exc, expected_schema_version="2"
+        )
         return (
             "The previous structured response was invalid. Return corrected JSON only.\n\n"
             f"Validation errors:\n{OpenRouterBlueprintProvider._safe_validation_summary(exc)}\n\n"
@@ -275,16 +282,24 @@ class OpenRouterBlueprintProvider:
             "Canonical JSON skeleton (exact expected field structure):\n"
             f"{json.dumps(gap['canonical_skeleton'], indent=2)}\n\n"
             "Do not change research meaning or the selected country. "
-            "Do not invent facilities or URLs.\n\n"
+            "Do not invent facilities or URLs. "
+            'Emit schema_version as the string "2" explicitly and include every required v2 field.\n\n'
             f"Invalid structured response:\n{invalid_text}"
         )
 
     @staticmethod
     def _validate_structured(
         text: str,
-        structured_output_schema: type[CountryMaximumCoverageStructuredBlueprint],
-    ) -> CountryMaximumCoverageStructuredBlueprint:
+        structured_output_schema: type[StructuredBlueprintAny],
+    ) -> StructuredBlueprintAny:
         parsed = OpenRouterBlueprintProvider._parse_json_object(text)
+        if structured_output_schema is CountryMaximumCoverageStructuredBlueprintV2:
+            version = detect_structured_blueprint_schema_version(parsed)
+            if version != "2":
+                raise ValueError(
+                    'New blueprints require schema_version to be the string "2"; '
+                    "do not omit it or emit another value."
+                )
         normalized = normalize_structured_blueprint_payload(parsed)
         return structured_output_schema.model_validate(normalized)
 

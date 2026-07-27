@@ -86,7 +86,7 @@ from app.services.scraping.mission_service import (
 from app.services.scraping.run_service import run_service
 from app.services.scraping.team_planner_service import TeamPlannerService, team_planner_service
 from conftest import create_model_set, create_other_auth, create_project, valid_blueprint
-from test_country_blueprint_foundation import valid_structured_blueprint
+from test_country_blueprint_foundation import valid_structured_blueprint_v2
 
 
 async def noop_enqueue_blueprint(_blueprint_id: str) -> None:
@@ -133,7 +133,7 @@ async def create_blueprint_version(
         ScrapingBlueprintStatus.READY_FOR_REVIEW,
         ScrapingBlueprintStatus.APPROVED,
     }
-    structured = valid_structured_blueprint() if reviewable else None
+    structured = valid_structured_blueprint_v2() if reviewable else None
     blueprint = ScrapingBlueprint(
         mission_id=mission_id,
         version=version,
@@ -2924,6 +2924,9 @@ async def test_orchestrator_failure_log_renders_stage_and_exception_type(
     assert len(failed_events) == 1
     assert failed_events[0].message == "Source discovery execution failed."
     assert "database detail that must not be persisted" not in failed_events[0].message
+    assert failed_events[0].metadata_json.get("stage") == "flush_coverage_cells"
+    assert failed_events[0].metadata_json.get("exception_type") == "RuntimeError"
+    assert "failure_detail" not in failed_events[0].metadata_json
     rendered_log = caplog.text
     assert f"scraping_execution_failed execution_id={execution.id}" in rendered_log
     assert "stage=flush_coverage_cells" in rendered_log
@@ -2932,6 +2935,8 @@ async def test_orchestrator_failure_log_renders_stage_and_exception_type(
     assert "language_count=1" in rendered_log
     assert "source_category_count=3" in rendered_log
     assert "attempted_coverage_cell_count=6" in rendered_log
+    assert "database detail that must not be persisted" not in failed.error_message
+    assert failed.current_stage == "flush_coverage_cells"
 
 
 @pytest.mark.asyncio
@@ -2976,6 +2981,26 @@ async def test_orchestrator_failed_flush_rolls_back_and_stores_failed_event(
         )
     )
     assert len(events.scalars().all()) == 1
+    duplicate = await db.execute(
+        select(ScrapingEvent).where(
+            ScrapingEvent.execution_id == execution.id,
+            ScrapingEvent.event_type == "duplicate_sequence_for_test",
+        )
+    )
+    assert duplicate.scalars().all() == []
+    all_messages = (
+        await db.execute(
+            select(ScrapingEvent.message).where(ScrapingEvent.execution_id == execution.id)
+        )
+    ).scalars().all()
+    assert all(
+        "This duplicate event intentionally fails." not in (message or "")
+        for message in all_messages
+    )
+    assert all(
+        "IntegrityError" not in (message or "") and "UNIQUE" not in (message or "").upper()
+        for message in all_messages
+    )
 
 
 @pytest.mark.asyncio

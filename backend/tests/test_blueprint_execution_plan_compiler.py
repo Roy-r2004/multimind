@@ -9,7 +9,7 @@ from test_country_blueprint_foundation import valid_structured_blueprint
 
 from app.core.exceptions import ValidationError
 from app.schemas.scraping_execution_plan import (
-    EXECUTION_PLAN_SCHEMA_VERSION,
+    EXECUTION_PLAN_SCHEMA_VERSION_V1,
     REQUIRED_QUALIFICATION_CRITERIA,
     FrozenExecutionPlan,
     QualificationStatus,
@@ -28,13 +28,14 @@ AUSTRIA = MissionCountryIdentity(
 )
 
 
-def _compile(payload: dict, *, country: MissionCountryIdentity = AUSTRIA):
+def _compile(payload: dict, *, country: MissionCountryIdentity = AUSTRIA, require_v2: bool = False):
     return BlueprintExecutionPlanService().compile(
         mission_id="mission-1",
         blueprint_id="blueprint-1",
         blueprint_version=3,
         mission_country=country,
         structured_blueprint=payload,
+        require_v2=require_v2,
     )
 
 
@@ -42,7 +43,7 @@ def test_valid_structured_blueprint_compiles() -> None:
     result = _compile(valid_structured_blueprint())
     plan = result.frozen_execution_plan
     assert isinstance(plan, FrozenExecutionPlan)
-    assert plan.schema_version == EXECUTION_PLAN_SCHEMA_VERSION
+    assert plan.schema_version == EXECUTION_PLAN_SCHEMA_VERSION_V1
     assert plan.country.country_code == "AT"
     assert plan.regions == ["Vienna"]
     assert plan.languages == ["German"]

@@ -43,6 +43,7 @@ def _plan():
             continent="Europe",
         ),
         structured_blueprint=payload,
+        require_v2=False,
     )
     return compiled.frozen_execution_plan, compiled.execution_plan_hash
 

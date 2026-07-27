@@ -11,8 +11,8 @@ from app.db.models import ScrapingBlueprintStatus, ScrapingExecution, ScrapingEx
 from app.db.session import AsyncSessionLocal
 from app.schemas.scraping_clarification import ClarificationStatus
 from app.schemas.scraping_execution_plan import (
-    EXECUTION_PLAN_SCHEMA_VERSION,
-    FrozenExecutionPlan,
+    SUPPORTED_EXECUTION_PLAN_SCHEMA_VERSIONS,
+    parse_frozen_execution_plan,
 )
 from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 from app.services.scraping.clarification_orchestrator import clarification_orchestrator
@@ -202,7 +202,10 @@ async def _validate_step1_provenance(db, execution: ScrapingExecution) -> bool:
             "Campaign frozen execution plan provenance is incomplete.",
         )
         return False
-    if execution.execution_plan_schema_version != EXECUTION_PLAN_SCHEMA_VERSION:
+    # Worker-readable provenance only. Do not treat membership here as Step-3
+    # deterministic-query-generation capability — that requires schema "2" via
+    # supports_deterministic_query_generation() independently of this set.
+    if execution.execution_plan_schema_version not in SUPPORTED_EXECUTION_PLAN_SCHEMA_VERSIONS:
         await _fail_provenance(
             db,
             execution,
@@ -210,7 +213,7 @@ async def _validate_step1_provenance(db, execution: ScrapingExecution) -> bool:
         )
         return False
     try:
-        plan = FrozenExecutionPlan.model_validate(execution.frozen_execution_plan_json)
+        plan = parse_frozen_execution_plan(execution.frozen_execution_plan_json)
     except Exception:
         await _fail_provenance(
             db,

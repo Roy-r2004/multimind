@@ -5,8 +5,11 @@ from dataclasses import dataclass
 from app.llm.prompt_engine import PromptEngine, get_prompt_engine
 from app.services.scraping.countries import Country
 
-COUNTRY_MAXIMUM_COVERAGE_TEMPLATE = "scraping/country_maximum_coverage_blueprint_v1.jinja2"
-COUNTRY_MAXIMUM_COVERAGE_TEMPLATE_VERSION = "country_maximum_coverage_blueprint_v1"
+# Historical v1 prompt retained for audit/provenance; new generation uses v2 only.
+COUNTRY_MAXIMUM_COVERAGE_TEMPLATE_V1 = "scraping/country_maximum_coverage_blueprint_v1.jinja2"
+COUNTRY_MAXIMUM_COVERAGE_TEMPLATE_VERSION_V1 = "country_maximum_coverage_blueprint_v1"
+COUNTRY_MAXIMUM_COVERAGE_TEMPLATE = "scraping/country_maximum_coverage_blueprint_v2.jinja2"
+COUNTRY_MAXIMUM_COVERAGE_TEMPLATE_VERSION = "country_maximum_coverage_blueprint_v2"
 
 
 @dataclass(frozen=True)
