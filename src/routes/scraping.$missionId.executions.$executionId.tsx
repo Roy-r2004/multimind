@@ -633,7 +633,7 @@ function formatTaskRow(task: ScrapingTask) {
 function formatQueryRow(query: SourceDiscoveryQuery) {
   return [
     query.query_text,
-    query.provider,
+    query.provider ?? "",
     query.status,
     `${query.result_count} candidates`,
     query.region_name ?? "",

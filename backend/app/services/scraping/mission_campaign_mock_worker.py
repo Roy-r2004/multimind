@@ -13,10 +13,12 @@ from app.schemas.scraping_clarification import ClarificationStatus
 from app.schemas.scraping_execution_plan import (
     SUPPORTED_EXECUTION_PLAN_SCHEMA_VERSIONS,
     parse_frozen_execution_plan,
+    supports_deterministic_query_generation,
 )
 from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 from app.services.scraping.clarification_orchestrator import clarification_orchestrator
 from app.services.scraping.execution_service import execution_service
+from app.services.scraping.query_generation_service import query_generation_service
 
 STAGES = (
     ("discovery", "Discovery checkpoint", "Gemini Deep Research"),
@@ -127,6 +129,55 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
             await db.refresh(execution)
             if not phase.continue_campaign:
                 return
+            if await _pause_or_cancel(db, execution):
+                return
+
+        # Step 3B: persistent deterministic query jobs for v2 plan-backed campaigns only.
+        # Historical v1/null executions keep mock-stage compatibility and never fall back
+        # into the legacy LLM query planner from this worker.
+        if supports_deterministic_query_generation(execution.execution_plan_schema_version):
+            generation = await query_generation_service.generate_for_execution(
+                db, execution, discovery_round=1
+            )
+            if generation.status != "ok":
+                execution.status = ScrapingExecutionStatus.FAILED
+                execution.completed_at = datetime.now(UTC)
+                execution.error_message = "Deterministic query generation failed."
+                execution.current_stage = "query_generation"
+                execution.current_stage_label = "Query generation"
+                await execution_service.emit_event(
+                    db,
+                    execution.id,
+                    "query_generation_failed",
+                    "Deterministic query generation failed.",
+                    metadata={
+                        "status": generation.status,
+                        "blocked_code": generation.blocked_code,
+                        "error_code": generation.error_code,
+                        "discovery_round": generation.discovery_round,
+                        "generated_count": generation.generated_count,
+                        "existing_count": generation.existing_count,
+                        "total_count": generation.total_count,
+                    },
+                )
+                await db.commit()
+                return
+            execution.current_stage = "query_generation"
+            execution.current_stage_label = "Query generation"
+            execution.latest_message = "Deterministic query jobs prepared."
+            await execution_service.emit_event(
+                db,
+                execution.id,
+                "query_generation_completed",
+                "Deterministic query jobs prepared.",
+                metadata={
+                    "discovery_round": generation.discovery_round,
+                    "generated_count": generation.generated_count,
+                    "existing_count": generation.existing_count,
+                    "total_count": generation.total_count,
+                },
+            )
+            await db.commit()
             if await _pause_or_cancel(db, execution):
                 return
 

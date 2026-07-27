@@ -1002,19 +1002,25 @@ class SourceDiscoveryQueryResponse(BaseModel):
     country_code: str
     country_name: str
     region_code: str | None = None
-    region_name: str
+    region_name: str | None = None
     language_code: str
     language_name: str
     source_category: str
     query_text: str
-    provider: str
+    provider: str | None = None
     status: str
-    requested_at: datetime
+    requested_at: datetime | None = None
     completed_at: datetime | None = None
     result_count: int
     error_code: str | None = None
     error_message: str | None = None
     metadata_json: dict[str, Any]
+    purpose: str | None = None
+    priority: int | None = None
+    discovery_round: int | None = None
+    generation_ordinal: int | None = None
+    scope_level: str | None = None
+    important_city: str | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -962,6 +962,33 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         CheckConstraint("length(trim(query_text)) > 0", name="ck_source_discovery_query_not_blank"),
         CheckConstraint("result_count >= 0", name="ck_source_discovery_query_result_count"),
+        CheckConstraint("discovery_round >= 1", name="ck_source_discovery_query_discovery_round"),
+        CheckConstraint("priority >= 0", name="ck_source_discovery_query_priority"),
+        CheckConstraint(
+            "generation_ordinal >= 0", name="ck_source_discovery_query_generation_ordinal"
+        ),
+        CheckConstraint(
+            "("
+            "(scope_level = 'countrywide' AND region_name IS NULL AND important_city IS NULL) OR "
+            "(scope_level = 'region' AND region_name IS NOT NULL AND important_city IS NULL) OR "
+            "(scope_level = 'city' AND region_name IS NOT NULL AND important_city IS NOT NULL)"
+            ")",
+            name="ck_source_discovery_query_scope_level",
+        ),
+        CheckConstraint(
+            "("
+            "(query_job_fingerprint IS NULL AND plan_hash_snapshot IS NULL) OR "
+            "(query_job_fingerprint IS NOT NULL AND plan_hash_snapshot IS NOT NULL "
+            "AND execution_id IS NOT NULL)"
+            ")",
+            name="ck_source_discovery_query_plan_backed_provenance",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "execution_id",
+            "query_job_fingerprint",
+            name="uq_source_discovery_query_fingerprint",
+        ),
         Index("ix_source_discovery_queries_org", "organization_id"),
         Index("ix_source_discovery_queries_execution", "execution_id"),
         Index("ix_source_discovery_queries_coverage", "coverage_cell_id"),
@@ -975,6 +1002,13 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "coverage_cell_id",
             "provider",
             "source_category",
+        ),
+        Index(
+            "ix_source_discovery_queries_round",
+            "execution_id",
+            "discovery_round",
+            "priority",
+            "generation_ordinal",
         ),
     )
 
@@ -993,12 +1027,12 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     country_code: Mapped[str] = mapped_column(String(2), nullable=False)
     country_name: Mapped[str] = mapped_column(String(120), nullable=False)
     region_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    region_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    region_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     language_code: Mapped[str] = mapped_column(String(16), nullable=False)
     language_name: Mapped[str] = mapped_column(String(120), nullable=False)
     source_category: Mapped[str] = mapped_column(String(120), nullable=False)
-    query_text: Mapped[str] = mapped_column(String(512), nullable=False)
-    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[SourceDiscoveryQueryStatus] = mapped_column(
         Enum(
             SourceDiscoveryQueryStatus,
@@ -1008,12 +1042,22 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=SourceDiscoveryQueryStatus.PENDING,
         nullable=False,
     )
-    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    purpose: Mapped[str] = mapped_column(
+        String(80), nullable=False, default="legacy_source_discovery"
+    )
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=500)
+    discovery_round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    generation_ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    query_job_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    plan_hash_snapshot: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope_level: Mapped[str] = mapped_column(String(32), nullable=False, default="region")
+    important_city: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
     organization: Mapped["Organization"] = relationship()
     execution: Mapped["ScrapingExecution | None"] = relationship()

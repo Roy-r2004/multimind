@@ -31,6 +31,7 @@ from app.schemas.api import (
     SourceDiscoveryQueryResponse,
     SourceDiscoverySummary,
 )
+from app.services.scraping.query_generation_service import public_query_metadata
 from app.services.scraping.search_providers import create_search_provider
 from app.services.scraping.search_providers.base import (
     SearchProvider,
@@ -82,6 +83,13 @@ class SourceDiscoveryQueryPlanner:
 
 
 class SourceDiscoveryService:
+    """Real source discovery for legacy/orchestrator executions.
+
+    Plan-backed mission campaigns must NOT call discover() or the LLM
+    SourceDiscoveryQueryPlanner for Step 3. Step 3B persists pending query jobs via
+    query_generation_service; Step 5 (not this task) will claim and execute them.
+    """
+
     def __init__(
         self,
         *,
@@ -96,6 +104,8 @@ class SourceDiscoveryService:
         db: AsyncSession,
         context: SourceDiscoveryContext,
     ) -> SourceDiscoverySummary:
+        # Legacy/orchestrator path only. Mission-campaign Step 3B jobs are generated
+        # deterministically and must never enter this LLM planner + search flow here.
         provider = self._provider(context.provider)
         planned_queries = await self.planner.plan_queries(context)
         summary = SourceDiscoverySummary(
@@ -258,6 +268,7 @@ class SourceDiscoveryService:
         planned: SourceDiscoveryPlannedQuery,
     ) -> ScrapingSourceDiscoveryQuery:
         now = datetime.now(UTC)
+        region_name = (context.region_name or "").strip() or None
         row = ScrapingSourceDiscoveryQuery(
             organization_id=context.organization_id,
             execution_id=context.execution_id,
@@ -266,7 +277,7 @@ class SourceDiscoveryService:
             country_code=context.country_code,
             country_name=context.country_name,
             region_code=context.region_code,
-            region_name=context.region_name,
+            region_name=region_name,
             language_code=planned.language_code or context.language_code,
             language_name=context.language_name,
             source_category=context.source_category,
@@ -275,7 +286,15 @@ class SourceDiscoveryService:
             status=SourceDiscoveryQueryStatus.RUNNING,
             requested_at=now,
             result_count=0,
-            metadata_json={"purpose": planned.purpose},
+            metadata_json={"purpose": planned.purpose, "generation_source": "legacy_planner"},
+            purpose=(planned.purpose or "legacy_source_discovery")[:80],
+            priority=500,
+            discovery_round=1,
+            generation_ordinal=0,
+            query_job_fingerprint=None,
+            plan_hash_snapshot=None,
+            scope_level="region" if region_name else "countrywide",
+            important_city=None,
         )
         db.add(row)
         await db.flush()
@@ -411,7 +430,13 @@ class SourceDiscoveryService:
             result_count=row.result_count,
             error_code=row.error_code,
             error_message=row.error_message,
-            metadata_json=row.metadata_json,
+            metadata_json=public_query_metadata(row),
+            purpose=row.purpose,
+            priority=row.priority,
+            discovery_round=row.discovery_round,
+            generation_ordinal=row.generation_ordinal,
+            scope_level=row.scope_level,
+            important_city=row.important_city,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

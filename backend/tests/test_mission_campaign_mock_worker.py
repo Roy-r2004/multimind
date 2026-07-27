@@ -64,13 +64,44 @@ async def test_mock_worker_completes_deterministic_checkpoints_without_facilitie
         "mission_campaign_queued",
         "mission_campaign_started",
         "clarification_not_required",
+        "query_generation_completed",
         "stage_completed",
         "stage_completed",
         "stage_completed",
         "stage_completed",
         "mission_campaign_completed",
     ]
-    assert [event.metadata_json.get("external_calls") for event in events[3:]] == [
+    query_gen = events[3]
+    assert query_gen.event_type == "query_generation_completed"
+    assert "deterministic query" in query_gen.message.lower()
+    query_meta = dict(query_gen.metadata_json or {})
+    assert set(query_meta.keys()) == {
+        "discovery_round",
+        "generated_count",
+        "existing_count",
+        "total_count",
+    }
+    assert isinstance(query_meta["discovery_round"], int)
+    assert isinstance(query_meta["generated_count"], int)
+    assert isinstance(query_meta["existing_count"], int)
+    assert isinstance(query_meta["total_count"], int)
+    assert query_meta["discovery_round"] >= 1
+    assert query_meta["total_count"] >= query_meta["generated_count"]
+    query_blob = f"{query_gen.message}\n{query_meta}".lower()
+    for secret in (
+        "query_job_fingerprint",
+        "plan_hash_snapshot",
+        "frozen_execution_plan",
+        "resolved_execution_plan",
+        "axes",
+        "prompt",
+        "api_key",
+        "provider_credentials",
+        "serper",
+        "openrouter",
+    ):
+        assert secret not in query_blob
+    assert [event.metadata_json.get("external_calls") for event in events[4:]] == [
         False,
         False,
         False,

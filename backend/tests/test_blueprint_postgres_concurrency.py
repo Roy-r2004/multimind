@@ -25,7 +25,9 @@ from app.db.models import (
 )
 from app.services.scraping.blueprint_service import blueprint_service
 from app.services.scraping.execution_service import execution_service
-from test_country_blueprint_foundation import valid_structured_blueprint
+from app.schemas.scraping_execution_plan import FrozenExecutionPlanV2, parse_frozen_execution_plan
+from test_country_blueprint_foundation import valid_structured_blueprint_v2
+from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 
 
 @pytest.fixture
@@ -152,7 +154,7 @@ async def test_same_mission_concurrent_campaign_starts_are_serialized(
             version=1,
             status=ScrapingBlueprintStatus.APPROVED,
             model_set_id="research-set",
-            structured_blueprint=valid_structured_blueprint(),
+            structured_blueprint=valid_structured_blueprint_v2(),
         )
         setup.add(blueprint)
         await setup.flush()
@@ -191,8 +193,14 @@ async def test_same_mission_concurrent_campaign_starts_are_serialized(
     results = await asyncio.gather(
         start_campaign(), start_campaign(), return_exceptions=True
     )
-    assert sum(not isinstance(result, Exception) for result in results) == 1
-    assert any(isinstance(result, ConflictError) for result in results)
+    successes = [result for result in results if not isinstance(result, Exception)]
+    failures = [result for result in results if isinstance(result, Exception)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], ConflictError)
+    assert "already exists" in str(failures[0]).lower() or "active mission campaign" in str(
+        failures[0]
+    ).lower()
 
     async with postgres_sessions() as verify:
         executions = (
@@ -203,5 +211,24 @@ async def test_same_mission_concurrent_campaign_starts_are_serialized(
                 )
             )
         ).mappings().all()
-    assert len(executions) == 1
-    assert executions[0]["status"] == "queued"
+        assert len(executions) == 1
+        assert executions[0]["status"] == "queued"
+        assert executions[0]["execution_plan_schema_version"] == "2"
+        assert executions[0]["execution_plan_hash"]
+        assert executions[0]["frozen_execution_plan_json"] is not None
+        plan = parse_frozen_execution_plan(executions[0]["frozen_execution_plan_json"])
+        assert isinstance(plan, FrozenExecutionPlanV2)
+        assert sha256_hex(plan.model_dump(mode="json")) == executions[0]["execution_plan_hash"]
+        active = (
+            await verify.execute(
+                ScrapingExecution.__table__.select().where(
+                    ScrapingExecution.mission_id == mission.id,
+                    ScrapingExecution.execution_type == "mission_campaign",
+                    ScrapingExecution.status.in_(("queued", "running", "paused")),
+                )
+            )
+        ).mappings().all()
+        assert len(active) == 1
+        # Both sessions remain usable after the race.
+        await verify.execute(ScrapingMission.__table__.select().where(ScrapingMission.id == mission.id))
+        await verify.commit()

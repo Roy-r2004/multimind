@@ -340,5 +340,5 @@ async def test_024_remains_linear_ancestor_of_single_head(
 
     # 024 remains a linear ancestor; exactly one Alembic head must exist.
     assert heads.count("(head)") == 1
-    assert "027 (head)" in heads
-    assert "027" in current
+    assert "028 (head)" in heads
+    assert "028" in current
