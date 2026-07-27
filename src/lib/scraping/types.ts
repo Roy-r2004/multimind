@@ -249,6 +249,14 @@ export type ScrapingExecutionSummary = {
   mode: string;
   execution_origin?: string;
   blueprint_version_snapshot?: number | null;
+  execution_plan_schema_version?: string | null;
+  execution_plan_hash?: string | null;
+  execution_plan_compiled_at?: string | null;
+  clarification_status?: string | null;
+  clarification_required_count?: number | null;
+  clarification_resolved_count?: number | null;
+  clarification_requires_human_review?: boolean | null;
+  resolved_execution_plan_hash?: string | null;
   created_by?: string | null;
   status: ScrapingExecutionStatus;
   status_label: string;

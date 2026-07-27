@@ -338,6 +338,7 @@ async def test_024_remains_linear_ancestor_of_single_head(
     heads = await postgres_migration_database.alembic("heads")
     current = await postgres_migration_database.alembic("current")
 
-    # 025 revises 024; a single head must remain.
-    assert heads.count("025 (head)") == 1
-    assert "025 (head)" in current
+    # 024 remains a linear ancestor; exactly one Alembic head must exist.
+    assert heads.count("(head)") == 1
+    assert "027 (head)" in heads
+    assert "027" in current

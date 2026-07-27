@@ -9,11 +9,13 @@ from sqlalchemy.orm import selectinload
 
 from app.db.models import ScrapingBlueprintStatus, ScrapingExecution, ScrapingExecutionStatus
 from app.db.session import AsyncSessionLocal
+from app.schemas.scraping_clarification import ClarificationStatus
 from app.schemas.scraping_execution_plan import (
     EXECUTION_PLAN_SCHEMA_VERSION,
     FrozenExecutionPlan,
 )
 from app.services.scraping.blueprint_execution_plan_service import sha256_hex
+from app.services.scraping.clarification_orchestrator import clarification_orchestrator
 from app.services.scraping.execution_service import execution_service
 
 STAGES = (
@@ -39,6 +41,13 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
         if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
             await _finish_cancelled(db, execution)
             return
+        # Human-review pause must not continue into later stages on duplicate delivery.
+        if (
+            execution.status == ScrapingExecutionStatus.PAUSED
+            and execution.clarification_status
+            == ClarificationStatus.REQUIRES_HUMAN_REVIEW.value
+        ):
+            return
         if execution.status != ScrapingExecutionStatus.QUEUED:
             return
         if not await _validate_campaign_provenance(db, execution):
@@ -59,6 +68,11 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
             await db.rollback()
             return
         await db.refresh(execution)
+        if execution.clarification_status == ClarificationStatus.REQUIRES_HUMAN_REVIEW.value:
+            execution.status = ScrapingExecutionStatus.PAUSED
+            execution.paused_at = execution.paused_at or datetime.now(UTC)
+            await db.commit()
+            return
         snapshot_version = (
             execution.blueprint_version_snapshot
             if execution.blueprint_version_snapshot is not None
@@ -87,6 +101,35 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
         await db.refresh(execution)
         if await _pause_or_cancel(db, execution):
             return
+
+        # Step 2 clarification phase for campaigns that own a frozen plan.
+        if execution.frozen_execution_plan_json is not None:
+            try:
+                phase = await clarification_orchestrator.run(
+                    db, execution, check_interrupt=_pause_or_cancel
+                )
+            except Exception:
+                await db.refresh(execution)
+                if execution.clarification_status != ClarificationStatus.FAILED.value:
+                    execution.clarification_status = ClarificationStatus.FAILED.value
+                    execution.status = ScrapingExecutionStatus.FAILED
+                    execution.completed_at = datetime.now(UTC)
+                    execution.error_message = "Clarification phase failed."
+                    await execution_service.emit_event(
+                        db,
+                        execution.id,
+                        "clarification_failed",
+                        "Typed clarification phase failed.",
+                        metadata={"error_code": "provider"},
+                    )
+                    await db.commit()
+                return
+            await db.refresh(execution)
+            if not phase.continue_campaign:
+                return
+            if await _pause_or_cancel(db, execution):
+                return
+
         for index, (stage, label, provider) in enumerate(STAGES, start=1):
             if await _pause_or_cancel(db, execution):
                 return

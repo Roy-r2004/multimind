@@ -649,6 +649,11 @@ class ScrapingExecutionSummary(BaseModel):
     execution_plan_schema_version: str | None = None
     execution_plan_hash: str | None = None
     execution_plan_compiled_at: datetime | None = None
+    clarification_status: str | None = None
+    clarification_required_count: int | None = None
+    clarification_resolved_count: int | None = None
+    clarification_requires_human_review: bool | None = None
+    resolved_execution_plan_hash: str | None = None
     created_by: str | None = None
     status: str
     status_label: str

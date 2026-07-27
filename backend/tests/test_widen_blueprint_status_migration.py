@@ -223,9 +223,10 @@ async def test_025_downgrade_is_non_destructive_and_reupgrade_succeeds(postgres_
     await db.alembic("upgrade", "025")
     heads = await db.alembic("heads")
     current = await db.alembic("current")
-    assert "025" in heads
+    # After upgrading only to 025, current is 025 while the repo head may be later.
     assert "025" in current
-    assert heads.count("025") == 1
+    assert heads.count("(head)") == 1
+    assert "027 (head)" in heads or "026 (head)" in heads or "025 (head)" in heads
 
 
 @pytest.mark.asyncio

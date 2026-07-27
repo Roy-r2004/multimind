@@ -35,6 +35,12 @@ def lebanon_structured_blueprint() -> dict:
     }
     payload["regions"] = ["Beirut"]
     payload["languages"] = ["Arabic", "English"]
+    payload["regulatory_sources"] = [
+        {"url": "https://example.test/lebanon-regulatory", "title": "Lebanon regulatory"}
+    ]
+    payload["commercial_sources"] = [
+        {"url": "https://example.test/lebanon-commercial", "title": "Lebanon commercial"}
+    ]
     payload["query_matrix"] = [
         {
             "query": "Lebanon inpatient addiction rehabilitation",

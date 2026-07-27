@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     openrouter_blueprint_timeout_seconds: float = 900.0
     openrouter_blueprint_max_output_tokens: int = 16_000
 
+    # OpenRouter scraper clarification (GPT-5.6 Luna role/display; exact slug is configurable).
+    openrouter_scraper_clarification_model: str = ""
+    openrouter_scraper_clarification_timeout_seconds: float = 120.0
+    openrouter_scraper_clarification_max_output_tokens: int = 2_048
+    openrouter_scraper_clarification_max_attempts: int = 2
+
     # Real source discovery
     source_discovery_provider: str = "serper"
     serper_api_key: str | None = None

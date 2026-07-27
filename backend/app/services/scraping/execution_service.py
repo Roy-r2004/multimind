@@ -143,6 +143,7 @@ class ScrapingExecutionService:
             execution_plan_schema_version=compiled.execution_plan_schema_version,
             execution_plan_hash=compiled.execution_plan_hash,
             execution_plan_compiled_at=compiled_at,
+            clarification_status="pending",
             created_by=auth.user.id,
             status=ScrapingExecutionStatus.QUEUED,
             country_code=mission.country_code,
@@ -315,7 +316,10 @@ class ScrapingExecutionService:
                 ScrapingExecutionStatus.PAUSED,
             },
             can_pause=execution.status == ScrapingExecutionStatus.RUNNING,
-            can_resume=execution.status == ScrapingExecutionStatus.PAUSED,
+            can_resume=(
+                execution.status == ScrapingExecutionStatus.PAUSED
+                and execution.clarification_status != "requires_human_review"
+            ),
             can_delete=execution.status in DELETABLE_EXECUTION_STATUSES,
             mock=execution.execution_origin == "mission_campaign_mock",
         )
@@ -554,6 +558,11 @@ class ScrapingExecutionService:
         execution = await self._mission_campaign_row(db, auth, mission_id, execution_id)
         if execution.status != ScrapingExecutionStatus.PAUSED:
             raise ConflictError("Only a paused mission campaign can be resumed.")
+        if execution.clarification_status == "requires_human_review":
+            raise ConflictError(
+                "This campaign requires human review of the blueprint. "
+                "Approve a revised blueprint and start a new campaign."
+            )
         now = datetime.now(UTC)
         execution.status = ScrapingExecutionStatus.QUEUED
         execution.resumed_at = now
@@ -793,6 +802,15 @@ class ScrapingExecutionService:
             execution_plan_schema_version=execution.execution_plan_schema_version,
             execution_plan_hash=execution.execution_plan_hash,
             execution_plan_compiled_at=execution.execution_plan_compiled_at,
+            clarification_status=execution.clarification_status,
+            clarification_required_count=_clarification_required_count(execution),
+            clarification_resolved_count=_clarification_resolved_count(execution),
+            clarification_requires_human_review=(
+                execution.clarification_status == "requires_human_review"
+                if execution.clarification_status is not None
+                else None
+            ),
+            resolved_execution_plan_hash=execution.resolved_execution_plan_hash,
             created_by=execution.created_by,
             status=execution.status.value,
             status_label=execution_outcome_label(execution.status, execution.coverage_debt),
@@ -1080,6 +1098,28 @@ async def _run_execution_inline(execution_id: str, *, job_name: str = "run_scrap
 
 
 execution_service = ScrapingExecutionService()
+
+
+def _clarification_required_count(execution: ScrapingExecution) -> int | None:
+    if execution.clarification_status is None and execution.clarification_requests_json is None:
+        return None
+    payload = execution.clarification_requests_json or {}
+    safe = payload.get("safe_candidates") if isinstance(payload, dict) else None
+    human = payload.get("human_review_findings") if isinstance(payload, dict) else None
+    return len(safe or []) + len(human or [])
+
+
+def _clarification_resolved_count(execution: ScrapingExecution) -> int | None:
+    if execution.clarification_status is None and execution.clarification_decisions_json is None:
+        return None
+    decisions = execution.clarification_decisions_json or []
+    if not isinstance(decisions, list):
+        return 0
+    return sum(
+        1
+        for item in decisions
+        if isinstance(item, dict) and item.get("decision") == "RESOLVED"
+    )
 
 
 def _primary_contact(

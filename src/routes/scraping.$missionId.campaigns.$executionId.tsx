@@ -14,6 +14,8 @@ import {
 } from "@/lib/scraping/api";
 import {
   campaignStatusLabel,
+  clarificationNeedsReviewMessage,
+  clarificationStatusLabel,
   isCampaignPollingStatus,
   latestCampaignSequence,
   mergeCampaignEvents,
@@ -155,12 +157,18 @@ function MissionCampaignCockpit() {
                     <span className="text-sm capitalize text-muted-foreground">
                       {campaignStatusLabel(execution.status)}
                     </span>
+                    {clarificationStatusLabel(execution.clarification_status) && (
+                      <Badge variant="outline">
+                        {clarificationStatusLabel(execution.clarification_status)}
+                      </Badge>
+                    )}
                     {detail.mock && <Badge variant="outline">Test campaign</Badge>}
                   </div>
                   <p className="mt-3 text-sm text-muted-foreground">
-                    {friendlyCampaignEventMessage(
-                      execution.latest_message ?? "Campaign is waiting for its next update.",
-                    )}
+                    {clarificationNeedsReviewMessage(execution.clarification_status) ||
+                      friendlyCampaignEventMessage(
+                        execution.latest_message ?? "Campaign is waiting for its next update.",
+                      )}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">

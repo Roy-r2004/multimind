@@ -63,19 +63,22 @@ async def test_mock_worker_completes_deterministic_checkpoints_without_facilitie
     assert [event.event_type for event in events] == [
         "mission_campaign_queued",
         "mission_campaign_started",
+        "clarification_not_required",
         "stage_completed",
         "stage_completed",
         "stage_completed",
         "stage_completed",
         "mission_campaign_completed",
     ]
-    assert [event.metadata_json.get("external_calls") for event in events[2:]] == [
+    assert [event.metadata_json.get("external_calls") for event in events[3:]] == [
         False,
         False,
         False,
         False,
         False,
     ]
+    assert execution.clarification_status == "not_required"
+    assert execution.resolved_execution_plan_hash
     facilities = await db.execute(
         select(RehabilitationFacility).where(RehabilitationFacility.execution_id == summary.id)
     )

@@ -3063,7 +3063,13 @@ def test_scraping_worker_timeout_is_explicit_and_above_default():
 
 
 def test_worker_registers_source_discovery_and_blueprint_generation_functions():
-    assert WorkerSettings.functions == [run_scraping_execution, run_blueprint_generation]
+    from app.services.scraping.mission_campaign_mock_worker import run_mission_campaign_mock
+
+    assert WorkerSettings.functions == [
+        run_scraping_execution,
+        run_mission_campaign_mock,
+        run_blueprint_generation,
+    ]
 
 
 @pytest.mark.asyncio

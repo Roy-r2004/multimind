@@ -653,6 +653,29 @@ class ScrapingExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     execution_plan_compiled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    clarification_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    clarification_schema_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    clarification_requests_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    clarification_decisions_json: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    resolved_execution_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    resolved_execution_plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    clarification_model_slug_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    clarification_attempt_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    clarification_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    clarification_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    clarification_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    clarification_provider_operation_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    clarification_provider_metadata_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
     created_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     status: Mapped[ScrapingExecutionStatus] = mapped_column(
         Enum(

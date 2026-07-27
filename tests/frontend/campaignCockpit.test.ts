@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
   campaignStatusLabel,
+  clarificationNeedsReviewMessage,
+  clarificationStatusLabel,
   isCampaignPollingStatus,
   latestCampaignSequence,
   mergeCampaignEvents,
@@ -43,6 +45,18 @@ test("campaign status labels are readable", () => {
   assert.equal(campaignStatusLabel("pause_requested"), "pause requested");
 });
 
+test("clarification status labels cover safe cockpit states", () => {
+  assert.equal(clarificationStatusLabel("not_required"), "Clarification not required");
+  assert.equal(clarificationStatusLabel("completed"), "Clarification completed");
+  assert.equal(clarificationStatusLabel("in_progress"), "Clarification in progress");
+  assert.equal(clarificationStatusLabel("requires_human_review"), "Clarification needs review");
+  assert.equal(clarificationStatusLabel("failed"), "Clarification failed");
+  assert.match(
+    clarificationNeedsReviewMessage("requires_human_review") ?? "",
+    /cannot continue automatically/,
+  );
+});
+
 test("campaign cockpit hides pricing and uses simple test-campaign wording", () => {
   const source = readFileSync(
     resolve(import.meta.dirname, "../../src/routes/scraping.$missionId.campaigns.$executionId.tsx"),
@@ -54,5 +68,6 @@ test("campaign cockpit hides pricing and uses simple test-campaign wording", () 
   assert.doesNotMatch(source, /\$\d/);
   assert.doesNotMatch(source, /deterministic mock execution/);
   assert.match(source, /Test campaign/);
+  assert.match(source, /clarificationStatusLabel/);
   assert.match(source, /lg:grid-cols-3/);
 });

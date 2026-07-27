@@ -109,8 +109,10 @@ class LLMProvider(ABC):
         user: str,
         model: str,
         max_tokens: int = 4096,
+        temperature: float | None = 0.7,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        provider: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
     ) -> LLMResponse:
         pass
@@ -215,8 +217,10 @@ class OpenRouterProvider(LLMProvider):
         user: str,
         model: str,
         max_tokens: int = 4096,
+        temperature: float | None = 0.7,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        provider: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
     ) -> LLMResponse:
         if not self._api_key:
@@ -230,14 +234,17 @@ class OpenRouterProvider(LLMProvider):
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                "temperature": 0.7,
                 "max_tokens": max_tokens,
                 "usage": {"include": True},
             }
+            if temperature is not None:
+                payload["temperature"] = temperature
             if response_format is not None:
                 payload["response_format"] = response_format
             if tools is not None:
                 payload["tools"] = tools
+            if provider is not None:
+                payload["provider"] = provider
             resp = await client.post(
                 OPENROUTER_CHAT_URL,
                 headers=self._headers(),

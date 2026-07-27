@@ -29,3 +29,29 @@ export function latestCampaignSequence(events: ScrapingEvent[]) {
 export function campaignStatusLabel(status: ScrapingExecutionStatus) {
   return status.replaceAll("_", " ");
 }
+
+export function clarificationStatusLabel(status: string | null | undefined) {
+  switch (status) {
+    case "not_required":
+      return "Clarification not required";
+    case "completed":
+      return "Clarification completed";
+    case "pending":
+    case "in_progress":
+      return "Clarification in progress";
+    case "requires_human_review":
+      return "Clarification needs review";
+    case "failed":
+      return "Clarification failed";
+    default:
+      return null;
+  }
+}
+
+export function clarificationNeedsReviewMessage(status: string | null | undefined) {
+  if (status !== "requires_human_review") return null;
+  return (
+    "This campaign cannot continue automatically. Review the blueprint, approve a " +
+    "revised version if needed, then start a new campaign."
+  );
+}
