@@ -3,6 +3,7 @@ from conftest import create_model_set, valid_blueprint
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from test_country_blueprint_foundation import valid_structured_blueprint
 
 from app.core.dependencies import AuthContext
 from app.db.models import (
@@ -18,8 +19,33 @@ from app.db.models import (
     ScrapingRunStatus,
 )
 from app.schemas.api import MissionCampaignStartRequest, ScrapingMissionCreate
+from app.schemas.scraping_execution_plan import FrozenExecutionPlan
+from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.mission_service import mission_service
+
+
+def lebanon_structured_blueprint() -> dict:
+    payload = valid_structured_blueprint()
+    payload["country_dossier"] = {
+        "country_name": "Lebanon",
+        "country_iso3": "LBN",
+        "continent": "Asia",
+        "local_term": "rehabilitation",
+    }
+    payload["regions"] = ["Beirut"]
+    payload["languages"] = ["Arabic", "English"]
+    payload["query_matrix"] = [
+        {
+            "query": "Lebanon inpatient addiction rehabilitation",
+            "language": "Arabic",
+            "purpose": "discovery",
+        }
+    ]
+    payload["region_coverage_plan"] = [
+        {"region_name": "Beirut", "coverage_actions": ["Search registry"]}
+    ]
+    return payload
 
 
 async def _approved_mission_with_team_plan(
@@ -41,6 +67,7 @@ async def _approved_mission_with_team_plan(
         version=7,
         status=ScrapingBlueprintStatus.APPROVED,
         blueprint_json=valid_blueprint(),
+        structured_blueprint=lebanon_structured_blueprint(),
         model_set_id="research-set",
     )
     db.add(blueprint)
@@ -90,10 +117,17 @@ async def test_mission_campaign_start_snapshots_approved_blueprint_provenance(
     assert summary.mode == "mock"
     assert summary.execution_origin == "mission_campaign_mock"
     assert summary.blueprint_version_snapshot == blueprint.version
+    assert summary.execution_plan_schema_version == "1"
+    assert summary.execution_plan_hash
+    assert summary.execution_plan_compiled_at is not None
     assert summary.created_by == auth.user.id
     assert queued == [(summary.id, "run_mission_campaign_mock")]
     execution = await db.get(ScrapingExecution, summary.id)
     assert execution is not None
+    assert execution.blueprint_snapshot_json is not None
+    assert execution.frozen_execution_plan_json is not None
+    plan = FrozenExecutionPlan.model_validate(execution.frozen_execution_plan_json)
+    assert sha256_hex(plan.model_dump(mode="json")) == execution.execution_plan_hash
     event = (
         await db.execute(
             select(ScrapingEvent).where(
@@ -104,11 +138,13 @@ async def test_mission_campaign_start_snapshots_approved_blueprint_provenance(
     ).scalar_one()
     assert event.metadata_json["external_calls"] is False
     assert event.metadata_json["facility_generation"] is False
+    assert event.metadata_json["execution_plan_hash"] == execution.execution_plan_hash
     detail = await execution_service.get_mission_campaign_detail(
         db, auth, mission.id, summary.id
     )
     assert detail.mock is True
     assert detail.execution.execution_origin == "mission_campaign_mock"
+    assert detail.execution.execution_plan_hash == execution.execution_plan_hash
     facilities = await db.execute(
         select(RehabilitationFacility).where(RehabilitationFacility.execution_id == summary.id)
     )
@@ -129,6 +165,31 @@ async def test_mission_campaign_start_rejects_non_approved_active_blueprint(
     monkeypatch.setattr(execution_service, "enqueue_execution", unexpected_enqueue)
     with pytest.raises(Exception, match="active approved blueprint"):
         await execution_service.start_mission_campaign(db, auth, mission.id)
+
+
+@pytest.mark.asyncio
+async def test_mission_campaign_compilation_failure_creates_no_execution(
+    db: AsyncSession, auth: AuthContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mission, blueprint = await _approved_mission_with_team_plan(db, auth)
+    blueprint.structured_blueprint = {
+        **lebanon_structured_blueprint(),
+        "regions": [],
+    }
+    await db.commit()
+
+    async def unexpected_enqueue(*args, **kwargs) -> None:
+        raise AssertionError("Compilation failure must not enqueue a worker.")
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", unexpected_enqueue)
+    with pytest.raises(Exception, match="region"):
+        await execution_service.start_mission_campaign(db, auth, mission.id)
+    count = (
+        await db.execute(
+            select(ScrapingExecution).where(ScrapingExecution.mission_id == mission.id)
+        )
+    ).scalars().all()
+    assert count == []
 
 
 def test_mission_campaign_start_schema_allows_mock_only() -> None:

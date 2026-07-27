@@ -58,6 +58,10 @@ from app.schemas.api import (
     ScrapingTaskResponse,
 )
 from app.services.scraping.execution_outcome import execution_outcome_label
+from app.services.scraping.blueprint_execution_plan_service import (
+    MissionCountryIdentity,
+    blueprint_execution_plan_service,
+)
 from app.services.scraping.scale_profile import MODE_FULL_CENSUS, SUPPORTED_EXECUTION_MODES
 
 ACTIVE_EXECUTION_STATUSES = {
@@ -106,6 +110,24 @@ class ScrapingExecutionService:
             raise ConflictError("An active approved blueprint is required to start a mission campaign.")
         if not mission.country_code or not mission.country_name:
             raise ConflictError("Set a mission country before starting a mission campaign.")
+        if blueprint.structured_blueprint is None:
+            raise ValidationError(
+                "An approved structured blueprint is required before starting a mission campaign."
+            )
+
+        compiled = blueprint_execution_plan_service.compile(
+            mission_id=mission.id,
+            blueprint_id=blueprint.id,
+            blueprint_version=blueprint.version,
+            mission_country=MissionCountryIdentity(
+                country_code=mission.country_code,
+                country_name=mission.country_name,
+                country_iso3=mission.country_iso3,
+                continent=mission.continent,
+            ),
+            structured_blueprint=blueprint.structured_blueprint,
+        )
+        compiled_at = datetime.now(UTC)
 
         execution = ScrapingExecution(
             organization_id=auth.org_id,
@@ -116,10 +138,16 @@ class ScrapingExecutionService:
             mode="mock",
             execution_origin="mission_campaign_mock",
             blueprint_version_snapshot=blueprint.version,
+            blueprint_snapshot_json=compiled.blueprint_snapshot_json,
+            frozen_execution_plan_json=compiled.frozen_execution_plan_json,
+            execution_plan_schema_version=compiled.execution_plan_schema_version,
+            execution_plan_hash=compiled.execution_plan_hash,
+            execution_plan_compiled_at=compiled_at,
             created_by=auth.user.id,
             status=ScrapingExecutionStatus.QUEUED,
             country_code=mission.country_code,
             country_name=mission.country_name,
+            regions_total=len(compiled.frozen_execution_plan.regions),
         )
         db.add(execution)
         try:
@@ -135,6 +163,8 @@ class ScrapingExecutionService:
                     "worker": "run_mission_campaign_mock",
                     "blueprint_id": mission.active_blueprint_id,
                     "blueprint_version_snapshot": blueprint.version,
+                    "execution_plan_schema_version": compiled.execution_plan_schema_version,
+                    "execution_plan_hash": compiled.execution_plan_hash,
                     "provenance": "local_deterministic_mock",
                     "external_calls": False,
                     "facility_generation": False,
@@ -760,6 +790,9 @@ class ScrapingExecutionService:
             mode=execution.mode,
             execution_origin=execution.execution_origin,
             blueprint_version_snapshot=execution.blueprint_version_snapshot,
+            execution_plan_schema_version=execution.execution_plan_schema_version,
+            execution_plan_hash=execution.execution_plan_hash,
+            execution_plan_compiled_at=execution.execution_plan_compiled_at,
             created_by=execution.created_by,
             status=execution.status.value,
             status_label=execution_outcome_label(execution.status, execution.coverage_debt),

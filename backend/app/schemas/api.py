@@ -646,6 +646,9 @@ class ScrapingExecutionSummary(BaseModel):
     mode: str
     execution_origin: str
     blueprint_version_snapshot: int | None = None
+    execution_plan_schema_version: str | None = None
+    execution_plan_hash: str | None = None
+    execution_plan_compiled_at: datetime | None = None
     created_by: str | None = None
     status: str
     status_label: str

@@ -646,6 +646,13 @@ class ScrapingExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
     execution_origin: Mapped[str] = mapped_column(String(32), default="legacy_pipeline", nullable=False)
     blueprint_version_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blueprint_snapshot_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    frozen_execution_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    execution_plan_schema_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    execution_plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_plan_compiled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     status: Mapped[ScrapingExecutionStatus] = mapped_column(
         Enum(

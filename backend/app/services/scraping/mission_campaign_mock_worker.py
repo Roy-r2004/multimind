@@ -9,6 +9,11 @@ from sqlalchemy.orm import selectinload
 
 from app.db.models import ScrapingBlueprintStatus, ScrapingExecution, ScrapingExecutionStatus
 from app.db.session import AsyncSessionLocal
+from app.schemas.scraping_execution_plan import (
+    EXECUTION_PLAN_SCHEMA_VERSION,
+    FrozenExecutionPlan,
+)
+from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 from app.services.scraping.execution_service import execution_service
 
 STAGES = (
@@ -36,25 +41,7 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
             return
         if execution.status != ScrapingExecutionStatus.QUEUED:
             return
-        blueprint = execution.blueprint
-        if (
-            blueprint is None
-            or blueprint.status != ScrapingBlueprintStatus.APPROVED
-            or execution.blueprint_version_snapshot != blueprint.version
-        ):
-            execution.status = ScrapingExecutionStatus.FAILED
-            execution.completed_at = datetime.now(UTC)
-            execution.error_message = (
-                "Campaign blueprint provenance no longer matches its snapshot."
-            )
-            await execution_service.emit_event(
-                db,
-                execution.id,
-                "mission_campaign_failed",
-                "Mission campaign failed provenance validation before execution.",
-                metadata={"provenance": "local_deterministic_mock", "external_calls": False},
-            )
-            await db.commit()
+        if not await _validate_campaign_provenance(db, execution):
             return
         claimed = await db.execute(
             update(ScrapingExecution)
@@ -72,12 +59,19 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
             await db.rollback()
             return
         await db.refresh(execution)
+        snapshot_version = (
+            execution.blueprint_version_snapshot
+            if execution.blueprint_version_snapshot is not None
+            else (execution.blueprint.version if execution.blueprint is not None else None)
+        )
         execution.country_profile_json = {
             "phase": "mission_campaign",
             "provenance": "local_deterministic_mock",
             "blueprint_id": execution.blueprint_id,
-            "blueprint_version": blueprint.version,
+            "blueprint_version": snapshot_version,
             "blueprint_version_snapshot": execution.blueprint_version_snapshot,
+            "execution_plan_schema_version": execution.execution_plan_schema_version,
+            "execution_plan_hash": execution.execution_plan_hash,
             "external_calls": False,
             "facility_generation": False,
         }
@@ -137,6 +131,103 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
             },
         )
         await db.commit()
+
+
+async def _validate_campaign_provenance(db, execution: ScrapingExecution) -> bool:
+    """Validate campaign-owned frozen data, with legacy fallback for pre-026 rows."""
+    has_step1 = (
+        execution.frozen_execution_plan_json is not None
+        or execution.blueprint_snapshot_json is not None
+        or execution.execution_plan_hash is not None
+    )
+    if has_step1:
+        return await _validate_step1_provenance(db, execution)
+    return await _validate_legacy_provenance(db, execution)
+
+
+async def _validate_step1_provenance(db, execution: ScrapingExecution) -> bool:
+    if (
+        execution.blueprint_snapshot_json is None
+        or execution.frozen_execution_plan_json is None
+        or not execution.execution_plan_schema_version
+        or not execution.execution_plan_hash
+        or execution.blueprint_version_snapshot is None
+    ):
+        await _fail_provenance(
+            db,
+            execution,
+            "Campaign frozen execution plan provenance is incomplete.",
+        )
+        return False
+    if execution.execution_plan_schema_version != EXECUTION_PLAN_SCHEMA_VERSION:
+        await _fail_provenance(
+            db,
+            execution,
+            "Campaign frozen execution plan schema version is unsupported.",
+        )
+        return False
+    try:
+        plan = FrozenExecutionPlan.model_validate(execution.frozen_execution_plan_json)
+    except Exception:
+        await _fail_provenance(
+            db,
+            execution,
+            "Campaign frozen execution plan is invalid.",
+        )
+        return False
+    if plan.blueprint_id != execution.blueprint_id:
+        await _fail_provenance(
+            db,
+            execution,
+            "Campaign frozen execution plan blueprint id does not match provenance.",
+        )
+        return False
+    if plan.blueprint_version != execution.blueprint_version_snapshot:
+        await _fail_provenance(
+            db,
+            execution,
+            "Campaign frozen execution plan blueprint version does not match provenance.",
+        )
+        return False
+    recomputed = sha256_hex(plan.model_dump(mode="json"))
+    if recomputed != execution.execution_plan_hash:
+        await _fail_provenance(
+            db,
+            execution,
+            "Campaign frozen execution plan hash does not match stored provenance.",
+        )
+        return False
+    return True
+
+
+async def _validate_legacy_provenance(db, execution: ScrapingExecution) -> bool:
+    blueprint = execution.blueprint
+    if (
+        blueprint is None
+        or blueprint.status != ScrapingBlueprintStatus.APPROVED
+        or execution.blueprint_version_snapshot != blueprint.version
+    ):
+        await _fail_provenance(
+            db,
+            execution,
+            "Campaign blueprint provenance no longer matches its snapshot.",
+        )
+        return False
+    return True
+
+
+async def _fail_provenance(db, execution: ScrapingExecution, message: str) -> None:
+    execution.status = ScrapingExecutionStatus.FAILED
+    execution.completed_at = datetime.now(UTC)
+    execution.error_message = message
+    await execution_service.emit_event(
+        db,
+        execution.id,
+        "mission_campaign_failed",
+        "Mission campaign failed provenance validation before execution.",
+        metadata={"provenance": "local_deterministic_mock", "external_calls": False},
+    )
+    await db.commit()
 
 
 async def _load_execution(db, execution_id: str) -> ScrapingExecution | None:

@@ -25,6 +25,7 @@ from app.db.models import (
 )
 from app.services.scraping.blueprint_service import blueprint_service
 from app.services.scraping.execution_service import execution_service
+from test_country_blueprint_foundation import valid_structured_blueprint
 
 
 @pytest.fixture
@@ -151,6 +152,7 @@ async def test_same_mission_concurrent_campaign_starts_are_serialized(
             version=1,
             status=ScrapingBlueprintStatus.APPROVED,
             model_set_id="research-set",
+            structured_blueprint=valid_structured_blueprint(),
         )
         setup.add(blueprint)
         await setup.flush()
