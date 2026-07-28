@@ -1,8 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/cinematic/PageChrome";
-import { Modal } from "@/components/Modal";
 import { MissionStatusBadge } from "@/components/scraping/MissionStatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,19 +9,21 @@ import { ApiClientError } from "@/lib/api/client";
 import { useAuth } from "@/lib/auth";
 import {
   getScrapingMission,
+  listMissionCampaigns,
   listScrapingBlueprints,
-  listScrapingExecutions,
-  listScrapingRuns,
-  planScrapingTeam,
-  updateScrapingMission,
+  startMissionCampaign,
 } from "@/lib/scraping/api";
-import { countryLabel, SCRAPING_COUNTRIES } from "@/lib/scraping/countries";
+import { campaignStatusLabel, isCampaignPollingStatus } from "@/lib/scraping/campaignCockpit";
+import { countryLabel } from "@/lib/scraping/countries";
+import {
+  isMissionCampaignActive,
+  pickLatestMissionCampaign,
+} from "@/lib/scraping/missionHub";
 import type {
   ScrapingBlueprint,
+  ScrapingExecutionConflictDetails,
   ScrapingExecutionSummary,
   ScrapingMissionDetail,
-  ScrapingRunConflictDetails,
-  ScrapingRunSummary,
 } from "@/lib/scraping/types";
 
 export const Route = createFileRoute("/scraping/$missionId/")({
@@ -36,13 +37,10 @@ function ScrapingMissionPage() {
   const navigate = useNavigate();
   const [mission, setMission] = useState<ScrapingMissionDetail | null>(null);
   const [blueprints, setBlueprints] = useState<ScrapingBlueprint[]>([]);
-  const [runs, setRuns] = useState<ScrapingRunSummary[]>([]);
-  const [latestExecution, setLatestExecution] = useState<ScrapingExecutionSummary | null>(null);
+  const [campaigns, setCampaigns] = useState<ScrapingExecutionSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [planning, setPlanning] = useState(false);
-  const [showCountryModal, setShowCountryModal] = useState(false);
-  const [countryCode, setCountryCode] = useState("");
-  const [savingCountry, setSavingCountry] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
 
   const loadMission = useCallback(() => {
     const auth = authHeaders();
@@ -54,26 +52,19 @@ function ScrapingMissionPage() {
     void Promise.all([
       getScrapingMission(auth, missionId),
       listScrapingBlueprints(auth, missionId),
-      listScrapingRuns(auth, missionId),
+      listMissionCampaigns(auth, missionId),
     ])
-      .then(async ([missionResult, blueprintResult, runResult]) => {
+      .then(([missionResult, blueprintResult, campaignResult]) => {
         setMission(missionResult);
         setBlueprints(blueprintResult);
-        setRuns(runResult);
-        const preferredRun =
-          runResult.find((run) => run.blueprint_id === missionResult.active_blueprint_id) ??
-          runResult[0];
-        if (!preferredRun) {
-          setLatestExecution(null);
-          return;
-        }
-        const executions = await listScrapingExecutions(auth, preferredRun.id);
-        setLatestExecution(executions[0] ?? null);
+        setCampaigns(campaignResult);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load mission"));
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load mission"))
+      .finally(() => setLoading(false));
   }, [authHeaders, missionId, navigate]);
 
   useEffect(() => {
+    setLoading(true);
     loadMission();
   }, [loadMission]);
 
@@ -82,71 +73,51 @@ function ScrapingMissionPage() {
     return () => window.removeEventListener("scraping-missions-updated", loadMission);
   }, [loadMission]);
 
-  const activeApprovedBlueprint = mission
-    ? blueprints.find(
+  const activeApprovedBlueprint = useMemo(() => {
+    if (!mission?.active_blueprint_id) return null;
+    return (
+      blueprints.find(
         (blueprint) =>
           blueprint.id === mission.active_blueprint_id && blueprint.status === "approved",
-      )
-    : null;
-  const activeBlueprintRun = activeApprovedBlueprint
-    ? runs.find((run) => run.blueprint_id === activeApprovedBlueprint.id)
-    : null;
+      ) ?? null
+    );
+  }, [blueprints, mission]);
 
-  const resultsReady =
-    latestExecution &&
-    ["completed", "failed", "cancelled"].includes(latestExecution.status) &&
-    (latestExecution.records_verified > 0 ||
-      latestExecution.documents_found > 0 ||
-      latestExecution.sources_discovered > 0);
-  const scrapeRunning =
-    latestExecution &&
-    ["queued", "running", "cancel_requested"].includes(latestExecution.status);
+  const latestBlueprint = blueprints[0] ?? null;
+  const latestCampaign = useMemo(() => pickLatestMissionCampaign(campaigns), [campaigns]);
+  const activeCampaign = useMemo(
+    () => campaigns.find((campaign) => isMissionCampaignActive(campaign.status)) ?? null,
+    [campaigns],
+  );
+  const featuredCampaign = activeCampaign ?? latestCampaign;
+  const canStartScrape = Boolean(activeApprovedBlueprint) && !activeCampaign;
 
-  async function handlePlanTeam() {
+  async function handleStartScrape() {
     const auth = authHeaders();
-    if (!auth) {
-      void navigate({ to: "/login" });
+    if (!auth || starting || !canStartScrape) {
+      if (!auth) void navigate({ to: "/login" });
       return;
     }
-    setPlanning(true);
+    setStarting(true);
     setError(null);
     try {
-      const run = await planScrapingTeam(auth, missionId);
+      const campaign = await startMissionCampaign(auth, missionId);
       void navigate({
-        to: "/scraping/$missionId/runs/$runId",
-        params: { missionId, runId: run.id },
+        to: "/scraping/$missionId/campaigns/$executionId",
+        params: { missionId, executionId: campaign.id },
       });
     } catch (err) {
-      const existingRun = existingRunConflictDetails(err);
-      if (existingRun) {
+      const existing = existingCampaignConflictDetails(err);
+      if (existing) {
         void navigate({
-          to: "/scraping/$missionId/runs/$runId",
-          params: { missionId, runId: existingRun.existing_run_id },
+          to: "/scraping/$missionId/campaigns/$executionId",
+          params: { missionId, executionId: existing.existing_execution_id },
         });
         return;
       }
-      setError(err instanceof Error ? err.message : "Failed to prepare the research pipeline");
+      setError(err instanceof Error ? err.message : "Failed to start the campaign.");
     } finally {
-      setPlanning(false);
-    }
-  }
-
-  async function handleSetCountry() {
-    const auth = authHeaders();
-    if (!auth || !mission) {
-      return;
-    }
-    setSavingCountry(true);
-    setError(null);
-    try {
-      const updated = await updateScrapingMission(auth, mission.id, { country_code: countryCode });
-      setMission(updated);
-      setShowCountryModal(false);
-      setCountryCode("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to set country");
-    } finally {
-      setSavingCountry(false);
+      setStarting(false);
     }
   }
 
@@ -156,226 +127,149 @@ function ScrapingMissionPage() {
         <PageHeader
           eyebrow="Scraping Mission"
           title={mission?.title ?? "Scraping Mission"}
-          description="Your scrape job — results first, setup second."
+          description={
+            mission
+              ? `${countryLabel(mission.country_code, mission.country_name)} · Blueprint-driven research campaign`
+              : "Blueprint-driven research campaign"
+          }
           action={
-            resultsReady && latestExecution ? (
-              <Link
-                to="/scraping/$missionId/executions/$executionId"
-                params={{ missionId, executionId: latestExecution.id }}
-                className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground"
-              >
-                View results
-              </Link>
-            ) : (
-              <Link
-                to="/scraping/$missionId/blueprint"
-                params={{ missionId }}
-                className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
-              >
-                Blueprint
-              </Link>
-            )
+            <Link
+              to="/scraping/$missionId/blueprint"
+              params={{ missionId }}
+              className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
+            >
+              Blueprint
+            </Link>
           }
         />
-        {error && <GlassCard className="mt-8 p-8 text-sm text-destructive">{error}</GlassCard>}
-        {!error && !mission && (
+
+        {loading && (
           <GlassCard className="mt-8 p-8 text-sm text-muted-foreground">
-            Loading mission...
+            Loading mission…
           </GlassCard>
         )}
-
-        {mission && resultsReady && latestExecution && (
-          <GlassCard className="mt-8 border-emerald-500/40 bg-emerald-500/10 p-6">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
-                <p className="text-lg font-semibold">Scrape results are ready</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {latestExecution.records_verified} facilities ·{" "}
-                  {latestExecution.documents_found} pages ·{" "}
-                  {latestExecution.sources_discovered} sources found
-                </p>
-              </div>
-              <Button
-                type="button"
-                size="lg"
-                onClick={() =>
-                  void navigate({
-                    to: "/scraping/$missionId/executions/$executionId",
-                    params: { missionId, executionId: latestExecution.id },
-                  })
-                }
-              >
-                Open results
-              </Button>
-            </div>
-          </GlassCard>
-        )}
-
-        {mission && scrapeRunning && latestExecution && (
-          <GlassCard className="mt-8 border-sky-500/40 bg-sky-500/10 p-6">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
-                <p className="text-lg font-semibold">Scrape is running…</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Watch live progress. Facilities appear when extraction finishes.
-                </p>
-              </div>
-              <Button
-                type="button"
-                onClick={() =>
-                  void navigate({
-                    to: "/scraping/$missionId/executions/$executionId",
-                    params: { missionId, executionId: latestExecution.id },
-                  })
-                }
-              >
-                Watch progress
-              </Button>
-            </div>
-          </GlassCard>
-        )}
+        {error && <GlassCard className="mt-8 p-5 text-sm text-destructive">{error}</GlassCard>}
 
         {mission && (
-          <GlassCard className="mt-6 p-6">
-            <div className="flex flex-wrap items-center gap-2">
-              <MissionStatusBadge status={mission.status} />
-              <Badge variant="outline">
-                {countryLabel(mission.country_code, mission.country_name)}
-              </Badge>
-              {!mission.country_code && (
+          <div className="mt-8 space-y-5">
+            <GlassCard className="p-6">
+              <div className="flex flex-wrap items-center gap-2">
+                <MissionStatusBadge status={mission.status} />
+                <Badge variant="outline">
+                  {countryLabel(mission.country_code, mission.country_name)}
+                </Badge>
+                {(activeApprovedBlueprint ?? latestBlueprint) && (
+                  <Badge variant="secondary">
+                    Blueprint v{(activeApprovedBlueprint ?? latestBlueprint)?.version}
+                    {activeApprovedBlueprint
+                      ? " · approved"
+                      : ` · ${latestBlueprint?.status ?? "draft"}`}
+                  </Badge>
+                )}
+              </div>
+              <p className="mt-3 text-sm text-muted-foreground">
+                {activeApprovedBlueprint
+                  ? "An approved Country Blueprint is ready. Start a campaign or open an existing one."
+                  : latestBlueprint
+                    ? "Review and approve a Country Blueprint before starting a campaign."
+                    : "Generate a Country Blueprint to begin."}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
                 <Button
                   type="button"
                   variant="outline"
-                  size="sm"
-                  onClick={() => setShowCountryModal(true)}
-                >
-                  Set Country
-                </Button>
-              )}
-            </div>
-            {mission.active_blueprint_version ? (
-              <p className="mt-3 text-xs text-muted-foreground">
-                Blueprint v{mission.active_blueprint_version}
-              </p>
-            ) : null}
-          </GlassCard>
-        )}
-
-        {mission && activeApprovedBlueprint && !activeBlueprintRun && (
-          <GlassCard className="mt-6 p-6">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
-                <h2 className="text-base font-semibold">Next: prepare scrape</h2>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Prepare the research pipeline, then start the campaign to get facility results.
-                </p>
-              </div>
-              <Button type="button" disabled={planning} onClick={() => void handlePlanTeam()}>
-                {planning ? "Preparing…" : "Continue"}
-              </Button>
-            </div>
-          </GlassCard>
-        )}
-
-        {mission &&
-          activeApprovedBlueprint &&
-          activeBlueprintRun &&
-          !resultsReady &&
-          !scrapeRunning && (
-            <GlassCard className="mt-6 p-6">
-              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <h2 className="text-base font-semibold">Ready to scrape</h2>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Start the scrape to search the web, extract facilities, and download Excel.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  disabled={activeBlueprintRun.status === "planning"}
                   onClick={() =>
                     void navigate({
-                      to: "/scraping/$missionId/runs/$runId",
-                      params: { missionId, runId: activeBlueprintRun.id },
+                      to: "/scraping/$missionId/blueprint",
+                      params: { missionId },
                     })
                   }
                 >
-                  {activeBlueprintRun.status === "planning" ? "Preparing…" : "Start scrape"}
+                  {activeApprovedBlueprint || latestBlueprint
+                    ? "Open blueprint"
+                    : "Generate blueprint"}
                 </Button>
+                {canStartScrape && (
+                  <Button
+                    type="button"
+                    disabled={starting}
+                    onClick={() => void handleStartScrape()}
+                  >
+                    {starting ? "Starting…" : "Start scrape"}
+                  </Button>
+                )}
               </div>
             </GlassCard>
-          )}
 
-        {mission && (
-          <details className="mt-6 rounded-xl border border-border bg-card/40 p-4 text-sm">
-            <summary className="cursor-pointer font-medium">Advanced / setup</summary>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Link
-                to="/scraping/$missionId/blueprint"
-                params={{ missionId }}
-                className="rounded-lg border border-border px-3 py-2"
-              >
-                Blueprint
-              </Link>
-              <Link
-                to="/scraping/$missionId/runs"
-                params={{ missionId }}
-                className="rounded-lg border border-border px-3 py-2"
-              >
-                All runs
-              </Link>
-            </div>
-          </details>
+            {featuredCampaign && (
+              <GlassCard className="p-6">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h2 className="text-base font-semibold">
+                      {activeCampaign ? "Active campaign" : "Latest campaign"}
+                    </h2>
+                    <p className="mt-2 text-sm capitalize text-muted-foreground">
+                      {campaignStatusLabel(featuredCampaign.status)}
+                      {featuredCampaign.blueprint_version_snapshot != null
+                        ? ` · Blueprint v${featuredCampaign.blueprint_version_snapshot}`
+                        : ""}
+                      {isCampaignPollingStatus(featuredCampaign.status)
+                        ? " · in progress"
+                        : ""}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={() =>
+                      void navigate({
+                        to: "/scraping/$missionId/campaigns/$executionId",
+                        params: { missionId, executionId: featuredCampaign.id },
+                      })
+                    }
+                  >
+                    Open campaign
+                  </Button>
+                </div>
+              </GlassCard>
+            )}
+
+            {campaigns.length > 0 && (
+              <GlassCard className="p-6">
+                <h2 className="text-base font-semibold">Campaign history</h2>
+                <div className="mt-4 space-y-2">
+                  {campaigns.map((campaign) => (
+                    <button
+                      key={campaign.id}
+                      type="button"
+                      className="flex w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent"
+                      onClick={() =>
+                        void navigate({
+                          to: "/scraping/$missionId/campaigns/$executionId",
+                          params: { missionId, executionId: campaign.id },
+                        })
+                      }
+                    >
+                      <span className="capitalize text-muted-foreground">
+                        {campaignStatusLabel(campaign.status)}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(campaign.created_at).toLocaleString()}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </GlassCard>
+            )}
+          </div>
         )}
       </div>
-      <Modal
-        open={showCountryModal}
-        onClose={savingCountry ? () => undefined : () => setShowCountryModal(false)}
-        title="Set Mission Country"
-        size="md"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            Set the country for this mission. One mission = one country.
-          </p>
-          <input
-            list="mission-country-options"
-            value={countryCode}
-            onChange={(event) => setCountryCode(event.target.value.toUpperCase())}
-            placeholder="Search country or enter code, e.g. LB"
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-          />
-          <datalist id="mission-country-options">
-            {SCRAPING_COUNTRIES.map((country) => (
-              <option key={country.code} value={country.code}>
-                {country.name}
-              </option>
-            ))}
-          </datalist>
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={savingCountry}
-              onClick={() => setShowCountryModal(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              disabled={savingCountry || !countryCode.trim()}
-              onClick={() => void handleSetCountry()}
-            >
-              {savingCountry ? "Saving..." : "Set Country"}
-            </Button>
-          </div>
-        </div>
-      </Modal>
     </AppShell>
   );
 }
 
-function existingRunConflictDetails(error: unknown): ScrapingRunConflictDetails | null {
+function existingCampaignConflictDetails(
+  error: unknown,
+): ScrapingExecutionConflictDetails | null {
   if (!(error instanceof ApiClientError) || error.status !== 409) {
     return null;
   }
@@ -383,12 +277,10 @@ function existingRunConflictDetails(error: unknown): ScrapingRunConflictDetails 
   if (
     typeof details !== "object" ||
     details === null ||
-    !("existing_run_id" in details) ||
-    !("existing_run_status" in details) ||
-    typeof details.existing_run_id !== "string" ||
-    typeof details.existing_run_status !== "string"
+    !("existing_execution_id" in details) ||
+    typeof details.existing_execution_id !== "string"
   ) {
     return null;
   }
-  return details as ScrapingRunConflictDetails;
+  return details as ScrapingExecutionConflictDetails;
 }

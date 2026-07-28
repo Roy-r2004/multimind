@@ -1,4 +1,9 @@
-import type { ScrapingEvent, ScrapingExecutionStatus } from "@/lib/scraping/types";
+import type {
+  ScrapingEvent,
+  ScrapingExecutionDetail,
+  ScrapingExecutionStatus,
+  ScrapingExecutionSummary,
+} from "@/lib/scraping/types";
 
 const ACTIVE_STATUSES = new Set<ScrapingExecutionStatus>([
   "queued",
@@ -28,6 +33,43 @@ export function latestCampaignSequence(events: ScrapingEvent[]) {
 
 export function campaignStatusLabel(status: ScrapingExecutionStatus) {
   return status.replaceAll("_", " ");
+}
+
+/** Cockpit control visibility derived from execution status (not stale can_* flags). */
+export function campaignActionFlags(
+  status: ScrapingExecutionStatus,
+  clarificationStatus?: string | null,
+): { canPause: boolean; canResume: boolean; canCancel: boolean } {
+  const humanReviewBlocked = clarificationStatus === "requires_human_review";
+  return {
+    canPause: status === "running",
+    // Operable resume: paused campaigns that are not blocked on blueprint human review.
+    canResume: status === "paused" && !humanReviewBlocked,
+    canCancel:
+      status === "queued" ||
+      status === "running" ||
+      status === "pause_requested" ||
+      status === "paused",
+  };
+}
+
+export function applyCampaignControlSummary(
+  detail: ScrapingExecutionDetail,
+  summary: ScrapingExecutionSummary,
+): ScrapingExecutionDetail {
+  const clarificationStatus =
+    summary.clarification_status ?? detail.execution.clarification_status;
+  const flags = campaignActionFlags(summary.status, clarificationStatus);
+  return {
+    ...detail,
+    execution: {
+      ...detail.execution,
+      ...summary,
+    },
+    can_pause: flags.canPause,
+    can_resume: flags.canResume,
+    can_cancel: flags.canCancel,
+  };
 }
 
 export function clarificationStatusLabel(status: string | null | undefined) {

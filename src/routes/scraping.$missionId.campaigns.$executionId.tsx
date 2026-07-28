@@ -13,6 +13,8 @@ import {
   resumeMissionCampaign,
 } from "@/lib/scraping/api";
 import {
+  applyCampaignControlSummary,
+  campaignActionFlags,
   campaignStatusLabel,
   clarificationNeedsReviewMessage,
   clarificationStatusLabel,
@@ -24,7 +26,11 @@ import {
   friendlyCampaignEventMessage,
   friendlyCampaignStageLabel,
 } from "@/lib/scraping/blueprintReviewPresentation";
-import type { ScrapingEvent, ScrapingExecutionDetail } from "@/lib/scraping/types";
+import type {
+  ScrapingEvent,
+  ScrapingExecutionDetail,
+  ScrapingExecutionSummary,
+} from "@/lib/scraping/types";
 
 const POLL_INTERVAL_MS = 2_000;
 
@@ -93,13 +99,20 @@ function MissionCampaignCockpit() {
   const execution = detail?.execution;
   const progress = Math.min(100, Math.max(0, execution?.progress_percent ?? 0));
   const history = useMemo(() => [...events].reverse(), [events]);
+  const actions = useMemo(
+    () =>
+      execution
+        ? campaignActionFlags(execution.status, execution.clarification_status)
+        : { canPause: false, canResume: false, canCancel: false },
+    [execution],
+  );
 
   async function control(
     action: (
       auth: { token: string; orgId: string },
       mission: string,
       campaign: string,
-    ) => Promise<unknown>,
+    ) => Promise<ScrapingExecutionSummary>,
   ) {
     const auth = authHeaders();
     if (!auth || acting) {
@@ -109,11 +122,16 @@ function MissionCampaignCockpit() {
     setActing(true);
     setError(null);
     try {
-      await action(auth, missionId, executionId);
-      await refresh();
+      const summary = await action(auth, missionId, executionId);
+      // Apply returned summary immediately so Resume/Pause/Cancel reflect persisted state
+      // without staying on "Updating…" while the worker acknowledges.
+      setDetail((current) => (current ? applyCampaignControlSummary(current, summary) : current));
+      setActing(false);
+      void refresh().catch((err) =>
+        setError(err instanceof Error ? err.message : "Failed to refresh campaign."),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Campaign control failed.");
-    } finally {
       setActing(false);
     }
   }
@@ -130,13 +148,22 @@ function MissionCampaignCockpit() {
               : "Follow research-pipeline campaign progress."
           }
           action={
-            <Link
-              to="/scraping/$missionId/blueprint"
-              params={{ missionId }}
-              className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
-            >
-              Blueprint
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                to="/scraping/$missionId"
+                params={{ missionId }}
+                className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
+              >
+                Back to mission
+              </Link>
+              <Link
+                to="/scraping/$missionId/blueprint"
+                params={{ missionId }}
+                className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium"
+              >
+                Blueprint
+              </Link>
+            </div>
           }
         />
         {loading && (
@@ -172,7 +199,7 @@ function MissionCampaignCockpit() {
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {detail.can_pause && (
+                  {actions.canPause && (
                     <Button
                       type="button"
                       variant="outline"
@@ -182,7 +209,7 @@ function MissionCampaignCockpit() {
                       {acting ? "Updating…" : "Pause"}
                     </Button>
                   )}
-                  {detail.can_resume && (
+                  {actions.canResume && (
                     <Button
                       type="button"
                       disabled={acting}
@@ -191,7 +218,7 @@ function MissionCampaignCockpit() {
                       {acting ? "Updating…" : "Resume"}
                     </Button>
                   )}
-                  {detail.can_cancel && (
+                  {actions.canCancel && (
                     <Button
                       type="button"
                       variant="destructive"
