@@ -201,6 +201,24 @@ class SourceCandidateStatus(str, enum.Enum):
     ACCEPTED = "accepted"
 
 
+class Phase5WorkKind(str, enum.Enum):
+    DIRECTORY_EXPANSION = "directory_expansion"
+    HTTP_RETRIEVAL = "http_retrieval"
+    FIRECRAWL_RETRIEVAL = "firecrawl_retrieval"
+    PLAYWRIGHT_RETRIEVAL = "playwright_retrieval"
+
+
+class Phase5WorkStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    RETRY_SCHEDULED = "retry_scheduled"
+    BLOCKED = "blocked"
+    REJECTED = "rejected"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class SourceRetrievalAttemptStatus(str, enum.Enum):
     SUCCEEDED = "succeeded"
     BLOCKED_BY_ROBOTS = "blocked_by_robots"
@@ -1417,6 +1435,8 @@ class ScrapingCrawlEdge(Base, UUIDPrimaryKeyMixin):
 
     __tablename__ = "scraping_crawl_edges"
     __table_args__ = (
+        UniqueConstraint("id", "organization_id", "execution_id",
+                         name="uq_crawl_edge_id_org_exec"),
         UniqueConstraint(
             "organization_id",
             "execution_id",
@@ -1520,6 +1540,243 @@ class ScrapingCrawlEdge(Base, UUIDPrimaryKeyMixin):
     )
 
 
+class ScrapingPhase5WorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Incrementally created Phase 5 action; never a preloaded campaign backlog."""
+
+    __tablename__ = "scraping_phase5_work_jobs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "execution_id", "fingerprint",
+                         name="uq_phase5_job_org_exec_fingerprint"),
+        UniqueConstraint("id", "organization_id", "execution_id",
+                         name="uq_phase5_job_id_org_exec"),
+        ForeignKeyConstraint(
+            ["crawl_node_id", "organization_id", "execution_id"],
+            ["scraping_crawl_nodes.id", "scraping_crawl_nodes.organization_id",
+             "scraping_crawl_nodes.execution_id"],
+            name="fk_phase5_job_node_org_exec", ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["source_candidate_id", "organization_id", "execution_id"],
+            ["scraping_source_candidates.id", "scraping_source_candidates.organization_id",
+             "scraping_source_candidates.execution_id"],
+            name="fk_phase5_job_candidate_org_exec", ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["crawl_edge_id", "organization_id", "execution_id"],
+            ["scraping_crawl_edges.id", "scraping_crawl_edges.organization_id",
+             "scraping_crawl_edges.execution_id"],
+            name="fk_phase5_job_edge_org_exec", ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["discovery_query_id", "organization_id", "execution_id"],
+            ["scraping_source_discovery_queries.id",
+             "scraping_source_discovery_queries.organization_id",
+             "scraping_source_discovery_queries.execution_id"],
+            name="fk_phase5_job_query_org_exec", ondelete="RESTRICT",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_phase5_job_attempt_count"),
+        CheckConstraint(
+            "work_kind IN ('directory_expansion','http_retrieval',"
+            "'firecrawl_retrieval','playwright_retrieval')",
+            name="ck_phase5_job_work_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending','running','succeeded','retry_scheduled',"
+            "'blocked','rejected','failed','cancelled')",
+            name="ck_phase5_job_status",
+        ),
+        CheckConstraint("max_attempts IS NULL OR max_attempts >= 1",
+                        name="ck_phase5_job_max_attempts"),
+        CheckConstraint("length(trim(fingerprint)) = 64",
+                        name="ck_phase5_job_fingerprint_len"),
+        CheckConstraint("lease_expires_at IS NULL OR claimed_at IS NULL OR "
+                        "lease_expires_at > claimed_at",
+                        name="ck_phase5_job_lease_after_claim"),
+        CheckConstraint(
+            "(work_kind = 'directory_expansion' AND selected_tool = 'directory_expansion') OR "
+            "(work_kind = 'http_retrieval' AND selected_tool = 'http') OR "
+            "(work_kind = 'firecrawl_retrieval' AND selected_tool = 'firecrawl') OR "
+            "(work_kind = 'playwright_retrieval' AND selected_tool = 'playwright')",
+            name="ck_phase5_job_kind_tool",
+        ),
+        CheckConstraint(
+            "(status = 'running' AND claim_token IS NOT NULL AND claimed_at IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(status <> 'running' AND claim_token IS NULL AND claimed_at IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name="ck_phase5_job_claim_state",
+        ),
+        CheckConstraint(
+            "(canonical_url IS NULL AND status = 'rejected' AND "
+            "last_error_category IS NOT NULL) OR canonical_url IS NOT NULL",
+            name="ck_phase5_job_unsafe_terminal",
+        ),
+        Index("ix_phase5_jobs_pending_claim", "organization_id", "execution_id",
+              "status", "next_retry_at", "requested_at"),
+        Index("ix_phase5_jobs_retry_schedule", "status", "next_retry_at"),
+        Index("ix_phase5_jobs_running_lease", "status", "lease_expires_at"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False)
+    source_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    crawl_node_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    crawl_edge_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    discovery_query_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    work_kind: Mapped[Phase5WorkKind] = mapped_column(Enum(Phase5WorkKind, values_callable=lambda e: [x.value for x in e], native_enum=False), nullable=False)
+    status: Mapped[Phase5WorkStatus] = mapped_column(Enum(Phase5WorkStatus, values_callable=lambda e: [x.value for x in e], native_enum=False), nullable=False, default=Phase5WorkStatus.PENDING)
+    original_url: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    selected_tool: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_category: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_result_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    operational_metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False,
+        comment="Sanitized Phase 5 operational allowlist; never public or raw provider data",
+    )
+
+
+class ScrapingPhase5RetrievalResult(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_phase5_retrieval_results"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "execution_id", "work_job_id",
+                         "result_fingerprint",
+                         name="uq_phase5_retrieval_resource"),
+        ForeignKeyConstraint(
+            ["work_job_id", "organization_id", "execution_id"],
+            ["scraping_phase5_work_jobs.id", "scraping_phase5_work_jobs.organization_id",
+             "scraping_phase5_work_jobs.execution_id"],
+            name="fk_phase5_retrieval_job_org_exec", ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["parent_crawl_edge_id", "organization_id", "execution_id"],
+            ["scraping_crawl_edges.id", "scraping_crawl_edges.organization_id",
+             "scraping_crawl_edges.execution_id"],
+            name="fk_phase5_retrieval_edge_org_exec", ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["source_document_id", "organization_id", "execution_id"],
+            ["scraping_source_documents.id", "scraping_source_documents.organization_id",
+             "scraping_source_documents.execution_id"],
+            name="fk_phase5_retrieval_document_org_exec", ondelete="RESTRICT",
+        ),
+        CheckConstraint("redirect_count >= 0", name="ck_phase5_retrieval_redirect_count"),
+        CheckConstraint("content_length IS NULL OR content_length >= 0",
+                        name="ck_phase5_retrieval_content_length"),
+        CheckConstraint(
+            "retrieval_method IN ('http_retrieval','firecrawl_retrieval',"
+            "'playwright_retrieval')",
+            name="ck_phase5_retrieval_method",
+        ),
+        CheckConstraint("result_ordinal >= 0", name="ck_phase5_retrieval_result_ordinal"),
+        CheckConstraint("length(trim(result_fingerprint)) = 64",
+                        name="ck_phase5_retrieval_result_fingerprint_len"),
+        Index("ix_phase5_retrieval_org_exec", "organization_id", "execution_id"),
+        Index("ix_phase5_retrieval_response_fingerprint", "response_fingerprint"),
+    )
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False)
+    work_job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    requested_url: Mapped[str] = mapped_column(Text, nullable=False)
+    final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_role: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    retrieval_method: Mapped[str] = mapped_column(String(64), nullable=False)
+    cache_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    redirect_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_storage_reference: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    source_document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    parent_crawl_edge_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_result_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    failure_category: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    operational_metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False,
+        comment="Sanitized Phase 5 operational allowlist; never public or raw provider data",
+    )
+
+
+class ScrapingDirectoryObservation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Unverified listing observation; intentionally separate from facility candidates."""
+    __tablename__ = "scraping_directory_observations"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "execution_id", "observation_fingerprint",
+                         name="uq_directory_observation_org_exec_fingerprint"),
+        ForeignKeyConstraint(
+            ["work_job_id", "organization_id", "execution_id"],
+            ["scraping_phase5_work_jobs.id", "scraping_phase5_work_jobs.organization_id",
+             "scraping_phase5_work_jobs.execution_id"],
+            name="fk_directory_observation_job_org_exec", ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["parent_directory_node_id", "organization_id", "execution_id"],
+            ["scraping_crawl_nodes.id", "scraping_crawl_nodes.organization_id",
+             "scraping_crawl_nodes.execution_id"],
+            name="fk_directory_observation_parent_node_org_exec", ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["emitted_profile_node_id", "organization_id", "execution_id"],
+            ["scraping_crawl_nodes.id", "scraping_crawl_nodes.organization_id",
+             "scraping_crawl_nodes.execution_id"],
+            name="fk_directory_observation_profile_node_org_exec",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["emitted_website_node_id", "organization_id", "execution_id"],
+            ["scraping_crawl_nodes.id", "scraping_crawl_nodes.organization_id",
+             "scraping_crawl_nodes.execution_id"],
+            name="fk_directory_observation_website_node_org_exec",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("listing_rank IS NULL OR listing_rank >= 1",
+                        name="ck_directory_observation_rank"),
+        CheckConstraint("length(trim(observation_fingerprint)) = 64",
+                        name="ck_directory_observation_fingerprint_len"),
+        Index("ix_directory_observations_org_exec", "organization_id", "execution_id"),
+        Index("ix_directory_observations_parent", "parent_directory_node_id"),
+    )
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False)
+    work_job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    observation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    displayed_facility_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    listing_page_url: Mapped[str] = mapped_column(Text, nullable=False)
+    profile_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    official_website_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    displayed_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    displayed_phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    displayed_region: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    displayed_city: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    directory_source: Mapped[str] = mapped_column(String(255), nullable=False)
+    listing_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    raw_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_payload_reference: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    parent_directory_node_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    emitted_profile_node_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    emitted_website_node_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    extraction_method: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ScrapingSourceRetrievalAttempt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "scraping_source_retrieval_attempts"
     __table_args__ = (
@@ -1609,6 +1866,8 @@ class ScrapingSourceRetrievalAttempt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class ScrapingSourceDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "scraping_source_documents"
     __table_args__ = (
+        UniqueConstraint("id", "organization_id", "execution_id",
+                         name="uq_source_document_id_org_exec"),
         UniqueConstraint(
             "organization_id",
             "source_candidate_id",

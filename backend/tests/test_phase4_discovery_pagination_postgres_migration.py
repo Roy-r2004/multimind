@@ -307,12 +307,15 @@ async def test_029_to_030_pagination_columns_and_surviving_backfill(
     finally:
         await connection.close()
 
-    await db.alembic("upgrade", "head")
+    await db.alembic("upgrade", "030")
+    current = await db.alembic("current")
+    assert "030" in current
+
+    # Repository head and target-database current answer different questions.
     heads = await db.alembic("heads")
-    assert "030" in heads
     head_lines = [line for line in heads.splitlines() if line.strip()]
-    assert any("030" in line for line in head_lines)
-    assert not any(line.strip().startswith("029") and "(head)" in line for line in head_lines)
+    assert any(line.strip().startswith("031") and "(head)" in line for line in head_lines)
+    assert not any(line.strip().startswith("030") and "(head)" in line for line in head_lines)
 
     connection = await db.connect()
     try:
@@ -452,6 +455,29 @@ async def test_029_to_030_pagination_columns_and_surviving_backfill(
             """,
             candidate_id,
         )
+
+        # Phase 4 pagination data and columns survive the linear 030 -> 031 upgrade.
+        await db.alembic("upgrade", "head")
+        current = await db.alembic("current")
+        assert "031" in current
+        survived = await connection.fetchrow(
+            """
+            SELECT next_page_number, pages_completed, last_page_result_count,
+                   last_page_fingerprint
+            FROM scraping_source_discovery_queries WHERE id = $1
+            """,
+            pending_id,
+        )
+        assert dict(survived) == {
+            "next_page_number": 3,
+            "pages_completed": 2,
+            "last_page_result_count": 10,
+            "last_page_fingerprint": "a" * 64,
+        }
+        assert await connection.fetchval(
+            "SELECT provider_page_number FROM scraping_source_candidates WHERE id = $1",
+            candidate_id,
+        ) == 2
 
         await db.alembic("downgrade", "029")
 

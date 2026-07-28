@@ -2,7 +2,7 @@
 
 Ephemeral-DB harness (same pattern as Slice 5/6):
 ``POSTGRES_TEST_ADMIN_URL`` creates/drops a unique ``page_slice7_*`` database;
-Alembic upgrades through **030** (head). Injected provider doubles only — no
+Alembic pins the temporary database to the Phase 4 boundary **030**. Injected provider doubles only — no
 real Serper/HTTP/DNS, and never the development database.
 
   docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm api-test \\
@@ -147,10 +147,10 @@ async def postgres_sessions() -> AsyncGenerator[async_sessionmaker[AsyncSession]
     engine = None
     try:
         # Slice 7 requires migration 030 pagination columns.
-        await harness.alembic("upgrade", "head")
-        heads = await harness.alembic("heads")
-        if "030" not in heads:
-            pytest.fail("Expected alembic head to include revision 030.")
+        await harness.alembic("upgrade", "030")
+        current = await harness.alembic("current")
+        if "030" not in current:
+            pytest.fail("Expected ephemeral database to be at revision 030.")
         engine = create_async_engine(
             url.replace("postgresql://", "postgresql+asyncpg://"),
             pool_size=5,
