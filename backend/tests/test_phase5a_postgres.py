@@ -38,12 +38,22 @@ from app.services.scraping.phase5_contracts import (
 )
 from app.services.scraping.phase5_job_service import (
     claim_batch,
+    complete_job,
     create_job_idempotently,
     persist_retrieval_result,
     persist_directory_observation,
     recover_expired_claims,
 )
+from app.services.scraping.phase5_retrieval_service import prepare_resource
 from phase5a_postgres_support import create_phase5_database, drop_phase5_database
+from phase5_postgres_fixtures import (
+    assert_claim_live,
+    assert_concurrent_retrieval_persistence,
+    assert_retrieval_persistence,
+    fetch_database_now,
+    seed_phase5_retrieval_bundle,
+    _persist_owned_source_document,
+)
 from test_phase4_discovery_results_postgres import _add_running_query, _seed_v2_campaign
 
 NOW = datetime(2026, 7, 28, 12, tzinfo=UTC)
@@ -54,7 +64,7 @@ async def phase5_sessions() -> AsyncGenerator[async_sessionmaker[AsyncSession], 
     db = await create_phase5_database()
     engine = None
     try:
-        await db.alembic("upgrade", "031")
+        await db.alembic("upgrade", "032")
         engine = create_async_engine(db.url.replace("postgresql://", "postgresql+asyncpg://"))
         yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     finally:
@@ -76,6 +86,48 @@ async def _seed_context(maker):
         session.add(node)
         await session.flush()
         return org.id, execution.id, node.id
+
+
+async def _seed_retrieval_ready_context(maker):
+    async with maker.begin() as session:
+        org, execution = await _seed_v2_campaign(session)
+        query = await _add_running_query(
+            session, org_id=org.id, execution_id=execution.id)
+        node = ScrapingCrawlNode(
+            organization_id=org.id, execution_id=execution.id,
+            canonical_url="https://docs.python.org/a",
+            canonical_url_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            hostname="docs.python.org", domain="python.org",
+            source_classification=CrawlNodeSourceClassification.DIRECTORY,
+            first_seen_at=NOW)
+        session.add(node)
+        await session.flush()
+        candidate = ScrapingSourceCandidate(
+            organization_id=org.id, execution_id=execution.id,
+            discovery_query_id=query.id, crawl_node_id=node.id, provider="serper",
+            rank=1, url=node.canonical_url, canonical_url=node.canonical_url,
+            domain="python.org", title="Directory", snippet="Listing",
+            country_code="LB", country_name="Lebanon", language_code="en",
+            language_name="English", source_category="directory",
+            initial_relevance_score=0.8, initial_trust_tier="medium",
+            status=SourceCandidateStatus.DISCOVERED, discovered_at=NOW,
+            metadata_json={})
+        session.add(candidate)
+        await session.flush()
+        return org.id, execution.id, node.id, candidate.id
+
+
+async def _claim_jobs(maker, org, execution, *, batch_size=1, lease_minutes=1,
+                      selected_tool=None, now=None):
+    async with maker.begin() as session:
+        claim_now = now or await fetch_database_now(session)
+        claimed = await claim_batch(
+            session, organization_id=org, execution_id=execution, now=claim_now,
+            lease_duration=timedelta(minutes=lease_minutes), batch_size=batch_size,
+            selected_tool=selected_tool)
+        for claim in claimed:
+            await assert_claim_live(session, claim)
+        return claim_now, claimed
 
 
 async def _seed_full_context(maker):
@@ -181,8 +233,9 @@ async def test_bounded_skip_locked_claims_do_not_overlap_and_isolate_tenants(
 
     async def claim():
         async with phase5_sessions.begin() as session:
+            claim_now = await fetch_database_now(session)
             return await claim_batch(
-                session, organization_id=org, execution_id=execution, now=NOW,
+                session, organization_id=org, execution_id=execution, now=claim_now,
                 lease_duration=timedelta(minutes=1), batch_size=2)
 
     left, right = await asyncio.gather(claim(), claim())
@@ -201,16 +254,19 @@ async def test_claim_predicate_groups_retry_due_with_tenant_and_safe_url_filters
         b = await create_job_idempotently(session, _job(org_b, execution_b, node_b))
         unsafe = await create_job_idempotently(
             session, _job(org_a, execution_a, node_a, url="http://127.0.0.1/private"))
+    async with phase5_sessions.begin() as session:
+        claim_now = await fetch_database_now(session)
         for record_id in (a.record_id, b.record_id):
             row = await session.get(ScrapingPhase5WorkJob, record_id)
             row.status = Phase5WorkStatus.RETRY_SCHEDULED
-            row.next_retry_at = NOW
+            row.next_retry_at = claim_now
         unsafe_row = await session.get(ScrapingPhase5WorkJob, unsafe.record_id)
         assert unsafe_row.status is Phase5WorkStatus.REJECTED
         assert unsafe_row.canonical_url is None
     async with phase5_sessions.begin() as session:
+        claim_now = await fetch_database_now(session)
         claimed = await claim_batch(
-            session, organization_id=org_a, execution_id=execution_a, now=NOW,
+            session, organization_id=org_a, execution_id=execution_a, now=claim_now,
             lease_duration=timedelta(minutes=1), batch_size=10)
     assert {job.id for job in claimed} == {a.record_id}
     assert all(job.organization_id == org_a and job.execution_id == execution_a
@@ -226,33 +282,34 @@ async def test_retry_timing_expired_recovery_active_protection_and_terminal_excl
         result = await create_job_idempotently(session, _job(org, execution, node))
         job = await session.get(ScrapingPhase5WorkJob, result.record_id)
         job.status = Phase5WorkStatus.RETRY_SCHEDULED
-        job.next_retry_at = NOW + timedelta(minutes=5)
+        claim_now = await fetch_database_now(session)
+        job.next_retry_at = claim_now + timedelta(minutes=5)
     async with phase5_sessions.begin() as session:
         assert not await claim_batch(
-            session, organization_id=org, execution_id=execution, now=NOW,
+            session, organization_id=org, execution_id=execution, now=claim_now,
             lease_duration=timedelta(minutes=1), batch_size=10)
     async with phase5_sessions.begin() as session:
         job = await session.get(ScrapingPhase5WorkJob, result.record_id)
-        job.next_retry_at = NOW
+        job.next_retry_at = claim_now
     async with phase5_sessions.begin() as session:
         claimed = await claim_batch(
-            session, organization_id=org, execution_id=execution, now=NOW,
+            session, organization_id=org, execution_id=execution, now=claim_now,
             lease_duration=timedelta(minutes=1), batch_size=10)
         assert len(claimed) == 1
     async with phase5_sessions.begin() as session:
         assert await recover_expired_claims(
             session, organization_id=org, execution_id=execution,
-            now=NOW + timedelta(seconds=30)) == 0
+            now=claim_now + timedelta(seconds=30)) == 0
         assert await recover_expired_claims(
             session, organization_id=org, execution_id=execution,
-            now=NOW + timedelta(minutes=2)) == 1
+            now=claim_now + timedelta(minutes=2)) == 1
         job = await session.get(ScrapingPhase5WorkJob, result.record_id)
         job.status = Phase5WorkStatus.FAILED
         job.next_retry_at = None
     async with phase5_sessions.begin() as session:
         assert not await claim_batch(
             session, organization_id=org, execution_id=execution,
-            now=NOW + timedelta(minutes=3),
+            now=claim_now + timedelta(minutes=3),
             lease_duration=timedelta(minutes=1), batch_size=10)
 
 
@@ -272,8 +329,9 @@ async def test_unsafe_and_blocked_jobs_are_never_claimed(phase5_sessions):
         blocked_row.status = Phase5WorkStatus.BLOCKED
         blocked_row.last_error_category = "provider_unavailable"
     async with phase5_sessions.begin() as session:
+        claim_now = await fetch_database_now(session)
         assert not await claim_batch(
-            session, organization_id=org, execution_id=execution, now=NOW,
+            session, organization_id=org, execution_id=execution, now=claim_now,
             lease_duration=timedelta(minutes=1), batch_size=10)
 
 
@@ -281,38 +339,62 @@ async def test_unsafe_and_blocked_jobs_are_never_claimed(phase5_sessions):
 async def test_multi_result_replay_and_concurrent_result_collision_are_idempotent(
     phase5_sessions,
 ):
-    org, execution, node = await _seed_context(phase5_sessions)
+    org, execution, node, candidate = await _seed_retrieval_ready_context(phase5_sessions)
     async with phase5_sessions.begin() as session:
         created = await create_job_idempotently(session, _job(org, execution, node))
-    async with phase5_sessions.begin() as session:
-        claimed = (await claim_batch(
-            session, organization_id=org, execution_id=execution, now=NOW,
-            lease_duration=timedelta(minutes=5), batch_size=1))[0]
+    claim_now, claimed = await _claim_jobs(
+        phase5_sessions, org, execution, lease_minutes=5)
+    claimed_job = claimed[0]
 
-    def prepared(url, ordinal):
-        fingerprint = retrieval_result_fingerprint(
-            organization_id=org, execution_id=execution, work_job_id=claimed.id,
-            retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL, resource_url=url,
+    async def prepared(url, ordinal, body):
+        resource = prepare_resource(
+            requested_url=url, final_url=url, content_type="text/html",
+            body=body.encode(), retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL,
+            requested_at=claim_now, fetched_at=claim_now,
             resource_role="page", result_ordinal=ordinal)
+        async with phase5_sessions.begin() as session:
+            document = await _persist_owned_source_document(
+                session,
+                organization_id=org,
+                execution_id=execution,
+                source_candidate_id=candidate,
+                final_url=url,
+                content_type="text/html",
+                content_text=body,
+                fetched_at=claim_now,
+                idempotency_suffix=f"{claimed_job.id}:{ordinal}",
+            )
         return PreparedRetrievalResult(
-            job_id=claimed.id, organization_id=org, execution_id=execution,
-            requested_url=url, final_url=url,
-            retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL, fetched_at=NOW,
-            result_fingerprint=fingerprint, resource_role="page",
-            result_ordinal=ordinal)
+            job_id=claimed_job.id, organization_id=org, execution_id=execution,
+            requested_url=url, final_url=url, http_status=200,
+            content_type="text/html", content_length=len(body.encode()),
+            response_fingerprint=resource.response_fingerprint,
+            result_fingerprint=retrieval_result_fingerprint(
+                organization_id=org, execution_id=execution,
+                work_job_id=claimed_job.id,
+                retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL,
+                resource_url=url, resource_role="page", result_ordinal=ordinal),
+            resource_role="page", result_ordinal=ordinal,
+            retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL,
+            fetched_at=claim_now, source_document_id=document.id)
 
     async def persist(value):
         async with phase5_sessions.begin() as session:
             return await persist_retrieval_result(
-                session, claim_token=claimed.claim_token, result=value)
+                session, claim_token=claimed_job.claim_token, result=value)
 
-    first = prepared("https://docs.python.org/a", 0)
+    first = await prepared("https://docs.python.org/a", 0, "page-a")
     collision = await asyncio.gather(persist(first), persist(first))
-    assert len({x.record_id for x in collision}) == 1
-    await persist(prepared("https://docs.python.org/b", 1))
+    record_id = assert_concurrent_retrieval_persistence(collision)
+    second = await prepared("https://docs.python.org/b", 1, "page-b")
+    assert_retrieval_persistence(await persist(second))
     async with phase5_sessions() as session:
         assert await session.scalar(select(text(
             "count(*)")).select_from(ScrapingPhase5RetrievalResult)) == 2
+        rows = (await session.scalars(select(ScrapingPhase5RetrievalResult))).all()
+        document_ids = {row.source_document_id for row in rows}
+        assert len(document_ids) == 2
+        assert record_id in {row.id for row in rows}
 
 
 @pytest.mark.asyncio
@@ -320,19 +402,18 @@ async def test_stale_and_expired_tokens_cannot_persist_results(phase5_sessions):
     org, execution, node = await _seed_context(phase5_sessions)
     async with phase5_sessions.begin() as session:
         await create_job_idempotently(session, _job(org, execution, node))
-    async with phase5_sessions.begin() as session:
-        claimed = (await claim_batch(
-            session, organization_id=org, execution_id=execution, now=NOW,
-            lease_duration=timedelta(seconds=30), batch_size=1))[0]
+    claim_now, claimed = await _claim_jobs(
+        phase5_sessions, org, execution, lease_minutes=1)
+    claimed_job = claimed[0]
     fingerprint = retrieval_result_fingerprint(
-        organization_id=org, execution_id=execution, work_job_id=claimed.id,
+        organization_id=org, execution_id=execution, work_job_id=claimed_job.id,
         retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL,
         resource_url="https://docs.python.org/a", resource_role="page",
         result_ordinal=0)
     prepared = PreparedRetrievalResult(
-        job_id=claimed.id, organization_id=org, execution_id=execution,
+        job_id=claimed_job.id, organization_id=org, execution_id=execution,
         requested_url="https://docs.python.org/a",
-        retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL, fetched_at=NOW,
+        retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL, fetched_at=claim_now,
         result_fingerprint=fingerprint, resource_role="page", result_ordinal=0)
     async with phase5_sessions.begin() as session:
         assert (await persist_retrieval_result(
@@ -343,10 +424,10 @@ async def test_stale_and_expired_tokens_cannot_persist_results(phase5_sessions):
                SET claimed_at = clock_timestamp() - interval '2 minutes',
                    lease_expires_at = clock_timestamp() - interval '1 minute'
                WHERE id = :id"""),
-            {"id": claimed.id})
+            {"id": claimed_job.id})
     async with phase5_sessions.begin() as session:
         assert (await persist_retrieval_result(
-            session, claim_token=claimed.claim_token, result=prepared)).outcome == "stale_claim"
+            session, claim_token=claimed_job.claim_token, result=prepared)).outcome == "stale_claim"
         assert await session.scalar(select(text(
             "count(*)")).select_from(ScrapingPhase5RetrievalResult)) == 0
 
@@ -356,50 +437,68 @@ async def test_invalid_lease_chronology_is_rejected_by_database(phase5_sessions)
     org, execution, node = await _seed_context(phase5_sessions)
     async with phase5_sessions.begin() as session:
         await create_job_idempotently(session, _job(org, execution, node))
-    async with phase5_sessions.begin() as session:
-        claimed = (await claim_batch(
-            session, organization_id=org, execution_id=execution, now=NOW,
-            lease_duration=timedelta(minutes=1), batch_size=1))[0]
+    claim_now, claimed = await _claim_jobs(phase5_sessions, org, execution)
+    claimed_job = claimed[0]
     async with phase5_sessions() as session:
         with pytest.raises(IntegrityError, match="ck_phase5_job_lease_after_claim"):
             await session.execute(text(
                 """UPDATE scraping_phase5_work_jobs
                    SET lease_expires_at = claimed_at
-                   WHERE id = :id"""), {"id": claimed.id})
+                   WHERE id = :id"""), {"id": claimed_job.id})
         await session.rollback()
 
 
 @pytest.mark.asyncio
 async def test_observation_replay_and_concurrent_collision_are_idempotent(phase5_sessions):
-    org, execution, node = await _seed_context(phase5_sessions)
-    prepared_job = _job(
-        org, execution, node, kind=Phase5WorkKind.DIRECTORY_EXPANSION,
-        tool="directory_expansion")
+    context = await _seed_full_context(phase5_sessions)
+    org, execution, node = context["org"], context["execution"], context["node"]
+    listing_url = "https://docs.python.org/directory"
+    bundle = await seed_phase5_retrieval_bundle(
+        phase5_sessions,
+        organization_id=org,
+        execution_id=execution,
+        crawl_node_id=node,
+        source_candidate_id=context["candidate"],
+        listing_url=listing_url,
+        decoded_content="directory listing",
+        content_type="text/html",
+    )
+    prepared_job = prepare_phase5_job(
+        organization_id=org, execution_id=execution, crawl_node_id=node,
+        original_url=listing_url,
+        source_classification="directory",
+        work_kind=Phase5WorkKind.DIRECTORY_EXPANSION,
+        selected_tool="directory_expansion",
+        requested_at=bundle.claim.lease_expires_at - timedelta(minutes=4),
+        input_retrieval_result_id=bundle.retrieval_result_id,
+        input_source_document_id=bundle.source_document_id,
+        input_content_fingerprint=bundle.content_fingerprint,
+        input_retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL)
     async with phase5_sessions.begin() as session:
         await create_job_idempotently(session, prepared_job)
-    async with phase5_sessions.begin() as session:
-        claimed = (await claim_batch(
-            session, organization_id=org, execution_id=execution, now=NOW,
-            lease_duration=timedelta(minutes=5), batch_size=1))[0]
+    claim_now, claimed = await _claim_jobs(
+        phase5_sessions, org, execution, lease_minutes=5,
+        selected_tool="directory_expansion")
+    claimed_job = claimed[0]
     identity = {
         "organization_id": org, "execution_id": execution,
         "parent_directory_node_id": node,
-        "listing_page_url": "https://docs.python.org/a",
+        "listing_page_url": listing_url,
         "profile_url": "https://docs.python.org/profile",
         "listing_rank": 1,
     }
     observation = PreparedDirectoryObservation(
-        organization_id=org, execution_id=execution, work_job_id=claimed.id,
+        organization_id=org, execution_id=execution, work_job_id=claimed_job.id,
         displayed_facility_name="Example", listing_page_url=identity["listing_page_url"],
         profile_url=identity["profile_url"], directory_source="Example directory",
         listing_rank=1, parent_directory_node_id=node,
-        extraction_method="structured_payload", observed_at=NOW,
+        extraction_method="structured_payload", observed_at=claim_now,
         observation_fingerprint=directory_observation_fingerprint(**identity))
 
     async def persist():
         async with phase5_sessions.begin() as session:
             return await persist_directory_observation(
-                session, claim_token=claimed.claim_token, observation=observation)
+                session, claim_token=claimed_job.claim_token, observation=observation)
 
     results = await asyncio.gather(persist(), persist())
     assert len({x.record_id for x in results}) == 1

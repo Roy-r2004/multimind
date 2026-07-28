@@ -33,6 +33,10 @@ def _prepared():
         source_classification="directory",
         work_kind=Phase5WorkKind.DIRECTORY_EXPANSION,
         selected_tool="directory_expansion", requested_at=datetime(2026, 1, 1, tzinfo=UTC),
+        input_retrieval_result_id="retrieval-result",
+        input_source_document_id="source-document",
+        input_content_fingerprint="a" * 64,
+        input_retrieval_method=Phase5WorkKind.HTTP_RETRIEVAL,
     )
 
 
@@ -49,18 +53,25 @@ def test_work_kind_parsing_is_typed_and_unknown_fails_closed():
     (Phase5WorkKind.PLAYWRIGHT_RETRIEVAL, "playwright"),
 ])
 def test_work_kind_tool_combinations_are_explicit(kind, tool):
+    binding = ({
+        "input_retrieval_result_id": "retrieval-result",
+        "input_source_document_id": "source-document",
+        "input_content_fingerprint": "a" * 64,
+        "input_retrieval_method": Phase5WorkKind.HTTP_RETRIEVAL,
+    } if kind is Phase5WorkKind.DIRECTORY_EXPANSION else {})
     prepared = prepare_phase5_job(
         organization_id="o", execution_id="e", crawl_node_id="n",
         original_url="https://docs.python.org/a",
         source_classification="directory", work_kind=kind, selected_tool=tool,
-        requested_at=datetime.now(UTC))
+        requested_at=datetime.now(UTC), **binding)
     assert prepared.selected_tool == tool
     with pytest.raises(ValueError):
         prepare_phase5_job(
             organization_id="o", execution_id="e", crawl_node_id="n",
             original_url="https://docs.python.org/a",
             source_classification="directory", work_kind=kind,
-            selected_tool="contradictory", requested_at=datetime.now(UTC))
+            selected_tool="contradictory", requested_at=datetime.now(UTC),
+            **binding)
 
 
 def test_job_fingerprint_is_deterministic_and_reuses_phase4_canonicalization():

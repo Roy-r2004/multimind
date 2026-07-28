@@ -157,7 +157,28 @@ def test_phase4_slice1_model_metadata() -> None:
     }
     assert CrawlNodeSourceClassification.UNCLASSIFIED.value == "unclassified"
     assert len(CrawlNodeSourceClassification) == 11
-    assert len(CrawlEdgeRelationshipType) == 9
+    relationship_values = {
+        relationship.value for relationship in CrawlEdgeRelationshipType
+    }
+    phase4_relationships = {
+        "directory_to_profile",
+        "profile_to_official_site",
+        "official_site_to_contact_page",
+        "official_site_to_program_page",
+        "official_site_to_location_page",
+        "official_site_to_licensing_page",
+        "official_site_to_evidence_page",
+        "related_source",
+        "discovered_link",
+    }
+    assert phase4_relationships <= relationship_values
+    phase5_relationships = {
+        "directory_to_official_site",
+        "pagination",
+        "load_more",
+        "structured_api",
+    }
+    assert phase5_relationships <= relationship_values
 
     query_cols = {c.name for c in ScrapingSourceDiscoveryQuery.__table__.columns}
     for name in (

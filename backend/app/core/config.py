@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     source_retrieval_robots_policy: Literal["respect"] = "respect"
     source_retrieval_max_candidates_per_coverage_cell: int = 10
     source_retrieval_max_candidates_per_execution: int = 150
+    phase5_claim_batch_size: int = Field(default=10, ge=1, le=50)
+    phase5_lease_seconds: int = Field(default=120, ge=10, le=3600)
+    phase5_http_concurrency: int = Field(default=4, ge=1, le=32)
+    phase5_firecrawl_concurrency: int = Field(default=2, ge=1, le=16)
+    phase5_playwright_concurrency: int = Field(default=1, ge=1, le=8)
+    firecrawl_api_key: str | None = None
+    firecrawl_base_url: str = "https://api.firecrawl.dev/v1"
+    firecrawl_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    playwright_navigation_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    playwright_enabled: bool = False
 
     # Real facility extraction (worker-connected)
     facility_extraction_enabled: bool = True

@@ -19,6 +19,9 @@ from app.db.models import (
     ScrapingExecution,
     ScrapingPhase5RetrievalResult,
     ScrapingPhase5WorkJob,
+    ScrapingSourceDocument,
+    ScrapingSourceRetrievalAttempt,
+    SourceRetrievalAttemptStatus,
 )
 from app.services.scraping.source_discovery_claim_service import evaluate_claim_lifecycle
 from app.services.scraping.phase5_contracts import (
@@ -28,9 +31,97 @@ from app.services.scraping.phase5_contracts import (
     PreparedRetrievalResult,
     RetryableFailure,
     TerminalActionFailure,
+    retrieval_result_fingerprint,
 )
 
 MAX_CLAIM_BATCH = 50
+
+
+async def persist_retrieval_resources(
+    session: AsyncSession, *, claimed_job: ClaimedPhase5Job,
+    resources, completed_at: datetime,
+) -> list[Phase5PersistenceResult]:
+    """Atomically persist immutable documents and results behind a live claim."""
+    job = await _locked_claim(
+        session, claimed_job.id, claimed_job.organization_id,
+        claimed_job.execution_id, claimed_job.claim_token)
+    if job is None:
+        return [Phase5PersistenceResult(outcome="stale_claim")]
+    if job.work_kind.value not in {
+        "http_retrieval", "firecrawl_retrieval", "playwright_retrieval",
+    } or not job.source_candidate_id:
+        raise ValueError("retrieval persistence requires an owned source candidate")
+    outcomes: list[Phase5PersistenceResult] = []
+    for resource in resources:
+        if resource.retrieval_method.value != job.work_kind.value:
+            raise ValueError("retrieval resource method does not match claimed job")
+        attempt_key = f"phase5:{job.id}:{resource.result_ordinal}"
+        attempt = await session.scalar(select(ScrapingSourceRetrievalAttempt).where(
+            ScrapingSourceRetrievalAttempt.organization_id == job.organization_id,
+            ScrapingSourceRetrievalAttempt.idempotency_key == attempt_key))
+        if attempt is None:
+            attempt = ScrapingSourceRetrievalAttempt(
+                organization_id=job.organization_id, execution_id=job.execution_id,
+                source_candidate_id=job.source_candidate_id,
+                status=SourceRetrievalAttemptStatus.SUCCEEDED,
+                requested_url=resource.requested_url, final_url=resource.final_url,
+                redirect_count=resource.redirect_count, http_status=200,
+                content_type=resource.content_type,
+                declared_content_length=resource.content_length,
+                bytes_received=resource.content_length, started_at=resource.requested_at,
+                completed_at=resource.fetched_at, idempotency_key=attempt_key,
+                metadata_json={"retrieval_method": resource.retrieval_method.value,
+                               "resource_role": resource.resource_role})
+            session.add(attempt)
+            await session.flush()
+        document = await session.scalar(select(ScrapingSourceDocument).where(
+            ScrapingSourceDocument.retrieval_attempt_id == attempt.id))
+        if document is None:
+            document = ScrapingSourceDocument(
+                organization_id=job.organization_id, execution_id=job.execution_id,
+                source_candidate_id=job.source_candidate_id,
+                retrieval_attempt_id=attempt.id, final_url=resource.final_url,
+                content_type=resource.content_type, charset="utf-8",
+                content_sha256=resource.content_sha256,
+                content_text=resource.body.decode("utf-8", errors="replace"),
+                byte_size=resource.content_length,
+                retrieval_timestamp=resource.fetched_at,
+                metadata_json={
+                    "storage": "immutable_source_document",
+                    "retrieval_method": resource.retrieval_method.value,
+                    "action_type": (
+                        resource.action_type.value if resource.action_type else None),
+                    "continuation_state": resource.continuation_state,
+                })
+            session.add(document)
+            await session.flush()
+        result = PreparedRetrievalResult(
+            job_id=job.id, organization_id=job.organization_id,
+            execution_id=job.execution_id, requested_url=resource.requested_url,
+            final_url=resource.final_url, http_status=200,
+            content_type=resource.content_type, content_length=resource.content_length,
+            response_fingerprint=resource.response_fingerprint,
+            result_fingerprint=retrieval_result_fingerprint(
+                organization_id=job.organization_id,
+                execution_id=job.execution_id, work_job_id=job.id,
+                retrieval_method=resource.retrieval_method,
+                resource_url=resource.canonical_resource_url,
+                resource_role=resource.resource_role,
+                result_ordinal=resource.result_ordinal),
+            resource_role=resource.resource_role,
+            result_ordinal=resource.result_ordinal,
+            retrieval_method=resource.retrieval_method,
+            redirect_count=resource.redirect_count, fetched_at=resource.fetched_at,
+            source_document_id=document.id,
+            provider_request_id=resource.provider_request_id,
+            provider_result_status=resource.provider_result_status)
+        outcomes.append(await persist_retrieval_result(
+            session, claim_token=claimed_job.claim_token, result=result))
+    job.status = Phase5WorkStatus.SUCCEEDED
+    job.completed_at = completed_at
+    job.claim_token = job.claimed_at = job.lease_expires_at = None
+    await session.flush()
+    return outcomes
 
 
 @dataclass(frozen=True)
@@ -41,6 +132,19 @@ class ClaimedPhase5Job:
     work_kind: str
     selected_tool: str
     canonical_url: str
+    crawl_node_id: str
+    source_candidate_id: str | None
+    crawl_edge_id: str | None
+    discovery_query_id: str | None
+    input_retrieval_result_id: str | None
+    input_source_document_id: str | None
+    input_content_fingerprint: str | None
+    input_retrieval_method: str | None
+    next_entry_ordinal: int
+    entries_completed: int
+    parser_state_fingerprint: str | None
+    action_state_fingerprint: str | None
+    operational_metadata: dict
     claim_token: str
     lease_expires_at: datetime
 
@@ -64,6 +168,13 @@ async def create_job_idempotently(
         crawl_node_id=prepared.crawl_node_id,
         crawl_edge_id=prepared.crawl_edge_id,
         discovery_query_id=prepared.discovery_query_id,
+        input_retrieval_result_id=prepared.input_retrieval_result_id,
+        input_source_document_id=prepared.input_source_document_id,
+        input_content_fingerprint=prepared.input_content_fingerprint,
+        input_retrieval_method=(
+            prepared.input_retrieval_method.value
+            if prepared.input_retrieval_method else None),
+        action_state_fingerprint=prepared.action_state_fingerprint,
         original_url=prepared.original_url,
         canonical_url=prepared.canonical_url,
         source_classification=prepared.source_classification,
@@ -171,6 +282,19 @@ async def claim_batch(
             id=row.id, organization_id=row.organization_id,
             execution_id=row.execution_id, work_kind=row.work_kind.value,
             selected_tool=row.selected_tool, canonical_url=row.canonical_url,
+            crawl_node_id=row.crawl_node_id,
+            source_candidate_id=row.source_candidate_id,
+            crawl_edge_id=row.crawl_edge_id,
+            discovery_query_id=row.discovery_query_id,
+            input_retrieval_result_id=row.input_retrieval_result_id,
+            input_source_document_id=row.input_source_document_id,
+            input_content_fingerprint=row.input_content_fingerprint,
+            input_retrieval_method=row.input_retrieval_method,
+            next_entry_ordinal=row.next_entry_ordinal,
+            entries_completed=row.entries_completed,
+            parser_state_fingerprint=row.parser_state_fingerprint,
+            action_state_fingerprint=row.action_state_fingerprint,
+            operational_metadata=dict(row.operational_metadata_json or {}),
             claim_token=token, lease_expires_at=row.lease_expires_at,
         ))
     await session.flush()
@@ -326,6 +450,23 @@ async def record_terminal_failure(
     if job is None:
         return Phase5PersistenceResult(outcome="stale_claim")
     job.status = Phase5WorkStatus.FAILED
+    job.completed_at = completed_at
+    job.last_error_category = failure.category
+    job.last_error_message = failure.public_message
+    job.claim_token = job.claimed_at = job.lease_expires_at = None
+    await session.flush()
+    return Phase5PersistenceResult(outcome="persisted", record_id=job.id)
+
+
+async def record_blocked_failure(
+    session: AsyncSession, *, job_id: str, organization_id: str,
+    execution_id: str, claim_token: str, failure: TerminalActionFailure,
+    completed_at: datetime,
+) -> Phase5PersistenceResult:
+    job = await _locked_claim(session, job_id, organization_id, execution_id, claim_token)
+    if job is None:
+        return Phase5PersistenceResult(outcome="stale_claim")
+    job.status = Phase5WorkStatus.BLOCKED
     job.completed_at = completed_at
     job.last_error_category = failure.category
     job.last_error_message = failure.public_message

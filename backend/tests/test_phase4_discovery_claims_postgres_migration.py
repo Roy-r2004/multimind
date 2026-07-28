@@ -893,7 +893,7 @@ async def test_029_revision_chain(postgres_migration_database: PostgresMigration
     current = await db.alembic("current")
     assert "029" in current
 
-    # Repository heads reflect the latest linear revision (031), not only the DB current.
+    # Repository heads reflect the latest linear revision (032), not only the DB current.
     heads = await db.alembic("heads")
     head_lines = [line.strip() for line in heads.splitlines() if line.strip()]
     head_revisions = [
@@ -901,15 +901,18 @@ async def test_029_revision_chain(postgres_migration_database: PostgresMigration
         for line in head_lines
         if "(head)" in line and not line.startswith("INFO")
     ]
-    assert head_revisions == ["031"]
+    assert head_revisions == ["032"]
     assert not any(line.startswith("029") and "(head)" in line for line in head_lines)
 
     mig_029 = _load_migration_module("029_phase4_discovery_claims_and_crawl_graph.py")
     mig_030 = _load_migration_module("030_phase4_discovery_pagination.py")
     mig_031 = _load_migration_module("031_phase5_directory_retrieval_foundation.py")
+    mig_032 = _load_migration_module("032_phase5b_directory_graph_relationships.py")
     assert mig_029.revision == "029"
     assert mig_029.down_revision == "028"
     assert mig_030.revision == "030"
     assert mig_030.down_revision == "029"
     assert mig_031.revision == "031"
     assert mig_031.down_revision == "030"
+    assert mig_032.revision == "032"
+    assert mig_032.down_revision == "031"

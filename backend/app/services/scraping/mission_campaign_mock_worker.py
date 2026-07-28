@@ -26,6 +26,7 @@ from app.services.scraping.query_generation_service import query_generation_serv
 from app.services.scraping.source_discovery_execution_service import (
     source_discovery_execution_service,
 )
+from app.services.scraping.phase5_execution_service import phase5_execution_service
 
 STAGES = (
     ("discovery", "Discovery checkpoint", "Gemini Deep Research"),
@@ -221,7 +222,9 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
                 return
 
             # Schema-v2: real Phase 4 discovery — never mock STAGES / later phases.
-            await _run_phase4_web_discovery(execution)
+            phase4 = await _run_phase4_web_discovery(execution)
+            if getattr(phase4, "outcome", None) == "completed":
+                await _run_phase5_work(execution)
             return
 
         for index, (stage, label, provider) in enumerate(STAGES, start=1):
@@ -270,16 +273,62 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
         await db.commit()
 
 
-async def _run_phase4_web_discovery(execution: ScrapingExecution) -> None:
+async def _run_phase4_web_discovery(execution: ScrapingExecution):
     """Invoke the dedicated Phase 4 orchestration service for schema-v2 campaigns.
 
     Uses the same execution ID. Orchestration owns pause/cancel/completion events.
     Does not call SourceDiscoveryService.discover, the LLM planner, or mock STAGES.
     """
-    await source_discovery_execution_service.run_discovery_work_slice(
+    return await source_discovery_execution_service.run_discovery_work_slice(
         execution.organization_id,
         execution.id,
     )
+
+
+async def _run_phase5_work(execution: ScrapingExecution) -> None:
+    """Run one bounded Phase 5 slice and queue only when runnable work remains."""
+    summary = await phase5_execution_service.run_work_slice(
+        execution.organization_id, execution.id)
+    async with AsyncSessionLocal.begin() as db:
+        row = await db.scalar(select(ScrapingExecution).where(
+            ScrapingExecution.id == execution.id,
+            ScrapingExecution.organization_id == execution.organization_id).with_for_update())
+        if row is None or row.status in {
+            ScrapingExecutionStatus.CANCELLED, ScrapingExecutionStatus.FAILED,
+        }:
+            return
+        row.current_stage = "phase5_retrieval"
+        row.current_stage_label = "Phase 5 retrieval"
+        row.completed_at = None
+        if summary["ready_for_review"]:
+            row.status = ScrapingExecutionStatus.PAUSED
+            row.paused_at = datetime.now(UTC)
+            row.latest_message = "Phase 5 complete and paused for review."
+            await execution_service.emit_event(
+                db, row.id, "phase5_ready_for_review",
+                "Phase 5 completed and paused before Phase 6.",
+                metadata={
+                    "retrieval_results": summary["retrieval_results"],
+                    "expansion_slices": summary["expansion_slices"],
+                    "blocked_work": summary["blocked_work"],
+                    "remaining_runnable": 0,
+                })
+        else:
+            row.status = ScrapingExecutionStatus.QUEUED
+            row.latest_message = "Phase 5 continuation queued."
+            await execution_service.emit_event(
+                db, row.id, "phase5_slice_completed",
+                "A bounded Phase 5 work slice completed.",
+                metadata={
+                    key: (value.isoformat() if isinstance(value, datetime) else value)
+                    for key, value in summary.items()
+                    if key not in {"ready_for_review"}
+                })
+    if not summary["ready_for_review"]:
+        await execution_service.enqueue_execution(
+            execution.id, job_name="run_mission_campaign_mock",
+            job_id=f"phase5-continuation:{execution.id}",
+            defer_until=summary.get("next_retry_at"))
 
 
 async def _validate_campaign_provenance(db, execution: ScrapingExecution) -> bool:

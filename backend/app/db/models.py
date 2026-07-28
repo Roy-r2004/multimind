@@ -185,7 +185,11 @@ class CrawlNodeSourceClassification(str, enum.Enum):
 
 class CrawlEdgeRelationshipType(str, enum.Enum):
     DIRECTORY_TO_PROFILE = "directory_to_profile"
+    DIRECTORY_TO_OFFICIAL_SITE = "directory_to_official_site"
     PROFILE_TO_OFFICIAL_SITE = "profile_to_official_site"
+    PAGINATION = "pagination"
+    LOAD_MORE = "load_more"
+    STRUCTURED_API = "structured_api"
     OFFICIAL_SITE_TO_CONTACT_PAGE = "official_site_to_contact_page"
     OFFICIAL_SITE_TO_PROGRAM_PAGE = "official_site_to_program_page"
     OFFICIAL_SITE_TO_LOCATION_PAGE = "official_site_to_location_page"
@@ -1449,6 +1453,7 @@ class ScrapingCrawlEdge(Base, UUIDPrimaryKeyMixin):
         CheckConstraint(
             "relationship_type IN ("
             "'directory_to_profile', 'profile_to_official_site', "
+            "'directory_to_official_site', 'pagination', 'load_more', 'structured_api', "
             "'official_site_to_contact_page', 'official_site_to_program_page', "
             "'official_site_to_location_page', 'official_site_to_licensing_page', "
             "'official_site_to_evidence_page', 'related_source', 'discovered_link'"
@@ -1574,6 +1579,19 @@ class ScrapingPhase5WorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
              "scraping_source_discovery_queries.execution_id"],
             name="fk_phase5_job_query_org_exec", ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["input_retrieval_result_id", "organization_id", "execution_id"],
+            ["scraping_phase5_retrieval_results.id",
+             "scraping_phase5_retrieval_results.organization_id",
+             "scraping_phase5_retrieval_results.execution_id"],
+            name="fk_phase5_job_input_retrieval_org_exec", ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["input_source_document_id", "organization_id", "execution_id"],
+            ["scraping_source_documents.id", "scraping_source_documents.organization_id",
+             "scraping_source_documents.execution_id"],
+            name="fk_phase5_job_input_document_org_exec", ondelete="RESTRICT",
+        ),
         CheckConstraint("attempt_count >= 0", name="ck_phase5_job_attempt_count"),
         CheckConstraint(
             "work_kind IN ('directory_expansion','http_retrieval',"
@@ -1611,10 +1629,31 @@ class ScrapingPhase5WorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "last_error_category IS NOT NULL) OR canonical_url IS NOT NULL",
             name="ck_phase5_job_unsafe_terminal",
         ),
+        CheckConstraint(
+            "next_entry_ordinal >= 0 AND entries_completed >= 0 AND "
+            "last_processed_slice_count >= 0",
+            name="ck_phase5_job_expansion_cursor",
+        ),
+        CheckConstraint(
+            "action_state_fingerprint IS NULL OR "
+            "length(trim(action_state_fingerprint)) = 64",
+            name="ck_phase5_job_action_state_fingerprint",
+        ),
+        CheckConstraint(
+            "work_kind <> 'directory_expansion' OR "
+            "(input_retrieval_result_id IS NOT NULL AND "
+            "input_source_document_id IS NOT NULL AND "
+            "input_content_fingerprint IS NOT NULL AND "
+            "length(trim(input_content_fingerprint)) = 64 AND "
+            "input_retrieval_method IN "
+            "('http_retrieval','firecrawl_retrieval','playwright_retrieval'))",
+            name="ck_phase5_job_directory_input",
+        ),
         Index("ix_phase5_jobs_pending_claim", "organization_id", "execution_id",
               "status", "next_retry_at", "requested_at"),
         Index("ix_phase5_jobs_retry_schedule", "status", "next_retry_at"),
         Index("ix_phase5_jobs_running_lease", "status", "lease_expires_at"),
+        Index("ix_phase5_jobs_input_retrieval", "input_retrieval_result_id"),
     )
 
     organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
@@ -1623,6 +1662,11 @@ class ScrapingPhase5WorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     crawl_node_id: Mapped[str] = mapped_column(String(36), nullable=False)
     crawl_edge_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     discovery_query_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    input_retrieval_result_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    input_source_document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    input_content_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_retrieval_method: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    action_state_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     work_kind: Mapped[Phase5WorkKind] = mapped_column(Enum(Phase5WorkKind, values_callable=lambda e: [x.value for x in e], native_enum=False), nullable=False)
     status: Mapped[Phase5WorkStatus] = mapped_column(Enum(Phase5WorkStatus, values_callable=lambda e: [x.value for x in e], native_enum=False), nullable=False, default=Phase5WorkStatus.PENDING)
     original_url: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1643,6 +1687,19 @@ class ScrapingPhase5WorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     last_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_result_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    next_entry_ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entries_completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expansion_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_processed_slice_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expansion_parser_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    parser_state_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expansion_outcome: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    requires_managed_rendering: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    requires_browser_interaction: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    continuation_markers_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list,
+        comment="Sanitized Phase 5B continuation markers; safe observed/canonical URLs only",
+    )
     operational_metadata_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, default=dict, nullable=False,
         comment="Sanitized Phase 5 operational allowlist; never public or raw provider data",
@@ -1652,6 +1709,8 @@ class ScrapingPhase5WorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class ScrapingPhase5RetrievalResult(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "scraping_phase5_retrieval_results"
     __table_args__ = (
+        UniqueConstraint("id", "organization_id", "execution_id",
+                         name="uq_phase5_retrieval_id_org_exec"),
         UniqueConstraint("organization_id", "execution_id", "work_job_id",
                          "result_fingerprint",
                          name="uq_phase5_retrieval_resource"),

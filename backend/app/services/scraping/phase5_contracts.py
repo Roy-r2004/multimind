@@ -57,6 +57,11 @@ class PreparedPhase5Job(StrictContract):
     crawl_node_id: str
     crawl_edge_id: str | None = None
     discovery_query_id: str | None = None
+    input_retrieval_result_id: str | None = None
+    input_source_document_id: str | None = None
+    input_content_fingerprint: str | None = None
+    input_retrieval_method: Phase5WorkKind | None = None
+    action_state_fingerprint: str | None = None
     original_url: str
     canonical_url: str | None
     source_classification: str
@@ -65,6 +70,13 @@ class PreparedPhase5Job(StrictContract):
     fingerprint: str
     requested_at: datetime
     rejection_category: str | None = None
+
+    @field_validator("input_content_fingerprint", "action_state_fingerprint")
+    @classmethod
+    def input_fingerprint_is_sha256(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("input_content_fingerprint must be lowercase sha256 hex")
+        return value
 
 
 class Phase5ClaimResult(StrictContract):
@@ -206,11 +218,26 @@ def prepare_phase5_job(*, organization_id: str, execution_id: str,
                        selected_tool: str, requested_at: datetime,
                        source_candidate_id: str | None = None,
                        crawl_edge_id: str | None = None,
-                       discovery_query_id: str | None = None) -> PreparedPhase5Job:
+                       discovery_query_id: str | None = None,
+                       input_retrieval_result_id: str | None = None,
+                       input_source_document_id: str | None = None,
+                       input_content_fingerprint: str | None = None,
+                       input_retrieval_method: Phase5WorkKind | None = None,
+                       action_state_fingerprint: str | None = None,
+                       ) -> PreparedPhase5Job:
     """Canonicalize with the Phase 4 service; unsafe targets remain rejected, never fetchable."""
     expected_tool = WORK_KIND_TOOL.get(work_kind)
     if expected_tool is None or selected_tool != expected_tool:
         raise ValueError("selected_tool does not match work_kind")
+    if work_kind is Phase5WorkKind.DIRECTORY_EXPANSION:
+        if (not input_retrieval_result_id or not input_source_document_id or
+                not input_content_fingerprint or
+                input_retrieval_method not in {
+                    Phase5WorkKind.HTTP_RETRIEVAL,
+                    Phase5WorkKind.FIRECRAWL_RETRIEVAL,
+                    Phase5WorkKind.PLAYWRIGHT_RETRIEVAL,
+                }):
+            raise ValueError("directory expansion requires a bound retrieval representation")
     url = canonicalize_discovery_target(original_url)
     canonical = url.canonical_url if url.is_valid and url.is_statically_safe else None
     rejection = None if canonical else (url.error_code or "unsafe_url")
@@ -223,11 +250,23 @@ def prepare_phase5_job(*, organization_id: str, execution_id: str,
         "original_url": original_url if canonical is None else None,
         "work_kind": work_kind.value,
         "selected_tool": selected_tool,
+        "input_retrieval_result_id": input_retrieval_result_id,
+        "input_content_fingerprint": input_content_fingerprint,
+        "input_retrieval_method": (
+            input_retrieval_method.value if input_retrieval_method else None),
+        "action_state_fingerprint": (
+            None if work_kind is Phase5WorkKind.DIRECTORY_EXPANSION
+            else action_state_fingerprint),
     }
     return PreparedPhase5Job(
         organization_id=organization_id, execution_id=execution_id,
         source_candidate_id=source_candidate_id, crawl_node_id=crawl_node_id,
         crawl_edge_id=crawl_edge_id, discovery_query_id=discovery_query_id,
+        input_retrieval_result_id=input_retrieval_result_id,
+        input_source_document_id=input_source_document_id,
+        input_content_fingerprint=input_content_fingerprint,
+        input_retrieval_method=input_retrieval_method,
+        action_state_fingerprint=action_state_fingerprint,
         original_url=original_url, canonical_url=canonical,
         source_classification=source_classification, work_kind=work_kind,
         selected_tool=selected_tool, fingerprint=sha256_hex(payload),
