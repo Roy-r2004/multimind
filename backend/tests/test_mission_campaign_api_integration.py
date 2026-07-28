@@ -76,9 +76,21 @@ async def test_mission_campaign_routes_start_observe_pause_resume_and_cancel(
 
     row.status = ScrapingExecutionStatus.PAUSED
     await db.commit()
+
+    detail_paused = await client.get(f"{base}/{execution_id}")
+    assert detail_paused.status_code == 200
+    paused_body = detail_paused.json()
+    assert paused_body["execution"]["status"] == "paused"
+    assert paused_body["execution"]["completed_at"] is None
+    assert paused_body["can_resume"] is True
+    assert paused_body["can_pause"] is False
+    assert paused_body["can_cancel"] is True
+
     resumed = await client.post(f"{base}/{execution_id}/resume")
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "queued"
+    assert resumed.json()["id"] == execution_id
+    assert resumed.json()["completed_at"] is None
     assert queued[-1] == (execution_id, "run_mission_campaign_mock")
 
     cancelled = await client.post(f"{base}/{execution_id}/cancel")

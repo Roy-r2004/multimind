@@ -43,12 +43,37 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
         if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
             await _finish_cancelled(db, execution)
             return
+        if execution.status == ScrapingExecutionStatus.PAUSE_REQUESTED:
+            # Acknowledge a pause request left pending after worker stop/restart.
+            if _cancel_supersedes_pause(execution):
+                await _finish_cancelled(db, execution)
+            else:
+                execution.status = ScrapingExecutionStatus.PAUSED
+                execution.paused_at = execution.paused_at or datetime.now(UTC)
+                execution.completed_at = None
+                await execution_service.emit_event(
+                    db,
+                    execution.id,
+                    "execution_paused",
+                    "Mission campaign paused at a safe checkpoint.",
+                )
+                await db.commit()
+            return
+        if execution.status in {
+            ScrapingExecutionStatus.CANCELLED,
+            ScrapingExecutionStatus.COMPLETED,
+            ScrapingExecutionStatus.FAILED,
+        }:
+            return
         # Human-review pause must not continue into later stages on duplicate delivery.
         if (
             execution.status == ScrapingExecutionStatus.PAUSED
             and execution.clarification_status
             == ClarificationStatus.REQUIRES_HUMAN_REVIEW.value
         ):
+            return
+        if execution.status == ScrapingExecutionStatus.PAUSED:
+            # Non-review pauses resume only via the resume API (re-queue to QUEUED).
             return
         if execution.status != ScrapingExecutionStatus.QUEUED:
             return
@@ -136,9 +161,14 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
         # Historical v1/null executions keep mock-stage compatibility and never fall back
         # into the legacy LLM query planner from this worker.
         if supports_deterministic_query_generation(execution.execution_plan_schema_version):
+            if await _pause_or_cancel(db, execution):
+                return
             generation = await query_generation_service.generate_for_execution(
-                db, execution, discovery_round=1
+                db, execution, discovery_round=1, check_interrupt=_pause_or_cancel
             )
+            if generation.status == "interrupted":
+                # Pause/cancel already acknowledged inside check_interrupt.
+                return
             if generation.status != "ok":
                 execution.status = ScrapingExecutionStatus.FAILED
                 execution.completed_at = datetime.now(UTC)
@@ -158,6 +188,7 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
                         "generated_count": generation.generated_count,
                         "existing_count": generation.existing_count,
                         "total_count": generation.total_count,
+                        "expected_raw_count": generation.expected_raw_count,
                     },
                 )
                 await db.commit()
@@ -175,6 +206,7 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
                     "generated_count": generation.generated_count,
                     "existing_count": generation.existing_count,
                     "total_count": generation.total_count,
+                    "expected_raw_count": generation.expected_raw_count,
                 },
             )
             await db.commit()
@@ -336,15 +368,31 @@ async def _load_execution(db, execution_id: str) -> ScrapingExecution | None:
     return result.scalar_one_or_none()
 
 
+def _cancel_supersedes_pause(execution: ScrapingExecution) -> bool:
+    """Cancel wins when both request timestamps exist (or status is already cancel_requested)."""
+    if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
+        return True
+    if execution.cancel_requested_at is None:
+        return False
+    if execution.pause_requested_at is None:
+        return True
+    return execution.cancel_requested_at >= execution.pause_requested_at
+
+
 async def _pause_or_cancel(db, execution: ScrapingExecution) -> bool:
     await db.refresh(execution)
-    if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
+    if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED or (
+        execution.status == ScrapingExecutionStatus.PAUSE_REQUESTED
+        and _cancel_supersedes_pause(execution)
+    ):
         await _finish_cancelled(db, execution)
         return True
     if execution.status != ScrapingExecutionStatus.PAUSE_REQUESTED:
         return False
+    # Paused is non-terminal: never set completed_at.
     execution.status = ScrapingExecutionStatus.PAUSED
     execution.paused_at = datetime.now(UTC)
+    execution.completed_at = None
     await execution_service.emit_event(
         db, execution.id, "execution_paused", "Mission campaign paused at a safe checkpoint."
     )

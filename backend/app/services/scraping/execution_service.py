@@ -313,6 +313,7 @@ class ScrapingExecutionService:
             can_cancel=execution.status in {
                 ScrapingExecutionStatus.QUEUED,
                 ScrapingExecutionStatus.RUNNING,
+                ScrapingExecutionStatus.PAUSE_REQUESTED,
                 ScrapingExecutionStatus.PAUSED,
             },
             can_pause=execution.status == ScrapingExecutionStatus.RUNNING,
@@ -557,6 +558,16 @@ class ScrapingExecutionService:
     ) -> ScrapingExecutionSummary:
         execution = await self._mission_campaign_row(db, auth, mission_id, execution_id)
         if execution.status != ScrapingExecutionStatus.PAUSED:
+            if execution.status == ScrapingExecutionStatus.CANCELLED:
+                raise ConflictError("A cancelled mission campaign cannot be resumed.")
+            if execution.status == ScrapingExecutionStatus.COMPLETED:
+                raise ConflictError("A completed mission campaign cannot be resumed.")
+            if execution.status == ScrapingExecutionStatus.FAILED:
+                raise ConflictError("A failed mission campaign cannot be resumed.")
+            if execution.status == ScrapingExecutionStatus.RUNNING:
+                raise ConflictError("A running mission campaign cannot be resumed.")
+            if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
+                raise ConflictError("A campaign with cancellation in progress cannot be resumed.")
             raise ConflictError("Only a paused mission campaign can be resumed.")
         if execution.clarification_status == "requires_human_review":
             raise ConflictError(
@@ -564,9 +575,12 @@ class ScrapingExecutionService:
                 "Approve a revised blueprint and start a new campaign."
             )
         now = datetime.now(UTC)
+        # Non-terminal resume: keep paused_at / pause_requested_at as audit trail;
+        # never set completed_at. Re-queue the same execution for idempotent continuation.
         execution.status = ScrapingExecutionStatus.QUEUED
         execution.resumed_at = now
         execution.heartbeat_at = None
+        execution.completed_at = None
         await self.emit_event(
             db, execution.id, "execution_resumed", "Mission campaign resumed and queued."
         )

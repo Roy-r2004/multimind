@@ -13,6 +13,7 @@ from test_mission_campaign_lifecycle import _approved_mission_with_team_plan
 
 from app.core.dependencies import AuthContext
 from app.db.models import (
+    ScrapingEvent,
     ScrapingExecution,
     ScrapingExecutionStatus,
     ScrapingSourceDiscoveryQuery,
@@ -31,16 +32,27 @@ from app.services.scraping.blueprint_execution_plan_service import (
 )
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.query_generation_service import (
+    ADDICTION_FACILITY_TEMPLATES,
     PURPOSE_COMMERCIAL,
     PURPOSE_REGULATORY,
     PURPOSE_SEED,
     PRIORITY_SEED,
+    QUERY_FAMILY_ADDICTION,
+    QUERY_FAMILY_FACILITY,
+    QUERY_FAMILY_PRIVATE,
+    QUERY_FAMILY_REGULATORY,
+    QUERY_FAMILY_SEED,
+    REGULATORY_QUERY_TEMPLATES,
     SOURCE_CATEGORIES,
     QueryGenerationError,
     compose_expansion_query_text,
     compute_query_job_fingerprint,
+    estimate_legacy_cartesian_combination_count,
+    estimate_query_family_counts,
+    estimate_raw_combination_count,
     fingerprint_payload,
     generate_query_job_specs,
+    iter_query_job_specs,
     match_seed_language,
     normalize_display_text,
     normalize_identity_text,
@@ -73,17 +85,12 @@ def _compile_v2(payload: dict | None = None) -> FrozenExecutionPlanV2:
     return plan
 
 
-def _expected_expansion_count(plan: FrozenExecutionPlanV2) -> int:
-    scopes = 1 + len(plan.regions) + len(plan.important_cities)
-    return (
-        len(SOURCE_CATEGORIES)
-        * scopes
-        * len(plan.language_profiles)
-        * len(plan.local_terminology)
-        * len(plan.inpatient_residential_terminology)
-        * len(plan.private_paid_terminology)
-        * len(plan.addiction_categories)
-    )
+def _expected_family_counts(plan: FrozenExecutionPlanV2):
+    return estimate_query_family_counts(plan)
+
+
+def _expected_family_total(plan: FrozenExecutionPlanV2) -> int:
+    return estimate_raw_combination_count(plan)
 
 
 def test_compose_and_normalize_are_deterministic() -> None:
@@ -100,17 +107,19 @@ def test_compose_and_normalize_are_deterministic() -> None:
     assert normalize_display_text("  Café  Bar ") == "Café Bar"
 
 
-def test_generate_specs_ordering_cartesian_seeds_and_priorities() -> None:
+def test_generate_specs_ordering_families_seeds_and_priorities() -> None:
     plan = _compile_v2()
     plan_hash = sha256_hex(plan.model_dump(mode="json"))
     specs = generate_query_job_specs(plan, plan_hash=plan_hash, discovery_round=1)
+    counts = _expected_family_counts(plan)
 
-    seed_count = len(plan.query_seed_plan.seeds) * len(SOURCE_CATEGORIES)
-    assert len(specs) == seed_count + _expected_expansion_count(plan)
+    seed_count = counts.seed
+    assert len(specs) == counts.total
     assert all(spec.discovery_round == 1 for spec in specs)
     assert [spec.generation_ordinal for spec in specs] == list(range(len(specs)))
     assert all(s.purpose == PURPOSE_SEED for s in specs[:seed_count])
     assert all(s.priority == 100 for s in specs[:seed_count])
+    assert all(s.metadata_json.get("query_family") == QUERY_FAMILY_SEED for s in specs[:seed_count])
     assert specs[0].scope_level == "countrywide"
     assert specs[0].region_name is None
     assert specs[0].important_city is None
@@ -119,6 +128,22 @@ def test_generate_specs_ordering_cartesian_seeds_and_priorities() -> None:
     assert expansions[0].source_category == "regulatory"
     assert expansions[0].purpose == PURPOSE_REGULATORY
     assert expansions[0].priority == 200
+    assert expansions[0].metadata_json.get("query_family") == QUERY_FAMILY_REGULATORY
+
+    families = [s.metadata_json.get("query_family") for s in expansions]
+    # Stable family order after seeds.
+    family_order = [
+        QUERY_FAMILY_REGULATORY,
+        QUERY_FAMILY_FACILITY,
+        QUERY_FAMILY_PRIVATE,
+        QUERY_FAMILY_ADDICTION,
+    ]
+    seen_families = []
+    for family in families:
+        if not seen_families or seen_families[-1] != family:
+            seen_families.append(family)
+    assert seen_families == family_order
+
     city_jobs = [s for s in expansions if s.scope_level == "city"]
     assert city_jobs
     assert all(s.region_name == s.important_city or s.region_name for s in city_jobs)
@@ -132,6 +157,10 @@ def test_generate_specs_ordering_cartesian_seeds_and_priorities() -> None:
     assert commercial
     assert all(s.purpose == PURPOSE_COMMERCIAL for s in commercial)
     assert {s.priority for s in commercial} <= {300, 310, 320}
+    regulatory = [s for s in expansions if s.source_category == "regulatory"]
+    assert regulatory
+    assert all(s.purpose == PURPOSE_REGULATORY for s in regulatory)
+    assert {s.priority for s in regulatory} <= {200, 210, 220}
 
 
 def test_seed_wins_semantic_collision_and_identity_axes_remain_distinct() -> None:
@@ -900,6 +929,504 @@ def test_no_campaign_wide_query_cap_in_generator() -> None:
     plan = _compile_v2(payload)
     plan_hash = sha256_hex(plan.model_dump(mode="json"))
     specs = generate_query_job_specs(plan, plan_hash=plan_hash, discovery_round=1)
-    expected = len(plan.query_seed_plan.seeds) * 2 + _expected_expansion_count(plan)
+    expected = _expected_family_total(plan)
     assert len(specs) == expected
     assert expected > 100
+    # Must remain far below the legacy all-axis Cartesian product.
+    assert expected < estimate_legacy_cartesian_combination_count(plan)
+
+
+@pytest.mark.asyncio
+async def test_generation_stops_between_batches_on_cancel(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+) -> None:
+    import app.services.scraping.query_generation_service as qgs
+
+    mission, _ = await _approved_mission_with_team_plan(db, auth)
+    monkeypatch.setattr(execution_service, "enqueue_execution", AsyncMock())
+    summary = await execution_service.start_mission_campaign(db, auth, mission.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    execution.clarification_status = ClarificationStatus.NOT_REQUIRED.value
+    execution.status = ScrapingExecutionStatus.RUNNING
+    await db.commit()
+
+    batch_size = 2
+    monkeypatch.setattr(qgs, "INSERT_BATCH_SIZE", batch_size)
+
+    async def cancel_after_first_committed_batch(
+        session: AsyncSession, row: ScrapingExecution
+    ) -> bool:
+        # Trigger only after at least one batch has been persisted (post-commit path).
+        persisted = (
+            await session.execute(
+                select(func.count()).select_from(ScrapingSourceDiscoveryQuery).where(
+                    ScrapingSourceDiscoveryQuery.execution_id == row.id
+                )
+            )
+        ).scalar_one()
+        if int(persisted or 0) < batch_size:
+            return False
+        from datetime import UTC, datetime
+
+        row.status = ScrapingExecutionStatus.CANCEL_REQUESTED
+        row.cancel_requested_at = datetime.now(UTC)
+        await session.commit()
+        return await mission_campaign_mock_worker._pause_or_cancel(session, row)
+
+    result = await query_generation_service.generate_for_execution(
+        db, execution, discovery_round=1, check_interrupt=cancel_after_first_committed_batch
+    )
+    assert result.status == "interrupted"
+    assert result.interrupt_reason == "cancelled"
+    assert result.generated_count > 0
+    assert result.total_count == result.existing_count + result.generated_count
+
+    await db.refresh(execution)
+    assert execution.status == ScrapingExecutionStatus.CANCELLED
+    assert execution.completed_at is not None
+    count = (
+        await db.execute(
+            select(func.count()).select_from(ScrapingSourceDiscoveryQuery).where(
+                ScrapingSourceDiscoveryQuery.execution_id == execution.id
+            )
+        )
+    ).scalar_one()
+    assert count == result.total_count
+    events = (
+        await db.execute(
+            select(ScrapingEvent).where(ScrapingEvent.execution_id == execution.id)
+        )
+    ).scalars().all()
+    assert not any(event.event_type == "query_generation_completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_generation_pause_then_resume_is_idempotent(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+) -> None:
+    import app.services.scraping.query_generation_service as qgs
+
+    mission, _ = await _approved_mission_with_team_plan(db, auth)
+    monkeypatch.setattr(execution_service, "enqueue_execution", AsyncMock())
+    summary = await execution_service.start_mission_campaign(db, auth, mission.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    execution.clarification_status = ClarificationStatus.NOT_REQUIRED.value
+    execution.status = ScrapingExecutionStatus.RUNNING
+    await db.commit()
+
+    batch_size = 3
+    monkeypatch.setattr(qgs, "INSERT_BATCH_SIZE", batch_size)
+
+    async def pause_after_first_committed_batch(
+        session: AsyncSession, row: ScrapingExecution
+    ) -> bool:
+        persisted = (
+            await session.execute(
+                select(func.count()).select_from(ScrapingSourceDiscoveryQuery).where(
+                    ScrapingSourceDiscoveryQuery.execution_id == row.id
+                )
+            )
+        ).scalar_one()
+        if int(persisted or 0) < batch_size:
+            return False
+        from datetime import UTC, datetime
+
+        row.status = ScrapingExecutionStatus.PAUSE_REQUESTED
+        row.pause_requested_at = datetime.now(UTC)
+        await session.commit()
+        return await mission_campaign_mock_worker._pause_or_cancel(session, row)
+
+    paused = await query_generation_service.generate_for_execution(
+        db, execution, discovery_round=1, check_interrupt=pause_after_first_committed_batch
+    )
+    assert paused.status == "interrupted"
+    assert paused.interrupt_reason == "paused"
+    await db.refresh(execution)
+    assert execution.status == ScrapingExecutionStatus.PAUSED
+    assert execution.paused_at is not None
+    assert execution.completed_at is None
+    assert paused.generated_count > 0
+    assert paused.total_count == paused.existing_count + paused.generated_count
+    partial = paused.generated_count
+    paused_execution_id = execution.id
+
+    persisted_at_pause = (
+        await db.execute(
+            select(func.count()).select_from(ScrapingSourceDiscoveryQuery).where(
+                ScrapingSourceDiscoveryQuery.execution_id == execution.id
+            )
+        )
+    ).scalar_one()
+    assert persisted_at_pause == paused.total_count
+
+    fingerprints_before = set(
+        (
+            await db.execute(
+                select(ScrapingSourceDiscoveryQuery.query_job_fingerprint).where(
+                    ScrapingSourceDiscoveryQuery.execution_id == execution.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert len(fingerprints_before) == paused.total_count
+
+    execution.status = ScrapingExecutionStatus.RUNNING
+    await db.commit()
+    resumed = await query_generation_service.generate_for_execution(db, execution, discovery_round=1)
+    await db.commit()
+    assert resumed.status == "ok"
+    assert resumed.execution_id == paused_execution_id
+    assert resumed.total_count >= paused.total_count
+    assert resumed.generated_count == resumed.total_count - partial
+    assert resumed.existing_count == partial
+
+    rows = (
+        await db.execute(
+            select(ScrapingSourceDiscoveryQuery).where(
+                ScrapingSourceDiscoveryQuery.execution_id == execution.id
+            )
+        )
+    ).scalars().all()
+    fingerprints_after = {row.query_job_fingerprint for row in rows}
+    assert len(fingerprints_after) == len(rows)
+    assert len(fingerprints_after) == resumed.total_count
+    assert fingerprints_before.issubset(fingerprints_after)
+
+
+def _large_realistic_v2_payload() -> dict:
+    """Austria-style multi-axis blueprint used as the quantitative fixture basis.
+
+    Live Lebanon execution DB is unavailable without Docker; this fixture plus
+    `_lebanon_scale_v2_payload` stand in for axis-count / Cartesian comparisons.
+    """
+    payload = valid_structured_blueprint_v2()
+    payload["languages"] = ["German", "English"]
+    payload["regions"] = [f"Region {i}" for i in range(1, 9)]
+    payload["important_cities"] = [
+        {"name": f"City {i}", "region_name": f"Region {((i - 1) % 8) + 1}"} for i in range(1, 17)
+    ]
+    payload["language_profiles"] = [
+        {"name": "German", "code": "de", "script": "Latn"},
+        {"name": "English", "code": "en", "script": "Latn"},
+    ]
+    payload["local_terminology"] = [f"local{i}" for i in range(1, 6)]
+    payload["inpatient_residential_terminology"] = [f"inpatient{i}" for i in range(1, 4)]
+    payload["private_paid_terminology"] = [f"private{i}" for i in range(1, 4)]
+    payload["addiction_categories"] = [f"addiction{i}" for i in range(1, 5)]
+    payload["query_matrix"] = [
+        {"query": f"Austria seed {i}", "language": "German", "purpose": "discovery"}
+        for i in range(1, 4)
+    ]
+    # region_coverage_plan must cover regions for compile
+    payload["region_coverage_plan"] = [
+        {"region_name": region, "coverage_actions": ["Search registry"]}
+        for region in payload["regions"]
+    ]
+    return payload
+
+
+def _lebanon_scale_v2_payload() -> dict:
+    """Lebanon-scale axes whose legacy Cartesian exceeds 1M jobs.
+
+    Approximate live observation (~1.23M inserted before pause, still incomplete):
+    scopes≈70–80 × langs≈2 × local≈12 × inpatient≈6 × private≈6 × addiction≈10 × cats(2).
+    """
+    from test_mission_campaign_lifecycle import lebanon_structured_blueprint
+
+    payload = lebanon_structured_blueprint()
+    payload["regions"] = [f"Governorate {i}" for i in range(1, 21)]
+    payload["important_cities"] = [
+        {
+            "name": f"City {i}",
+            "region_name": f"Governorate {((i - 1) % 20) + 1}",
+        }
+        for i in range(1, 51)
+    ]
+    payload["languages"] = ["Arabic", "English"]
+    payload["language_profiles"] = [
+        {"name": "Arabic", "code": "ar", "script": "Arab"},
+        {"name": "English", "code": "en", "script": "Latn"},
+    ]
+    payload["local_terminology"] = [f"local{i}" for i in range(1, 13)]
+    payload["inpatient_residential_terminology"] = [f"inpatient{i}" for i in range(1, 7)]
+    payload["private_paid_terminology"] = [f"private{i}" for i in range(1, 7)]
+    payload["addiction_categories"] = [f"addiction{i}" for i in range(1, 11)]
+    payload["query_matrix"] = [
+        {"query": f"Lebanon seed {i}", "language": "English", "purpose": "discovery"}
+        for i in range(1, 6)
+    ]
+    payload["region_coverage_plan"] = [
+        {"region_name": region, "coverage_actions": ["Search registry"]}
+        for region in payload["regions"]
+    ]
+    return payload
+
+
+def test_estimate_raw_combination_count_matches_family_formulas() -> None:
+    plan = _compile_v2(_large_realistic_v2_payload())
+    counts = estimate_query_family_counts(plan)
+    # scopes = 1+8+16 = 25; langs=2; local=5; inpatient=3; private=3; addiction=4; seeds=3
+    assert counts.seed == 3 * 2
+    assert counts.regulatory == 25 * 2 * len(REGULATORY_QUERY_TEMPLATES)
+    assert counts.facility_discovery == 25 * 2 * 5 * 3
+    assert counts.private_provider == 25 * 2 * 5 * 3
+    assert counts.addiction_specific == 25 * 2 * 4 * len(ADDICTION_FACILITY_TEMPLATES)
+    raw = estimate_raw_combination_count(plan)
+    assert raw == counts.total
+    assert raw == 6 + 300 + 750 + 750 + 400
+    assert raw == 2206
+    legacy = estimate_legacy_cartesian_combination_count(plan)
+    assert legacy == 3 * 2 + 2 * 25 * 2 * 5 * 3 * 3 * 4
+    assert legacy == 18006
+    assert raw < legacy
+
+
+def test_iter_query_job_specs_is_lazy_generator() -> None:
+    plan = _compile_v2(_large_realistic_v2_payload())
+    plan_hash = sha256_hex(plan.model_dump(mode="json"))
+    stream = iter_query_job_specs(plan, plan_hash=plan_hash, discovery_round=1)
+    assert hasattr(stream, "__iter__")
+    assert hasattr(stream, "__next__")
+    first = next(stream)
+    assert first.purpose == PURPOSE_SEED
+    assert first.generation_ordinal == 0
+    # Must not have materialized the full product up front.
+    assert not isinstance(stream, list)
+
+
+def test_fingerprint_lookups_are_linear_not_quadratic() -> None:
+    plan = _compile_v2(_large_realistic_v2_payload())
+    plan_hash = sha256_hex(plan.model_dump(mode="json"))
+    counter = [0]
+    specs = list(
+        iter_query_job_specs(
+            plan,
+            plan_hash=plan_hash,
+            discovery_round=1,
+            fingerprint_lookup_counter=counter,
+        )
+    )
+    raw = estimate_raw_combination_count(plan)
+    # One membership test per raw candidate (seed + family), not pairwise O(n²).
+    assert counter[0] == raw
+    assert counter[0] < len(specs) * len(specs)
+    assert len(specs) <= raw
+
+
+@pytest.mark.asyncio
+async def test_large_product_streams_multiple_batches_without_full_list(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+) -> None:
+    import app.services.scraping.query_generation_service as qgs
+
+    mission, _ = await _approved_mission_with_team_plan(db, auth)
+    # Replace mission blueprint with a large v2 payload via recompile on execution plan.
+    monkeypatch.setattr(execution_service, "enqueue_execution", AsyncMock())
+    summary = await execution_service.start_mission_campaign(db, auth, mission.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+
+    large_plan = _compile_v2(_large_realistic_v2_payload())
+    plan_hash = sha256_hex(large_plan.model_dump(mode="json"))
+    execution.frozen_execution_plan_json = large_plan.model_dump(mode="json")
+    execution.execution_plan_hash = plan_hash
+    execution.execution_plan_schema_version = "2"
+    execution.clarification_status = ClarificationStatus.NOT_REQUIRED.value
+    execution.status = ScrapingExecutionStatus.RUNNING
+    await db.commit()
+
+    monkeypatch.setattr(qgs, "INSERT_BATCH_SIZE", 100)
+    commits = {"n": 0}
+    original_commit = db.commit
+
+    async def counting_commit():
+        commits["n"] += 1
+        return await original_commit()
+
+    monkeypatch.setattr(db, "commit", counting_commit)
+
+    monkeypatch.setattr(
+        qgs,
+        "generate_query_job_specs",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("persistence must use iter_query_job_specs")
+        ),
+    )
+
+    lookup_counter = [0]
+    result = await query_generation_service.generate_for_execution(
+        db,
+        execution,
+        discovery_round=1,
+        fingerprint_lookup_counter=lookup_counter,
+    )
+    assert result.status == "ok"
+    assert result.expected_raw_count == 2206
+    assert result.generated_count == result.total_count > 1000
+    assert commits["n"] >= 2
+    assert lookup_counter[0] == result.expected_raw_count
+    assert lookup_counter[0] < result.total_count * result.total_count
+
+    count = (
+        await db.execute(
+            select(func.count()).select_from(ScrapingSourceDiscoveryQuery).where(
+                ScrapingSourceDiscoveryQuery.execution_id == execution.id
+            )
+        )
+    ).scalar_one()
+    assert count == result.total_count
+
+
+def test_malformed_empty_axis_fails_closed() -> None:
+    plan = _compile_v2()
+    broken = plan.model_copy(update={"local_terminology": []})
+    with pytest.raises(QueryGenerationError) as exc:
+        estimate_raw_combination_count(broken)
+    assert exc.value.code == "malformed_axes"
+
+
+def test_family_axis_coverage_and_no_full_cartesian() -> None:
+    plan = _compile_v2(_large_realistic_v2_payload())
+    plan_hash = sha256_hex(plan.model_dump(mode="json"))
+    specs = generate_query_job_specs(plan, plan_hash=plan_hash, discovery_round=1)
+    counts = _expected_family_counts(plan)
+    assert len(specs) == counts.total
+
+    texts = [s.query_text for s in specs]
+    # Every approved geography token appears.
+    for region in plan.regions:
+        assert any(region in text for text in texts)
+    for city in plan.important_cities:
+        assert any(city.name in text for text in texts)
+    assert any(plan.country.country_name in text for text in texts)
+
+    # Every language appears on at least one job.
+    lang_names = {s.language_name for s in specs}
+    assert {p.name for p in plan.language_profiles} <= lang_names
+
+    # Axis coverage by family (substring presence in family texts).
+    by_family: dict[str, list] = {}
+    for spec in specs:
+        by_family.setdefault(spec.metadata_json.get("query_family"), []).append(spec)
+
+    facility_texts = [s.query_text for s in by_family[QUERY_FAMILY_FACILITY]]
+    private_texts = [s.query_text for s in by_family[QUERY_FAMILY_PRIVATE]]
+    addiction_texts = [s.query_text for s in by_family[QUERY_FAMILY_ADDICTION]]
+    regulatory_texts = [s.query_text for s in by_family[QUERY_FAMILY_REGULATORY]]
+
+    for term in plan.local_terminology:
+        assert any(term in t for t in facility_texts + private_texts)
+    for term in plan.inpatient_residential_terminology:
+        assert any(term in t for t in facility_texts)
+    for term in plan.private_paid_terminology:
+        assert any(term in t for t in private_texts)
+    for term in plan.addiction_categories:
+        assert any(term in t for t in addiction_texts)
+    for term in REGULATORY_QUERY_TEMPLATES:
+        assert any(term in t for t in regulatory_texts)
+
+    # No family multiplies all commercial axes at once.
+    for spec in specs:
+        axes = (spec.metadata_json or {}).get("axes") or {}
+        axis_keys = set(axes)
+        assert not (
+            {"local_terminology", "inpatient_residential_terminology", "private_paid_terminology", "addiction_category"}
+            <= axis_keys
+        )
+
+    assert by_family[QUERY_FAMILY_REGULATORY]
+    assert all(s.source_category == "regulatory" for s in by_family[QUERY_FAMILY_REGULATORY])
+    for family in (
+        QUERY_FAMILY_FACILITY,
+        QUERY_FAMILY_PRIVATE,
+        QUERY_FAMILY_ADDICTION,
+    ):
+        assert by_family[family]
+        assert all(s.source_category == "commercial" for s in by_family[family])
+
+
+def test_workload_grows_linearly_with_axis_terms() -> None:
+    base = _compile_v2(_large_realistic_v2_payload())
+    base_counts = estimate_query_family_counts(base)
+    scopes = 1 + len(base.regions) + len(base.important_cities)
+    langs = len(base.language_profiles)
+
+    # Adding one addiction category grows only the addiction family.
+    more_addiction = base.model_copy(
+        update={"addiction_categories": list(base.addiction_categories) + ["addiction_extra"]}
+    )
+    after_addiction = estimate_query_family_counts(more_addiction)
+    delta_addiction = after_addiction.total - base_counts.total
+    assert delta_addiction == scopes * langs * 1 * len(ADDICTION_FACILITY_TEMPLATES)
+    assert after_addiction.facility_discovery == base_counts.facility_discovery
+    assert after_addiction.private_provider == base_counts.private_provider
+    assert after_addiction.regulatory == base_counts.regulatory
+    # Must NOT multiply local × inpatient × private.
+    assert delta_addiction != (
+        scopes
+        * langs
+        * len(base.local_terminology)
+        * len(base.inpatient_residential_terminology)
+        * len(base.private_paid_terminology)
+        * len(SOURCE_CATEGORIES)
+    )
+
+    # Adding one private term grows only the private-provider family.
+    more_private = base.model_copy(
+        update={
+            "private_paid_terminology": list(base.private_paid_terminology) + ["private_extra"]
+        }
+    )
+    after_private = estimate_query_family_counts(more_private)
+    delta_private = after_private.total - base_counts.total
+    assert delta_private == scopes * langs * len(base.local_terminology) * 1
+    assert after_private.facility_discovery == base_counts.facility_discovery
+    assert after_private.addiction_specific == base_counts.addiction_specific
+
+
+def test_lebanon_scale_legacy_cartesian_exceeds_one_million_family_is_reduced() -> None:
+    # Compile via Austria identity helper but payload is Lebanon-shaped axes.
+    payload = _lebanon_scale_v2_payload()
+    # Compiler requires mission country to match dossier; use Lebanon identity.
+    from app.services.scraping.blueprint_execution_plan_service import MissionCountryIdentity
+
+    lebanon = MissionCountryIdentity(
+        country_code="LB",
+        country_name="Lebanon",
+        country_iso3="LBN",
+        continent="Asia",
+    )
+    compiled = BlueprintExecutionPlanService().compile(
+        mission_id="mission-lb",
+        blueprint_id="blueprint-lb",
+        blueprint_version=1,
+        mission_country=lebanon,
+        structured_blueprint=payload,
+        require_v2=True,
+    )
+    plan = compiled.frozen_execution_plan
+    assert isinstance(plan, FrozenExecutionPlanV2)
+
+    legacy = estimate_legacy_cartesian_combination_count(plan)
+    family = estimate_raw_combination_count(plan)
+    counts = estimate_query_family_counts(plan)
+    assert legacy > 1_000_000
+    assert family == counts.total
+    assert family < legacy
+    # scopes = 1+20+50 = 71
+    assert counts.seed == 5 * 2
+    assert counts.regulatory == 71 * 2 * len(REGULATORY_QUERY_TEMPLATES)
+    assert counts.facility_discovery == 71 * 2 * 12 * 6
+    assert counts.private_provider == 71 * 2 * 12 * 6
+    assert counts.addiction_specific == 71 * 2 * 10 * len(ADDICTION_FACILITY_TEMPLATES)
+    assert family == 10 + 852 + 10224 + 10224 + 2840
+    assert family == 24150
+
+    plan_hash = sha256_hex(plan.model_dump(mode="json"))
+    specs = generate_query_job_specs(plan, plan_hash=plan_hash, discovery_round=1)
+    assert len(specs) == family
+    assert specs[0].metadata_json.get("query_family") == QUERY_FAMILY_SEED
+    fps = {s.query_job_fingerprint for s in specs}
+    assert len(fps) == len(specs)

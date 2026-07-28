@@ -80,6 +80,7 @@ async def test_mock_worker_completes_deterministic_checkpoints_without_facilitie
         "generated_count",
         "existing_count",
         "total_count",
+        "expected_raw_count",
     }
     assert isinstance(query_meta["discovery_round"], int)
     assert isinstance(query_meta["generated_count"], int)
@@ -263,3 +264,256 @@ async def test_historical_mock_execution_with_null_step1_fields_still_runs(
     refreshed = await db.get(ScrapingExecution, summary.id, populate_existing=True)
     assert refreshed is not None
     assert refreshed.status == ScrapingExecutionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_worker_cancel_requested_on_restart_finishes_cancelled(
+    db: AsyncSession, auth, monkeypatch
+) -> None:
+    mission, _ = await _approved_mission_with_team_plan(db, auth)
+
+    async def no_enqueue(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", no_enqueue)
+    monkeypatch.setattr(execution_service, "_publish_event", no_enqueue)
+    summary = await execution_service.start_mission_campaign(db, auth, mission.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    from datetime import UTC, datetime
+
+    execution.status = ScrapingExecutionStatus.CANCEL_REQUESTED
+    execution.cancel_requested_at = datetime.now(UTC)
+    await db.commit()
+
+    session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
+
+    done = await db.get(ScrapingExecution, summary.id, populate_existing=True)
+    assert done is not None
+    assert done.status == ScrapingExecutionStatus.CANCELLED
+    assert done.completed_at is not None
+    events = (
+        await db.execute(
+            select(ScrapingEvent)
+            .where(ScrapingEvent.execution_id == summary.id)
+            .order_by(ScrapingEvent.sequence_number)
+        )
+    ).scalars().all()
+    assert any(event.event_type == "execution_cancelled" for event in events)
+    assert not any(event.event_type == "query_generation_completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_worker_pause_requested_on_restart_becomes_paused(
+    db: AsyncSession, auth, monkeypatch
+) -> None:
+    mission, _ = await _approved_mission_with_team_plan(db, auth)
+
+    async def no_enqueue(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", no_enqueue)
+    monkeypatch.setattr(execution_service, "_publish_event", no_enqueue)
+    summary = await execution_service.start_mission_campaign(db, auth, mission.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    from datetime import UTC, datetime
+
+    execution.status = ScrapingExecutionStatus.PAUSE_REQUESTED
+    execution.pause_requested_at = datetime.now(UTC)
+    await db.commit()
+
+    session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
+
+    done = await db.get(ScrapingExecution, summary.id, populate_existing=True)
+    assert done is not None
+    assert done.status == ScrapingExecutionStatus.PAUSED
+    assert done.paused_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_supersedes_pause_when_both_timestamps_exist(
+    db: AsyncSession, auth, monkeypatch
+) -> None:
+    mission, _ = await _approved_mission_with_team_plan(db, auth)
+
+    async def no_enqueue(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(execution_service, "enqueue_execution", no_enqueue)
+    monkeypatch.setattr(execution_service, "_publish_event", no_enqueue)
+    summary = await execution_service.start_mission_campaign(db, auth, mission.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    from datetime import UTC, datetime, timedelta
+
+    earlier = datetime.now(UTC) - timedelta(seconds=30)
+    later = datetime.now(UTC)
+    execution.status = ScrapingExecutionStatus.PAUSE_REQUESTED
+    execution.pause_requested_at = earlier
+    execution.cancel_requested_at = later
+    await db.commit()
+
+    session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
+
+    done = await db.get(ScrapingExecution, summary.id, populate_existing=True)
+    assert done is not None
+    assert done.status == ScrapingExecutionStatus.CANCELLED
+    assert done.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_paused_campaign_resumes_same_execution_without_duplicate_jobs(
+    db: AsyncSession, auth, monkeypatch
+) -> None:
+    import app.services.scraping.query_generation_service as qgs
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock
+
+    from app.db.models import ScrapingSourceDiscoveryQuery
+    from app.schemas.scraping_clarification import ClarificationStatus
+    from app.services.scraping.query_generation_service import query_generation_service
+    from sqlalchemy import func, select
+
+    mission, _ = await _approved_mission_with_team_plan(db, auth)
+    monkeypatch.setattr(execution_service, "enqueue_execution", AsyncMock())
+    monkeypatch.setattr(execution_service, "_publish_event", AsyncMock())
+    summary = await execution_service.start_mission_campaign(db, auth, mission.id)
+    execution_id = summary.id
+    execution = await db.get(ScrapingExecution, execution_id)
+    assert execution is not None
+    execution.clarification_status = ClarificationStatus.NOT_REQUIRED.value
+    execution.status = ScrapingExecutionStatus.RUNNING
+    await db.commit()
+
+    batch_size = 2
+    monkeypatch.setattr(qgs, "INSERT_BATCH_SIZE", batch_size)
+
+    async def pause_after_first_committed_batch(session, row) -> bool:
+        # Trigger only after at least one batch has been persisted (post-commit path).
+        persisted = (
+            await session.execute(
+                select(func.count()).select_from(ScrapingSourceDiscoveryQuery).where(
+                    ScrapingSourceDiscoveryQuery.execution_id == row.id
+                )
+            )
+        ).scalar_one()
+        if int(persisted or 0) < batch_size:
+            return False
+        row.status = ScrapingExecutionStatus.PAUSE_REQUESTED
+        row.pause_requested_at = datetime.now(UTC)
+        await session.commit()
+        return await mission_campaign_mock_worker._pause_or_cancel(session, row)
+
+    paused_gen = await query_generation_service.generate_for_execution(
+        db, execution, discovery_round=1, check_interrupt=pause_after_first_committed_batch
+    )
+    assert paused_gen.status == "interrupted"
+    await db.refresh(execution)
+    assert execution.status == ScrapingExecutionStatus.PAUSED
+    assert execution.paused_at is not None
+    assert execution.completed_at is None
+    partial = paused_gen.generated_count
+    assert partial > 0
+
+    fingerprints = set(
+        (
+            await db.execute(
+                select(ScrapingSourceDiscoveryQuery.query_job_fingerprint).where(
+                    ScrapingSourceDiscoveryQuery.execution_id == execution_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(fingerprints) == partial
+
+    detail = await execution_service.get_mission_campaign_detail(
+        db, auth, mission.id, execution_id
+    )
+    assert detail.can_resume is True
+    assert detail.can_pause is False
+    assert detail.can_cancel is True
+    assert detail.execution.completed_at is None
+
+    resumed = await execution_service.resume_mission_campaign(
+        db, auth, mission.id, execution_id
+    )
+    assert resumed.id == execution_id
+    assert resumed.status == ScrapingExecutionStatus.QUEUED.value
+    assert resumed.completed_at is None
+
+    session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    await mission_campaign_mock_worker.run_mission_campaign_mock({}, execution_id)
+
+    done = await db.get(ScrapingExecution, execution_id, populate_existing=True)
+    assert done is not None
+    assert done.id == execution_id
+    assert done.status == ScrapingExecutionStatus.COMPLETED
+    total = (
+        await db.execute(
+            select(func.count()).select_from(ScrapingSourceDiscoveryQuery).where(
+                ScrapingSourceDiscoveryQuery.execution_id == execution_id
+            )
+        )
+    ).scalar_one()
+    # Interrupted total_count is persisted-so-far, not the eventual workload size.
+    assert total > paused_gen.total_count
+    fingerprints_after = set(
+        (
+            await db.execute(
+                select(ScrapingSourceDiscoveryQuery.query_job_fingerprint).where(
+                    ScrapingSourceDiscoveryQuery.execution_id == execution_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert fingerprints.issubset(fingerprints_after)
+    assert len(fingerprints_after) == total
+    completed_events = (
+        await db.execute(
+            select(ScrapingEvent).where(
+                ScrapingEvent.execution_id == execution_id,
+                ScrapingEvent.event_type == "query_generation_completed",
+            )
+        )
+    ).scalars().all()
+    assert len(completed_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_campaign_cannot_resume(db: AsyncSession, auth, monkeypatch) -> None:
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock
+
+    from app.core.exceptions import ConflictError
+
+    mission, _ = await _approved_mission_with_team_plan(db, auth)
+    monkeypatch.setattr(execution_service, "enqueue_execution", AsyncMock())
+    monkeypatch.setattr(execution_service, "_publish_event", AsyncMock())
+    summary = await execution_service.start_mission_campaign(db, auth, mission.id)
+    execution = await db.get(ScrapingExecution, summary.id)
+    assert execution is not None
+    execution.status = ScrapingExecutionStatus.CANCELLED
+    execution.cancel_requested_at = datetime.now(UTC)
+    execution.completed_at = datetime.now(UTC)
+    await db.commit()
+
+    with pytest.raises(ConflictError, match="cancelled"):
+        await execution_service.resume_mission_campaign(db, auth, mission.id, summary.id)
+
+    detail = await execution_service.get_mission_campaign_detail(
+        db, auth, mission.id, summary.id
+    )
+    assert detail.can_resume is False
+    assert detail.execution.status == ScrapingExecutionStatus.CANCELLED.value
