@@ -25,6 +25,7 @@ from app.schemas.scraping_clarification import (
 )
 from app.schemas.scraping_execution_plan import FrozenExecutionPlanV2
 from app.services.scraping import mission_campaign_mock_worker
+from test_phase4_discovery_execution import _stub_phase4_complete
 from app.services.scraping.blueprint_execution_plan_service import (
     BlueprintExecutionPlanService,
     MissionCountryIdentity,
@@ -826,6 +827,7 @@ async def test_worker_runs_step3_after_clarification_and_blocks_on_failure(
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
     execution = await db.get(ScrapingExecution, summary.id, populate_existing=True)
@@ -889,6 +891,7 @@ async def test_historical_v1_compatible_skips_step3_without_planner(
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     # Provenance validation rejects schema "1" if plan is v2 — expect failed provenance OR
     # if we only change the gate field after claim... worker validates before claim.

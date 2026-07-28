@@ -630,7 +630,13 @@ class ScrapingExecutionService:
         return event
 
     async def enqueue_execution(
-        self, execution_id: str, *, job_name: str = "run_scraping_execution"
+        self,
+        execution_id: str,
+        *,
+        job_name: str = "run_scraping_execution",
+        defer_until: datetime | None = None,
+        defer_by: float | int | None = None,
+        job_id: str | None = None,
     ) -> None:
         settings = get_settings()
         inline = (
@@ -638,14 +644,20 @@ class ScrapingExecutionService:
             if settings.scraping_inline_execution is not None
             else settings.environment == "development"
         )
+        resolved_job_id = job_id or f"scraping-execution:{execution_id}"
         queued_on_redis = False
         if not inline:
             try:
                 redis = await create_pool(_redis_settings())
+                enqueue_kwargs: dict[str, Any] = {"_job_id": resolved_job_id}
+                if defer_until is not None:
+                    enqueue_kwargs["_defer_until"] = defer_until
+                elif defer_by is not None:
+                    enqueue_kwargs["_defer_by"] = defer_by
                 await redis.enqueue_job(
                     job_name,
                     execution_id,
-                    _job_id=f"scraping-execution:{execution_id}",
+                    **enqueue_kwargs,
                 )
                 await redis.close()
                 queued_on_redis = True
@@ -656,7 +668,21 @@ class ScrapingExecutionService:
                     exc_info=True,
                 )
         if inline or not queued_on_redis:
-            asyncio.create_task(_run_execution_inline(execution_id, job_name=job_name))
+            if defer_until is not None or defer_by is not None:
+                delay = 0.0
+                if defer_by is not None:
+                    delay = float(defer_by)
+                elif defer_until is not None:
+                    delay = max((defer_until - datetime.now(UTC)).total_seconds(), 0.0)
+
+                async def _deferred_inline() -> None:
+                    if delay > 0:
+                        await asyncio.sleep(min(delay, 1.0))
+                    await _run_execution_inline(execution_id, job_name=job_name)
+
+                asyncio.create_task(_deferred_inline())
+            else:
+                asyncio.create_task(_run_execution_inline(execution_id, job_name=job_name))
 
     async def _publish_event(self, event: ScrapingEvent) -> None:
         try:

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -166,6 +167,32 @@ class SourceDiscoveryQueryStatus(str, enum.Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+class CrawlNodeSourceClassification(str, enum.Enum):
+    OFFICIAL_FACILITY_SITE = "official_facility_site"
+    FACILITY_PROFILE = "facility_profile"
+    DIRECTORY = "directory"
+    REGISTRY = "registry"
+    GOVERNMENT_SOURCE = "government_source"
+    COMMERCIAL_LISTING = "commercial_listing"
+    PDF = "pdf"
+    SOCIAL_PROFILE = "social_profile"
+    SUPPORTING_SOURCE = "supporting_source"
+    IRRELEVANT = "irrelevant"
+    UNCLASSIFIED = "unclassified"
+
+
+class CrawlEdgeRelationshipType(str, enum.Enum):
+    DIRECTORY_TO_PROFILE = "directory_to_profile"
+    PROFILE_TO_OFFICIAL_SITE = "profile_to_official_site"
+    OFFICIAL_SITE_TO_CONTACT_PAGE = "official_site_to_contact_page"
+    OFFICIAL_SITE_TO_PROGRAM_PAGE = "official_site_to_program_page"
+    OFFICIAL_SITE_TO_LOCATION_PAGE = "official_site_to_location_page"
+    OFFICIAL_SITE_TO_LICENSING_PAGE = "official_site_to_licensing_page"
+    OFFICIAL_SITE_TO_EVIDENCE_PAGE = "official_site_to_evidence_page"
+    RELATED_SOURCE = "related_source"
+    DISCOVERED_LINK = "discovered_link"
 
 
 class SourceCandidateStatus(str, enum.Enum):
@@ -967,6 +994,21 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         CheckConstraint(
             "generation_ordinal >= 0", name="ck_source_discovery_query_generation_ordinal"
         ),
+        CheckConstraint("attempt_count >= 0", name="ck_source_discovery_query_attempt_count"),
+        CheckConstraint(
+            "lease_expires_at IS NULL OR claimed_at IS NULL OR lease_expires_at > claimed_at",
+            name="ck_source_discovery_query_lease_after_claim",
+        ),
+        CheckConstraint("next_page_number >= 1", name="ck_source_discovery_query_next_page_number"),
+        CheckConstraint("pages_completed >= 0", name="ck_source_discovery_query_pages_completed"),
+        CheckConstraint(
+            "last_page_result_count IS NULL OR last_page_result_count >= 0",
+            name="ck_source_discovery_query_last_page_result_count",
+        ),
+        CheckConstraint(
+            "last_page_fingerprint IS NULL OR length(trim(last_page_fingerprint)) = 64",
+            name="ck_source_discovery_query_last_page_fingerprint_len",
+        ),
         CheckConstraint(
             "("
             "(scope_level = 'countrywide' AND region_name IS NULL AND important_city IS NULL) OR "
@@ -989,6 +1031,12 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "query_job_fingerprint",
             name="uq_source_discovery_query_fingerprint",
         ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            "execution_id",
+            name="uq_source_discovery_query_id_org_exec",
+        ),
         Index("ix_source_discovery_queries_org", "organization_id"),
         Index("ix_source_discovery_queries_execution", "execution_id"),
         Index("ix_source_discovery_queries_coverage", "coverage_cell_id"),
@@ -1009,6 +1057,24 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "discovery_round",
             "priority",
             "generation_ordinal",
+        ),
+        Index(
+            "ix_source_discovery_queries_pending_claim",
+            "organization_id",
+            "execution_id",
+            "priority",
+            "generation_ordinal",
+            "next_attempt_at",
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+        Index(
+            "ix_source_discovery_queries_running_lease",
+            "organization_id",
+            "execution_id",
+            "lease_expires_at",
+            postgresql_where=text("status = 'running'"),
+            sqlite_where=text("status = 'running'"),
         ),
     )
 
@@ -1058,6 +1124,42 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     plan_hash_snapshot: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scope_level: Mapped[str] = mapped_column(String(32), nullable=False, default="region")
     important_city: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # String(36) matches UUIDPrimaryKeyMixin / UuidFK — not native PG UUID.
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Safe machine-readable codes only — never raw provider payloads or PII.
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Restart-safe Serper page cursor (1-indexed). Not a campaign-wide page cap.
+    next_page_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    pages_completed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    pagination_completed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    last_page_result_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Technical loop-guard only — sha256_hex(payload_dict); never public.
+    last_page_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pagination_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     organization: Mapped["Organization"] = relationship()
     execution: Mapped["ScrapingExecution | None"] = relationship()
@@ -1070,6 +1172,94 @@ class ScrapingSourceDiscoveryQuery(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
 
+class ScrapingCrawlNode(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Deduplicated crawl graph vertex for one campaign execution.
+
+    Store ``canonical_url_hash`` via ``sha256_hex(payload_dict)`` of the
+    canonical URL identity payload — never double-canonicalize before hashing.
+    Mission ownership is via ``execution_id`` (same pattern as source candidates).
+    """
+
+    __tablename__ = "scraping_crawl_nodes"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "execution_id",
+            "canonical_url_hash",
+            name="uq_crawl_node_org_exec_url_hash",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            "execution_id",
+            name="uq_crawl_node_id_org_exec",
+        ),
+        CheckConstraint(
+            "source_classification IN ("
+            "'official_facility_site', 'facility_profile', 'directory', 'registry', "
+            "'government_source', 'commercial_listing', 'pdf', 'social_profile', "
+            "'supporting_source', 'irrelevant', 'unclassified'"
+            ")",
+            name="ck_crawl_node_source_classification",
+        ),
+        CheckConstraint(
+            "length(trim(canonical_url)) > 0",
+            name="ck_crawl_node_canonical_url_not_blank",
+        ),
+        CheckConstraint(
+            "length(trim(canonical_url_hash)) = 64",
+            name="ck_crawl_node_canonical_url_hash_len",
+        ),
+        Index("ix_crawl_nodes_org_execution", "organization_id", "execution_id"),
+        Index("ix_crawl_nodes_hostname", "hostname"),
+        Index("ix_crawl_nodes_domain", "domain"),
+        Index("ix_crawl_nodes_source_classification", "source_classification"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_url_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_classification: Mapped[CrawlNodeSourceClassification] = mapped_column(
+        Enum(
+            CrawlNodeSourceClassification,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=CrawlNodeSourceClassification.UNCLASSIFIED,
+        nullable=False,
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    organization: Mapped["Organization"] = relationship(
+        foreign_keys="[ScrapingCrawlNode.organization_id]",
+    )
+    execution: Mapped["ScrapingExecution"] = relationship(
+        foreign_keys="[ScrapingCrawlNode.execution_id]",
+    )
+    # Composite FK (crawl_node_id, organization_id, execution_id) shares ownership
+    # columns with Candidate.organization / .execution. Limit this relationship to
+    # crawl_node_id so ORM sync does not fight those relationships; DB still enforces
+    # org/execution isolation via fk_source_candidates_crawl_node_org_exec.
+    source_candidates: Mapped[list["ScrapingSourceCandidate"]] = relationship(
+        back_populates="crawl_node",
+        primaryjoin=(
+            "and_("
+            "ScrapingCrawlNode.id == ScrapingSourceCandidate.crawl_node_id, "
+            "ScrapingCrawlNode.organization_id == ScrapingSourceCandidate.organization_id, "
+            "ScrapingCrawlNode.execution_id == ScrapingSourceCandidate.execution_id"
+            ")"
+        ),
+        foreign_keys="[ScrapingSourceCandidate.crawl_node_id]",
+    )
+
+
 class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "scraping_source_candidates"
     __table_args__ = (
@@ -1079,7 +1269,17 @@ class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "canonical_url",
             name="uq_source_candidate_query_url",
         ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            "execution_id",
+            name="uq_source_candidate_id_org_exec",
+        ),
         CheckConstraint("rank >= 1", name="ck_source_candidate_rank"),
+        CheckConstraint(
+            "provider_page_number IS NULL OR provider_page_number >= 1",
+            name="ck_source_candidate_provider_page_number",
+        ),
         CheckConstraint(
             "initial_relevance_score >= 0 AND initial_relevance_score <= 1",
             name="ck_source_candidate_relevance_score",
@@ -1089,6 +1289,24 @@ class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "(lower(canonical_url) LIKE 'http://%' OR lower(canonical_url) LIKE 'https://%')",
             name="ck_source_candidate_http_urls",
         ),
+        CheckConstraint(
+            "crawl_node_id IS NULL OR execution_id IS NOT NULL",
+            name="ck_source_candidate_crawl_node_requires_execution",
+        ),
+        # Composite FK: RESTRICT (not SET NULL) — composite SET NULL would null
+        # organization_id/execution_id. Clear crawl_node_id via UPDATE first.
+        ForeignKeyConstraint(
+            ["crawl_node_id", "organization_id", "execution_id"],
+            [
+                "scraping_crawl_nodes.id",
+                "scraping_crawl_nodes.organization_id",
+                "scraping_crawl_nodes.execution_id",
+            ],
+            name="fk_source_candidates_crawl_node_org_exec",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         Index("ix_source_candidates_org", "organization_id"),
         Index("ix_source_candidates_execution", "execution_id"),
         Index("ix_source_candidates_coverage", "coverage_cell_id"),
@@ -1097,6 +1315,7 @@ class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_source_candidates_domain", "domain"),
         Index("ix_source_candidates_status", "status"),
         Index("ix_source_candidates_canonical_url", "canonical_url"),
+        Index("ix_source_candidates_crawl_node", "crawl_node_id"),
         Index(
             "ix_source_candidates_context_url",
             "organization_id",
@@ -1120,9 +1339,12 @@ class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ForeignKey("scraping_source_discovery_queries.id", ondelete="CASCADE"),
         nullable=False,
     )
+    crawl_node_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     provider_result_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Within-page Serper provenance only — not an invented absolute cross-page rank.
+    provider_page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     canonical_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     domain: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1131,7 +1353,7 @@ class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     country_code: Mapped[str] = mapped_column(String(2), nullable=False)
     country_name: Mapped[str] = mapped_column(String(120), nullable=False)
     region_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    region_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    region_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     language_code: Mapped[str] = mapped_column(String(16), nullable=False)
     language_name: Mapped[str] = mapped_column(String(120), nullable=False)
     source_category: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -1149,11 +1371,30 @@ class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
-    organization: Mapped["Organization"] = relationship()
-    execution: Mapped["ScrapingExecution | None"] = relationship()
+    organization: Mapped["Organization"] = relationship(
+        foreign_keys="[ScrapingSourceCandidate.organization_id]",
+    )
+    execution: Mapped["ScrapingExecution | None"] = relationship(
+        foreign_keys="[ScrapingSourceCandidate.execution_id]",
+    )
     coverage_cell: Mapped["ScrapingCoverageCell | None"] = relationship()
     discovery_query: Mapped["ScrapingSourceDiscoveryQuery"] = relationship(
         back_populates="candidates"
+    )
+    # Join includes org/execution equality for isolation; foreign_keys lists only
+    # crawl_node_id so assignment writes the linkage column (not ownership columns).
+    # Shared ownership columns with the composite FK are intentional; DB FK rejects
+    # cross-org/execution crawl-node assignment.
+    crawl_node: Mapped["ScrapingCrawlNode | None"] = relationship(
+        back_populates="source_candidates",
+        primaryjoin=(
+            "and_("
+            "ScrapingSourceCandidate.crawl_node_id == ScrapingCrawlNode.id, "
+            "ScrapingSourceCandidate.organization_id == ScrapingCrawlNode.organization_id, "
+            "ScrapingSourceCandidate.execution_id == ScrapingCrawlNode.execution_id"
+            ")"
+        ),
+        foreign_keys="[ScrapingSourceCandidate.crawl_node_id]",
     )
     retrieval_attempts: Mapped[list["ScrapingSourceRetrievalAttempt"]] = relationship(
         back_populates="source_candidate",
@@ -1164,6 +1405,118 @@ class ScrapingSourceCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="source_candidate",
         cascade="all, delete-orphan",
         order_by="ScrapingSourceDocument.retrieval_timestamp",
+    )
+
+
+class ScrapingCrawlEdge(Base, UUIDPrimaryKeyMixin):
+    """Directed crawl-graph edge within one org+execution.
+
+    Composite FKs to ``(node.id, organization_id, execution_id)`` and provenance
+    targets prevent cross-org/execution linkage at the database layer.
+    """
+
+    __tablename__ = "scraping_crawl_edges"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "execution_id",
+            "from_node_id",
+            "to_node_id",
+            "relationship_type",
+            name="uq_crawl_edge_org_exec_rel",
+        ),
+        CheckConstraint("from_node_id <> to_node_id", name="ck_crawl_edge_no_self_loop"),
+        CheckConstraint(
+            "relationship_type IN ("
+            "'directory_to_profile', 'profile_to_official_site', "
+            "'official_site_to_contact_page', 'official_site_to_program_page', "
+            "'official_site_to_location_page', 'official_site_to_licensing_page', "
+            "'official_site_to_evidence_page', 'related_source', 'discovered_link'"
+            ")",
+            name="ck_crawl_edge_relationship_type",
+        ),
+        ForeignKeyConstraint(
+            ["from_node_id", "organization_id", "execution_id"],
+            [
+                "scraping_crawl_nodes.id",
+                "scraping_crawl_nodes.organization_id",
+                "scraping_crawl_nodes.execution_id",
+            ],
+            name="fk_crawl_edges_from_node_org_exec",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["to_node_id", "organization_id", "execution_id"],
+            [
+                "scraping_crawl_nodes.id",
+                "scraping_crawl_nodes.organization_id",
+                "scraping_crawl_nodes.execution_id",
+            ],
+            name="fk_crawl_edges_to_node_org_exec",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["discovery_query_id", "organization_id", "execution_id"],
+            [
+                "scraping_source_discovery_queries.id",
+                "scraping_source_discovery_queries.organization_id",
+                "scraping_source_discovery_queries.execution_id",
+            ],
+            name="fk_crawl_edges_discovery_query_org_exec",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["source_candidate_id", "organization_id", "execution_id"],
+            [
+                "scraping_source_candidates.id",
+                "scraping_source_candidates.organization_id",
+                "scraping_source_candidates.execution_id",
+            ],
+            name="fk_crawl_edges_source_candidate_org_exec",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        Index("ix_crawl_edges_org_execution", "organization_id", "execution_id"),
+        Index("ix_crawl_edges_from_node", "from_node_id"),
+        Index("ix_crawl_edges_to_node", "to_node_id"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    from_node_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    to_node_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    relationship_type: Mapped[CrawlEdgeRelationshipType] = mapped_column(
+        Enum(
+            CrawlEdgeRelationshipType,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        nullable=False,
+    )
+    discovery_query_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    organization: Mapped["Organization"] = relationship()
+    execution: Mapped["ScrapingExecution"] = relationship()
+    discovery_query: Mapped["ScrapingSourceDiscoveryQuery | None"] = relationship(
+        primaryjoin=(
+            "ScrapingCrawlEdge.discovery_query_id == ScrapingSourceDiscoveryQuery.id"
+        ),
+        foreign_keys="[ScrapingCrawlEdge.discovery_query_id]",
+    )
+    source_candidate: Mapped["ScrapingSourceCandidate | None"] = relationship(
+        primaryjoin="ScrapingCrawlEdge.source_candidate_id == ScrapingSourceCandidate.id",
+        foreign_keys="[ScrapingCrawlEdge.source_candidate_id]",
     )
 
 

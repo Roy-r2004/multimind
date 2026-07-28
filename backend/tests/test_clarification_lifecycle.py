@@ -23,6 +23,7 @@ from app.schemas.scraping_clarification import (
 )
 from app.schemas.scraping_execution_plan import parse_frozen_execution_plan
 from app.services.scraping import mission_campaign_mock_worker
+from test_phase4_discovery_execution import _stub_phase4_complete
 from app.services.scraping.blueprint_execution_plan_service import (
     BlueprintExecutionPlanService,
     MissionCountryIdentity,
@@ -96,6 +97,7 @@ async def test_no_typed_ambiguity_means_zero_provider_calls_and_mock_continues(
     assert summary.clarification_status == ClarificationStatus.PENDING.value
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
@@ -151,6 +153,7 @@ async def test_typed_candidate_without_model_config_fails_closed(
     summary = await execution_service.start_mission_campaign(db, auth, mission.id)
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
@@ -189,6 +192,7 @@ async def test_safe_clarification_completes_with_test_local_provider(
     summary = await execution_service.start_mission_campaign(db, auth, mission.id)
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
@@ -232,6 +236,7 @@ async def test_human_review_pauses_before_mock_stages(db: AsyncSession, auth, mo
     summary = await execution_service.start_mission_campaign(db, auth, mission.id)
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 

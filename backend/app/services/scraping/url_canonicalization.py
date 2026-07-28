@@ -1,42 +1,30 @@
-"""URL validation and canonicalization for discovery-stage source candidates."""
+"""URL validation and canonicalization for discovery-stage source candidates.
+
+Legacy public contract for existing discovery/provider callers.
+Phase 4 Slice 2 logic lives in ``discovery_url_service``; this module
+delegates while preserving ``UrlRejected`` / ``CanonicalUrl``.
+"""
 
 from __future__ import annotations
 
-import ipaddress
 from dataclasses import dataclass
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-MAX_DISCOVERY_URL_LENGTH = 2048
-TRACKING_QUERY_PREFIXES = ("utm_",)
-TRACKING_QUERY_KEYS = {
-    "fbclid",
-    "gclid",
-    "gbraid",
-    "wbraid",
-    "msclkid",
-    "mc_cid",
-    "mc_eid",
-    "igshid",
-}
-RESERVED_HOSTS = {
-    "example.com",
-    "example.org",
-    "example.net",
-    "example.edu",
-    "example.invalid",
-    "mock.example",
-}
-RESERVED_SUFFIXES = (
-    ".example.com",
-    ".example.org",
-    ".example.net",
-    ".example.edu",
-    ".example.invalid",
+from app.services.scraping.discovery_url_service import (
+    MAX_DISCOVERY_URL_LENGTH,
+    TRACKING_QUERY_KEYS,
+    TRACKING_QUERY_PREFIXES,
+    canonicalize_discovery_target,
 )
-LOCALHOST_HOSTS = {"localhost", "localhost.localdomain"}
-METADATA_IPS = {
-    ipaddress.ip_address("169.254.169.254"),
-}
+
+# Re-exported for any callers/tests that imported constants from here.
+__all__ = [
+    "CanonicalUrl",
+    "MAX_DISCOVERY_URL_LENGTH",
+    "TRACKING_QUERY_KEYS",
+    "TRACKING_QUERY_PREFIXES",
+    "UrlRejected",
+    "canonicalize_discovery_url",
+]
 
 
 class UrlRejected(ValueError):
@@ -53,70 +41,13 @@ class CanonicalUrl:
 
 
 def canonicalize_discovery_url(raw_url: str) -> CanonicalUrl:
-    original = (raw_url or "").strip()
-    if not original:
-        raise UrlRejected("empty_url")
-    if len(original) > MAX_DISCOVERY_URL_LENGTH:
-        raise UrlRejected("url_too_long")
-
-    parsed = urlsplit(original)
-    scheme = parsed.scheme.lower()
-    if scheme not in {"http", "https"}:
-        raise UrlRejected("unsupported_scheme")
-    if parsed.username or parsed.password:
-        raise UrlRejected("embedded_credentials")
-    if not parsed.hostname:
-        raise UrlRejected("missing_hostname")
-
-    hostname = parsed.hostname.rstrip(".").lower()
-    _validate_hostname(hostname)
-
-    port = parsed.port
-    netloc = hostname
-    if port is not None and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
-        netloc = f"{hostname}:{port}"
-
-    path = parsed.path or "/"
-    query = _canonical_query(parsed.query)
-    canonical = urlunsplit((scheme, netloc, path, query, ""))
-    if len(canonical) > MAX_DISCOVERY_URL_LENGTH:
-        raise UrlRejected("canonical_url_too_long")
-
-    return CanonicalUrl(original_url=original, canonical_url=canonical, domain=hostname)
-
-
-def _canonical_query(query: str) -> str:
-    if not query:
-        return ""
-    pairs: list[tuple[str, str]] = []
-    for key, value in parse_qsl(query, keep_blank_values=True):
-        lowered = key.lower()
-        if lowered in TRACKING_QUERY_KEYS:
-            continue
-        if any(lowered.startswith(prefix) for prefix in TRACKING_QUERY_PREFIXES):
-            continue
-        pairs.append((key, value))
-    return urlencode(pairs, doseq=True)
-
-
-def _validate_hostname(hostname: str) -> None:
-    if hostname in LOCALHOST_HOSTS or hostname.endswith(".localhost"):
-        raise UrlRejected("localhost_hostname")
-    if hostname in RESERVED_HOSTS or any(hostname.endswith(suffix) for suffix in RESERVED_SUFFIXES):
-        raise UrlRejected("reserved_example_domain")
-
-    try:
-        ip = ipaddress.ip_address(hostname.strip("[]"))
-    except ValueError:
-        return
-
-    if (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-        or ip in METADATA_IPS
-    ):
-        raise UrlRejected("unsafe_ip_literal")
+    """Legacy API: raise ``UrlRejected`` on failure; ``domain`` is the hostname."""
+    result = canonicalize_discovery_target(raw_url)
+    if not result.is_valid or not result.is_statically_safe or not result.canonical_url or not result.hostname:
+        # Prefer structured codes from the new service; keep a stable fallback.
+        raise UrlRejected(result.error_code or "invalid_url")
+    return CanonicalUrl(
+        original_url=result.original_url,
+        canonical_url=result.canonical_url,
+        domain=result.hostname,
+    )

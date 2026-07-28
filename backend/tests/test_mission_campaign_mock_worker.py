@@ -19,6 +19,7 @@ from app.db.models import (
 )
 from app.services.scraping import mission_campaign_mock_worker
 from app.services.scraping.execution_service import execution_service
+from test_phase4_discovery_execution import _stub_phase4_complete
 
 
 @pytest.mark.asyncio
@@ -35,6 +36,7 @@ async def test_mock_worker_completes_deterministic_checkpoints_without_facilitie
     summary = await execution_service.start_mission_campaign(db, auth, mission.id)
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
@@ -65,10 +67,7 @@ async def test_mock_worker_completes_deterministic_checkpoints_without_facilitie
         "mission_campaign_started",
         "clarification_not_required",
         "query_generation_completed",
-        "stage_completed",
-        "stage_completed",
-        "stage_completed",
-        "stage_completed",
+        "web_discovery_completed",
         "mission_campaign_completed",
     ]
     query_gen = events[3]
@@ -102,13 +101,9 @@ async def test_mock_worker_completes_deterministic_checkpoints_without_facilitie
         "openrouter",
     ):
         assert secret not in query_blob
-    assert [event.metadata_json.get("external_calls") for event in events[4:]] == [
-        False,
-        False,
-        False,
-        False,
-        False,
-    ]
+    # Phase 4 stub completion — no mock stage_completed events on schema-v2 path.
+    assert "stage_completed" not in [event.event_type for event in events]
+    assert events[-1].event_type == "mission_campaign_completed"
     assert execution.clarification_status == "not_required"
     assert execution.resolved_execution_plan_hash
     facilities = await db.execute(
@@ -137,6 +132,7 @@ async def test_mock_worker_survives_live_blueprint_version_mutation_with_frozen_
     await db.commit()
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
@@ -174,6 +170,7 @@ async def test_mock_worker_legacy_without_step1_fails_when_blueprint_version_dri
     await db.commit()
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
 
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
@@ -224,6 +221,7 @@ async def test_mock_worker_uses_v3_snapshot_after_v4_supersedes(
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
     refreshed = await db.get(ScrapingExecution, summary.id, populate_existing=True)
@@ -259,6 +257,7 @@ async def test_historical_mock_execution_with_null_step1_fields_still_runs(
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
     refreshed = await db.get(ScrapingExecution, summary.id, populate_existing=True)
@@ -288,6 +287,7 @@ async def test_worker_cancel_requested_on_restart_finishes_cancelled(
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
     done = await db.get(ScrapingExecution, summary.id, populate_existing=True)
@@ -327,6 +327,7 @@ async def test_worker_pause_requested_on_restart_becomes_paused(
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
     done = await db.get(ScrapingExecution, summary.id, populate_existing=True)
@@ -360,6 +361,7 @@ async def test_cancel_supersedes_pause_when_both_timestamps_exist(
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, summary.id)
 
     done = await db.get(ScrapingExecution, summary.id, populate_existing=True)
@@ -452,6 +454,7 @@ async def test_paused_campaign_resumes_same_execution_without_duplicate_jobs(
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(mission_campaign_mock_worker, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(mission_campaign_mock_worker, "_run_phase4_web_discovery", _stub_phase4_complete)
     await mission_campaign_mock_worker.run_mission_campaign_mock({}, execution_id)
 
     done = await db.get(ScrapingExecution, execution_id, populate_existing=True)

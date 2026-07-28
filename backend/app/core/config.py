@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # When true (default in development), run scrapes inside the API process if Redis/worker is down
     scraping_inline_execution: bool | None = None
     scraping_inline_blueprint_generation: bool | None = None
+    # Phase 4 v2 discovery orchestration — operational bounds only (not campaign caps).
+    scraping_discovery_claim_batch_size: int = Field(default=10, ge=1, le=50)
+    scraping_discovery_provider_concurrency: int = Field(default=4, ge=1, le=32)
+    scraping_discovery_recovery_batch_size: int = Field(default=50, ge=1, le=50)
+    scraping_discovery_lease_seconds: int = Field(default=60, ge=1, le=3600)
+    scraping_discovery_retry_base_seconds: float = Field(default=30.0, gt=0, le=3600)
 
     # LLM — OpenRouter (single key for all models)
     openrouter_api_key: str | None = None

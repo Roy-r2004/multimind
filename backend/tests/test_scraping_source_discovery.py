@@ -177,7 +177,8 @@ def test_serper_is_default_provider(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_missing_serper_api_key_fails_closed(monkeypatch):
-    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    # Empty override beats a developer .env value; delenv alone is not enough.
+    monkeypatch.setenv("SERPER_API_KEY", "")
     get_settings.cache_clear()
     try:
         provider = SerperSearchProvider()
@@ -250,6 +251,7 @@ async def test_serper_uses_auth_header_country_language_query_and_bounded_num(mo
     assert captured["json"]["gl"] == "fr"
     assert captured["json"]["hl"] == "fr"
     assert captured["json"]["num"] == 20
+    assert captured["json"]["page"] == 1
     assert results[0].rank == 7
     assert results[0].title == "Title"
     assert results[0].url == "https://sante.gouv.fr/source"

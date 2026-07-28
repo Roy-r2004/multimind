@@ -1,4 +1,8 @@
-"""Local-only deterministic worker for Phase 2A mission campaigns."""
+"""Mission-campaign worker (historical filename; active v2 path included).
+
+Schema-v2 campaigns run Step 3B then real Phase 4 discovery orchestration.
+Legacy / non-v2 executions keep the deterministic mock STAGES loop only.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +23,9 @@ from app.services.scraping.blueprint_execution_plan_service import sha256_hex
 from app.services.scraping.clarification_orchestrator import clarification_orchestrator
 from app.services.scraping.execution_service import execution_service
 from app.services.scraping.query_generation_service import query_generation_service
+from app.services.scraping.source_discovery_execution_service import (
+    source_discovery_execution_service,
+)
 
 STAGES = (
     ("discovery", "Discovery checkpoint", "Gemini Deep Research"),
@@ -213,6 +220,10 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
             if await _pause_or_cancel(db, execution):
                 return
 
+            # Schema-v2: real Phase 4 discovery — never mock STAGES / later phases.
+            await _run_phase4_web_discovery(execution)
+            return
+
         for index, (stage, label, provider) in enumerate(STAGES, start=1):
             if await _pause_or_cancel(db, execution):
                 return
@@ -257,6 +268,18 @@ async def run_mission_campaign_mock(ctx: dict, execution_id: str) -> None:
             },
         )
         await db.commit()
+
+
+async def _run_phase4_web_discovery(execution: ScrapingExecution) -> None:
+    """Invoke the dedicated Phase 4 orchestration service for schema-v2 campaigns.
+
+    Uses the same execution ID. Orchestration owns pause/cancel/completion events.
+    Does not call SourceDiscoveryService.discover, the LLM planner, or mock STAGES.
+    """
+    await source_discovery_execution_service.run_discovery_work_slice(
+        execution.organization_id,
+        execution.id,
+    )
 
 
 async def _validate_campaign_provenance(db, execution: ScrapingExecution) -> bool:
