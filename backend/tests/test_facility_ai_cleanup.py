@@ -162,3 +162,35 @@ def test_apply_cleanup_provider_skip_marks_reviewed_so_poison_cannot_wedge():
 
     assert _is_ai_reviewed(facility)
     assert facility.hard_gate_results_json["ai_cleanup"]["action"] == "keep"
+
+
+def test_apply_website_promotes_existing_contact_instead_of_duplicating():
+    """Updating primary website to a URL already on the facility must not collide."""
+    from app.services.scraping.facility_ai_cleanup_service import _apply_website
+
+    existing = SimpleNamespace(
+        id="c-existing",
+        contact_type="website",
+        value="https://www.paihdepalvelusaatio.fi/",
+        normalized_value="https://www.paihdepalvelusaatio.fi/",
+        is_primary=False,
+    )
+    primary = SimpleNamespace(
+        id="c-primary",
+        contact_type="website",
+        value="https://wrong.example/",
+        normalized_value="https://wrong.example/",
+        is_primary=True,
+    )
+    facility = _facility(
+        id="fac-web",
+        primary_website="https://wrong.example/",
+        contacts=[primary, existing],
+    )
+
+    assert _apply_website(facility, "https://www.paihdepalvelusaatio.fi/") is True
+    assert facility.primary_website == "https://www.paihdepalvelusaatio.fi/"
+    assert existing.is_primary is True
+    assert primary.is_primary is False
+    assert primary.value == "https://wrong.example/"
+    assert len(facility.contacts) == 2

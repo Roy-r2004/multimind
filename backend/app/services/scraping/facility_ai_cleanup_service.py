@@ -195,12 +195,42 @@ class FacilityAiCleanupService:
                             )
                         )
                     ).scalars().all()
-                    apply_cleanup_decisions(
-                        facilities_by_id={facility.id: facility for facility in writable},
-                        decisions=decisions,
-                    )
-                    await write_db.flush()
-                    await write_db.commit()
+                    try:
+                        apply_cleanup_decisions(
+                            facilities_by_id={facility.id: facility for facility in writable},
+                            decisions=decisions,
+                        )
+                        await write_db.flush()
+                        await write_db.commit()
+                    except Exception:  # noqa: BLE001
+                        # A single bad website correction must not abort the whole cleanup.
+                        logger.exception(
+                            "facility_ai_cleanup_apply_failed count=%s; retrying without website fixes",
+                            len(batch_ids),
+                        )
+                        await write_db.rollback()
+                        writable = (
+                            await write_db.execute(
+                                select(RehabilitationFacility)
+                                .where(RehabilitationFacility.id.in_(batch_ids))
+                                .options(
+                                    selectinload(RehabilitationFacility.contacts),
+                                    selectinload(RehabilitationFacility.source_links).selectinload(
+                                        RehabilitationFacilitySourceLink.source
+                                    ),
+                                )
+                            )
+                        ).scalars().all()
+                        safe_decisions = [
+                            decision.model_copy(update={"corrected_website": None})
+                            for decision in decisions
+                        ]
+                        apply_cleanup_decisions(
+                            facilities_by_id={facility.id: facility for facility in writable},
+                            decisions=safe_decisions,
+                        )
+                        await write_db.flush()
+                        await write_db.commit()
                     await execution_service.touch_heartbeat(write_db, execution_id)
 
         async with AsyncSessionLocal() as final_db:
@@ -477,12 +507,36 @@ def _apply_website(facility: RehabilitationFacility, raw_url: str) -> bool:
     if (facility.primary_website or "").strip() == url:
         return False
     facility.primary_website = url[:512]
-    # Refresh primary website contact when present.
-    for contact in list(facility.contacts or []):
-        if str(contact.contact_type or "").lower() in {"website", "booking_url"} and contact.is_primary:
-            contact.value = url[:512]
-            contact.normalized_value = url[:512]
-            return True
+
+    website_contacts = [
+        contact
+        for contact in list(facility.contacts or [])
+        if str(contact.contact_type or "").lower() in {"website", "booking_url"}
+    ]
+    existing = next(
+        (
+            contact
+            for contact in website_contacts
+            if (contact.value or "").strip() == url
+            or (contact.normalized_value or "").strip() == url
+        ),
+        None,
+    )
+    if existing is not None:
+        # URL already stored on this facility — promote it instead of duplicating.
+        for contact in website_contacts:
+            contact.is_primary = contact.id == existing.id
+        existing.is_primary = True
+        existing.value = url[:512]
+        existing.normalized_value = url[:512]
+        return True
+
+    primary = next((contact for contact in website_contacts if contact.is_primary), None)
+    if primary is not None:
+        primary.value = url[:512]
+        primary.normalized_value = url[:512]
+        return True
+
     facility.contacts.append(
         RehabilitationFacilityContact(
             facility_id=facility.id,
