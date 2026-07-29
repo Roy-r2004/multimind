@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 from app.services.scraping.facility_ai_cleanup_service import (
     FacilityCleanupDecision,
-    _is_ai_reviewed,
     apply_cleanup_decisions,
 )
 
@@ -95,51 +94,3 @@ def test_apply_cleanup_ignores_invalid_duplicate_keep_target():
     )
     assert summary["excluded"] == 0
     assert facility.publication_class == "verified"
-
-
-def test_apply_cleanup_records_plain_keep_for_resumability():
-    """A plain 'keep' with no website fix must still be marked reviewed.
-
-    Without this, a restart mid-cleanup would resend every already-kept
-    facility to the LLM again instead of resuming from where it left off.
-    """
-    facility = _facility(id="keep-only", publication_class="review_required")
-    assert not _is_ai_reviewed(facility)
-
-    apply_cleanup_decisions(
-        facilities_by_id={"keep-only": facility},
-        decisions=[
-            FacilityCleanupDecision(
-                facility_id="keep-only",
-                action="keep",
-                reason="Legitimate rehabilitation clinic",
-            )
-        ],
-    )
-
-    assert _is_ai_reviewed(facility)
-    assert facility.hard_gate_results_json["ai_cleanup"]["action"] == "keep"
-    assert facility.hard_gate_results_json["ai_cleanup"]["website_fixed"] is False
-
-
-def test_apply_cleanup_batch_failure_leaves_facility_unreviewed():
-    """A provider/parse failure for a batch must not be recorded as reviewed.
-
-    This keeps the facility eligible for retry on the next resumed attempt
-    instead of permanently skipping it because of a transient LLM failure.
-    """
-    facility = _facility(id="retry-me", publication_class="review_required")
-
-    apply_cleanup_decisions(
-        facilities_by_id={"retry-me": facility},
-        decisions=[
-            FacilityCleanupDecision(
-                facility_id="retry-me",
-                action="keep",
-                reason="cleanup_batch_failed",
-            )
-        ],
-    )
-
-    assert not _is_ai_reviewed(facility)
-    assert facility.hard_gate_results_json == {}

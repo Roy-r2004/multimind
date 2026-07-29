@@ -145,9 +145,6 @@ LANGUAGE_CODE_BY_NAME = {
 }
 
 
-MAX_FACILITY_AI_CLEANUP_ATTEMPTS = 3
-
-
 class ExecutionCancelled(Exception):
     pass
 
@@ -1287,37 +1284,6 @@ class SourceDiscoveryExecutionOrchestrator:
             await self.db.commit()
             return
 
-        # This phase can be interrupted by stale-heartbeat recovery (worker restarts,
-        # deploys, long LLM calls). run_for_execution() is resumable and persists
-        # progress per-batch, but as a hard safety valve: never let a run stay stuck
-        # in "running" forever because cleanup keeps stalling — cap the number of
-        # attempts and complete with the published roster as-is once exceeded.
-        prior_attempts = (
-            await self.db.execute(
-                select(ScrapingEvent.id).where(
-                    ScrapingEvent.execution_id == execution.id,
-                    ScrapingEvent.event_type == "facility_ai_cleanup_started",
-                )
-            )
-        ).scalars().all()
-        if len(prior_attempts) >= MAX_FACILITY_AI_CLEANUP_ATTEMPTS:
-            await execution_service.emit_event(
-                self.db,
-                execution.id,
-                "facility_ai_cleanup_skipped",
-                (
-                    "AI cleanup skipped after repeated stalls; completing with the "
-                    "published roster as-is so the execution does not get stuck."
-                ),
-                metadata={
-                    "enabled": True,
-                    "reason": "max_attempts_exceeded",
-                    "attempts": len(prior_attempts),
-                },
-            )
-            await self.db.commit()
-            return
-
         mission_goal = f"Find rehabilitation and addiction treatment facilities in {execution.country_name}."
 
         await execution_service.emit_event(
@@ -1325,7 +1291,7 @@ class SourceDiscoveryExecutionOrchestrator:
             execution.id,
             "facility_ai_cleanup_started",
             "AI cleanup started to remove non-rehabs, bad source pages, and duplicates.",
-            metadata={"batch_size": settings.facility_ai_cleanup_batch_size, "attempt": len(prior_attempts) + 1},
+            metadata={"batch_size": settings.facility_ai_cleanup_batch_size},
         )
         await self.db.commit()
         await execution_service.touch_heartbeat(self.db, execution.id)
