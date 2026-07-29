@@ -66,7 +66,7 @@ function ScrapingExecutionPage() {
   const [discoveryQueries, setDiscoveryQueries] = useState<SourceDiscoveryQuery[]>([]);
   const [retrievalAttempts, setRetrievalAttempts] = useState<SourceRetrievalAttempt[]>([]);
   const [sourceDocuments, setSourceDocuments] = useState<SourceDocument[]>([]);
-  const [facilityFilter, setFacilityFilter] = useState<"all" | "verified" | "review" | "excluded">("all");
+  const [facilityFilter, setFacilityFilter] = useState<"all" | "verified" | "review">("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<"Live" | "Reconnecting" | "Disconnected">(
     "Disconnected",
@@ -126,18 +126,23 @@ function ScrapingExecutionPage() {
       .finally(() => setLoading(false));
   }, [loadAll]);
 
+  // Facilities AI cleanup excluded are never surfaced: the roster shows the kept census.
+  const keptFacilities = useMemo(
+    () => facilities.filter((facility) => facility.publication_class !== "excluded"),
+    [facilities],
+  );
+
   const visibleFacilities = useMemo(() => {
-    if (facilityFilter === "all") return facilities;
+    if (facilityFilter === "all") return keptFacilities;
     const target = facilityFilter === "review" ? "review_required" : facilityFilter;
-    return facilities.filter((facility) => facility.publication_class === target);
-  }, [facilities, facilityFilter]);
+    return keptFacilities.filter((facility) => facility.publication_class === target);
+  }, [keptFacilities, facilityFilter]);
 
   const facilityCounts = useMemo(() => {
-    const verified = facilities.filter((f) => f.publication_class === "verified").length;
-    const review = facilities.filter((f) => f.publication_class === "review_required").length;
-    const excluded = facilities.filter((f) => f.publication_class === "excluded").length;
-    return { all: facilities.length, verified, review, excluded, kept: verified + review };
-  }, [facilities]);
+    const verified = keptFacilities.filter((f) => f.publication_class === "verified").length;
+    const review = keptFacilities.filter((f) => f.publication_class === "review_required").length;
+    return { all: keptFacilities.length, verified, review };
+  }, [keptFacilities]);
 
   useEffect(() => {
     if (visibleFacilities.length === 0) {
@@ -366,12 +371,12 @@ function ScrapingExecutionPage() {
     return buildFlightStages({
       sources: Math.max(sourceCandidates.length, execution.sources_discovered),
       pages: Math.max(sourceDocuments.length, execution.documents_found),
-      facilities: Math.max(facilities.length, execution.records_verified),
+      facilities: keptFacilities.length,
       duplicates: execution.duplicates_detected,
       status: execution.status,
       stageStates,
     });
-  }, [events, execution, facilities.length, sourceCandidates.length, sourceDocuments.length]);
+  }, [events, execution, keptFacilities.length, sourceCandidates.length, sourceDocuments.length]);
 
   return (
     <AppShell>
@@ -379,13 +384,13 @@ function ScrapingExecutionPage() {
         <DreamHeader
           eyebrow="Scraping Council · Live flight"
           title={
-            facilities.length > 0
-              ? `${facilityCounts.kept} facilities found`
+            keptFacilities.length > 0
+              ? `${keptFacilities.length} facilities found`
               : isTerminal
                 ? "Flight complete"
                 : "Dreamflight in progress"
           }
-          description={`${execution?.country_name ?? "Country"} · ${Math.max(sourceDocuments.length, execution?.documents_found ?? 0)} pages · ${Math.max(sourceCandidates.length, execution?.sources_discovered ?? 0)} sources${facilityCounts.excluded > 0 ? ` · ${facilityCounts.excluded} excluded` : ""}`}
+          description={`${execution?.country_name ?? "Country"} · ${Math.max(sourceDocuments.length, execution?.documents_found ?? 0)} pages · ${Math.max(sourceCandidates.length, execution?.sources_discovered ?? 0)} sources`}
           action={
             <Link
               to="/scraping/$missionId"
@@ -415,7 +420,7 @@ function ScrapingExecutionPage() {
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
-                    disabled={!isTerminal || downloadingExcel || facilities.length === 0}
+                    disabled={!isTerminal || downloadingExcel || keptFacilities.length === 0}
                     className="bg-primary text-primary-foreground hover:bg-primary/90"
                     onClick={() => void handleDownloadExcel()}
                   >
@@ -436,10 +441,9 @@ function ScrapingExecutionPage() {
               </div>
             </DreamPanel>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Metric label="Verified" value={execution.result_counts.verified ?? 0} />
               <Metric label="Review" value={execution.result_counts.review ?? 0} />
-              <Metric label="Excluded" value={execution.result_counts.excluded ?? 0} />
               <Metric label="Completeness" value={`${execution.completeness_percent.toFixed(0)}%`} />
               <Metric
                 label="Mission profile"
@@ -456,7 +460,7 @@ function ScrapingExecutionPage() {
               isTerminal={isTerminal}
             />
 
-            {facilities.length === 0 ? (
+            {keptFacilities.length === 0 ? (
               <DreamPanel>
                 <h2 className="font-display text-lg text-foreground">Facilities</h2>
                 <p className="mt-2 text-sm text-muted-foreground">
@@ -473,7 +477,6 @@ function ScrapingExecutionPage() {
                       ["all", "All", facilityCounts.all],
                       ["verified", "Verified", facilityCounts.verified],
                       ["review", "Review", facilityCounts.review],
-                      ["excluded", "Excluded", facilityCounts.excluded],
                     ] as const).map(([value, label, count]) => (
                       <Button
                         key={value}
@@ -485,9 +488,7 @@ function ScrapingExecutionPage() {
                             ? ""
                             : "border-border bg-muted/40 text-foreground hover:bg-accent"
                         }
-                        onClick={() =>
-                          setFacilityFilter(value as "all" | "verified" | "review" | "excluded")
-                        }
+                        onClick={() => setFacilityFilter(value)}
                       >
                         {label} ({count})
                       </Button>
