@@ -132,6 +132,13 @@ function ScrapingExecutionPage() {
     return facilities.filter((facility) => facility.publication_class === target);
   }, [facilities, facilityFilter]);
 
+  const facilityCounts = useMemo(() => {
+    const verified = facilities.filter((f) => f.publication_class === "verified").length;
+    const review = facilities.filter((f) => f.publication_class === "review_required").length;
+    const excluded = facilities.filter((f) => f.publication_class === "excluded").length;
+    return { all: facilities.length, verified, review, excluded, kept: verified + review };
+  }, [facilities]);
+
   useEffect(() => {
     if (visibleFacilities.length === 0) {
       setSelectedFacilityId(null);
@@ -373,12 +380,12 @@ function ScrapingExecutionPage() {
           eyebrow="Scraping Council · Live flight"
           title={
             facilities.length > 0
-              ? `${facilities.length} facilities found`
+              ? `${facilityCounts.kept} facilities found`
               : isTerminal
                 ? "Flight complete"
                 : "Dreamflight in progress"
           }
-          description={`${execution?.country_name ?? "Country"} · ${Math.max(sourceDocuments.length, execution?.documents_found ?? 0)} pages · ${Math.max(sourceCandidates.length, execution?.sources_discovered ?? 0)} sources`}
+          description={`${execution?.country_name ?? "Country"} · ${Math.max(sourceDocuments.length, execution?.documents_found ?? 0)} pages · ${Math.max(sourceCandidates.length, execution?.sources_discovered ?? 0)} sources${facilityCounts.excluded > 0 ? ` · ${facilityCounts.excluded} excluded` : ""}`}
           action={
             <Link
               to="/scraping/$missionId"
@@ -462,12 +469,12 @@ function ScrapingExecutionPage() {
               <div className="space-y-3">
                 <DreamPanel className="p-4">
                   <div className="flex flex-wrap items-center gap-2">
-                    {[
-                      ["all", "All"],
-                      ["verified", "Verified"],
-                      ["review", "Review"],
-                      ["excluded", "Excluded"],
-                    ].map(([value, label]) => (
+                    {([
+                      ["all", "All", facilityCounts.all],
+                      ["verified", "Verified", facilityCounts.verified],
+                      ["review", "Review", facilityCounts.review],
+                      ["excluded", "Excluded", facilityCounts.excluded],
+                    ] as const).map(([value, label, count]) => (
                       <Button
                         key={value}
                         type="button"
@@ -482,7 +489,7 @@ function ScrapingExecutionPage() {
                           setFacilityFilter(value as "all" | "verified" | "review" | "excluded")
                         }
                       >
-                        {label}
+                        {label} ({count})
                       </Button>
                     ))}
                   </div>
