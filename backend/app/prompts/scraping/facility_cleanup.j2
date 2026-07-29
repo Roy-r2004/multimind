@@ -1,0 +1,35 @@
+You clean a scraped rehabilitation-facility roster for {{ country_name }} ({{ country_code }}).
+
+Mission goal: {{ mission_goal }}
+
+For each facility decide:
+1. keep — it is a real rehab / addiction / detox / recovery / substance-use treatment center or clinic
+2. exclude_not_rehab — not a treatment facility (NGO campaign, news, pharmacy, general hospital ward without rehab, school, charity shop, etc.)
+3. exclude_bad_source — website/source is a registry article, EU agency page, news post, directory hub, or other non-clinic page that should not represent the facility (example bad: euda.europa.eu node pages for "free drugs" style listings)
+4. exclude_duplicate — same real facility as another row; keep exactly one and exclude the rest
+
+Also fix wrong websites when the facility should be kept but the URL is clearly not the facility's own site. Prefer the facility's own homepage. If you cannot confidently propose a better URL, leave corrected_website null (do not invent).
+
+Return strict JSON only:
+{
+  "decisions": [
+    {
+      "facility_id": "uuid",
+      "action": "keep",
+      "keep_facility_id": null,
+      "corrected_website": null,
+      "reason": "short reason"
+    }
+  ]
+}
+
+Rules:
+- Include every facility_id exactly once.
+- For exclude_duplicate, keep_facility_id must be another facility_id from this batch that you mark keep (or that is the canonical survivor).
+- Prefer excluding directory/agency/news domains as exclude_bad_source when that is the only website.
+- Do not exclude a facility only because contact is missing.
+- Reasons must be short (<= 200 chars).
+- No chain-of-thought. No markdown.
+
+FACILITIES JSON:
+{{ facilities_json }}

@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     facility_publication_max_candidates_per_execution: int = 300
     facility_publication_duplicate_match_threshold: float = 0.82
 
+    # Final AI roster cleanup (non-rehabs, bad links, duplicates, website fixes)
+    facility_ai_cleanup_enabled: bool = True
+    facility_ai_cleanup_model: str = "gpt-4.1"
+    facility_ai_cleanup_batch_size: int = 35
+
     # Optional source discovery provider — Brave Search
     brave_search_api_key: str | None = None
     brave_search_base_url: str = "https://api.search.brave.com/res/v1/web/search"

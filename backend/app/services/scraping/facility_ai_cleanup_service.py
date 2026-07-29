@@ -1,0 +1,380 @@
+"""Final AI cleanup: drop non-rehabs / bad sources / duplicates and fix wrong websites."""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.core.config import get_settings
+from app.db.models import (
+    RehabilitationFacility,
+    RehabilitationFacilityContact,
+    RehabilitationFacilitySourceLink,
+)
+from app.llm.catalog import get_model
+from app.llm.prompt_engine import get_prompt_engine
+from app.llm.providers import LLMProvider, get_provider_registry
+from app.services.scraping.result_metrics import normalized_publication_class
+from app.services.scraping.url_canonicalization import UrlRejected, canonicalize_discovery_url
+
+logger = logging.getLogger(__name__)
+
+CLEANUP_ACTIONS = {
+    "keep",
+    "exclude_not_rehab",
+    "exclude_bad_source",
+    "exclude_duplicate",
+}
+DEFAULT_BATCH_SIZE = 35
+MAX_REASON_LEN = 200
+
+
+class FacilityCleanupDecision(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    facility_id: str = Field(min_length=1, max_length=36)
+    action: str = Field(min_length=1, max_length=40)
+    keep_facility_id: str | None = Field(default=None, max_length=36)
+    corrected_website: str | None = Field(default=None, max_length=512)
+    reason: str = Field(default="", max_length=300)
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def normalize_action(cls, value: Any) -> str:
+        text = str(value or "").strip().casefold()
+        if text not in CLEANUP_ACTIONS:
+            return "keep"
+        return text
+
+    @field_validator("facility_id", "keep_facility_id", mode="before")
+    @classmethod
+    def trim_ids(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("corrected_website", "reason", mode="before")
+    @classmethod
+    def trim_text(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return str(value)
+        return value.strip()
+
+
+class FacilityCleanupPlan(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    decisions: list[FacilityCleanupDecision] = Field(default_factory=list)
+
+
+class FacilityAiCleanupService:
+    async def run_for_execution(
+        self,
+        db: AsyncSession,
+        *,
+        execution_id: str,
+        country_code: str,
+        country_name: str,
+        mission_goal: str,
+    ) -> dict[str, int]:
+        settings = get_settings()
+        if not getattr(settings, "facility_ai_cleanup_enabled", True):
+            return {"enabled": 0, "reviewed": 0, "excluded": 0, "websites_fixed": 0}
+
+        facilities = (
+            await db.execute(
+                select(RehabilitationFacility)
+                .where(RehabilitationFacility.execution_id == execution_id)
+                .options(
+                    selectinload(RehabilitationFacility.contacts),
+                    selectinload(RehabilitationFacility.source_links).selectinload(
+                        RehabilitationFacilitySourceLink.source
+                    ),
+                )
+                .order_by(RehabilitationFacility.canonical_name, RehabilitationFacility.id)
+            )
+        ).scalars().all()
+
+        candidates = [
+            facility
+            for facility in facilities
+            if normalized_publication_class(facility.publication_class) != "excluded"
+        ]
+        if not candidates:
+            return {"enabled": 1, "reviewed": 0, "excluded": 0, "websites_fixed": 0}
+
+        batch_size = max(int(getattr(settings, "facility_ai_cleanup_batch_size", DEFAULT_BATCH_SIZE) or DEFAULT_BATCH_SIZE), 1)
+        model_name = getattr(settings, "facility_ai_cleanup_model", None) or getattr(
+            settings, "facility_extraction_model", "gpt-4.1"
+        )
+        model = get_model(model_name)
+        provider = get_provider_registry().get_provider(model.provider)
+
+        all_decisions: list[FacilityCleanupDecision] = []
+        for offset in range(0, len(candidates), batch_size):
+            batch = candidates[offset : offset + batch_size]
+            decisions = await self._plan_batch(
+                provider=provider,
+                model_slug=model.provider_model,
+                country_code=country_code,
+                country_name=country_name,
+                mission_goal=mission_goal,
+                facilities=batch,
+            )
+            all_decisions.extend(decisions)
+
+        summary = apply_cleanup_decisions(
+            facilities_by_id={facility.id: facility for facility in candidates},
+            decisions=all_decisions,
+        )
+        await db.flush()
+        return {
+            "enabled": 1,
+            "reviewed": len(candidates),
+            "excluded": summary["excluded"],
+            "websites_fixed": summary["websites_fixed"],
+            "batches": (len(candidates) + batch_size - 1) // batch_size,
+        }
+
+    async def _plan_batch(
+        self,
+        *,
+        provider: Any,
+        model_slug: str,
+        country_code: str,
+        country_name: str,
+        mission_goal: str,
+        facilities: list[RehabilitationFacility],
+    ) -> list[FacilityCleanupDecision]:
+        payload = [_facility_payload(facility) for facility in facilities]
+        prompt = get_prompt_engine().render(
+            "scraping/facility_cleanup.j2",
+            country_code=(country_code or "XX")[:2].upper(),
+            country_name=(country_name or "Unknown")[:120],
+            mission_goal=(mission_goal or "Find rehabilitation facilities.")[:2000],
+            facilities_json=json.dumps(payload, ensure_ascii=True),
+        )
+        try:
+            response = await provider.complete(
+                system=(
+                    "You return strict JSON cleanup decisions for rehabilitation facility rosters. "
+                    "Remove non-clinics, bad source pages, and duplicates; fix wrong websites when sure."
+                ),
+                user=prompt,
+                model=model_slug,
+                max_tokens=3500,
+            )
+            raw = LLMProvider.parse_json_response(response.text)
+            plan = FacilityCleanupPlan.model_validate(_normalize_cleanup_payload(raw))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "facility_ai_cleanup_batch_failed count=%s error=%s",
+                len(facilities),
+                exc,
+            )
+            return [
+                FacilityCleanupDecision(facility_id=facility.id, action="keep", reason="cleanup_batch_failed")
+                for facility in facilities
+            ]
+
+        by_id = {decision.facility_id: decision for decision in plan.decisions if decision.facility_id}
+        # Ensure every facility has a decision; default keep on omission.
+        result: list[FacilityCleanupDecision] = []
+        for facility in facilities:
+            result.append(
+                by_id.get(facility.id)
+                or FacilityCleanupDecision(facility_id=facility.id, action="keep", reason="missing_decision")
+            )
+        return result
+
+
+def apply_cleanup_decisions(
+    *,
+    facilities_by_id: dict[str, RehabilitationFacility],
+    decisions: list[FacilityCleanupDecision],
+) -> dict[str, int]:
+    excluded = 0
+    websites_fixed = 0
+    seen: set[str] = set()
+
+    for decision in decisions:
+        facility = facilities_by_id.get(decision.facility_id)
+        if facility is None or decision.facility_id in seen:
+            continue
+        seen.add(decision.facility_id)
+        reason = (decision.reason or decision.action)[:MAX_REASON_LEN]
+
+        if decision.action == "keep":
+            if decision.corrected_website:
+                if _apply_website(facility, decision.corrected_website):
+                    websites_fixed += 1
+                    _record_cleanup(facility, action="keep", reason=reason, website_fixed=True)
+            continue
+
+        if decision.action == "exclude_duplicate":
+            keep_id = decision.keep_facility_id
+            if not keep_id or keep_id == facility.id or keep_id not in facilities_by_id:
+                # Invalid duplicate target — do not exclude.
+                continue
+            facility.publication_class = "excluded"
+            facility.duplicate_status = "merged"
+            facility.human_review_status = "not_required"
+            _record_cleanup(
+                facility,
+                action="exclude_duplicate",
+                reason=reason,
+                keep_facility_id=keep_id,
+            )
+            excluded += 1
+            continue
+
+        if decision.action in {"exclude_not_rehab", "exclude_bad_source"}:
+            facility.publication_class = "excluded"
+            facility.human_review_status = "not_required"
+            _record_cleanup(facility, action=decision.action, reason=reason)
+            excluded += 1
+            if decision.corrected_website and decision.action == "exclude_bad_source":
+                # Still drop the row; do not keep a bad listing just because a better URL is known.
+                pass
+
+    return {"excluded": excluded, "websites_fixed": websites_fixed}
+
+
+def _facility_payload(facility: RehabilitationFacility) -> dict[str, Any]:
+    contacts = list(facility.contacts or [])
+    phones = [
+        contact.value
+        for contact in contacts
+        if str(contact.contact_type or "").lower() in {"phone", "hotline", "whatsapp"} and contact.value
+    ][:3]
+    emails = [
+        contact.value
+        for contact in contacts
+        if str(contact.contact_type or "").lower() == "email" and contact.value
+    ][:2]
+    websites = []
+    if facility.primary_website:
+        websites.append(facility.primary_website)
+    for contact in contacts:
+        if str(contact.contact_type or "").lower() in {"website", "booking_url"} and contact.value:
+            if contact.value not in websites:
+                websites.append(contact.value)
+    source_urls: list[str] = []
+    for link in list(getattr(facility, "source_links", None) or [])[:4]:
+        source = getattr(link, "source", None)
+        url = getattr(source, "url", None) or getattr(link, "source_url", None)
+        if url and url not in source_urls:
+            source_urls.append(str(url)[:512])
+    return {
+        "facility_id": facility.id,
+        "name": facility.canonical_name,
+        "facility_type": facility.facility_type,
+        "city": facility.primary_city,
+        "region": facility.primary_region,
+        "address": facility.primary_address,
+        "websites": websites[:4],
+        "phones": phones,
+        "emails": emails,
+        "source_urls": source_urls[:4],
+        "publication_class": facility.publication_class,
+    }
+
+
+def _normalize_cleanup_payload(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        items = raw.get("decisions") or raw.get("facilities") or raw.get("results") or []
+    else:
+        items = []
+    if not isinstance(items, list):
+        items = []
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            {
+                "facility_id": item.get("facility_id") or item.get("id"),
+                "action": item.get("action") or item.get("decision") or "keep",
+                "keep_facility_id": item.get("keep_facility_id") or item.get("canonical_facility_id"),
+                "corrected_website": item.get("corrected_website")
+                or item.get("website")
+                or item.get("fixed_website"),
+                "reason": item.get("reason") or item.get("explanation") or "",
+            }
+        )
+    return {"decisions": normalized}
+
+
+def _apply_website(facility: RehabilitationFacility, raw_url: str) -> bool:
+    try:
+        canonical = canonicalize_discovery_url(raw_url)
+    except UrlRejected:
+        return False
+    url = canonical.canonical_url
+    if not _safe_http_url(url):
+        return False
+    if (facility.primary_website or "").strip() == url:
+        return False
+    facility.primary_website = url[:512]
+    # Refresh primary website contact when present.
+    for contact in list(facility.contacts or []):
+        if str(contact.contact_type or "").lower() in {"website", "booking_url"} and contact.is_primary:
+            contact.value = url[:512]
+            contact.normalized_value = url[:512]
+            return True
+    facility.contacts.append(
+        RehabilitationFacilityContact(
+            facility_id=facility.id,
+            location_id=None,
+            contact_type="website",
+            label="Website",
+            value=url[:512],
+            normalized_value=url[:512],
+            is_primary=True,
+            verification_status="unverified",
+            confidence_score=0.7,
+            contact_discovery_status="ai_cleanup_corrected",
+            is_mock=facility.is_mock,
+        )
+    )
+    return True
+
+
+def _record_cleanup(
+    facility: RehabilitationFacility,
+    *,
+    action: str,
+    reason: str,
+    keep_facility_id: str | None = None,
+    website_fixed: bool = False,
+) -> None:
+    payload = dict(facility.hard_gate_results_json or {})
+    payload["ai_cleanup"] = {
+        "action": action,
+        "reason": reason,
+        "keep_facility_id": keep_facility_id,
+        "website_fixed": website_fixed,
+    }
+    facility.hard_gate_results_json = payload
+    if action.startswith("exclude_"):
+        facility.country_containment_reason = f"AI cleanup: {reason}"[:500]
+
+
+def _safe_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+facility_ai_cleanup_service = FacilityAiCleanupService()

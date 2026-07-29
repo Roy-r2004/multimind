@@ -61,6 +61,7 @@ from app.services.scraping.execution_outcome import GAP_COVERAGE_STATUSES
 from app.services.scraping.facility_candidate_publication_service import (
     facility_candidate_publication_service,
 )
+from app.services.scraping.facility_ai_cleanup_service import facility_ai_cleanup_service
 from app.services.scraping.facility_extraction_service import (
     FacilityExtractionContext,
     facility_extraction_service,
@@ -431,6 +432,8 @@ class SourceDiscoveryExecutionOrchestrator:
                     metadata={"mode": MODE_DIRECTORY_FIRST},
                 )
                 await self.db.commit()
+            await self._check_cancelled(execution)
+            await self._run_facility_ai_cleanup_phase(execution)
             await self._check_cancelled(execution)
             await self._refresh_metrics(execution)
             if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
@@ -1253,6 +1256,77 @@ class SourceDiscoveryExecutionOrchestrator:
             execution_id=execution.id,
             **summary,
         )
+
+    async def _run_facility_ai_cleanup_phase(self, execution: ScrapingExecution) -> None:
+        self.current_stage = "facility_ai_cleanup"
+        settings = get_settings()
+        if not settings.facility_ai_cleanup_enabled:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_ai_cleanup_skipped",
+                "Facility AI cleanup skipped because it is disabled.",
+                metadata={"enabled": False},
+            )
+            await self.db.commit()
+            return
+        if not settings.facility_publication_enabled or not settings.facility_extraction_enabled:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_ai_cleanup_skipped",
+                "Facility AI cleanup skipped because publication/extraction is disabled.",
+                metadata={"enabled": False, "reason": "publication_or_extraction_disabled"},
+            )
+            await self.db.commit()
+            return
+
+        mission_goal = f"Find rehabilitation and addiction treatment facilities in {execution.country_name}."
+
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "facility_ai_cleanup_started",
+            "AI cleanup started to remove non-rehabs, bad source pages, and duplicates.",
+            metadata={"batch_size": settings.facility_ai_cleanup_batch_size},
+        )
+        await self.db.commit()
+
+        try:
+            summary = await facility_ai_cleanup_service.run_for_execution(
+                self.db,
+                execution_id=execution.id,
+                country_code=execution.country_code,
+                country_name=execution.country_name,
+                mission_goal=mission_goal,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "facility_ai_cleanup_failed execution_id=%s",
+                execution.id,
+            )
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_ai_cleanup_failed",
+                "Facility AI cleanup failed; keeping published facilities as-is.",
+                metadata={"error": str(exc)[:300]},
+            )
+            await self.db.commit()
+            return
+
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "facility_ai_cleanup_completed",
+            (
+                f"AI cleanup finished: excluded {summary.get('excluded', 0)} facilities, "
+                f"fixed {summary.get('websites_fixed', 0)} websites."
+            ),
+            metadata=summary,
+        )
+        await self.db.commit()
+        self._log("facility_ai_cleanup_completed", execution_id=execution.id, **summary)
 
     async def _run_coverage_gap_loop(self, execution: ScrapingExecution) -> None:
         self.current_stage = "coverage_gap_loop"
@@ -2134,7 +2208,12 @@ class SourceDiscoveryExecutionOrchestrator:
             return "verify"
         if internal_stage == "facility_publication":
             return "cite"
-        if internal_stage in {"complete_execution", "refresh_metrics"}:
+        if internal_stage in {
+            "complete_execution",
+            "refresh_metrics",
+            "facility_ai_cleanup",
+            "coverage_gap_loop",
+        }:
             return "clean"
         return "discover"
 
@@ -2143,7 +2222,12 @@ class SourceDiscoveryExecutionOrchestrator:
             return {"discover"}
         if internal_stage == "facility_publication":
             return {"discover", "verify"}
-        if internal_stage in {"complete_execution", "refresh_metrics"}:
+        if internal_stage in {
+            "complete_execution",
+            "refresh_metrics",
+            "facility_ai_cleanup",
+            "coverage_gap_loop",
+        }:
             return {"discover", "verify", "cite"}
         return set()
 
