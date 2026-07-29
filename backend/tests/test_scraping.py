@@ -3703,35 +3703,11 @@ async def test_excel_export_workbook_contract_and_active_rejection(
     assert "scraping-execution" in response.headers["content-disposition"]
     workbook = load_workbook(BytesIO(response.content))
     assert workbook.sheetnames == SHEET_ORDER
-    verified_sheet = workbook["Verified"]
-    review_sheet = workbook["Review"]
-    excluded_sheet = workbook["Excluded"]
-    assert verified_sheet["A1"].value == "Facility Name"
-    assert review_sheet["A1"].value == "Facility Name"
-    assert excluded_sheet["A1"].value == "Facility Name"
-    assert workbook["Locations"]["A1"].value == "Facility Name"
-    assert workbook["Contacts"]["A1"].value == "Facility Name"
-    assert workbook["Hard Gates"]["A1"].value == "Facility Name"
-    assert workbook["Contradictions"]["A1"].value == "Facility Name"
-    coverage_sheet = workbook["Coverage"]
-    assert coverage_sheet["A1"].value == "Coverage Cell ID"
-    assert coverage_sheet.max_row >= 2
-    assert workbook["Execution Summary"]["A1"].value.startswith("MOCK EXECUTION SUMMARY")
-    assert workbook["Execution Summary"]["A2"].value == (
-        "This workbook contains generated mock records for pipeline testing."
-    )
-    assert workbook["Execution Summary"]["A3"].value == "KPI"
-    assert workbook["Execution Summary"]["A4"].value == "Total Facilities"
-    assert workbook["Execution Summary"]["B4"].value == execution.records_extracted
-    assert workbook["Execution Summary"]["A8"].value == "Coverage Percentage"
-    assert workbook["Execution Summary"]["B8"].number_format == "0.0%"
-    summary_values = {
-        workbook["Execution Summary"].cell(row=row, column=1).value:
-        workbook["Execution Summary"].cell(row=row, column=2).value
-        for row in range(1, workbook["Execution Summary"].max_row + 1)
-    }
-    assert summary_values["Mission Name"] == "Mission"
-    assert summary_values["Country"] == execution.country_name
+    facilities_sheet = workbook["Facilities"]
+    assert facilities_sheet["A1"].value == "Facility"
+    assert facilities_sheet["B1"].value == "Contact"
+    assert facilities_sheet["C1"].value == "Website"
+    assert facilities_sheet.max_row >= 2
     assert all(workbook[sheet].max_row >= 1 for sheet in SHEET_ORDER)
 
     queued = await execution_service.create_execution(

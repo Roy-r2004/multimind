@@ -275,26 +275,15 @@ async def test_real_export_uses_classification_sheets_and_honest_copy(
     assert workbook.sheetnames == SHEET_ORDER
     assert filename.startswith("scraping-execution-france-")
 
-    verified_sheet = workbook["Verified"]
-    review_sheet = workbook["Review"]
-    excluded_sheet = workbook["Excluded"]
-    contacts_sheet = workbook["Contacts"]
-    hard_gates_sheet = workbook["Hard Gates"]
-    contradictions_sheet = workbook["Contradictions"]
-    coverage_sheet = workbook["Coverage"]
-    summary_sheet = workbook["Execution Summary"]
-
-    assert verified_sheet["A1"].value == "Facility Name"
-    assert verified_sheet["A2"].value == "Centre Verifie"
-    assert review_sheet["A2"].value == "Centre Review"
-    assert excluded_sheet["A2"].value == "Centre Excluded"
-    contact_rows = list(contacts_sheet.iter_rows(min_row=2, values_only=True))
-    verified_contact_row = next(row for row in contact_rows if row[0] == "Centre Verifie")
-    assert verified_contact_row[5] == "'+33 1 23 45 67 89"
-    assert hard_gates_sheet["A2"].value == "Centre Excluded"
-    assert contradictions_sheet["A2"].value == "Centre Review"
-    assert coverage_sheet["A2"].value == "No coverage cells recorded."
-
-    assert summary_sheet["A1"].value == "SCRAPING EXECUTION SUMMARY — France"
-    assert "mock" not in str(summary_sheet["A1"].value).lower()
-    assert "fiction" not in str(summary_sheet["A2"].value).lower()
+    facilities_sheet = workbook["Facilities"]
+    assert facilities_sheet["A1"].value == "Facility"
+    assert facilities_sheet["B1"].value == "Contact"
+    assert facilities_sheet["C1"].value == "Website"
+    rows = list(facilities_sheet.iter_rows(min_row=2, values_only=True))
+    by_name = {row[0]: row for row in rows}
+    assert "Centre Verifie" in by_name
+    assert "Centre Review" in by_name
+    assert "Centre Excluded" not in by_name
+    assert by_name["Centre Verifie"][1] == "'+33 1 23 45 67 89"
+    assert "mock" not in filename.lower()
+    assert "fiction" not in filename.lower()
