@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0")
     scraping_mock_step_delay_ms: int = 600
     scraping_worker_concurrency: int = 4
-    scraping_execution_stale_seconds: int = 120
+    # Long LLM phases (extract/cleanup) can exceed 2 minutes without task heartbeats.
+    scraping_execution_stale_seconds: int = 900
     # Full-census discovery alone can exceed 30m; keep ARQ job alive for multi-hour runs.
     scraping_worker_job_timeout_seconds: int = 21600
     # When true (default in development), run scrapes inside the API process if Redis/worker is down

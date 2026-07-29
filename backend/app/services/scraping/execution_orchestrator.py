@@ -1065,6 +1065,7 @@ class SourceDiscoveryExecutionOrchestrator:
             document_id = document["id"]
             document_final_url = document["final_url"]
             await self._check_cancelled(execution)
+            await execution_service.touch_heartbeat(self.db, execution_id)
             if summary["chunks_considered"] >= chunk_limit:
                 summary["chunk_limit_reached"] = True
                 summary["documents_skipped"] += 1
@@ -1122,6 +1123,7 @@ class SourceDiscoveryExecutionOrchestrator:
                 chunk_id = chunk["id"]
                 coverage_cell_id = chunk["coverage_cell_id"]
                 await self._check_cancelled(execution)
+                await execution_service.touch_heartbeat(self.db, execution_id)
                 if summary["chunks_considered"] >= chunk_limit:
                     summary["chunk_limit_reached"] = True
                     break
@@ -1236,6 +1238,7 @@ class SourceDiscoveryExecutionOrchestrator:
             },
         )
         await self.db.commit()
+        await execution_service.touch_heartbeat(self.db, execution.id)
 
         summary = await facility_candidate_publication_service.publish_execution_candidates(
             self.db,
@@ -1291,6 +1294,7 @@ class SourceDiscoveryExecutionOrchestrator:
             metadata={"batch_size": settings.facility_ai_cleanup_batch_size},
         )
         await self.db.commit()
+        await execution_service.touch_heartbeat(self.db, execution.id)
 
         try:
             summary = await facility_ai_cleanup_service.run_for_execution(

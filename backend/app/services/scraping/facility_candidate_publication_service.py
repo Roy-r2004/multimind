@@ -351,12 +351,15 @@ class FacilityCandidatePublicationService:
             "failed": 0,
             "reused": 0,
         }
+        from app.services.scraping.execution_service import execution_service
+
         for candidate_id in candidate_ids:
             if candidate_id in published_set:
                 continue
             if summary["candidates_considered"] >= limit:
                 break
             summary["candidates_considered"] += 1
+            await execution_service.touch_heartbeat(db, execution_id)
             result = await self.publish_one_candidate(
                 db,
                 FacilityCandidatePublicationContext(

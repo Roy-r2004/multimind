@@ -120,9 +120,13 @@ class FacilityAiCleanupService:
         model = get_model(model_name)
         provider = get_provider_registry().get_provider(model.provider)
 
+        from app.services.scraping.execution_service import execution_service
+
         all_decisions: list[FacilityCleanupDecision] = []
         for offset in range(0, len(candidates), batch_size):
             batch = candidates[offset : offset + batch_size]
+            # Heartbeat before each LLM batch so stale recovery does not re-queue mid-call.
+            await execution_service.touch_heartbeat(db, execution_id)
             decisions = await self._plan_batch(
                 provider=provider,
                 model_slug=model.provider_model,
@@ -132,12 +136,14 @@ class FacilityAiCleanupService:
                 facilities=batch,
             )
             all_decisions.extend(decisions)
+            await execution_service.touch_heartbeat(db, execution_id)
 
         summary = apply_cleanup_decisions(
             facilities_by_id={facility.id: facility for facility in candidates},
             decisions=all_decisions,
         )
         await db.flush()
+        await execution_service.touch_heartbeat(db, execution_id)
         return {
             "enabled": 1,
             "reviewed": len(candidates),

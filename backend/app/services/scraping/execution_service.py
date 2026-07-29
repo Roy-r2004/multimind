@@ -531,6 +531,15 @@ class ScrapingExecutionService:
         await db.delete(execution)
         await db.commit()
 
+    async def touch_heartbeat(self, db: AsyncSession, execution_id: str) -> None:
+        """Keep zombie recovery from re-queuing long LLM phases mid-flight."""
+        await db.execute(
+            update(ScrapingExecution)
+            .where(ScrapingExecution.id == execution_id)
+            .values(heartbeat_at=datetime.now(UTC))
+        )
+        await db.commit()
+
     async def emit_event(
         self,
         db: AsyncSession,
