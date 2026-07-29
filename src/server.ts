@@ -19,6 +19,9 @@ async function proxyApiRequest(request: Request): Promise<Response | null> {
   const target = `${backendTarget()}${url.pathname}${url.search}`;
   const headers = new Headers(request.headers);
   headers.delete("host");
+  // undici's fetch rejects any request carrying Expect (UND_ERR_NOT_SUPPORTED),
+  // and .NET/PowerShell/curl send "Expect: 100-continue" on bodied requests.
+  headers.delete("expect");
   headers.set("accept-encoding", "identity");
 
   const init: RequestInit & { duplex?: "half" } = {
