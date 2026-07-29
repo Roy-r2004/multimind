@@ -481,6 +481,49 @@ class ScrapingExecutionService:
         await db.commit()
         return self._summary(execution)
 
+    async def force_complete_execution(
+        self, db: AsyncSession, auth: AuthContext, execution_id: str
+    ) -> ScrapingExecutionSummary:
+        """Mark an active/stuck execution completed so exports unlock without waiting."""
+        execution = await self._execution_row(db, auth, execution_id)
+        if execution.status in TERMINAL_EXECUTION_STATUSES:
+            if execution.status == ScrapingExecutionStatus.COMPLETED:
+                return self._summary(execution)
+            raise ConflictError(
+                "This execution already ended. Only active executions can be force-completed."
+            )
+        now = datetime.now(UTC)
+        previous_status = execution.status.value
+        execution.status = ScrapingExecutionStatus.COMPLETED
+        execution.completed_at = now
+        execution.error_message = None
+        await self._cancel_pending_children(db, execution.id)
+        await db.execute(
+            update(ScrapingTask)
+            .where(
+                ScrapingTask.execution_id == execution.id,
+                ScrapingTask.status == ScrapingTaskStatus.RUNNING,
+            )
+            .values(status=ScrapingTaskStatus.CANCELLED, completed_at=now)
+        )
+        await db.execute(
+            update(ScrapingExecutionAgent)
+            .where(
+                ScrapingExecutionAgent.execution_id == execution.id,
+                ScrapingExecutionAgent.status == ScrapingExecutionAgentStatus.RUNNING,
+            )
+            .values(status=ScrapingExecutionAgentStatus.COMPLETED, completed_at=now)
+        )
+        await self.emit_event(
+            db,
+            execution.id,
+            "execution_force_completed",
+            "Execution was manually marked completed so results can be exported.",
+            metadata={"previous_status": previous_status},
+        )
+        await db.commit()
+        return self._summary(execution)
+
     async def delete_execution(self, db: AsyncSession, auth: AuthContext, execution_id: str) -> None:
         execution = await self._execution_row(db, auth, execution_id)
         if execution.status not in DELETABLE_EXECUTION_STATUSES:

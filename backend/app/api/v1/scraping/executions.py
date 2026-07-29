@@ -590,6 +590,15 @@ async def cancel_execution(
     return await execution_service.cancel_execution(db, auth, execution_id)
 
 
+@router.post("/{execution_id}/force-complete", response_model=ScrapingExecutionSummary)
+async def force_complete_execution(
+    execution_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await execution_service.force_complete_execution(db, auth, execution_id)
+
+
 @router.delete("/{execution_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_execution(
     execution_id: str,

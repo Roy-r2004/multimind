@@ -419,7 +419,18 @@ class SourceDiscoveryExecutionOrchestrator:
                 active_stage="clean",
                 completed_stages={"discover", "verify", "cite"},
             )
-            await self._run_coverage_gap_loop(execution)
+            # Directory-first prioritizes speed: skip expensive gap re-extract rounds.
+            if self.scale_profile.mode != MODE_DIRECTORY_FIRST:
+                await self._run_coverage_gap_loop(execution)
+            else:
+                await execution_service.emit_event(
+                    self.db,
+                    execution.id,
+                    "coverage_gap_loop_skipped",
+                    "Directory-first mode skipped coverage gap follow-up for a faster finish.",
+                    metadata={"mode": MODE_DIRECTORY_FIRST},
+                )
+                await self.db.commit()
             await self._check_cancelled(execution)
             await self._refresh_metrics(execution)
             if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
@@ -2861,6 +2872,19 @@ class SourceDiscoveryExecutionOrchestrator:
         }
 
     async def _finish_cancelled(self, execution: ScrapingExecution) -> None:
+        await self.db.refresh(execution)
+        if execution.status in {
+            ScrapingExecutionStatus.COMPLETED,
+            ScrapingExecutionStatus.FAILED,
+            ScrapingExecutionStatus.CANCELLED,
+        }:
+            self._log(
+                "cancel_finish_skipped",
+                execution_id=execution.id,
+                reason="execution_already_terminal",
+                status=execution.status.value,
+            )
+            return
         await execution_service._cancel_pending_children(self.db, execution.id)
         execution.status = ScrapingExecutionStatus.CANCELLED
         execution.completed_at = datetime.now(UTC)
@@ -2876,6 +2900,8 @@ class SourceDiscoveryExecutionOrchestrator:
 
     async def _check_cancelled(self, execution: ScrapingExecution) -> None:
         await self.db.refresh(execution)
+        if execution.status == ScrapingExecutionStatus.COMPLETED:
+            raise ExecutionCancelled()
         if execution.status == ScrapingExecutionStatus.CANCEL_REQUESTED:
             await self._finish_cancelled(execution)
             raise ExecutionCancelled()
