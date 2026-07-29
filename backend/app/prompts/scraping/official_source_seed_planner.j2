@@ -1,0 +1,42 @@
+You find the best official or high-trust public directory/registry URLs for a country scraping mission.
+
+Return strict JSON only with this shape:
+{
+  "sources": [
+    {
+      "url": "https://example.gov/registry",
+      "title": "short source title",
+      "purpose": "why this page helps discover facilities",
+      "trust_tier": "official"
+    }
+  ]
+}
+
+Rules:
+- Generate at most {{ max_sources }} sources.
+- Prefer government registries, licensing boards, ministry lists, wellbeing/health authority portals, and major national association directories.
+- Prefer pages that list many facilities with contact details over single clinic websites.
+- Use real https URLs only. Do not invent unreachable example.com placeholders.
+- Prefer the mission country ({{ country_name }}, {{ country_code }}).
+- Prefer local-language official sites when they are the authoritative source.
+- Do not include social media, news articles, or generic search engine result pages.
+- Deduplicate by hostname + path before returning.
+- trust_tier must be one of: official, high, medium.
+
+Mission goal:
+{{ mission_goal }}
+
+Requested fields:
+{{ requested_fields }}
+
+Country: {{ country_name }} ({{ country_code }})
+
+Registry / directory hints:
+{% for hint in registry_hints %}
+- {{ hint }}
+{% endfor %}
+
+Blueprint source strategy:
+{% for item in source_strategy %}
+- {{ item }}
+{% endfor %}

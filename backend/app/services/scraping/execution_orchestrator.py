@@ -67,6 +67,11 @@ from app.services.scraping.facility_extraction_service import (
 )
 from app.services.scraping.source_discovery_service import source_discovery_service
 from app.services.scraping.amplifiers import build_registry_seed_list
+from app.services.scraping.official_source_seed_service import (
+    MAX_OFFICIAL_SEEDS,
+    official_source_seed_planner,
+)
+from app.schemas.api import OfficialSourceSeed
 from app.services.scraping.scale_profile import (
     MODE_DIRECTORY_FIRST,
     MODE_FULL_CENSUS,
@@ -77,6 +82,7 @@ from app.services.scraping.scale_profile import (
     scale_profile_from_country_profile,
     shrink_dimensions_for_directory_first,
 )
+from app.services.scraping.url_canonicalization import UrlRejected, canonicalize_discovery_url
 from app.services.scraping.source_retrieval_service import (
     SourceRetrievalContext,
     SourceRetrievalSummary,
@@ -502,6 +508,7 @@ class SourceDiscoveryExecutionOrchestrator:
                 execution.country_code,
                 execution.country_name,
             )
+            official_seeds: list[OfficialSourceSeed] = []
             if (execution.mode or "").strip().lower() == MODE_DIRECTORY_FIRST:
                 regions, languages, categories = shrink_dimensions_for_directory_first(
                     regions,
@@ -509,6 +516,9 @@ class SourceDiscoveryExecutionOrchestrator:
                     categories,
                     country_code=execution.country_code or "XX",
                     country_name=execution.country_name or "National",
+                )
+                official_seeds = await self._plan_official_source_seeds(
+                    execution, blueprint_json
                 )
             cell_count = len(regions) * len(languages) * len(categories)
             expected_pages = expected_pages_from_blueprint(blueprint_json)
@@ -547,6 +557,16 @@ class SourceDiscoveryExecutionOrchestrator:
                 "results_per_query": results_per_query,
                 "max_search_request_count": cell_count * max_queries,
                 "scale_budget": profile.as_metadata(),
+                "official_seed_urls": [
+                    {
+                        "url": seed.url,
+                        "title": seed.title,
+                        "purpose": seed.purpose,
+                        "trust_tier": seed.trust_tier,
+                    }
+                    for seed in official_seeds
+                ],
+                "official_seed_count": len(official_seeds),
                 }
             )
             execution.country_profile_json = persisted_profile
@@ -562,6 +582,7 @@ class SourceDiscoveryExecutionOrchestrator:
                     ],
                     "coverage_cell_count": cell_count,
                     "expected_pages": expected_pages,
+                    "official_seed_count": len(official_seeds),
                     **profile.as_metadata(),
                 },
             )
@@ -701,6 +722,216 @@ class SourceDiscoveryExecutionOrchestrator:
                 task_count=await self._task_count(execution.id),
                 coverage_cell_count=len(cells),
             )
+
+        if (execution.mode or "").strip().lower() == MODE_DIRECTORY_FIRST:
+            await self._seed_official_source_candidates(execution, execution_agents)
+
+    async def _plan_official_source_seeds(
+        self,
+        execution: ScrapingExecution,
+        blueprint_json: dict[str, Any],
+    ) -> list[OfficialSourceSeed]:
+        source_strategy_raw = blueprint_json.get("source_strategy")
+        source_strategy: list[str] = []
+        if isinstance(source_strategy_raw, list):
+            for item in source_strategy_raw:
+                if isinstance(item, dict):
+                    text = self._clean_text(item.get("source_type"))
+                else:
+                    text = self._clean_text(item)
+                if text:
+                    source_strategy.append(text)
+        registry_hints = build_registry_seed_list(
+            country_name=execution.country_name or "Unknown",
+            country_blueprint=blueprint_json if isinstance(blueprint_json, dict) else {},
+            source_strategy=(
+                source_strategy_raw if isinstance(source_strategy_raw, list) else None
+            ),
+        )
+        try:
+            seeds = await official_source_seed_planner.plan(
+                country_code=execution.country_code or "XX",
+                country_name=execution.country_name or "Unknown",
+                mission_goal=self._mission_goal(blueprint_json),
+                requested_fields=self._requested_fields(blueprint_json),
+                registry_hints=registry_hints,
+                source_strategy=source_strategy,
+                max_sources=MAX_OFFICIAL_SEEDS,
+            )
+        except Exception as exc:
+            self._log(
+                "official_source_seed_planning_failed",
+                execution_id=execution.id,
+                error=str(exc)[:300],
+            )
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "task_failed",
+                "Official registry seed planning failed; continuing with gap-fill discovery.",
+                metadata={
+                    "task_type": "official_source_seed",
+                    "error": str(exc)[:300],
+                },
+            )
+            return []
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "task_completed",
+            f"Official registry seed agent returned {len(seeds)} URLs.",
+            metadata={
+                "task_type": "official_source_seed",
+                "official_seed_count": len(seeds),
+                "urls": [seed.url for seed in seeds[:MAX_OFFICIAL_SEEDS]],
+            },
+        )
+        self._log(
+            "official_source_seeds_planned",
+            execution_id=execution.id,
+            seed_count=len(seeds),
+        )
+        return seeds
+
+    async def _seed_official_source_candidates(
+        self,
+        execution: ScrapingExecution,
+        execution_agents: list[ScrapingExecutionAgent],
+    ) -> None:
+        profile_json = (
+            dict(execution.country_profile_json)
+            if isinstance(execution.country_profile_json, dict)
+            else {}
+        )
+        if profile_json.get("official_seeds_persisted"):
+            return
+        raw_seeds = profile_json.get("official_seed_urls") or []
+        if not isinstance(raw_seeds, list) or not raw_seeds:
+            return
+
+        cells = await self._coverage_cells(execution.id)
+        if not cells:
+            return
+        anchor = cells[0]
+        default_agent_id = (
+            anchor.assigned_execution_agent_id
+            or (execution_agents[0].id if execution_agents else None)
+        )
+        if default_agent_id is None:
+            return
+
+        created = 0
+        for index, raw in enumerate(raw_seeds[:MAX_OFFICIAL_SEEDS]):
+            if not isinstance(raw, dict):
+                continue
+            url = str(raw.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                canonical = canonicalize_discovery_url(url)
+            except UrlRejected:
+                continue
+            existing = await self.db.scalar(
+                select(ScrapingSourceCandidate).where(
+                    ScrapingSourceCandidate.execution_id == execution.id,
+                    ScrapingSourceCandidate.canonical_url == canonical.canonical_url,
+                )
+            )
+            if existing is not None:
+                continue
+            query = ScrapingSourceDiscoveryQuery(
+                organization_id=execution.organization_id,
+                execution_id=execution.id,
+                coverage_cell_id=anchor.id,
+                country_code=execution.country_code,
+                country_name=execution.country_name,
+                region_code=anchor.region_code,
+                region_name=anchor.region_name,
+                language_code=(anchor.language_code or "und")[:16],
+                language_name=anchor.language_name or "und",
+                source_category="official registry",
+                query_text="official registry seed",
+                provider="official_seed",
+                status=SourceDiscoveryQueryStatus.SUCCEEDED,
+                result_count=1,
+                requested_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+            )
+            self.db.add(query)
+            await self.db.flush()
+            trust = str(raw.get("trust_tier") or "official").strip().casefold()
+            if trust not in {"official", "high", "medium"}:
+                trust = "official"
+            candidate = ScrapingSourceCandidate(
+                organization_id=execution.organization_id,
+                execution_id=execution.id,
+                coverage_cell_id=anchor.id,
+                discovery_query_id=query.id,
+                provider="official_seed",
+                rank=index + 1,
+                url=canonical.original_url,
+                canonical_url=canonical.canonical_url,
+                domain=canonical.domain,
+                title=str(raw.get("title") or canonical.domain)[:300],
+                snippet=str(raw.get("purpose") or "Official registry or directory seed")[:1000],
+                country_code=execution.country_code,
+                country_name=execution.country_name,
+                region_code=anchor.region_code,
+                region_name=anchor.region_name,
+                language_code=(anchor.language_code or "und")[:16],
+                language_name=anchor.language_name or "und",
+                source_category="official registry",
+                initial_relevance_score=1.0,
+                initial_trust_tier=trust,
+                status=SourceCandidateStatus.DISCOVERED,
+                discovered_at=datetime.now(UTC),
+                metadata_json={
+                    "phase": "official_registry_seed",
+                    "purpose": str(raw.get("purpose") or "")[:300],
+                },
+            )
+            self.db.add(candidate)
+            await self.db.flush()
+            self.db.add(
+                ScrapingTask(
+                    execution_id=execution.id,
+                    execution_agent_id=default_agent_id,
+                    coverage_cell_id=anchor.id,
+                    task_type="retrieve_source",
+                    title=f"Retrieve official seed {canonical.domain}",
+                    status=ScrapingTaskStatus.QUEUED,
+                    priority=10 + index,
+                    max_attempts=3,
+                    input_json={
+                        "source_candidate_id": candidate.id,
+                        "phase": "official_registry_seed",
+                    },
+                    output_json={},
+                    dependency_task_ids_json=[],
+                )
+            )
+            created += 1
+
+        profile_json["official_seeds_persisted"] = True
+        profile_json["official_seeds_candidate_count"] = created
+        execution.country_profile_json = profile_json
+        await self._refresh_metrics(execution)
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "task_completed",
+            f"Seeded {created} official registry/directory URLs for retrieval.",
+            metadata={
+                "task_type": "official_source_seed_persist",
+                "seeded_candidate_count": created,
+            },
+        )
+        await self.db.commit()
+        self._log(
+            "official_source_seeds_persisted",
+            execution_id=execution.id,
+            seeded_candidate_count=created,
+        )
 
     async def _process_tasks(self, execution: ScrapingExecution) -> None:
         processed_count = 0

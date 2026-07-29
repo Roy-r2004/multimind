@@ -37,8 +37,8 @@ def test_real_mode_uses_settings_values():
 
 
 def test_directory_first_scales_with_cell_count():
-    # 9 regions × 2 languages × 2 directory categories
-    cells = 36
+    # National × 2 local languages × 4 directory categories
+    cells = 8
     profile = resolve_dynamic_scale_profile(
         MODE_DIRECTORY_FIRST,
         _settings(),
@@ -48,11 +48,8 @@ def test_directory_first_scales_with_cell_count():
     assert profile.mode == MODE_DIRECTORY_FIRST
     assert profile.label == "Directory-first"
     assert profile.retrieval_max_per_cell == DIR_PER_CELL_FETCH
-    assert profile.retrieval_max_per_execution == cells * DIR_PER_CELL_FETCH
-    assert profile.retrieval_max_per_execution == 2160
-    assert profile.extraction_max_documents == 1080
-    assert profile.extraction_max_chunks == 3240
-    assert profile.publication_max_candidates == 4320
+    # Floor keeps enough budget for official seed retrieval.
+    assert profile.retrieval_max_per_execution == max(cells * DIR_PER_CELL_FETCH, 250)
     assert profile.serper_max_queries_per_discovery <= profile.discovery_query_hard_cap
 
 
@@ -60,7 +57,7 @@ def test_directory_first_expected_pages_raises_budget():
     profile = resolve_dynamic_scale_profile(
         MODE_DIRECTORY_FIRST,
         _settings(),
-        cell_count=36,
+        cell_count=8,
         expected_pages=5000,
     )
     assert profile.retrieval_max_per_execution == 5000
@@ -75,7 +72,7 @@ def test_directory_first_provisional_until_cells_known():
     assert profile.extraction_max_documents == 1
 
 
-def test_shrink_keeps_regions_and_filters_directory_categories():
+def test_shrink_collapses_to_national_local_directory_categories():
     regions = [
         {"code": "W", "name": "Vienna"},
         {"code": "S", "name": "Salzburg"},
@@ -101,8 +98,11 @@ def test_shrink_keeps_regions_and_filters_directory_categories():
         country_code="at",
         country_name="Austria",
     )
-    assert out_regions == regions
-    assert out_languages == languages
+    assert out_regions == [{"code": "AT", "name": "Austria"}]
+    assert all(
+        (lang.get("code") or "").casefold() not in {"en", "eng"} for lang in out_languages
+    )
+    assert len(out_languages) <= 2
     assert out_categories == [
         "official registry",
         "licensed provider directory",
@@ -111,17 +111,15 @@ def test_shrink_keeps_regions_and_filters_directory_categories():
 
 
 def test_shrink_dimensions_falls_back_to_default_directory_categories():
-    regions = [{"code": "X", "name": "Somewhere"}]
-    languages = [{"code": "de", "name": "German"}]
     out_regions, out_languages, categories = shrink_dimensions_for_directory_first(
-        regions,
-        languages,
+        [{"code": "X", "name": "Somewhere"}],
+        [{"code": "de", "name": "German"}],
         ["clinic websites", "news articles"],
         country_code="AT",
         country_name="Austria",
     )
-    assert out_regions == regions
-    assert out_languages == languages
+    assert out_regions == [{"code": "AT", "name": "Austria"}]
+    assert out_languages == [{"code": "de", "name": "German"}]
     assert "official registry" in categories
     assert "licensed provider directory" in categories
 

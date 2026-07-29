@@ -734,6 +734,28 @@ class SourceDiscoveryQueryPlan(BaseModel):
     queries: list[SourceDiscoveryPlannedQuery] = Field(min_length=1, max_length=32)
 
 
+class OfficialSourceSeed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1, max_length=2048)
+    title: str = Field(default="", max_length=300)
+    purpose: str = Field(default="", max_length=300)
+    trust_tier: str = Field(default="official", max_length=32)
+
+    @field_validator("url", "title", "purpose", "trust_tier", mode="before")
+    @classmethod
+    def trim_seed_strings(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class OfficialSourceSeedPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sources: list[OfficialSourceSeed] = Field(default_factory=list, max_length=24)
+
+
 class SourceDiscoveryProviderResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

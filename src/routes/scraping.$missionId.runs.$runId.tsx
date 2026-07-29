@@ -227,10 +227,10 @@ function ScrapingRunDetailPage() {
                   </p>
                   {!activeExecution && (
                     <p className="mt-2 text-xs text-white/45">
-                      <strong className="text-primary">Directory-first</strong> covers all
-                      regions via registries/directories (can take hours).{" "}
-                      <strong className="text-primary">Full census</strong> adds every source
-                      category. <strong className="text-primary">Standard</strong> is for demos.
+                      <strong className="text-primary">Directory-first</strong> asks an AI
+                      agent for official registry URLs first, then gap-fills (faster).{" "}
+                      <strong className="text-primary">Full census</strong> is the long matrix.{" "}
+                      <strong className="text-primary">Standard</strong> is for demos.
                     </p>
                   )}
                   {!activeExecution && (

@@ -23,6 +23,8 @@ DIR_MAX_QUERIES_PER_DISCOVERY = 12
 DIR_DISCOVERY_QUERY_HARD_CAP = 16
 DIR_DISCOVERY_RESULTS_HARD_CAP = 20
 DIR_CONTACT_CRAWL_MAX_PAGES = 8
+DIR_MAX_CATEGORIES = 4
+DIR_MIN_RETRIEVAL_PER_EXECUTION = 250
 
 DIRECTORY_CATEGORY_HINTS = (
     "directory",
@@ -107,7 +109,11 @@ def resolve_dynamic_scale_profile(
     if normalized == MODE_DIRECTORY_FIRST:
         cells = max(int(cell_count or 0), 0)
         pages_hint = max(int(expected_pages or 0), 0)
-        retrieval_max_per_execution = max(pages_hint, cells * DIR_PER_CELL_FETCH)
+        retrieval_max_per_execution = max(
+            pages_hint,
+            cells * DIR_PER_CELL_FETCH,
+            DIR_MIN_RETRIEVAL_PER_EXECUTION if cells > 0 else 0,
+        )
         extraction_max_documents = max(1, retrieval_max_per_execution // 2)
         return ScaleProfile(
             mode=MODE_DIRECTORY_FIRST,
@@ -157,8 +163,29 @@ def shrink_dimensions_for_directory_first(
     country_code: str,
     country_name: str,
 ) -> tuple[list[dict[str, str | None]], list[dict[str, str | None]], list[str]]:
-    """Keep all regions/languages; restrict categories to directory/registry sources."""
-    del country_code, country_name  # unused; regions already carry country scope
+    """National coverage + local languages + directory/registry categories only.
+
+    Official URL seeds carry the main discovery load; the matrix is a small gap-fill
+    pass, not a region×language explosion.
+    """
+    del regions  # regional matrix replaced by national + official seeds
+    national = [
+        {
+            "code": (country_code or "XX")[:2].upper(),
+            "name": (country_name or "National")[:160],
+        }
+    ]
+    local_languages = [
+        language
+        for language in languages
+        if not _is_english_language(language)
+    ]
+    if not local_languages:
+        local_languages = list(languages[:2]) if languages else [
+            {"code": "en", "name": "English"}
+        ]
+    else:
+        local_languages = local_languages[:2]
     preferred = [
         category
         for category in categories
@@ -166,7 +193,15 @@ def shrink_dimensions_for_directory_first(
     ]
     if not preferred:
         preferred = list(DEFAULT_DIRECTORY_CATEGORIES)
-    return regions, languages, preferred
+    else:
+        preferred = preferred[:DIR_MAX_CATEGORIES]
+    return national, local_languages, preferred
+
+
+def _is_english_language(language: dict[str, str | None]) -> bool:
+    code = str(language.get("code") or "").strip().casefold()
+    name = str(language.get("name") or "").strip().casefold()
+    return code in {"en", "eng"} or name == "english"
 
 
 def expected_pages_from_blueprint(blueprint_json: dict[str, Any] | None) -> int | None:
