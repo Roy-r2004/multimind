@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+from arq import cron
 from arq.connections import RedisSettings
 
 from app.core.config import get_settings
@@ -37,7 +38,11 @@ _MIN_JOB_TIMEOUT_SECONDS = 21600
 
 
 class WorkerSettings:
-    functions = [run_scraping_execution]
+    functions = [run_scraping_execution, recover_scraping_executions]
+    cron_jobs = [
+        # Reclaim zombie "running" executions if the worker/job died mid-flight.
+        cron(recover_scraping_executions, second={0, 30}, run_at_startup=False),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()

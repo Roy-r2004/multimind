@@ -186,6 +186,30 @@ async def mark_scraping_execution_timeout_failed(execution_id: str) -> None:
         )
 
 
+async def _reset_running_work_to_queued(db: AsyncSession, execution_id: str) -> None:
+    """Move in-flight tasks/agents back to queued so a resumed job can continue."""
+    await db.execute(
+        update(ScrapingTask)
+        .where(
+            ScrapingTask.execution_id == execution_id,
+            ScrapingTask.status == ScrapingTaskStatus.RUNNING,
+        )
+        .values(status=ScrapingTaskStatus.QUEUED, current_action=None)
+    )
+    await db.execute(
+        update(ScrapingExecutionAgent)
+        .where(
+            ScrapingExecutionAgent.execution_id == execution_id,
+            ScrapingExecutionAgent.status == ScrapingExecutionAgentStatus.RUNNING,
+        )
+        .values(
+            status=ScrapingExecutionAgentStatus.QUEUED,
+            current_task_id=None,
+            current_action=None,
+        )
+    )
+
+
 async def requeue_scraping_execution_after_job_slice(execution_id: str) -> None:
     """Continue a long census after ARQ/Coolify cancels the current job slice."""
     async with AsyncSessionLocal() as db:
@@ -201,26 +225,7 @@ async def requeue_scraping_execution_after_job_slice(execution_id: str) -> None:
             return
 
         now = datetime.now(UTC)
-        await db.execute(
-            update(ScrapingTask)
-            .where(
-                ScrapingTask.execution_id == execution_id,
-                ScrapingTask.status == ScrapingTaskStatus.RUNNING,
-            )
-            .values(status=ScrapingTaskStatus.QUEUED, current_action=None)
-        )
-        await db.execute(
-            update(ScrapingExecutionAgent)
-            .where(
-                ScrapingExecutionAgent.execution_id == execution_id,
-                ScrapingExecutionAgent.status == ScrapingExecutionAgentStatus.RUNNING,
-            )
-            .values(
-                status=ScrapingExecutionAgentStatus.QUEUED,
-                current_task_id=None,
-                current_action=None,
-            )
-        )
+        await _reset_running_work_to_queued(db, execution_id)
         execution.status = ScrapingExecutionStatus.QUEUED
         execution.error_message = None
         execution.heartbeat_at = now
@@ -237,10 +242,14 @@ async def requeue_scraping_execution_after_job_slice(execution_id: str) -> None:
 
 
 async def recover_scraping_executions(ctx: dict) -> None:
+    """Re-queue orphaned/stale executions (startup + periodic cron)."""
+    del ctx  # ARQ passes worker context; unused here.
+    to_enqueue: list[str] = []
     async with AsyncSessionLocal() as db:
         threshold = datetime.now(UTC) - timedelta(
             seconds=get_settings().scraping_execution_stale_seconds
         )
+        now = datetime.now(UTC)
         result = await db.execute(
             select(ScrapingExecution).where(
                 (ScrapingExecution.status == ScrapingExecutionStatus.QUEUED)
@@ -254,9 +263,25 @@ async def recover_scraping_executions(ctx: dict) -> None:
             )
         )
         for execution in result.scalars().all():
+            was_running = execution.status == ScrapingExecutionStatus.RUNNING
+            if was_running:
+                await _reset_running_work_to_queued(db, execution.id)
+                await execution_service.emit_event(
+                    db,
+                    execution.id,
+                    "stale_execution_recovered",
+                    "Stale running execution recovered; re-queuing after worker silence.",
+                    metadata={"reason": "stale_heartbeat_recovery"},
+                )
             execution.status = ScrapingExecutionStatus.QUEUED
-            await execution_service.enqueue_execution(execution.id)
+            execution.error_message = None
+            if was_running:
+                execution.heartbeat_at = now
+            to_enqueue.append(execution.id)
         await db.commit()
+
+    for execution_id in to_enqueue:
+        await execution_service.enqueue_execution(execution_id)
 
 
 class SourceDiscoveryExecutionOrchestrator:
@@ -957,7 +982,8 @@ class SourceDiscoveryExecutionOrchestrator:
                 execution.heartbeat_at = datetime.now(UTC)
                 if processed_count % METRIC_REFRESH_TASK_INTERVAL == 0:
                     await self._refresh_metrics(execution)
-                    await self.db.commit()
+                # Persist heartbeat every task so zombie detection stays accurate.
+                await self.db.commit()
 
         await self._reconcile_coverage_after_retrieval(execution)
         await self._refresh_metrics(execution)
