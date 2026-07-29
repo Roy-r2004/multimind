@@ -95,39 +95,38 @@ class FacilityAiCleanupService:
         if not getattr(settings, "facility_ai_cleanup_enabled", True):
             return {"enabled": 0, "reviewed": 0, "excluded": 0, "websites_fixed": 0}
 
-        facilities = (
+        # Lightweight scan only — never load contacts/sources for the whole roster at
+        # once. Holding that graph open kept the DB connection checked out through the
+        # LLM calls, which starved the background heartbeat and made the job look dead.
+        light_rows = (
             await db.execute(
                 select(RehabilitationFacility)
                 .where(RehabilitationFacility.execution_id == execution_id)
-                .options(
-                    selectinload(RehabilitationFacility.contacts),
-                    selectinload(RehabilitationFacility.source_links).selectinload(
-                        RehabilitationFacilitySourceLink.source
-                    ),
-                )
                 .order_by(RehabilitationFacility.canonical_name, RehabilitationFacility.id)
             )
         ).scalars().all()
-
-        # A facility already carrying an ai_cleanup mark was already decided in a prior
-        # attempt (this phase can be interrupted by stale-recovery restarts). Keeping it
-        # in the pool for the final tally but out of `pending` makes the phase resumable:
-        # a restart continues where it left off instead of re-spending LLM calls (and
-        # re-risking another stall) on facilities that were already reviewed.
-        candidate_pool = [
-            facility
-            for facility in facilities
+        candidate_ids = [
+            facility.id
+            for facility in light_rows
             if normalized_publication_class(facility.publication_class) != "excluded"
             or _is_ai_reviewed(facility)
         ]
-        if not candidate_pool:
+        pending_ids = [
+            facility.id
+            for facility in light_rows
+            if facility.id in set(candidate_ids) and not _is_ai_reviewed(facility)
+        ]
+        already_reviewed = len(candidate_ids) - len(pending_ids)
+        # Release the connection before any LLM wait so the heartbeat task can beat.
+        await db.commit()
+
+        if not candidate_ids:
             return {"enabled": 1, "reviewed": 0, "excluded": 0, "websites_fixed": 0}
-        pending = [facility for facility in candidate_pool if not _is_ai_reviewed(facility)]
 
         from app.services.scraping.execution_service import execution_service
 
         batches = 0
-        if pending:
+        if pending_ids:
             batch_size = max(
                 int(getattr(settings, "facility_ai_cleanup_batch_size", DEFAULT_BATCH_SIZE) or DEFAULT_BATCH_SIZE),
                 1,
@@ -138,38 +137,91 @@ class FacilityAiCleanupService:
             model = get_model(model_name)
             provider = get_provider_registry().get_provider(model.provider)
 
-            for offset in range(0, len(pending), batch_size):
-                batch = pending[offset : offset + batch_size]
+            for offset in range(0, len(pending_ids), batch_size):
+                batch_ids = pending_ids[offset : offset + batch_size]
                 batches += 1
-                # Heartbeat before each LLM batch so stale recovery does not re-queue mid-call.
                 await execution_service.touch_heartbeat(db, execution_id)
+                batch = list(
+                    (
+                        await db.execute(
+                            select(RehabilitationFacility)
+                            .where(RehabilitationFacility.id.in_(batch_ids))
+                            .options(
+                                selectinload(RehabilitationFacility.contacts),
+                                selectinload(RehabilitationFacility.source_links).selectinload(
+                                    RehabilitationFacilitySourceLink.source
+                                ),
+                            )
+                            .order_by(
+                                RehabilitationFacility.canonical_name,
+                                RehabilitationFacility.id,
+                            )
+                        )
+                    ).scalars().all()
+                )
+                # Snapshot everything the prompt needs before releasing the DB connection.
+                facility_payloads = [_facility_payload(facility) for facility in batch]
+                facility_ids = [facility.id for facility in batch]
+                await db.commit()
                 decisions = await self._plan_batch_with_fallback(
                     provider=provider,
                     model_slug=model.provider_model,
                     country_code=country_code,
                     country_name=country_name,
                     mission_goal=mission_goal,
-                    facilities=batch,
+                    facility_ids=facility_ids,
+                    facility_payloads=facility_payloads,
                 )
+                writable = (
+                    await db.execute(
+                        select(RehabilitationFacility)
+                        .where(RehabilitationFacility.id.in_(batch_ids))
+                        .options(
+                            selectinload(RehabilitationFacility.contacts),
+                            selectinload(RehabilitationFacility.source_links).selectinload(
+                                RehabilitationFacilitySourceLink.source
+                            ),
+                        )
+                    )
+                ).scalars().all()
                 apply_cleanup_decisions(
-                    facilities_by_id={facility.id: facility for facility in batch},
+                    facilities_by_id={facility.id: facility for facility in writable},
                     decisions=decisions,
                 )
-                # Persist this batch immediately (not just at the very end) so a
-                # restart mid-phase never throws away already-decided facilities.
                 await db.flush()
                 await db.commit()
                 await execution_service.touch_heartbeat(db, execution_id)
 
-        excluded = sum(1 for facility in candidate_pool if _ai_cleanup_mark(facility).get("action", "").startswith("exclude_"))
-        websites_fixed = sum(1 for facility in candidate_pool if _ai_cleanup_mark(facility).get("website_fixed"))
+        # Final tallies from fresh light rows so we do not keep the heavy graph in memory.
+        final_rows = (
+            await db.execute(
+                select(RehabilitationFacility).where(
+                    RehabilitationFacility.execution_id == execution_id
+                )
+            )
+        ).scalars().all()
+        final_pool = [
+            facility
+            for facility in final_rows
+            if normalized_publication_class(facility.publication_class) != "excluded"
+            or _is_ai_reviewed(facility)
+        ]
+        excluded = sum(
+            1
+            for facility in final_pool
+            if _ai_cleanup_mark(facility).get("action", "").startswith("exclude_")
+        )
+        websites_fixed = sum(
+            1 for facility in final_pool if _ai_cleanup_mark(facility).get("website_fixed")
+        )
+        await db.commit()
         return {
             "enabled": 1,
-            "reviewed": len(candidate_pool),
+            "reviewed": len(final_pool),
             "excluded": excluded,
             "websites_fixed": websites_fixed,
             "batches": batches,
-            "resumed_from_prior_attempt": len(candidate_pool) - len(pending),
+            "resumed_from_prior_attempt": already_reviewed,
         }
 
     async def _plan_batch_with_fallback(
@@ -180,7 +232,8 @@ class FacilityAiCleanupService:
         country_code: str,
         country_name: str,
         mission_goal: str,
-        facilities: list[RehabilitationFacility],
+        facility_ids: list[str],
+        facility_payloads: list[dict[str, Any]],
     ) -> list[FacilityCleanupDecision]:
         """Plan a batch; on failure, fall back to solo calls so one hung prompt cannot wedge forever."""
         decisions = await self._plan_batch(
@@ -189,26 +242,26 @@ class FacilityAiCleanupService:
             country_code=country_code,
             country_name=country_name,
             mission_goal=mission_goal,
-            facilities=facilities,
+            facility_ids=facility_ids,
+            facility_payloads=facility_payloads,
         )
         if not any(d.reason == "cleanup_batch_failed" for d in decisions):
             return decisions
-        if len(facilities) == 1:
+        if len(facility_ids) == 1:
             # Solo already failed — mark reviewed so resume does not retry the same poison forever.
-            facility = facilities[0]
             return [
                 FacilityCleanupDecision(
-                    facility_id=facility.id,
+                    facility_id=facility_ids[0],
                     action="keep",
                     reason="cleanup_skipped_provider_error",
                 )
             ]
         logger.warning(
             "facility_ai_cleanup_batch_falling_back_to_solo count=%s",
-            len(facilities),
+            len(facility_ids),
         )
         solo: list[FacilityCleanupDecision] = []
-        for facility in facilities:
+        for facility_id, payload in zip(facility_ids, facility_payloads, strict=True):
             solo.extend(
                 await self._plan_batch_with_fallback(
                     provider=provider,
@@ -216,7 +269,8 @@ class FacilityAiCleanupService:
                     country_code=country_code,
                     country_name=country_name,
                     mission_goal=mission_goal,
-                    facilities=[facility],
+                    facility_ids=[facility_id],
+                    facility_payloads=[payload],
                 )
             )
         return solo
@@ -229,15 +283,15 @@ class FacilityAiCleanupService:
         country_code: str,
         country_name: str,
         mission_goal: str,
-        facilities: list[RehabilitationFacility],
+        facility_ids: list[str],
+        facility_payloads: list[dict[str, Any]],
     ) -> list[FacilityCleanupDecision]:
-        payload = [_facility_payload(facility) for facility in facilities]
         prompt = get_prompt_engine().render(
             "scraping/facility_cleanup.j2",
             country_code=(country_code or "XX")[:2].upper(),
             country_name=(country_name or "Unknown")[:120],
             mission_goal=(mission_goal or "Find rehabilitation facilities.")[:2000],
-            facilities_json=json.dumps(payload, ensure_ascii=True),
+            facilities_json=json.dumps(facility_payloads, ensure_ascii=True),
         )
         try:
             response = await asyncio.wait_for(
@@ -257,21 +311,21 @@ class FacilityAiCleanupService:
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "facility_ai_cleanup_batch_failed count=%s error=%s",
-                len(facilities),
+                len(facility_ids),
                 exc,
             )
             return [
-                FacilityCleanupDecision(facility_id=facility.id, action="keep", reason="cleanup_batch_failed")
-                for facility in facilities
+                FacilityCleanupDecision(facility_id=facility_id, action="keep", reason="cleanup_batch_failed")
+                for facility_id in facility_ids
             ]
 
         by_id = {decision.facility_id: decision for decision in plan.decisions if decision.facility_id}
         # Ensure every facility has a decision; default keep on omission.
         result: list[FacilityCleanupDecision] = []
-        for facility in facilities:
+        for facility_id in facility_ids:
             result.append(
-                by_id.get(facility.id)
-                or FacilityCleanupDecision(facility_id=facility.id, action="keep", reason="missing_decision")
+                by_id.get(facility_id)
+                or FacilityCleanupDecision(facility_id=facility_id, action="keep", reason="missing_decision")
             )
         return result
 
