@@ -14,7 +14,7 @@ async def test_032_upgrade_downgrade_and_single_head():
         assert "032" in await db.alembic("current")
         heads = await db.alembic("heads")
         assert heads.count("(head)") == 1
-        assert "034 (head)" in heads
+        assert "035 (head)" in heads
         connection = await db.connect()
         try:
             definition = await connection.fetchval(

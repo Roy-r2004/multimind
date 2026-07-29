@@ -97,7 +97,7 @@ async def test_033_upgrade_schema_one_head_and_empty_downgrade() -> None:
             await connection.close()
         heads = await db.alembic("heads")
         assert heads.count("(head)") == 1
-        assert "034" in heads
+        assert "035" in heads
         await db.alembic("downgrade", "032")
         connection = await db.connect()
         try:

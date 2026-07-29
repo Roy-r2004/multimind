@@ -104,9 +104,9 @@ async def controlled_profile_sessions(
         await database.alembic("upgrade", "head")
         current = await database.alembic("current")
         heads = await database.alembic("heads")
-        assert "034 (head)" in current
+        assert "035 (head)" in current
         assert [line.strip() for line in heads.splitlines() if "(head)" in line] == [
-            "034 (head)"
+            "035 (head)"
         ]
         schema = await database.connect()
         try:

@@ -30,6 +30,7 @@ from app.db.models import (
     ScrapingExecutionAgent,
     ScrapingExecutionStatus,
     ScrapingMission,
+    ScrapingFacilityCandidatePublication,
     ScrapingTask,
 )
 from app.services.scraping.execution_outcome import coverage_gap_count, execution_outcome_label
@@ -112,11 +113,23 @@ ID_HEADERS = {
 
 class ExecutionExportService:
     async def build_workbook(
-        self, db: AsyncSession, auth: AuthContext, execution_id: str
+        self, db: AsyncSession, auth: AuthContext, execution_id: str,
+        *, allow_nonterminal: bool = False,
     ) -> tuple[bytes, str]:
-        data = await self._load(db, auth, execution_id)
+        return await self.build_workbook_for_organization(
+            db,
+            organization_id=auth.org_id,
+            execution_id=execution_id,
+            allow_nonterminal=allow_nonterminal,
+        )
+
+    async def build_workbook_for_organization(
+        self, db: AsyncSession, *, organization_id: str, execution_id: str,
+        allow_nonterminal: bool = False,
+    ) -> tuple[bytes, str]:
+        data = await self._load(db, organization_id, execution_id)
         execution = data["execution"]
-        if execution.status not in TERMINAL_STATUSES:
+        if not allow_nonterminal and execution.status not in TERMINAL_STATUSES:
             raise ConflictError("Excel report available after execution finishes.")
         if not data["facilities"]:
             raise ConflictError(
@@ -160,10 +173,15 @@ class ExecutionExportService:
         filename = _filename(execution)
         return buffer.getvalue(), filename
 
-    async def _load(self, db: AsyncSession, auth: AuthContext, execution_id: str) -> dict[str, Any]:
+    async def _load(
+        self, db: AsyncSession, organization_id: str, execution_id: str
+    ) -> dict[str, Any]:
         result = await db.execute(
             select(ScrapingExecution)
-            .where(ScrapingExecution.id == execution_id, ScrapingExecution.organization_id == auth.org_id)
+            .where(
+                ScrapingExecution.id == execution_id,
+                ScrapingExecution.organization_id == organization_id,
+            )
             .options(
                 selectinload(ScrapingExecution.mission).selectinload(ScrapingMission.project),
                 selectinload(ScrapingExecution.blueprint),
@@ -173,10 +191,23 @@ class ExecutionExportService:
         execution = result.scalar_one_or_none()
         if execution is None:
             raise NotFoundError("ScrapingExecution", execution_id)
+        linked_facility_ids = select(
+            ScrapingFacilityCandidatePublication.final_facility_id
+        ).where(
+            ScrapingFacilityCandidatePublication.organization_id == organization_id,
+            ScrapingFacilityCandidatePublication.execution_id == execution.id,
+            ScrapingFacilityCandidatePublication.final_facility_id.is_not(None),
+        )
         facilities = (
             await db.execute(
                 select(RehabilitationFacility)
-                .where(RehabilitationFacility.execution_id == execution.id)
+                .where(
+                    RehabilitationFacility.organization_id == organization_id,
+                    (
+                        (RehabilitationFacility.execution_id == execution.id)
+                        | RehabilitationFacility.id.in_(linked_facility_ids)
+                    ),
+                )
                 .options(
                     selectinload(RehabilitationFacility.aliases),
                     selectinload(RehabilitationFacility.locations),

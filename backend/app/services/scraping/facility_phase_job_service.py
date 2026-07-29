@@ -63,6 +63,7 @@ async def create_job(
 async def claim_batch(
     db: AsyncSession, *, organization_id: str, execution_id: str,
     batch_size: int, lease_duration: timedelta,
+    work_kinds: set[str] | None = None,
 ) -> list[ClaimedFacilityWork]:
     # Ownership is checked in the same transaction as the SKIP LOCKED claim.
     execution_exists = await db.scalar(select(ScrapingExecution.id).where(
@@ -79,13 +80,17 @@ async def claim_batch(
         and_(ScrapingFacilityPhaseWorkJob.status == "running",
              ScrapingFacilityPhaseWorkJob.lease_expires_at < db_now),
     )
-    rows = list((await db.execute(
-        select(ScrapingFacilityPhaseWorkJob).where(
+    criteria = [
             ScrapingFacilityPhaseWorkJob.organization_id == organization_id,
             ScrapingFacilityPhaseWorkJob.execution_id == execution_id,
             eligible,
             ScrapingFacilityPhaseWorkJob.attempt_count < ScrapingFacilityPhaseWorkJob.max_attempts,
-        ).order_by(ScrapingFacilityPhaseWorkJob.created_at, ScrapingFacilityPhaseWorkJob.id)
+    ]
+    if work_kinds:
+        criteria.append(ScrapingFacilityPhaseWorkJob.work_kind.in_(work_kinds))
+    rows = list((await db.execute(
+        select(ScrapingFacilityPhaseWorkJob).where(*criteria)
+        .order_by(ScrapingFacilityPhaseWorkJob.created_at, ScrapingFacilityPhaseWorkJob.id)
         .with_for_update(skip_locked=True).limit(batch_size)
     )).scalars())
     claimed: list[ClaimedFacilityWork] = []

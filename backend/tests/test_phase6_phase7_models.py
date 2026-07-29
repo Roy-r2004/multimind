@@ -25,6 +25,12 @@ def test_package_a_models_match_constraint_contract() -> None:
             "uq_facility_phase_job_fingerprint", "uq_facility_phase_job_owner",
             "ck_facility_phase_job_kind", "ck_facility_phase_job_status",
         },
+        "scraping_execution_exports": {
+            "uq_scraping_execution_export_kind",
+            "uq_scraping_execution_export_owner",
+            "ck_scraping_execution_export_status",
+            "ck_scraping_execution_export_succeeded",
+        },
         "scraping_facility_candidate_decisions": {
             "uq_facility_candidate_decision", "ck_facility_candidate_country_decision",
             "ck_facility_candidate_final_status",

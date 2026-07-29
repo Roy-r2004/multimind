@@ -32,16 +32,25 @@ from app.services.scraping.facility_phase_orchestration_service import (
     seed_candidate_verification,
     seed_chunk_extraction,
 )
+from app.services.scraping.facility_package_b_service import (
+    build_execution_export,
+    finalize_execution,
+    persist_execution_export,
+    publish_claimed_candidate,
+    seed_package_b_continuations,
+)
 
 
 async def run_work_slice(
     db: AsyncSession, *, organization_id: str, execution_id: str,
+    work_kinds: set[str] | None = None,
 ) -> dict[str, int]:
     settings = get_settings()
     claims = await claim_batch(
         db, organization_id=organization_id, execution_id=execution_id,
         batch_size=settings.phase6_claim_batch_size,
         lease_duration=timedelta(seconds=settings.phase6_lease_seconds),
+        work_kinds=work_kinds,
     )
     counts = {"claimed": len(claims), "succeeded": 0, "failed": 0, "stale": 0}
     for claim in claims:
@@ -54,6 +63,16 @@ async def run_work_slice(
                 job_id=claim.id, claim_token=claim.claim_token, metadata=metadata,
             ):
                 counts["succeeded"] += 1
+                if claim.work_kind in {
+                    "deduplicate_candidate",
+                    "publish_candidate",
+                    "generate_execution_export",
+                }:
+                    await seed_package_b_continuations(
+                        db,
+                        organization_id=organization_id,
+                        execution_id=execution_id,
+                    )
             else:
                 counts["stale"] += 1
         except Exception as exc:
@@ -134,5 +153,52 @@ async def _execute_claim(
             candidate_id=claim.facility_candidate_id,
         )
         await db.commit()
-        return {"status": "deduplicated", "relationships_created": count}
+        seeded = await seed_package_b_continuations(
+            db, organization_id=organization_id, execution_id=execution_id
+        )
+        return {
+            "status": "deduplicated", "relationships_created": count,
+            "publication_jobs_created": seeded["created"],
+        }
+    if claim.work_kind == "publish_candidate" and claim.facility_candidate_id:
+        result = await publish_claimed_candidate(
+            db, organization_id=organization_id, execution_id=execution_id,
+            candidate_id=claim.facility_candidate_id,
+            job_id=claim.id, claim_token=claim.claim_token,
+        )
+        if result["status"] in {"failed", "ineligible", "stale_claim"}:
+            raise RuntimeError(str(result["reason"] or "publication_failed"))
+        await seed_package_b_continuations(
+            db, organization_id=organization_id, execution_id=execution_id
+        )
+        return {
+            "status": str(result["status"]),
+            "facility_id": str(result["facility_id"] or ""),
+        }
+    if claim.work_kind == "generate_execution_export":
+        payload, filename = await build_execution_export(
+            db, organization_id=organization_id, execution_id=execution_id
+        )
+        export = await persist_execution_export(
+            db, organization_id=organization_id, execution_id=execution_id,
+            payload=payload, filename=filename,
+            job_id=claim.id, claim_token=claim.claim_token,
+        )
+        if export is None:
+            raise RuntimeError("stale_claim")
+        await seed_package_b_continuations(
+            db, organization_id=organization_id, execution_id=execution_id
+        )
+        return {
+            "status": "exported", "export_id": export.id,
+            "artifact_sha256": export.artifact_sha256 or "",
+        }
+    if claim.work_kind == "finalize_execution":
+        decision = await finalize_execution(
+            db, organization_id=organization_id, execution_id=execution_id,
+            job_id=claim.id, claim_token=claim.claim_token,
+        )
+        if not decision.terminal:
+            raise RuntimeError("finalization_not_ready")
+        return {"status": decision.state}
     raise ValueError("incompatible facility work job")

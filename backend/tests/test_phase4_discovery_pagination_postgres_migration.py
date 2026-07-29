@@ -315,7 +315,7 @@ async def test_029_to_030_pagination_columns_and_surviving_backfill(
     heads = await db.alembic("heads")
     head_lines = [line for line in heads.splitlines() if line.strip()]
     assert sum("(head)" in line for line in head_lines) == 1
-    assert any(line.strip().startswith("034") and "(head)" in line for line in head_lines)
+    assert any(line.strip().startswith("035") and "(head)" in line for line in head_lines)
     assert not any(line.strip().startswith("030") and "(head)" in line for line in head_lines)
 
     connection = await db.connect()
@@ -460,7 +460,7 @@ async def test_029_to_030_pagination_columns_and_surviving_backfill(
         # Phase 4 pagination data and columns survive the linear 030 -> current-head upgrade.
         await db.alembic("upgrade", "head")
         current = await db.alembic("current")
-        assert "034" in current
+        assert "035" in current
         survived = await connection.fetchrow(
             """
             SELECT next_page_number, pages_completed, last_page_result_count,

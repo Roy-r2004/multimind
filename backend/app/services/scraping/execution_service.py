@@ -1124,14 +1124,18 @@ def _redis_settings() -> RedisSettings:
 async def _run_execution_inline(execution_id: str, *, job_name: str = "run_scraping_execution") -> None:
     """Run a scrape inside the API process when the ARQ worker is unavailable."""
     from app.services.scraping.execution_orchestrator import run_scraping_execution
+    from app.services.scraping.facility_package_worker import (
+        run_facility_package_pipeline,
+    )
     from app.services.scraping.mission_campaign_mock_worker import run_mission_campaign_mock
 
     try:
-        worker = (
-            run_mission_campaign_mock
-            if job_name == "run_mission_campaign_mock"
-            else run_scraping_execution
-        )
+        workers = {
+            "run_scraping_execution": run_scraping_execution,
+            "run_mission_campaign_mock": run_mission_campaign_mock,
+            "run_facility_package_pipeline": run_facility_package_pipeline,
+        }
+        worker = workers.get(job_name, run_scraping_execution)
         await worker({}, execution_id)
     except Exception:
         logger.exception("scraping_inline_execution_failed execution_id=%s", execution_id)

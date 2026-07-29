@@ -37,7 +37,9 @@ from app.db.models import (
     ScrapingFacilityCandidate,
     ScrapingFacilityCandidateEvidence,
     ScrapingFacilityCandidatePublication,
+    ScrapingFacilityCandidateDecision,
     ScrapingFacilityExtractionAttempt,
+    ScrapingFacilityPhaseWorkJob,
     ScrapingMission,
     ScrapingRun,
     ScrapingRunStatus,
@@ -59,6 +61,7 @@ from app.services.scraping.facility_candidate_publication_service import (
     FacilityCandidatePublicationService,
     facility_candidate_publication_service,
 )
+from app.services.scraping.facility_package_b_service import publication_eligibility
 from conftest import create_model_set, create_other_auth, valid_blueprint
 
 
@@ -764,3 +767,80 @@ def test_publication_is_connected_to_worker_but_not_excel_export():
     # Publishing must not automatically enable or modify Excel export.
     assert "FacilityCandidatePublicationService" not in export_text
     assert "facility_candidate_publication_service" not in export_text
+
+
+async def _add_package_b_decision_and_dedup(
+    db: AsyncSession, auth: Any, execution: ScrapingExecution,
+    candidate: ScrapingFacilityCandidate, *, final_status: str = "accepted",
+) -> None:
+    db.add(ScrapingFacilityCandidateDecision(
+        organization_id=auth.org_id, execution_id=execution.id,
+        facility_candidate_id=candidate.id, canonical_candidate_id=candidate.id,
+        requested_country_code=execution.country_code,
+        country_decision="inside_requested_country", country_reason="test",
+        country_evidence_json=[], normalized_payload={"name": candidate.raw_name},
+        identity_fingerprint="a" * 64, final_status=final_status,
+        final_reason="test", algorithm_version="test",
+    ))
+    db.add(ScrapingFacilityPhaseWorkJob(
+        organization_id=auth.org_id, execution_id=execution.id,
+        work_kind="deduplicate_candidate", fingerprint="b" * 64,
+        facility_candidate_id=candidate.id, status="succeeded",
+        attempt_count=1, max_attempts=3, completed_at=datetime.now(UTC),
+        metadata_json={},
+    ))
+    await db.flush()
+
+
+@pytest.mark.parametrize(
+    ("final_status", "expected_reason"),
+    [("needs_review", "needs_review"), ("rejected", "rejected")],
+)
+async def test_package_b_python_decision_blocks_nonaccepted_candidates(
+    db: AsyncSession, auth, final_status: str, expected_reason: str,
+):
+    execution = await create_execution(db, auth)
+    candidate = await create_staged_candidate(db, auth, execution)
+    await _add_package_b_decision_and_dedup(
+        db, auth, execution, candidate, final_status=final_status
+    )
+    result = await publication_eligibility(
+        db, organization_id=auth.org_id, execution_id=execution.id,
+        candidate_id=candidate.id,
+    )
+    assert result.eligible is False
+    assert result.reason == expected_reason
+
+
+async def test_package_b_accepted_evidenced_deduplicated_candidate_is_eligible(
+    db: AsyncSession, auth,
+):
+    execution = await create_execution(db, auth)
+    candidate = await create_staged_candidate(db, auth, execution)
+    await _add_package_b_decision_and_dedup(db, auth, execution, candidate)
+    result = await publication_eligibility(
+        db, organization_id=auth.org_id, execution_id=execution.id,
+        candidate_id=candidate.id,
+    )
+    assert result.eligible is True
+    assert result.reason == "eligible"
+
+
+async def test_package_b_missing_evidence_and_cross_org_are_ineligible(
+    db: AsyncSession, auth,
+):
+    execution = await create_execution(db, auth)
+    candidate = await create_staged_candidate(
+        db, auth, execution, include_name_evidence=False
+    )
+    await _add_package_b_decision_and_dedup(db, auth, execution, candidate)
+    missing = await publication_eligibility(
+        db, organization_id=auth.org_id, execution_id=execution.id,
+        candidate_id=candidate.id,
+    )
+    wrong_owner = await publication_eligibility(
+        db, organization_id="00000000-0000-0000-0000-000000000000",
+        execution_id=execution.id, candidate_id=candidate.id,
+    )
+    assert missing.reason == "candidate_evidence_missing"
+    assert wrong_owner.reason == "ownership_mismatch"

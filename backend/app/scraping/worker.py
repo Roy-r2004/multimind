@@ -12,6 +12,7 @@ from app.services.scraping.execution_orchestrator import (
     run_scraping_execution,
 )
 from app.services.scraping.mission_campaign_mock_worker import run_mission_campaign_mock
+from app.services.scraping.facility_package_worker import run_facility_package_pipeline
 from app.services.scraping.blueprint_generation_orchestrator import (
     recover_blueprint_generations,
     run_blueprint_generation,
@@ -39,7 +40,12 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
-    functions = [run_scraping_execution, run_mission_campaign_mock, run_blueprint_generation]
+    functions = [
+        run_scraping_execution,
+        run_mission_campaign_mock,
+        run_blueprint_generation,
+        run_facility_package_pipeline,
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()

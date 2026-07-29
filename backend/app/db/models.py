@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -2294,7 +2295,8 @@ class ScrapingFacilityPhaseWorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         CheckConstraint("length(fingerprint) = 64", name="ck_facility_phase_job_fingerprint"),
         CheckConstraint("attempt_count >= 0", name="ck_facility_phase_job_attempt_count"),
         CheckConstraint("max_attempts >= 1", name="ck_facility_phase_job_max_attempts"),
-        CheckConstraint("work_kind IN ('prepare_document','extract_chunk','verify_candidate','deduplicate_candidate')",
+        CheckConstraint("work_kind IN ('prepare_document','extract_chunk','verify_candidate','deduplicate_candidate',"
+                        "'publish_candidate','generate_execution_export','finalize_execution')",
                         name="ck_facility_phase_job_kind"),
         CheckConstraint("status IN ('pending','running','retry_scheduled','succeeded','failed','cancelled')",
                         name="ck_facility_phase_job_status"),
@@ -2319,6 +2321,57 @@ class ScrapingFacilityPhaseWorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     safe_error_message: Mapped[str | None] = mapped_column(String(500))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ScrapingExecutionExport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_execution_exports"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "execution_id", "export_kind",
+            name="uq_scraping_execution_export_kind",
+        ),
+        UniqueConstraint(
+            "id", "organization_id", "execution_id",
+            name="uq_scraping_execution_export_owner",
+        ),
+        CheckConstraint(
+            "status IN ('pending','succeeded','failed')",
+            name="ck_scraping_execution_export_status",
+        ),
+        CheckConstraint(
+            "status != 'succeeded' OR "
+            "(artifact_sha256 IS NOT NULL AND artifact_bytes IS NOT NULL "
+            "AND filename IS NOT NULL AND completed_at IS NOT NULL)",
+            name="ck_scraping_execution_export_succeeded",
+        ),
+        Index(
+            "ix_scraping_execution_exports_execution",
+            "organization_id", "execution_id", "status",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    export_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="xlsx"
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="pending"
+    )
+    filename: Mapped[str | None] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(120))
+    artifact_sha256: Mapped[str | None] = mapped_column(String(64))
+    artifact_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
+    failure_classification: Mapped[str | None] = mapped_column(String(80))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
 
 
 class ScrapingFacilityCandidateDecision(Base, UUIDPrimaryKeyMixin, TimestampMixin):

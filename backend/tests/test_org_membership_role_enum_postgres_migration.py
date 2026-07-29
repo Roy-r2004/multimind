@@ -119,9 +119,9 @@ async def test_034_upgrade_downgrade_reupgrade_preserves_roles_and_package_a():
         await database.alembic("upgrade", "034")
         current = await database.alembic("current")
         heads = await database.alembic("heads")
-        assert "034 (head)" in current
+        assert "034" in current
         assert [line.strip() for line in heads.splitlines() if "(head)" in line] == [
-            "034 (head)"
+            "035 (head)"
         ]
         connection = await database.connect()
         try:
