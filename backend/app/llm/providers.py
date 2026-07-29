@@ -1,5 +1,6 @@
 """LLM provider abstraction — OpenRouter (multi-model gateway)."""
 
+import asyncio
 import json
 import re
 from abc import ABC, abstractmethod
@@ -7,7 +8,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
 from app.core.exceptions import AppError
@@ -81,7 +81,6 @@ class OpenRouterProvider(LLMProvider):
             headers["X-OpenRouter-Title"] = self._app_name
         return headers
 
-    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=8))
     async def complete(
         self,
         *,
@@ -94,6 +93,34 @@ class OpenRouterProvider(LLMProvider):
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                return await self._complete_once(
+                    system=system,
+                    user=user,
+                    model=model,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
+                    continue
+                raise
+        assert last_error is not None
+        raise last_error
+
+    async def _complete_once(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str,
+        max_tokens: int,
+        response_format: dict[str, Any] | None,
+    ) -> LLMResponse:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             payload: dict[str, Any] = {
                 "model": model,

@@ -217,6 +217,8 @@ async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
 
     Used when a census finished (or was force/budget-completed) before cleanup ran.
     Leaves execution status alone so exports stay unlocked while cleanup works.
+    Sessions are opened in short scopes so a connection is never held across LLM waits
+    (which would starve the background heartbeat task on a small pool).
     """
     del ctx
     logger.info(
@@ -226,8 +228,7 @@ async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
     heartbeat = asyncio.create_task(_heartbeat_loop(execution_id))
     try:
         async with AsyncSessionLocal() as db:
-            orchestrator = SourceDiscoveryExecutionOrchestrator(db)
-            execution = await orchestrator._load_execution(execution_id)
+            execution = await SourceDiscoveryExecutionOrchestrator(db)._load_execution(execution_id)
             if execution is None:
                 logger.warning(
                     "facility_ai_cleanup_job_skipped",
@@ -245,7 +246,11 @@ async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
                 )
                 await db.commit()
                 return
-
+            execution_meta = {
+                "id": execution.id,
+                "country_code": execution.country_code,
+                "country_name": execution.country_name,
+            }
             mission_goal = (
                 f"Find rehabilitation and addiction treatment facilities in {execution.country_name}."
             )
@@ -260,32 +265,37 @@ async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
                 },
             )
             await db.commit()
-            try:
-                summary = await facility_ai_cleanup_service.run_for_execution(
-                    db,
-                    execution_id=execution.id,
-                    country_code=execution.country_code,
-                    country_name=execution.country_name,
-                    mission_goal=mission_goal,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "facility_ai_cleanup_job_failed execution_id=%s",
-                    execution.id,
-                )
+
+        try:
+            summary = await facility_ai_cleanup_service.run_for_execution(
+                None,
+                execution_id=execution_meta["id"],
+                country_code=execution_meta["country_code"],
+                country_name=execution_meta["country_name"],
+                mission_goal=mission_goal,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "facility_ai_cleanup_job_failed execution_id=%s",
+                execution_meta["id"],
+            )
+            async with AsyncSessionLocal() as db:
                 await execution_service.emit_event(
                     db,
-                    execution.id,
+                    execution_meta["id"],
                     "facility_ai_cleanup_failed",
                     f"AI cleanup failed: {exc}",
                     metadata={"source": "standalone_job"},
                 )
                 await db.commit()
-                return
+            return
 
+        async with AsyncSessionLocal() as db:
+            orchestrator = SourceDiscoveryExecutionOrchestrator(db)
+            execution = await orchestrator._load_execution(execution_meta["id"])
             await execution_service.emit_event(
                 db,
-                execution.id,
+                execution_meta["id"],
                 "facility_ai_cleanup_completed",
                 (
                     f"AI cleanup finished: reviewed {summary.get('reviewed', 0)}, "
@@ -294,11 +304,15 @@ async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
                 ),
                 metadata={**summary, "source": "standalone_job"},
             )
-            await orchestrator._refresh_metrics(execution)
+            if execution is not None:
+                await orchestrator._refresh_metrics(execution)
             await db.commit()
             logger.info(
                 "facility_ai_cleanup_job_completed",
-                extra={"execution_id": execution.id, **{k: str(v) for k, v in summary.items()}},
+                extra={
+                    "execution_id": execution_meta["id"],
+                    **{k: str(v) for k, v in summary.items()},
+                },
             )
     finally:
         heartbeat.cancel()

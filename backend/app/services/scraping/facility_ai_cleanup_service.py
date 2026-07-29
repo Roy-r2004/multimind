@@ -84,46 +84,52 @@ class FacilityCleanupPlan(BaseModel):
 class FacilityAiCleanupService:
     async def run_for_execution(
         self,
-        db: AsyncSession,
+        db: AsyncSession | None,
         *,
         execution_id: str,
         country_code: str,
         country_name: str,
         mission_goal: str,
     ) -> dict[str, int]:
+        """Clean facilities for an execution.
+
+        Opens short-lived DB sessions around reads/writes only. Never holds a
+        connection across LLM awaits — that starved the background heartbeat.
+        The optional ``db`` argument is accepted for call-site compatibility but
+        unused for the long-running work.
+        """
+        del db  # Explicit: do not hold the caller's session across LLM waits.
+        from app.db.session import AsyncSessionLocal
+        from app.services.scraping.execution_service import execution_service
+
         settings = get_settings()
         if not getattr(settings, "facility_ai_cleanup_enabled", True):
             return {"enabled": 0, "reviewed": 0, "excluded": 0, "websites_fixed": 0}
 
-        # Lightweight scan only — never load contacts/sources for the whole roster at
-        # once. Holding that graph open kept the DB connection checked out through the
-        # LLM calls, which starved the background heartbeat and made the job look dead.
-        light_rows = (
-            await db.execute(
-                select(RehabilitationFacility)
-                .where(RehabilitationFacility.execution_id == execution_id)
-                .order_by(RehabilitationFacility.canonical_name, RehabilitationFacility.id)
-            )
-        ).scalars().all()
-        candidate_ids = [
-            facility.id
-            for facility in light_rows
-            if normalized_publication_class(facility.publication_class) != "excluded"
-            or _is_ai_reviewed(facility)
-        ]
-        pending_ids = [
-            facility.id
-            for facility in light_rows
-            if facility.id in set(candidate_ids) and not _is_ai_reviewed(facility)
-        ]
-        already_reviewed = len(candidate_ids) - len(pending_ids)
-        # Release the connection before any LLM wait so the heartbeat task can beat.
-        await db.commit()
+        async with AsyncSessionLocal() as scan_db:
+            light_rows = (
+                await scan_db.execute(
+                    select(RehabilitationFacility)
+                    .where(RehabilitationFacility.execution_id == execution_id)
+                    .order_by(RehabilitationFacility.canonical_name, RehabilitationFacility.id)
+                )
+            ).scalars().all()
+            candidate_ids = [
+                facility.id
+                for facility in light_rows
+                if normalized_publication_class(facility.publication_class) != "excluded"
+                or _is_ai_reviewed(facility)
+            ]
+            pending_ids = [
+                facility.id
+                for facility in light_rows
+                if facility.id in set(candidate_ids) and not _is_ai_reviewed(facility)
+            ]
+            already_reviewed = len(candidate_ids) - len(pending_ids)
+            await scan_db.commit()
 
         if not candidate_ids:
             return {"enabled": 1, "reviewed": 0, "excluded": 0, "websites_fixed": 0}
-
-        from app.services.scraping.execution_service import execution_service
 
         batches = 0
         if pending_ids:
@@ -140,29 +146,32 @@ class FacilityAiCleanupService:
             for offset in range(0, len(pending_ids), batch_size):
                 batch_ids = pending_ids[offset : offset + batch_size]
                 batches += 1
-                await execution_service.touch_heartbeat(db, execution_id)
-                batch = list(
-                    (
-                        await db.execute(
-                            select(RehabilitationFacility)
-                            .where(RehabilitationFacility.id.in_(batch_ids))
-                            .options(
-                                selectinload(RehabilitationFacility.contacts),
-                                selectinload(RehabilitationFacility.source_links).selectinload(
-                                    RehabilitationFacilitySourceLink.source
-                                ),
+
+                async with AsyncSessionLocal() as batch_db:
+                    await execution_service.touch_heartbeat(batch_db, execution_id)
+                    batch = list(
+                        (
+                            await batch_db.execute(
+                                select(RehabilitationFacility)
+                                .where(RehabilitationFacility.id.in_(batch_ids))
+                                .options(
+                                    selectinload(RehabilitationFacility.contacts),
+                                    selectinload(RehabilitationFacility.source_links).selectinload(
+                                        RehabilitationFacilitySourceLink.source
+                                    ),
+                                )
+                                .order_by(
+                                    RehabilitationFacility.canonical_name,
+                                    RehabilitationFacility.id,
+                                )
                             )
-                            .order_by(
-                                RehabilitationFacility.canonical_name,
-                                RehabilitationFacility.id,
-                            )
-                        )
-                    ).scalars().all()
-                )
-                # Snapshot everything the prompt needs before releasing the DB connection.
-                facility_payloads = [_facility_payload(facility) for facility in batch]
-                facility_ids = [facility.id for facility in batch]
-                await db.commit()
+                        ).scalars().all()
+                    )
+                    facility_payloads = [_facility_payload(facility) for facility in batch]
+                    facility_ids = [facility.id for facility in batch]
+                    await batch_db.commit()
+                # Session closed — connection is back in the pool during the LLM wait.
+
                 decisions = await self._plan_batch_with_fallback(
                     provider=provider,
                     model_slug=model.provider_model,
@@ -172,49 +181,52 @@ class FacilityAiCleanupService:
                     facility_ids=facility_ids,
                     facility_payloads=facility_payloads,
                 )
-                writable = (
-                    await db.execute(
-                        select(RehabilitationFacility)
-                        .where(RehabilitationFacility.id.in_(batch_ids))
-                        .options(
-                            selectinload(RehabilitationFacility.contacts),
-                            selectinload(RehabilitationFacility.source_links).selectinload(
-                                RehabilitationFacilitySourceLink.source
-                            ),
-                        )
-                    )
-                ).scalars().all()
-                apply_cleanup_decisions(
-                    facilities_by_id={facility.id: facility for facility in writable},
-                    decisions=decisions,
-                )
-                await db.flush()
-                await db.commit()
-                await execution_service.touch_heartbeat(db, execution_id)
 
-        # Final tallies from fresh light rows so we do not keep the heavy graph in memory.
-        final_rows = (
-            await db.execute(
-                select(RehabilitationFacility).where(
-                    RehabilitationFacility.execution_id == execution_id
+                async with AsyncSessionLocal() as write_db:
+                    writable = (
+                        await write_db.execute(
+                            select(RehabilitationFacility)
+                            .where(RehabilitationFacility.id.in_(batch_ids))
+                            .options(
+                                selectinload(RehabilitationFacility.contacts),
+                                selectinload(RehabilitationFacility.source_links).selectinload(
+                                    RehabilitationFacilitySourceLink.source
+                                ),
+                            )
+                        )
+                    ).scalars().all()
+                    apply_cleanup_decisions(
+                        facilities_by_id={facility.id: facility for facility in writable},
+                        decisions=decisions,
+                    )
+                    await write_db.flush()
+                    await write_db.commit()
+                    await execution_service.touch_heartbeat(write_db, execution_id)
+
+        async with AsyncSessionLocal() as final_db:
+            final_rows = (
+                await final_db.execute(
+                    select(RehabilitationFacility).where(
+                        RehabilitationFacility.execution_id == execution_id
+                    )
                 )
+            ).scalars().all()
+            final_pool = [
+                facility
+                for facility in final_rows
+                if normalized_publication_class(facility.publication_class) != "excluded"
+                or _is_ai_reviewed(facility)
+            ]
+            excluded = sum(
+                1
+                for facility in final_pool
+                if _ai_cleanup_mark(facility).get("action", "").startswith("exclude_")
             )
-        ).scalars().all()
-        final_pool = [
-            facility
-            for facility in final_rows
-            if normalized_publication_class(facility.publication_class) != "excluded"
-            or _is_ai_reviewed(facility)
-        ]
-        excluded = sum(
-            1
-            for facility in final_pool
-            if _ai_cleanup_mark(facility).get("action", "").startswith("exclude_")
-        )
-        websites_fixed = sum(
-            1 for facility in final_pool if _ai_cleanup_mark(facility).get("website_fixed")
-        )
-        await db.commit()
+            websites_fixed = sum(
+                1 for facility in final_pool if _ai_cleanup_mark(facility).get("website_fixed")
+            )
+            await final_db.commit()
+
         return {
             "enabled": 1,
             "reviewed": len(final_pool),
