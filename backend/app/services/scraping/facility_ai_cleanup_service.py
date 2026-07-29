@@ -105,51 +105,67 @@ class FacilityAiCleanupService:
             )
         ).scalars().all()
 
-        candidates = [
+        # A facility already carrying an ai_cleanup mark was already decided in a prior
+        # attempt (this phase can be interrupted by stale-recovery restarts). Keeping it
+        # in the pool for the final tally but out of `pending` makes the phase resumable:
+        # a restart continues where it left off instead of re-spending LLM calls (and
+        # re-risking another stall) on facilities that were already reviewed.
+        candidate_pool = [
             facility
             for facility in facilities
             if normalized_publication_class(facility.publication_class) != "excluded"
+            or _is_ai_reviewed(facility)
         ]
-        if not candidates:
+        if not candidate_pool:
             return {"enabled": 1, "reviewed": 0, "excluded": 0, "websites_fixed": 0}
-
-        batch_size = max(int(getattr(settings, "facility_ai_cleanup_batch_size", DEFAULT_BATCH_SIZE) or DEFAULT_BATCH_SIZE), 1)
-        model_name = getattr(settings, "facility_ai_cleanup_model", None) or getattr(
-            settings, "facility_extraction_model", "gpt-4.1"
-        )
-        model = get_model(model_name)
-        provider = get_provider_registry().get_provider(model.provider)
+        pending = [facility for facility in candidate_pool if not _is_ai_reviewed(facility)]
 
         from app.services.scraping.execution_service import execution_service
 
-        all_decisions: list[FacilityCleanupDecision] = []
-        for offset in range(0, len(candidates), batch_size):
-            batch = candidates[offset : offset + batch_size]
-            # Heartbeat before each LLM batch so stale recovery does not re-queue mid-call.
-            await execution_service.touch_heartbeat(db, execution_id)
-            decisions = await self._plan_batch(
-                provider=provider,
-                model_slug=model.provider_model,
-                country_code=country_code,
-                country_name=country_name,
-                mission_goal=mission_goal,
-                facilities=batch,
+        batches = 0
+        if pending:
+            batch_size = max(
+                int(getattr(settings, "facility_ai_cleanup_batch_size", DEFAULT_BATCH_SIZE) or DEFAULT_BATCH_SIZE),
+                1,
             )
-            all_decisions.extend(decisions)
-            await execution_service.touch_heartbeat(db, execution_id)
+            model_name = getattr(settings, "facility_ai_cleanup_model", None) or getattr(
+                settings, "facility_extraction_model", "gpt-4.1"
+            )
+            model = get_model(model_name)
+            provider = get_provider_registry().get_provider(model.provider)
 
-        summary = apply_cleanup_decisions(
-            facilities_by_id={facility.id: facility for facility in candidates},
-            decisions=all_decisions,
-        )
-        await db.flush()
-        await execution_service.touch_heartbeat(db, execution_id)
+            for offset in range(0, len(pending), batch_size):
+                batch = pending[offset : offset + batch_size]
+                batches += 1
+                # Heartbeat before each LLM batch so stale recovery does not re-queue mid-call.
+                await execution_service.touch_heartbeat(db, execution_id)
+                decisions = await self._plan_batch(
+                    provider=provider,
+                    model_slug=model.provider_model,
+                    country_code=country_code,
+                    country_name=country_name,
+                    mission_goal=mission_goal,
+                    facilities=batch,
+                )
+                apply_cleanup_decisions(
+                    facilities_by_id={facility.id: facility for facility in batch},
+                    decisions=decisions,
+                )
+                # Persist this batch immediately (not just at the very end) so a
+                # restart mid-phase never throws away already-decided facilities.
+                await db.flush()
+                await db.commit()
+                await execution_service.touch_heartbeat(db, execution_id)
+
+        excluded = sum(1 for facility in candidate_pool if _ai_cleanup_mark(facility).get("action", "").startswith("exclude_"))
+        websites_fixed = sum(1 for facility in candidate_pool if _ai_cleanup_mark(facility).get("website_fixed"))
         return {
             "enabled": 1,
-            "reviewed": len(candidates),
-            "excluded": summary["excluded"],
-            "websites_fixed": summary["websites_fixed"],
-            "batches": (len(candidates) + batch_size - 1) // batch_size,
+            "reviewed": len(candidate_pool),
+            "excluded": excluded,
+            "websites_fixed": websites_fixed,
+            "batches": batches,
+            "resumed_from_prior_attempt": len(candidate_pool) - len(pending),
         }
 
     async def _plan_batch(
@@ -221,10 +237,15 @@ def apply_cleanup_decisions(
         reason = (decision.reason or decision.action)[:MAX_REASON_LEN]
 
         if decision.action == "keep":
-            if decision.corrected_website:
-                if _apply_website(facility, decision.corrected_website):
-                    websites_fixed += 1
-                    _record_cleanup(facility, action="keep", reason=reason, website_fixed=True)
+            if decision.reason == "cleanup_batch_failed":
+                # Provider/parse error for this batch — leave unreviewed so a future
+                # attempt retries it instead of permanently skipping on a transient failure.
+                continue
+            website_fixed = False
+            if decision.corrected_website and _apply_website(facility, decision.corrected_website):
+                website_fixed = True
+                websites_fixed += 1
+            _record_cleanup(facility, action="keep", reason=reason, website_fixed=website_fixed)
             continue
 
         if decision.action == "exclude_duplicate":
@@ -376,6 +397,16 @@ def _record_cleanup(
     facility.hard_gate_results_json = payload
     if action.startswith("exclude_"):
         facility.country_containment_reason = f"AI cleanup: {reason}"[:500]
+
+
+def _ai_cleanup_mark(facility: RehabilitationFacility) -> dict[str, Any]:
+    payload = facility.hard_gate_results_json or {}
+    mark = payload.get("ai_cleanup")
+    return mark if isinstance(mark, dict) else {}
+
+
+def _is_ai_reviewed(facility: RehabilitationFacility) -> bool:
+    return bool(_ai_cleanup_mark(facility))
 
 
 def _safe_http_url(value: str) -> bool:
