@@ -581,6 +581,15 @@ async def requeue_execution(
     return await execution_service.requeue_execution(db, auth, execution_id)
 
 
+@router.post("/{execution_id}/ai-cleanup", response_model=ScrapingExecutionSummary)
+async def request_facility_ai_cleanup(
+    execution_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await execution_service.request_facility_ai_cleanup(db, auth, execution_id)
+
+
 @router.post("/{execution_id}/cancel", response_model=ScrapingExecutionSummary)
 async def cancel_execution(
     execution_id: str,

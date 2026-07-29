@@ -449,6 +449,37 @@ class ScrapingExecutionService:
         await self.enqueue_execution(execution.id)
         return self._summary(execution)
 
+    async def request_facility_ai_cleanup(
+        self, db: AsyncSession, auth: AuthContext, execution_id: str
+    ) -> ScrapingExecutionSummary:
+        """Enqueue AI cleanup for a published roster (including completed executions)."""
+        execution = await self._execution_row(db, auth, execution_id)
+        facility_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(RehabilitationFacility)
+                .where(RehabilitationFacility.execution_id == execution.id)
+            )
+        ).scalar_one()
+        if facility_count == 0:
+            raise ConflictError(
+                "This execution has no published facilities to clean up yet."
+            )
+        if execution.status == ScrapingExecutionStatus.RUNNING:
+            raise ConflictError(
+                "This execution is still running. Wait for it to finish, or cancel it first."
+            )
+        await self.emit_event(
+            db,
+            execution.id,
+            "facility_ai_cleanup_requested",
+            "AI facility cleanup was requested and queued for the scraping worker.",
+            metadata={"facility_count": int(facility_count)},
+        )
+        await db.commit()
+        await self.enqueue_facility_ai_cleanup(execution.id)
+        return self._summary(execution)
+
     async def cancel_execution(
         self, db: AsyncSession, auth: AuthContext, execution_id: str
     ) -> ScrapingExecutionSummary:
@@ -604,6 +635,35 @@ class ScrapingExecutionService:
                 )
         if inline or not queued_on_redis:
             asyncio.create_task(_run_execution_inline(execution_id))
+
+    async def enqueue_facility_ai_cleanup(self, execution_id: str) -> None:
+        settings = get_settings()
+        inline = (
+            settings.scraping_inline_execution
+            if settings.scraping_inline_execution is not None
+            else settings.environment == "development"
+        )
+        queued_on_redis = False
+        if not inline:
+            try:
+                from uuid import uuid4
+
+                redis = await create_pool(_redis_settings())
+                await redis.enqueue_job(
+                    "run_facility_ai_cleanup_job",
+                    execution_id,
+                    _job_id=f"facility-ai-cleanup:{execution_id}:{uuid4().hex[:12]}",
+                )
+                await redis.close()
+                queued_on_redis = True
+            except Exception:
+                logger.warning(
+                    "facility_ai_cleanup_enqueue_redis_failed execution_id=%s; falling back to inline",
+                    execution_id,
+                    exc_info=True,
+                )
+        if inline or not queued_on_redis:
+            asyncio.create_task(_run_facility_ai_cleanup_inline(execution_id))
 
     async def _publish_event(self, event: ScrapingEvent) -> None:
         try:
@@ -1022,6 +1082,16 @@ async def _run_execution_inline(execution_id: str) -> None:
         await run_scraping_execution({}, execution_id)
     except Exception:
         logger.exception("scraping_inline_execution_failed execution_id=%s", execution_id)
+
+
+async def _run_facility_ai_cleanup_inline(execution_id: str) -> None:
+    """Run AI cleanup inside the API process when the ARQ worker is unavailable."""
+    from app.services.scraping.execution_orchestrator import run_facility_ai_cleanup_job
+
+    try:
+        await run_facility_ai_cleanup_job({}, execution_id)
+    except Exception:
+        logger.exception("facility_ai_cleanup_inline_failed execution_id=%s", execution_id)
 
 
 execution_service = ScrapingExecutionService()

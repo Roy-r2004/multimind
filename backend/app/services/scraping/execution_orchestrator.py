@@ -212,6 +212,100 @@ async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
             await heartbeat
 
 
+async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
+    """Apply AI facility cleanup to an already-published execution.
+
+    Used when a census finished (or was force/budget-completed) before cleanup ran.
+    Leaves execution status alone so exports stay unlocked while cleanup works.
+    """
+    del ctx
+    logger.info(
+        "facility_ai_cleanup_job_entered",
+        extra={"execution_id": execution_id},
+    )
+    heartbeat = asyncio.create_task(_heartbeat_loop(execution_id))
+    try:
+        async with AsyncSessionLocal() as db:
+            orchestrator = SourceDiscoveryExecutionOrchestrator(db)
+            execution = await orchestrator._load_execution(execution_id)
+            if execution is None:
+                logger.warning(
+                    "facility_ai_cleanup_job_skipped",
+                    extra={"execution_id": execution_id, "reason": "execution_not_found"},
+                )
+                return
+            settings = get_settings()
+            if not settings.facility_ai_cleanup_enabled:
+                await execution_service.emit_event(
+                    db,
+                    execution.id,
+                    "facility_ai_cleanup_skipped",
+                    "Facility AI cleanup skipped because it is disabled.",
+                    metadata={"enabled": False, "source": "standalone_job"},
+                )
+                await db.commit()
+                return
+
+            mission_goal = (
+                f"Find rehabilitation and addiction treatment facilities in {execution.country_name}."
+            )
+            await execution_service.emit_event(
+                db,
+                execution.id,
+                "facility_ai_cleanup_started",
+                "AI cleanup started to remove non-rehabs, bad source pages, and duplicates.",
+                metadata={
+                    "batch_size": settings.facility_ai_cleanup_batch_size,
+                    "source": "standalone_job",
+                },
+            )
+            await db.commit()
+            try:
+                summary = await facility_ai_cleanup_service.run_for_execution(
+                    db,
+                    execution_id=execution.id,
+                    country_code=execution.country_code,
+                    country_name=execution.country_name,
+                    mission_goal=mission_goal,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "facility_ai_cleanup_job_failed execution_id=%s",
+                    execution.id,
+                )
+                await execution_service.emit_event(
+                    db,
+                    execution.id,
+                    "facility_ai_cleanup_failed",
+                    f"AI cleanup failed: {exc}",
+                    metadata={"source": "standalone_job"},
+                )
+                await db.commit()
+                return
+
+            await execution_service.emit_event(
+                db,
+                execution.id,
+                "facility_ai_cleanup_completed",
+                (
+                    f"AI cleanup finished: reviewed {summary.get('reviewed', 0)}, "
+                    f"excluded {summary.get('excluded', 0)}, "
+                    f"websites fixed {summary.get('websites_fixed', 0)}."
+                ),
+                metadata={**summary, "source": "standalone_job"},
+            )
+            await orchestrator._refresh_metrics(execution)
+            await db.commit()
+            logger.info(
+                "facility_ai_cleanup_job_completed",
+                extra={"execution_id": execution.id, **{k: str(v) for k, v in summary.items()}},
+            )
+    finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
+
+
 async def mark_scraping_execution_timeout_failed(execution_id: str) -> None:
     """Legacy hard-fail path kept for tests; production CancelledError uses requeue."""
     async with AsyncSessionLocal() as db:
