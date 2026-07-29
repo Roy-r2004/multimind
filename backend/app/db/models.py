@@ -2050,6 +2050,7 @@ class ScrapingSourceDocumentText(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class ScrapingSourceDocumentChunk(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "scraping_source_document_chunks"
     __table_args__ = (
+        UniqueConstraint("id", "organization_id", "execution_id", name="uq_source_document_chunk_owner"),
         UniqueConstraint("prepared_text_id", "chunk_index", name="uq_source_document_chunk_index"),
         UniqueConstraint("prepared_text_id", "chunk_hash", name="uq_source_document_chunk_hash"),
         CheckConstraint("chunk_index >= 0", name="ck_source_document_chunk_index"),
@@ -2075,6 +2076,14 @@ class ScrapingSourceDocumentChunk(Base, UUIDPrimaryKeyMixin):
     coverage_cell_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("scraping_coverage_cells.id", ondelete="SET NULL"), nullable=True
     )
+    retrieval_result_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_phase5_retrieval_results.id", ondelete="SET NULL"), nullable=True
+    )
+    crawl_node_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_crawl_nodes.id", ondelete="SET NULL"), nullable=True
+    )
+    original_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    representation_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     character_start: Mapped[int] = mapped_column(Integer, nullable=False)
     character_end: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -2157,6 +2166,7 @@ class ScrapingFacilityExtractionAttempt(Base, UUIDPrimaryKeyMixin):
 class ScrapingFacilityCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "scraping_facility_candidates"
     __table_args__ = (
+        UniqueConstraint("id", "organization_id", "execution_id", name="uq_facility_candidate_owner"),
         UniqueConstraint(
             "organization_id",
             "extraction_attempt_id",
@@ -2210,6 +2220,9 @@ class ScrapingFacilityCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
     candidate_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    directory_observation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_directory_observations.id", ondelete="SET NULL"), nullable=True
+    )
 
 
 class ScrapingFacilityCandidateEvidence(Base, UUIDPrimaryKeyMixin):
@@ -2249,6 +2262,13 @@ class ScrapingFacilityCandidateEvidence(Base, UUIDPrimaryKeyMixin):
     chunk_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("scraping_source_document_chunks.id", ondelete="CASCADE"), nullable=False
     )
+    retrieval_result_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_phase5_retrieval_results.id", ondelete="SET NULL"), nullable=True
+    )
+    crawl_node_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scraping_crawl_nodes.id", ondelete="SET NULL"), nullable=True
+    )
+    source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     field_name: Mapped[str] = mapped_column(String(120), nullable=False)
     raw_value: Mapped[Any] = mapped_column(JSON, nullable=True)
     evidence_quote: Mapped[str] = mapped_column(String(1000), nullable=False)
@@ -2264,6 +2284,88 @@ class ScrapingFacilityCandidateEvidence(Base, UUIDPrimaryKeyMixin):
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ScrapingFacilityPhaseWorkJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_facility_phase_work_jobs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "execution_id", "fingerprint", name="uq_facility_phase_job_fingerprint"),
+        UniqueConstraint("id", "organization_id", "execution_id", name="uq_facility_phase_job_owner"),
+        CheckConstraint("length(fingerprint) = 64", name="ck_facility_phase_job_fingerprint"),
+        CheckConstraint("attempt_count >= 0", name="ck_facility_phase_job_attempt_count"),
+        CheckConstraint("max_attempts >= 1", name="ck_facility_phase_job_max_attempts"),
+        CheckConstraint("work_kind IN ('prepare_document','extract_chunk','verify_candidate','deduplicate_candidate')",
+                        name="ck_facility_phase_job_kind"),
+        CheckConstraint("status IN ('pending','running','retry_scheduled','succeeded','failed','cancelled')",
+                        name="ck_facility_phase_job_status"),
+        Index("ix_facility_phase_jobs_claim", "organization_id", "execution_id", "status", "next_retry_at"),
+        Index("ix_facility_phase_jobs_lease", "status", "lease_expires_at"),
+    )
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False)
+    work_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scraping_source_documents.id", ondelete="CASCADE"))
+    chunk_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scraping_source_document_chunks.id", ondelete="CASCADE"))
+    facility_candidate_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scraping_facility_candidates.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    claim_token: Mapped[str | None] = mapped_column(String(64))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_classification: Mapped[str | None] = mapped_column(String(80))
+    safe_error_message: Mapped[str | None] = mapped_column(String(500))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ScrapingFacilityCandidateDecision(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_facility_candidate_decisions"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "execution_id", "facility_candidate_id",
+                         name="uq_facility_candidate_decision"),
+        Index("ix_facility_candidate_identity", "organization_id", "execution_id", "identity_fingerprint"),
+        CheckConstraint("country_decision IN ('inside_requested_country','outside_requested_country','uncertain')",
+                        name="ck_facility_candidate_country_decision"),
+        CheckConstraint("final_status IN ('accepted','needs_review','rejected')",
+                        name="ck_facility_candidate_final_status"),
+        Index("ix_facility_candidate_decisions_status", "organization_id", "execution_id", "final_status"),
+    )
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False)
+    facility_candidate_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_facility_candidates.id", ondelete="CASCADE"), nullable=False)
+    canonical_candidate_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scraping_facility_candidates.id", ondelete="SET NULL"))
+    requested_country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    country_decision: Mapped[str] = mapped_column(String(40), nullable=False)
+    country_reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    country_evidence_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    normalized_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    identity_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    final_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    final_reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class ScrapingFacilityCandidateDuplicate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "scraping_facility_candidate_duplicates"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "execution_id", "left_candidate_id", "right_candidate_id",
+                         name="uq_facility_candidate_duplicate_pair"),
+        CheckConstraint("left_candidate_id < right_candidate_id", name="ck_facility_candidate_duplicate_order"),
+        CheckConstraint("relationship IN ('probable_duplicate','distinct_branch')",
+                        name="ck_facility_candidate_duplicate_relationship"),
+        Index("ix_facility_candidate_duplicates_execution", "organization_id", "execution_id"),
+    )
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_executions.id", ondelete="CASCADE"), nullable=False)
+    left_candidate_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_facility_candidates.id", ondelete="CASCADE"), nullable=False)
+    right_candidate_id: Mapped[str] = mapped_column(String(36), ForeignKey("scraping_facility_candidates.id", ondelete="CASCADE"), nullable=False)
+    relationship: Mapped[str] = mapped_column(String(32), nullable=False)
+    score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    reasons_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
 class ScrapingFacilityCandidatePublication(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -176,7 +176,8 @@ class QueryGenerationResult:
 
     Count fields (do not overload):
     - generated_count: rows newly committed by this invocation
-    - existing_count: rows already present before this invocation
+    - existing_count: requested deterministic jobs not inserted by this invocation
+      because they already existed or another concurrent invocation won the conflict
     - total_count: currently persisted rows when this invocation returns
       (not the eventual unique final size after an interrupted stream)
     - expected_raw_count: deterministic raw family-workload estimate before dedup
@@ -1020,12 +1021,13 @@ class QueryGenerationService:
         )
 
         generated = 0
+        conflict_existing = 0
         unique_intended = existing_count
         batch: list[QueryJobSpec] = []
         batch_commits = 0
 
         async def _flush_batch() -> QueryGenerationResult | None:
-            nonlocal generated, batch_commits, batch
+            nonlocal generated, conflict_existing, batch_commits, batch
             if not batch:
                 return None
             if check_interrupt is not None:
@@ -1054,8 +1056,24 @@ class QueryGenerationService:
                             db.add(_row_from_spec(locked_execution, spec))
                             await db.flush()
                         generated += 1
-                    except IntegrityError:
-                        continue
+                    except IntegrityError as exc:
+                        # Do not classify arbitrary insert failures as existing rows.
+                        # The savepoint has rolled back, so verify that this exact
+                        # deterministic fingerprint now exists before continuing.
+                        conflict_winner = await db.scalar(
+                            select(ScrapingSourceDiscoveryQuery.id).where(
+                                ScrapingSourceDiscoveryQuery.organization_id
+                                == locked_execution.organization_id,
+                                ScrapingSourceDiscoveryQuery.execution_id == execution_id,
+                                ScrapingSourceDiscoveryQuery.discovery_round
+                                == discovery_round,
+                                ScrapingSourceDiscoveryQuery.query_job_fingerprint
+                                == spec.query_job_fingerprint,
+                            )
+                        )
+                        if conflict_winner is None:
+                            raise exc
+                        conflict_existing += 1
             await db.commit()
             batch_commits += 1
             batch = []
@@ -1105,7 +1123,7 @@ class QueryGenerationService:
             discovery_round=discovery_round,
             plan_hash_snapshot=selection.plan_hash,
             generated_count=generated,
-            existing_count=existing_count,
+            existing_count=existing_count + conflict_existing,
             total_count=unique_intended,
             expected_raw_count=expected_raw,
         )

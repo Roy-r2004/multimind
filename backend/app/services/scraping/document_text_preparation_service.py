@@ -24,6 +24,7 @@ from app.db.models import (
     ScrapingSourceDocument,
     ScrapingSourceDocumentChunk,
     ScrapingSourceDocumentText,
+    ScrapingPhase5RetrievalResult,
     SourceDocumentTextPreparationStatus,
 )
 
@@ -173,6 +174,7 @@ class DocumentTextPreparationService:
         existing = list(result.scalars().all())
         if existing:
             return existing
+        provenance = await self._provenance(db, prepared)
         rows = [
             ScrapingSourceDocumentChunk(
                 organization_id=prepared.organization_id,
@@ -185,6 +187,17 @@ class DocumentTextPreparationService:
                 character_end=chunk.end,
                 chunk_text=chunk.text,
                 chunk_hash=chunk.hash,
+                retrieval_result_id=provenance["retrieval_result_id"],
+                crawl_node_id=provenance["crawl_node_id"],
+                original_url=provenance["original_url"],
+                representation_provenance={
+                    "schema": "phase6_chunk_provenance_v1",
+                    "parser_version": prepared.parser_version,
+                    "source_content_hash": prepared.source_content_hash,
+                    "prepared_text_hash": prepared.prepared_text_hash,
+                    "character_start": chunk.start,
+                    "character_end": chunk.end,
+                },
             )
             for chunk in chunk_text(prepared.prepared_text)
         ]
@@ -200,6 +213,30 @@ class DocumentTextPreparationService:
             )
             return list(result.scalars().all())
         return rows
+
+    async def _provenance(
+        self, db: AsyncSession, prepared: ScrapingSourceDocumentText
+    ) -> dict[str, str | None]:
+        candidate = await db.execute(
+            select(ScrapingSourceCandidate.crawl_node_id, ScrapingSourceCandidate.url).where(
+                ScrapingSourceCandidate.id == prepared.source_candidate_id,
+                ScrapingSourceCandidate.organization_id == prepared.organization_id,
+                ScrapingSourceCandidate.execution_id == prepared.execution_id,
+            )
+        )
+        candidate_row = candidate.one_or_none()
+        retrieval_id = await db.scalar(
+            select(ScrapingPhase5RetrievalResult.id).where(
+                ScrapingPhase5RetrievalResult.organization_id == prepared.organization_id,
+                ScrapingPhase5RetrievalResult.execution_id == prepared.execution_id,
+                ScrapingPhase5RetrievalResult.source_document_id == prepared.source_document_id,
+            ).order_by(ScrapingPhase5RetrievalResult.result_ordinal).limit(1)
+        )
+        return {
+            "retrieval_result_id": retrieval_id,
+            "crawl_node_id": candidate_row.crawl_node_id if candidate_row else None,
+            "original_url": candidate_row.url if candidate_row else None,
+        }
 
     async def recreate_chunks(
         self, db: AsyncSession, prepared: ScrapingSourceDocumentText

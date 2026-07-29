@@ -21,6 +21,7 @@ from app.db.models import (
     RehabilitationFacilityContact,
     RehabilitationFacilityLocation,
     RehabilitationSource,
+    FacilityExtractionAttemptStatus,
     ScrapingBlueprint,
     ScrapingBlueprintStatus,
     ScrapingEvent,
@@ -29,6 +30,7 @@ from app.db.models import (
     ScrapingFacilityCandidate,
     ScrapingFacilityCandidateEvidence,
     ScrapingFacilityExtractionAttempt,
+    ScrapingFacilityPhaseWorkJob,
     ScrapingMission,
     ScrapingRun,
     ScrapingRunStatus,
@@ -220,6 +222,22 @@ class FakeProvider(FacilityExtractionProvider):
         self.seen_chunk = chunk_text
         self.call_count += 1
         return self.output
+
+
+class TransactionObservingProvider(FakeProvider):
+    def __init__(self, output, db: AsyncSession, *, stale_job_id: str | None = None):
+        super().__init__(output)
+        self.db = db
+        self.stale_job_id = stale_job_id
+        self.called_outside_transaction = False
+
+    async def extract(self, *, chunk_text: str, language_hint: str | None = None):
+        self.called_outside_transaction = not self.db.in_transaction()
+        if self.stale_job_id:
+            job = await self.db.get(ScrapingFacilityPhaseWorkJob, self.stale_job_id)
+            job.claim_token = "replacement-token"
+            await self.db.commit()
+        return await super().extract(chunk_text=chunk_text, language_hint=language_hint)
 
 
 class VersionedFakeProvider(FakeProvider):
@@ -1213,3 +1231,61 @@ async def test_worker_extraction_phase_uses_execution_org_documents_only(
         ).scalars().all()
     )
     assert prepared_org_ids == {auth.org_id}
+@pytest.mark.asyncio
+async def test_provider_call_is_outside_transaction_and_stale_claim_persists_nothing(
+    db: AsyncSession, auth,
+):
+    execution = await create_execution(db, auth)
+    document = await create_document(
+        db, auth, execution,
+        body="<h1>Centre Alpha</h1><p>1 Paris Road, France</p>",
+    )
+    prepared = await document_text_preparation_service.prepare(
+        db, SourceDocumentPreparationContext(
+            organization_id=auth.org_id, execution_id=execution.id,
+            source_document_id=document.id,
+        ))
+    chunk = await db.scalar(select(ScrapingSourceDocumentChunk).where(
+        ScrapingSourceDocumentChunk.prepared_text_id == prepared.id))
+    now = datetime.now(UTC)
+    job = ScrapingFacilityPhaseWorkJob(
+        organization_id=auth.org_id, execution_id=execution.id,
+        work_kind="extract_chunk", fingerprint="f" * 64,
+        source_document_id=document.id, chunk_id=chunk.id, status="running",
+        attempt_count=1, max_attempts=3, claim_token="original-token",
+        claimed_at=now, lease_expires_at=now.replace(year=now.year + 1),
+        metadata_json={},
+    )
+    db.add(job)
+    await db.commit()
+    provider = TransactionObservingProvider(
+        FacilityExtractionOutput(
+            document_relevant=True,
+            facilities=[ExtractedFacility(
+                name=ExtractedEvidenceValue(
+                    value="Centre Alpha", evidence_quote="Centre Alpha"),
+                addresses=[ExtractedEvidenceValue(
+                    value="1 Paris Road, France",
+                    evidence_quote="1 Paris Road, France")],
+            )],
+        ),
+        db,
+        stale_job_id=job.id,
+    )
+    summary = await FacilityExtractionService(provider).extract_one_chunk(
+        db, FacilityExtractionContext(
+            organization_id=auth.org_id, execution_id=execution.id,
+            source_document_id=document.id, prepared_text_id=prepared.id,
+            chunk_id=chunk.id, idempotency_key="stale-claim-extraction",
+            work_job_id=job.id, claim_token="original-token",
+        ))
+    assert provider.called_outside_transaction
+    assert summary.status == "stale_claim"
+    assert await db.scalar(select(func.count()).select_from(
+        ScrapingFacilityCandidate).where(
+            ScrapingFacilityCandidate.extraction_attempt_id == summary.attempt_id)) == 0
+    assert await db.scalar(select(func.count()).select_from(
+        ScrapingFacilityCandidateEvidence)) == 0
+    persisted_attempt = await db.get(ScrapingFacilityExtractionAttempt, summary.attempt_id)
+    assert persisted_attempt.status == FacilityExtractionAttemptStatus.RUNNING
+    assert persisted_attempt.output_candidate_count == 0

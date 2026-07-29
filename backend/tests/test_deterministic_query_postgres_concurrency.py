@@ -46,7 +46,7 @@ from app.services.scraping.query_generation_service import (
 
 @dataclass
 class PostgresConcurrencyDatabase:
-    """Isolated PostgreSQL database initialized via Alembic through revision 028."""
+    """Isolated PostgreSQL database initialized via Alembic repository head."""
 
     admin: asyncpg.Connection
     database: str
@@ -82,8 +82,37 @@ async def postgres_sessions() -> AsyncGenerator[async_sessionmaker[AsyncSession]
     )
     engine = None
     try:
-        # Real migration chain through 028 — never Base.metadata.create_all().
-        await db.alembic("upgrade", "028")
+        # Real migration chain through repository head; never Base.metadata.create_all().
+        await db.alembic("upgrade", "head")
+        schema_connection = await asyncpg.connect(db.url)
+        try:
+            query_columns = {
+                row["column_name"]
+                for row in await schema_connection.fetch(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' "
+                    "AND table_name='scraping_source_discovery_queries'"
+                )
+            }
+            required_query_columns = {
+                "claim_token",
+                "claimed_at",
+                "lease_expires_at",
+                "attempt_count",
+                "last_attempt_at",
+                "next_attempt_at",
+                "last_error_code",
+                "last_error_at",
+                "next_page_number",
+                "pages_completed",
+                "pagination_completed",
+                "last_page_result_count",
+                "last_page_fingerprint",
+                "pagination_completed_at",
+            }
+            assert required_query_columns <= query_columns
+        finally:
+            await schema_connection.close()
         engine = create_async_engine(
             db.url.replace("postgresql://", "postgresql+asyncpg://")
         )
@@ -239,6 +268,10 @@ async def test_concurrent_generate_is_idempotent_and_seed_wins(
     assert all(r["status"] == "ok" for r in results)
     assert all(r["error_code"] is None for r in results)
     assert all(r["total_count"] == expected_total for r in results)
+    assert all(
+        r["generated_count"] + r["existing_count"] == r["total_count"]
+        for r in results
+    )
     assert sum(r["generated_count"] for r in results) == expected_total
     assert sum(r["existing_count"] for r in results) == expected_total
 
@@ -246,7 +279,8 @@ async def test_concurrent_generate_is_idempotent_and_seed_wins(
         rows = (
             await verify.execute(
                 select(ScrapingSourceDiscoveryQuery).where(
-                    ScrapingSourceDiscoveryQuery.execution_id == execution_id
+                    ScrapingSourceDiscoveryQuery.execution_id == execution_id,
+                    ScrapingSourceDiscoveryQuery.discovery_round == 1,
                 )
             )
         ).scalars().all()
@@ -254,6 +288,11 @@ async def test_concurrent_generate_is_idempotent_and_seed_wins(
         fingerprints = [r.query_job_fingerprint for r in rows]
         assert None not in fingerprints
         assert len(fingerprints) == len(set(fingerprints))
+        deterministic_identities = [
+            (normalize_identity_text(row.query_text), row.query_job_fingerprint)
+            for row in rows
+        ]
+        assert len(deterministic_identities) == len(set(deterministic_identities))
 
         matching = [
             r

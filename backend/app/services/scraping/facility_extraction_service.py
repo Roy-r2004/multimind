@@ -20,9 +20,11 @@ from app.db.models import (
     FacilityCandidateStagingStatus,
     FacilityExtractionAttemptStatus,
     ScrapingExecution,
+    ScrapingDirectoryObservation,
     ScrapingFacilityCandidate,
     ScrapingFacilityCandidateEvidence,
     ScrapingFacilityExtractionAttempt,
+    ScrapingFacilityPhaseWorkJob,
     ScrapingSourceDocument,
     ScrapingSourceDocumentChunk,
     ScrapingSourceDocumentText,
@@ -44,6 +46,9 @@ from app.services.scraping.openrouter_facility_extraction_provider import (
     FacilityProviderError,
     OpenRouterFacilityExtractionProvider,
 )
+from app.services.scraping.facility_candidate_verification import (
+    normalize_address, normalize_name, normalize_phone, normalize_website,
+)
 
 MAX_IDEMPOTENCY_KEY_LENGTH = 160
 
@@ -60,6 +65,8 @@ class FacilityExtractionContext(BaseModel):
     chunk_index: int | None = Field(default=None, ge=0)
     language_hint: str | None = None
     idempotency_key: str = Field(min_length=1, max_length=MAX_IDEMPOTENCY_KEY_LENGTH)
+    work_job_id: str | None = None
+    claim_token: str | None = None
 
 
 class FacilityExtractionSummary(BaseModel):
@@ -138,6 +145,17 @@ class FacilityExtractionService:
                 if existing is not None and existing.completed_at is not None:
                     return await self._summary_for_attempt(db, existing)
                 raise
+        # Capture every scalar needed across commit; ORM state expires on commit.
+        attempt_id = attempt.id
+        attempt_provider = attempt.provider
+        attempt_model = attempt.model
+        organization_id = context.organization_id
+        execution_id = context.execution_id
+        work_job_id = context.work_job_id
+        claim_token = context.claim_token
+        # Persist the attempt and end the transaction before the provider/network call.
+        # The durable Phase 6 job claim fences the later write with its claim token.
+        await db.commit()
 
         try:
             provider_result = await self.provider.extract(
@@ -152,65 +170,135 @@ class FacilityExtractionService:
                 output = provider_result
                 provider_diagnostics = {}
                 provider_request_id = None
-            accepted, rejected = await self._persist_output(
-                db, attempt, chunk_id=chunk_id, chunk_text=chunk_text, output=output
+            if work_job_id and not await self._claim_is_current(
+                db,
+                organization_id=organization_id,
+                execution_id=execution_id,
+                work_job_id=work_job_id,
+                claim_token=claim_token,
+            ):
+                await db.rollback()
+                return FacilityExtractionSummary(
+                    attempt_id=attempt_id, source_document_id=document_id, chunk_id=chunk_id,
+                    provider=attempt_provider, model=attempt_model, status="stale_claim",
+                    failure_classification="stale_claim_token",
+                )
+            attempt_for_write = await self._load_attempt_for_write(
+                db, organization_id, execution_id, attempt_id
             )
-            attempt.status = FacilityExtractionAttemptStatus.SUCCEEDED
-            attempt.completed_at = datetime.now(UTC)
-            attempt.output_candidate_count = len(output.facilities)
-            attempt.failure_classification = None
-            attempt.safe_error_message = None
-            attempt.provider_request_id = provider_request_id
-            attempt.metadata_json = {
+            accepted, rejected = await self._persist_output(
+                db, attempt_for_write, chunk_id=chunk_id, chunk_text=chunk_text, output=output
+            )
+            attempt_for_write.status = FacilityExtractionAttemptStatus.SUCCEEDED
+            attempt_for_write.completed_at = datetime.now(UTC)
+            attempt_for_write.output_candidate_count = len(output.facilities)
+            attempt_for_write.failure_classification = None
+            attempt_for_write.safe_error_message = None
+            attempt_for_write.provider_request_id = provider_request_id
+            attempt_for_write.metadata_json = {
                 "document_relevant": output.document_relevant,
                 "chunk_hash_prefix": chunk_hash[:12],
                 "schema_version": self.provider.schema_version,
                 "structured_output": _safe_metadata(provider_diagnostics),
             }
             await db.commit()
-            await db.refresh(attempt)
             return FacilityExtractionSummary(
-                attempt_id=attempt.id,
+                attempt_id=attempt_id,
                 source_document_id=document_id,
                 chunk_id=chunk_id,
-                provider=attempt.provider,
-                model=attempt.model,
-                status=attempt.status.value,
+                provider=attempt_provider,
+                model=attempt_model,
+                status=FacilityExtractionAttemptStatus.SUCCEEDED.value,
                 extracted_candidate_count=accepted,
-                accepted_evidence_count=await self._evidence_count(db, attempt.id),
+                accepted_evidence_count=await self._evidence_count(db, attempt_id),
                 rejected_evidence_count=rejected,
                 document_relevant=output.document_relevant,
             )
         except FacilityProviderError as exc:
-            attempt.status = FacilityExtractionAttemptStatus.FAILED
-            attempt.completed_at = datetime.now(UTC)
-            attempt.failure_classification = exc.classification
-            attempt.safe_error_message = exc.safe_message
-            attempt.metadata_json = {
+            attempt_for_write = await self._load_attempt_for_write(
+                db, organization_id, execution_id, attempt_id
+            )
+            attempt_for_write.status = FacilityExtractionAttemptStatus.FAILED
+            attempt_for_write.completed_at = datetime.now(UTC)
+            attempt_for_write.failure_classification = exc.classification
+            attempt_for_write.safe_error_message = exc.safe_message
+            attempt_for_write.metadata_json = {
                 "retryable": exc.retryable,
                 "schema_version": self.provider.schema_version,
             }
             await db.commit()
-            return await self._summary_for_attempt(db, attempt)
+            return await self._summary_for_attempt_id(
+                db, organization_id, execution_id, attempt_id
+            )
+
         except FacilityStructuredOutputError as exc:
-            attempt.status = FacilityExtractionAttemptStatus.FAILED
-            attempt.completed_at = datetime.now(UTC)
-            attempt.failure_classification = "invalid_structured_output"
-            attempt.safe_error_message = exc.safe_message[:500]
-            attempt.metadata_json = {
+            attempt_for_write = await self._load_attempt_for_write(
+                db, organization_id, execution_id, attempt_id
+            )
+            attempt_for_write.status = FacilityExtractionAttemptStatus.FAILED
+            attempt_for_write.completed_at = datetime.now(UTC)
+            attempt_for_write.failure_classification = "invalid_structured_output"
+            attempt_for_write.safe_error_message = exc.safe_message[:500]
+            attempt_for_write.metadata_json = {
                 "schema_version": self.provider.schema_version,
                 "structured_output": _safe_metadata(exc.diagnostics),
             }
             await db.commit()
-            return await self._summary_for_attempt(db, attempt)
+            return await self._summary_for_attempt_id(
+                db, organization_id, execution_id, attempt_id
+            )
         except ValidationError:
-            attempt.status = FacilityExtractionAttemptStatus.FAILED
-            attempt.completed_at = datetime.now(UTC)
-            attempt.failure_classification = "invalid_structured_output"
-            attempt.safe_error_message = "Facility extraction returned invalid structured output"
-            attempt.metadata_json = {"schema_version": self.provider.schema_version}
+            attempt_for_write = await self._load_attempt_for_write(
+                db, organization_id, execution_id, attempt_id
+            )
+            attempt_for_write.status = FacilityExtractionAttemptStatus.FAILED
+            attempt_for_write.completed_at = datetime.now(UTC)
+            attempt_for_write.failure_classification = "invalid_structured_output"
+            attempt_for_write.safe_error_message = "Facility extraction returned invalid structured output"
+            attempt_for_write.metadata_json = {"schema_version": self.provider.schema_version}
             await db.commit()
-            return await self._summary_for_attempt(db, attempt)
+            return await self._summary_for_attempt_id(
+                db, organization_id, execution_id, attempt_id
+            )
+
+    async def _claim_is_current(
+        self, db: AsyncSession, *, organization_id: str, execution_id: str,
+        work_job_id: str, claim_token: str | None,
+    ) -> bool:
+        if not claim_token:
+            return False
+        return bool(await db.scalar(select(ScrapingFacilityPhaseWorkJob.id).where(
+            ScrapingFacilityPhaseWorkJob.id == work_job_id,
+            ScrapingFacilityPhaseWorkJob.organization_id == organization_id,
+            ScrapingFacilityPhaseWorkJob.execution_id == execution_id,
+            ScrapingFacilityPhaseWorkJob.status == "running",
+            ScrapingFacilityPhaseWorkJob.claim_token == claim_token,
+            ScrapingFacilityPhaseWorkJob.lease_expires_at >= func.now(),
+        ).with_for_update()))
+
+    async def _load_attempt_for_write(
+        self, db: AsyncSession, organization_id: str, execution_id: str, attempt_id: str
+    ) -> ScrapingFacilityExtractionAttempt:
+        row = await db.scalar(select(ScrapingFacilityExtractionAttempt).where(
+            ScrapingFacilityExtractionAttempt.id == attempt_id,
+            ScrapingFacilityExtractionAttempt.organization_id == organization_id,
+            ScrapingFacilityExtractionAttempt.execution_id == execution_id,
+        ).with_for_update())
+        if row is None:
+            raise NotFoundError("ScrapingFacilityExtractionAttempt", attempt_id)
+        return row
+
+    async def _summary_for_attempt_id(
+        self, db: AsyncSession, organization_id: str, execution_id: str, attempt_id: str
+    ) -> FacilityExtractionSummary:
+        attempt = await db.scalar(select(ScrapingFacilityExtractionAttempt).where(
+            ScrapingFacilityExtractionAttempt.id == attempt_id,
+            ScrapingFacilityExtractionAttempt.organization_id == organization_id,
+            ScrapingFacilityExtractionAttempt.execution_id == execution_id,
+        ))
+        if attempt is None:
+            raise NotFoundError("ScrapingFacilityExtractionAttempt", attempt_id)
+        return await self._summary_for_attempt(db, attempt)
 
     async def list_prepared_texts(
         self,
@@ -342,6 +430,18 @@ class FacilityExtractionService:
         source_document_id = attempt.source_document_id
         prepared_text_id = attempt.prepared_text_id
         attempt_id = attempt.id
+        chunk_provenance = await db.execute(
+            select(
+                ScrapingSourceDocumentChunk.retrieval_result_id,
+                ScrapingSourceDocumentChunk.crawl_node_id,
+                ScrapingSourceDocumentChunk.original_url,
+            ).where(
+                ScrapingSourceDocumentChunk.id == chunk_id,
+                ScrapingSourceDocumentChunk.organization_id == organization_id,
+                ScrapingSourceDocumentChunk.execution_id == execution_id,
+            )
+        )
+        provenance = chunk_provenance.one()
         document_count = await db.scalar(
             select(func.count()).select_from(ScrapingFacilityCandidate).where(
                 ScrapingFacilityCandidate.organization_id == organization_id,
@@ -380,6 +480,10 @@ class FacilityExtractionService:
                 model_confidence=facility.model_confidence,
                 staging_status=FacilityCandidateStagingStatus.EXTRACTED,
                 candidate_fingerprint=fingerprint,
+                directory_observation_id=await self._matching_directory_observation(
+                    db, organization_id=organization_id, execution_id=execution_id,
+                    facility=facility,
+                ),
             )
             db.add(candidate)
             try:
@@ -399,6 +503,9 @@ class FacilityExtractionService:
                 field_name="name",
                 raw_value=facility.name.value,
                 verified=name_ev,
+                retrieval_result_id=provenance.retrieval_result_id,
+                crawl_node_id=provenance.crawl_node_id,
+                source_url=provenance.original_url,
             )
             for field_name, item in _iter_optional_fields(facility):
                 verified = _verify(item, chunk_text)
@@ -416,10 +523,37 @@ class FacilityExtractionService:
                     field_name=field_name,
                     raw_value=item.value,
                     verified=verified,
+                    retrieval_result_id=provenance.retrieval_result_id,
+                    crawl_node_id=provenance.crawl_node_id,
+                    source_url=provenance.original_url,
                 )
             accepted += 1
             document_count += 1
         return accepted, rejected
+
+    async def _matching_directory_observation(
+        self, db: AsyncSession, *, organization_id: str, execution_id: str,
+        facility: ExtractedFacility,
+    ) -> str | None:
+        observations = list((await db.execute(select(ScrapingDirectoryObservation).where(
+            ScrapingDirectoryObservation.organization_id == organization_id,
+            ScrapingDirectoryObservation.execution_id == execution_id,
+        ).order_by(ScrapingDirectoryObservation.id))).scalars())
+        name = normalize_name(facility.name.value)
+        website = facility.websites[0].value if facility.websites else None
+        phone = facility.phones[0].value if facility.phones else None
+        address = facility.addresses[0].value if facility.addresses else None
+        _, domain = normalize_website(website)
+        for item in observations:
+            _, observed_domain = normalize_website(item.official_website_url)
+            strong_contact = (
+                domain and domain == observed_domain
+                or normalize_phone(phone) and normalize_phone(phone) == normalize_phone(item.displayed_phone)
+                or normalize_address(address) and normalize_address(address) == normalize_address(item.displayed_address)
+            )
+            if name and name == normalize_name(item.displayed_facility_name) and strong_contact:
+                return item.id
+        return None
 
     async def _add_evidence(
         self,
@@ -434,6 +568,9 @@ class FacilityExtractionService:
         field_name: str,
         raw_value: Any,
         verified: tuple[str, int, int, str],
+        retrieval_result_id: str | None,
+        crawl_node_id: str | None,
+        source_url: str | None,
     ) -> None:
         quote, start, end, evidence_hash = verified
         row = ScrapingFacilityCandidateEvidence(
@@ -450,6 +587,9 @@ class FacilityExtractionService:
             quote_end=end,
             evidence_hash=evidence_hash,
             verification_status=FacilityCandidateEvidenceVerificationStatus.VERIFIED,
+            retrieval_result_id=retrieval_result_id,
+            crawl_node_id=crawl_node_id,
+            source_url=source_url,
         )
         db.add(row)
         try:
@@ -593,7 +733,7 @@ def _verify(value: ExtractedEvidenceValue, chunk_text: str) -> tuple[str, int, i
 
 
 def _iter_optional_fields(facility: ExtractedFacility):
-    for field_name in ("facility_type", "operator"):
+    for field_name in ("facility_type", "physical_country", "city_or_region", "operator"):
         item = getattr(facility, field_name)
         if item is not None:
             yield field_name, item

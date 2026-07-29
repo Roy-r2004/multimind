@@ -27,12 +27,23 @@ class Phase5Postgres:
         target = urlparse(self.url).path.lstrip("/")
         if target != self.database or target in FORBIDDEN or not NAME_RE.fullmatch(target):
             pytest.fail("Refusing Alembic against a non-ephemeral Phase 5A database.")
-        result = await asyncio.to_thread(
-            subprocess.run, ["alembic", *arguments], check=True,
-            capture_output=True, text=True,
-            env={**os.environ, "DATABASE_URL": self.url.replace(
-                "postgresql://", "postgresql+asyncpg://")},
-        )
+        command = ["alembic", *arguments]
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run, command, check=True,
+                capture_output=True, text=True,
+                env={**os.environ, "DATABASE_URL": self.url.replace(
+                    "postgresql://", "postgresql+asyncpg://")},
+            )
+        except subprocess.CalledProcessError as exc:
+            exc.add_note(
+                "Alembic command failed\n"
+                f"command: {' '.join(command)}\n"
+                f"return code: {exc.returncode}\n"
+                f"stdout:\n{exc.stdout or '<empty>'}\n"
+                f"stderr:\n{exc.stderr or '<empty>'}"
+            )
+            raise
         return result.stdout + result.stderr
 
     async def connect(self) -> asyncpg.Connection:

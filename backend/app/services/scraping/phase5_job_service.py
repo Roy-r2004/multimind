@@ -149,6 +149,170 @@ class ClaimedPhase5Job:
     lease_expires_at: datetime
 
 
+@dataclass(frozen=True)
+class GuardedHttpClaimResult:
+    outcome: str
+    diagnostic: dict
+    claim: ClaimedPhase5Job | None = None
+
+
+def _safe_job_diagnostic(row, *, outcome: str, db_now: datetime) -> dict:
+    lease_state = "absent"
+    if row.lease_expires_at is not None:
+        lease_state = "live" if row.lease_expires_at > db_now else "expired"
+    retry_state = (
+        "deferred"
+        if row.next_retry_at is not None and row.next_retry_at > db_now
+        else "ready"
+    )
+    return {
+        "job_exists": True,
+        "job_id": row.id,
+        "work_kind": row.work_kind.value,
+        "status": row.status.value,
+        "attempt_count": row.attempt_count,
+        "max_attempts": row.max_attempts,
+        "claim_token_present": row.claim_token is not None,
+        "lease_state": lease_state,
+        "retry_state": retry_state,
+        "last_failure_classification": row.last_error_category,
+        "guarded_outcome": outcome,
+    }
+
+
+def _claimed_job(row, token: str) -> ClaimedPhase5Job:
+    assert row.canonical_url is not None
+    assert row.lease_expires_at is not None
+    return ClaimedPhase5Job(
+        id=row.id,
+        organization_id=row.organization_id,
+        execution_id=row.execution_id,
+        work_kind=row.work_kind.value,
+        selected_tool=row.selected_tool,
+        canonical_url=row.canonical_url,
+        crawl_node_id=row.crawl_node_id,
+        source_candidate_id=row.source_candidate_id,
+        crawl_edge_id=row.crawl_edge_id,
+        discovery_query_id=row.discovery_query_id,
+        input_retrieval_result_id=row.input_retrieval_result_id,
+        input_source_document_id=row.input_source_document_id,
+        input_content_fingerprint=row.input_content_fingerprint,
+        input_retrieval_method=row.input_retrieval_method,
+        next_entry_ordinal=row.next_entry_ordinal,
+        entries_completed=row.entries_completed,
+        parser_state_fingerprint=row.parser_state_fingerprint,
+        action_state_fingerprint=row.action_state_fingerprint,
+        operational_metadata=dict(row.operational_metadata_json or {}),
+        claim_token=token,
+        lease_expires_at=row.lease_expires_at,
+    )
+
+
+async def claim_guarded_controlled_http_job(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    organization_id: str,
+    execution_id: str,
+    crawl_node_id: str,
+    lease_duration: timedelta,
+) -> GuardedHttpClaimResult:
+    """Claim one controlled HTTP job without relaxing normal worker lifecycle."""
+    if lease_duration <= timedelta(0):
+        raise ValueError("lease_duration must be positive")
+    db_now = await session.scalar(select(func.now()))
+    execution = await session.scalar(select(ScrapingExecution).where(
+        ScrapingExecution.id == execution_id,
+        ScrapingExecution.organization_id == organization_id,
+    ).with_for_update())
+    if (
+        execution is None
+        or execution.execution_origin != "guarded_controlled_profile"
+        or execution.status.value != "paused"
+    ):
+        return GuardedHttpClaimResult(
+            outcome="ownership_mismatch",
+            diagnostic={
+                "job_exists": False,
+                "job_id": job_id,
+                "guarded_outcome": "ownership_mismatch",
+            },
+        )
+    row = await session.scalar(select(ScrapingPhase5WorkJob).where(
+        ScrapingPhase5WorkJob.id == job_id,
+        ScrapingPhase5WorkJob.organization_id == organization_id,
+        ScrapingPhase5WorkJob.execution_id == execution_id,
+        ScrapingPhase5WorkJob.crawl_node_id == crawl_node_id,
+        ScrapingPhase5WorkJob.work_kind == "http_retrieval",
+        ScrapingPhase5WorkJob.selected_tool == "http",
+    ).with_for_update())
+    if row is None:
+        return GuardedHttpClaimResult(
+            outcome="ownership_mismatch",
+            diagnostic={
+                "job_exists": False,
+                "job_id": job_id,
+                "guarded_outcome": "ownership_mismatch",
+            },
+        )
+    if row.status == Phase5WorkStatus.SUCCEEDED:
+        return GuardedHttpClaimResult(
+            "already_retrieved",
+            _safe_job_diagnostic(row, outcome="already_retrieved", db_now=db_now),
+        )
+    if (
+        row.status == Phase5WorkStatus.RUNNING
+        and row.lease_expires_at is not None
+        and row.lease_expires_at > db_now
+    ):
+        return GuardedHttpClaimResult(
+            "live_claim_exists",
+            _safe_job_diagnostic(row, outcome="live_claim_exists", db_now=db_now),
+        )
+    if row.max_attempts is not None and row.attempt_count >= row.max_attempts:
+        return GuardedHttpClaimResult(
+            "attempts_exhausted",
+            _safe_job_diagnostic(row, outcome="attempts_exhausted", db_now=db_now),
+        )
+    if row.next_retry_at is not None and row.next_retry_at > db_now:
+        return GuardedHttpClaimResult(
+            "retry_deferred",
+            _safe_job_diagnostic(row, outcome="retry_deferred", db_now=db_now),
+        )
+    if row.status == Phase5WorkStatus.RUNNING:
+        if row.lease_expires_at is None or row.lease_expires_at > db_now:
+            return GuardedHttpClaimResult(
+                "job_state_invalid",
+                _safe_job_diagnostic(row, outcome="job_state_invalid", db_now=db_now),
+            )
+        row.status = Phase5WorkStatus.RETRY_SCHEDULED
+        row.next_retry_at = db_now
+        row.last_error_category = "lease_expired"
+        row.last_error_message = "The prior action lease expired."
+        row.claim_token = row.claimed_at = row.lease_expires_at = None
+    if row.status not in {
+        Phase5WorkStatus.PENDING,
+        Phase5WorkStatus.RETRY_SCHEDULED,
+    }:
+        return GuardedHttpClaimResult(
+            "job_state_invalid",
+            _safe_job_diagnostic(row, outcome="job_state_invalid", db_now=db_now),
+        )
+    token = str(uuid.uuid4())
+    row.status = Phase5WorkStatus.RUNNING
+    row.claim_token = token
+    row.claimed_at = db_now
+    row.lease_expires_at = db_now + lease_duration
+    row.started_at = row.started_at or db_now
+    row.attempt_count += 1
+    await session.flush()
+    return GuardedHttpClaimResult(
+        "job_seeded_and_claimed",
+        _safe_job_diagnostic(row, outcome="job_seeded_and_claimed", db_now=db_now),
+        _claimed_job(row, token),
+    )
+
+
 async def create_job_idempotently(
     session: AsyncSession, prepared: PreparedPhase5Job
 ) -> Phase5PersistenceResult:

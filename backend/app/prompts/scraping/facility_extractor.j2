@@ -13,6 +13,8 @@ Return strict JSON with this shape and no extra keys:
       "name": {"value": "...", "evidence_quote": "..."},
       "aliases": [{"value": "...", "evidence_quote": "..."}],
       "facility_type": {"value": "...", "evidence_quote": "..."},
+      "physical_country": {"value": "...", "evidence_quote": "..."},
+      "city_or_region": {"value": "...", "evidence_quote": "..."},
       "operator": {"value": "...", "evidence_quote": "..."},
       "addresses": [{"value": "...", "evidence_quote": "..."}],
       "phones": [{"value": "...", "evidence_quote": "..."}],
@@ -42,6 +44,9 @@ Rules:
 - Evidence quotes must be {{ max_quote_characters }} characters or fewer.
 - Preserve original-language names and addresses. Do not translate unless a translated value is explicitly present.
 - Do not infer missing phones, locations, licenses, websites, services, programs, populations, admissions, or operators.
+- Extract physical_country and city_or_region only when the text explicitly supports
+  the facility's physical location. Domain suffix, page language, hosting location,
+  and telephone prefix are not physical-location evidence.
 - For websites: when an http(s) URL appears next to a facility (including bare URLs inserted after link text), extract it into websites with that URL as both value and evidence_quote. Prefer the facility's own site over directory/aggregator domains when both appear.
 - Do not include chain-of-thought.
 

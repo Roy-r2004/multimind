@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     facility_extraction_timeout_seconds: float = 60.0
     facility_extraction_max_attempts: int = 2
     facility_extraction_max_evidence_quote_characters: int = 1000
+    phase6_claim_batch_size: int = Field(default=10, ge=1, le=100)
+    phase6_lease_seconds: int = Field(default=300, ge=30, le=3600)
+    phase6_retry_base_seconds: int = Field(default=30, ge=1, le=3600)
 
     # Auto-publish verified staging candidates into final rehab tables
     facility_publication_enabled: bool = True

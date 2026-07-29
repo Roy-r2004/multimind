@@ -33,6 +33,8 @@ class ExtractedFacility(BaseModel):
     name: ExtractedEvidenceValue
     aliases: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
     facility_type: ExtractedEvidenceValue | None = None
+    physical_country: ExtractedEvidenceValue | None = None
+    city_or_region: ExtractedEvidenceValue | None = None
     operator: ExtractedEvidenceValue | None = None
     addresses: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)
     phones: list[ExtractedEvidenceValue] = Field(default_factory=list, max_length=MAX_ARRAY_ITEMS)

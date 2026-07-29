@@ -226,7 +226,7 @@ async def test_025_downgrade_is_non_destructive_and_reupgrade_succeeds(postgres_
     # After upgrading only to 025, current is 025 while the repo head may be later.
     assert "025" in current
     assert heads.count("(head)") == 1
-    assert "028 (head)" in heads
+    assert "034 (head)" in heads
 
 
 @pytest.mark.asyncio

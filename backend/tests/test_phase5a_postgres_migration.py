@@ -37,7 +37,9 @@ async def test_031_fresh_upgrade_downgrade_reupgrade_and_one_head():
             assert constraints == {"uq_crawl_edge_id_org_exec", "uq_source_document_id_org_exec"}
         finally:
             await connection.close()
-        assert "032" in await db.alembic("heads")
+        heads = await db.alembic("heads")
+        assert heads.count("(head)") == 1
+        assert "034 (head)" in heads
         await db.alembic("downgrade", "030")
         connection = await db.connect()
         try:
