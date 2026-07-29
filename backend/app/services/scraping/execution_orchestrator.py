@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
@@ -146,6 +147,10 @@ LANGUAGE_CODE_BY_NAME = {
 
 
 MAX_FACILITY_AI_CLEANUP_ATTEMPTS = 3
+HEARTBEAT_INTERVAL_SECONDS = 30
+# Each run() emits execution_started, so this counts how many times the census has
+# been (re)started. Past this, finish with what is published instead of looping.
+MAX_EXECUTION_ATTEMPTS = 8
 
 
 class ExecutionCancelled(Exception):
@@ -156,11 +161,35 @@ class CoverageDimensionError(RuntimeError):
     pass
 
 
+async def _heartbeat_loop(execution_id: str, interval: float = HEARTBEAT_INTERVAL_SECONDS) -> None:
+    """Beat for as long as this job runs.
+
+    Phase-local touch_heartbeat() calls only fire where someone remembered to add
+    them, so any long stretch between them looked like a dead worker and got the
+    whole census re-queued from the top. Beating from the job wrapper instead means
+    a stale heartbeat reliably means "the worker is gone", not "this phase is slow".
+    Uses its own session per beat because the orchestrator's session is busy and
+    AsyncSession does not support concurrent use.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with AsyncSessionLocal() as db:
+                await execution_service.touch_heartbeat(db, execution_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "scraping_execution_heartbeat_failed",
+                extra={"execution_id": execution_id},
+                exc_info=True,
+            )
+
+
 async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
     logger.info(
         "scraping_execution_job_entered",
         extra={"execution_id": execution_id},
     )
+    heartbeat = asyncio.create_task(_heartbeat_loop(execution_id))
     try:
         async with AsyncSessionLocal() as db:
             await SourceDiscoveryExecutionOrchestrator(db).run(execution_id)
@@ -177,6 +206,10 @@ async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
             await asyncio.shield(cleanup_task)
         finally:
             raise
+    finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
 
 
 async def mark_scraping_execution_timeout_failed(execution_id: str) -> None:
@@ -245,6 +278,66 @@ async def requeue_scraping_execution_after_job_slice(execution_id: str) -> None:
     await execution_service.enqueue_execution(execution_id)
 
 
+async def _exhausted_restart_budget(db: AsyncSession, execution_id: str) -> bool:
+    started = await db.execute(
+        select(ScrapingEvent.id).where(
+            ScrapingEvent.execution_id == execution_id,
+            ScrapingEvent.event_type == "execution_started",
+        )
+    )
+    return len(started.scalars().all()) >= MAX_EXECUTION_ATTEMPTS
+
+
+async def _finish_after_exhausted_restarts(
+    db: AsyncSession, execution: ScrapingExecution, now: datetime
+) -> None:
+    await _terminalize_children_for_completion(db, execution.id, now)
+    execution.status = ScrapingExecutionStatus.COMPLETED
+    execution.completed_at = now
+    execution.error_message = None
+    await execution_service.emit_event(
+        db,
+        execution.id,
+        "execution_completed_after_restart_budget",
+        (
+            "Execution completed with the results gathered so far after repeated "
+            "restarts; it was not able to finish every phase cleanly."
+        ),
+        metadata={
+            "reason": "restart_budget_exhausted",
+            "max_attempts": MAX_EXECUTION_ATTEMPTS,
+        },
+    )
+
+
+async def _terminalize_children_for_completion(
+    db: AsyncSession, execution_id: str, now: datetime
+) -> None:
+    await db.execute(
+        update(ScrapingTask)
+        .where(
+            ScrapingTask.execution_id == execution_id,
+            ScrapingTask.status.in_([ScrapingTaskStatus.RUNNING, ScrapingTaskStatus.QUEUED]),
+        )
+        .values(status=ScrapingTaskStatus.CANCELLED, completed_at=now, current_action=None)
+    )
+    await db.execute(
+        update(ScrapingExecutionAgent)
+        .where(
+            ScrapingExecutionAgent.execution_id == execution_id,
+            ScrapingExecutionAgent.status.in_(
+                [ScrapingExecutionAgentStatus.RUNNING, ScrapingExecutionAgentStatus.QUEUED]
+            ),
+        )
+        .values(
+            status=ScrapingExecutionAgentStatus.COMPLETED,
+            completed_at=now,
+            current_task_id=None,
+            current_action=None,
+        )
+    )
+
+
 async def recover_scraping_executions(ctx: dict) -> None:
     """Re-queue orphaned/stale executions (startup + periodic cron)."""
     del ctx  # ARQ passes worker context; unused here.
@@ -268,6 +361,12 @@ async def recover_scraping_executions(ctx: dict) -> None:
         )
         for execution in result.scalars().all():
             was_running = execution.status == ScrapingExecutionStatus.RUNNING
+            if was_running and await _exhausted_restart_budget(db, execution.id):
+                # Recovery exists to survive dead workers, not to retry forever. Finish
+                # with whatever is already published so the run reaches a terminal state
+                # (and exports unlock) instead of looping through restarts indefinitely.
+                await _finish_after_exhausted_restarts(db, execution, now)
+                continue
             if was_running:
                 await _reset_running_work_to_queued(db, execution.id)
                 await execution_service.emit_event(
@@ -1007,6 +1106,31 @@ class SourceDiscoveryExecutionOrchestrator:
         await self.db.commit()
         await self._create_gap_audit_task(execution)
 
+    async def _event_count(self, execution_id: str, event_type: str) -> int:
+        result = await self.db.execute(
+            select(ScrapingEvent.id).where(
+                ScrapingEvent.execution_id == execution_id,
+                ScrapingEvent.event_type == event_type,
+            )
+        )
+        return len(result.scalars().all())
+
+    async def _phase_already_completed(self, execution_id: str, event_type: str) -> bool:
+        """Did this phase already finish in an earlier attempt of the same execution?
+
+        Restarts (stale recovery, worker slices) re-enter run() from the top; without
+        this the census redid finished phases every time and never converged.
+        """
+        result = await self.db.execute(
+            select(ScrapingEvent.id)
+            .where(
+                ScrapingEvent.execution_id == execution_id,
+                ScrapingEvent.event_type == event_type,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def _run_facility_extraction_phase(self, execution: ScrapingExecution) -> None:
         self.current_stage = "facility_extraction"
         settings = get_settings()
@@ -1024,6 +1148,17 @@ class SourceDiscoveryExecutionOrchestrator:
                 execution_id=execution.id,
                 enabled=False,
             )
+            return
+        if await self._phase_already_completed(execution.id, "facility_extraction_phase_completed"):
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_extraction_phase_resumed",
+                "Facility extraction already finished in an earlier attempt; skipping ahead.",
+                metadata={"reason": "phase_already_completed"},
+            )
+            await self.db.commit()
+            self._log("facility_extraction_phase_resumed", execution_id=execution.id)
             return
 
         documents = await self._source_documents_for_extraction(execution)
@@ -1228,6 +1363,17 @@ class SourceDiscoveryExecutionOrchestrator:
                 enabled=False,
             )
             return
+        if await self._phase_already_completed(execution.id, "facility_publication_phase_completed"):
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_publication_phase_resumed",
+                "Facility publication already finished in an earlier attempt; skipping ahead.",
+                metadata={"reason": "phase_already_completed"},
+            )
+            await self.db.commit()
+            self._log("facility_publication_phase_resumed", execution_id=execution.id)
+            return
 
         await execution_service.emit_event(
             self.db,
@@ -1292,15 +1438,8 @@ class SourceDiscoveryExecutionOrchestrator:
         # progress per-batch, but as a hard safety valve: never let a run stay stuck
         # in "running" forever because cleanup keeps stalling — cap the number of
         # attempts and complete with the published roster as-is once exceeded.
-        prior_attempts = (
-            await self.db.execute(
-                select(ScrapingEvent.id).where(
-                    ScrapingEvent.execution_id == execution.id,
-                    ScrapingEvent.event_type == "facility_ai_cleanup_started",
-                )
-            )
-        ).scalars().all()
-        if len(prior_attempts) >= MAX_FACILITY_AI_CLEANUP_ATTEMPTS:
+        prior_attempt_count = await self._event_count(execution.id, "facility_ai_cleanup_started")
+        if prior_attempt_count >= MAX_FACILITY_AI_CLEANUP_ATTEMPTS:
             await execution_service.emit_event(
                 self.db,
                 execution.id,
@@ -1312,7 +1451,7 @@ class SourceDiscoveryExecutionOrchestrator:
                 metadata={
                     "enabled": True,
                     "reason": "max_attempts_exceeded",
-                    "attempts": len(prior_attempts),
+                    "attempts": prior_attempt_count,
                 },
             )
             await self.db.commit()
@@ -1325,7 +1464,10 @@ class SourceDiscoveryExecutionOrchestrator:
             execution.id,
             "facility_ai_cleanup_started",
             "AI cleanup started to remove non-rehabs, bad source pages, and duplicates.",
-            metadata={"batch_size": settings.facility_ai_cleanup_batch_size, "attempt": len(prior_attempts) + 1},
+            metadata={
+                "batch_size": settings.facility_ai_cleanup_batch_size,
+                "attempt": prior_attempt_count + 1,
+            },
         )
         await self.db.commit()
         await execution_service.touch_heartbeat(self.db, execution.id)
