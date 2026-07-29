@@ -128,7 +128,7 @@ export function LiveSiteActivity({
             Pages opening and crystallizing as evidence in real time.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2 text-xs text-white/45">
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
           <span>{rows.length} tracked</span>
           <span>·</span>
           <span>{extractedCount} extracted</span>

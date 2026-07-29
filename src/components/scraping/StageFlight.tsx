@@ -26,10 +26,11 @@ const ICONS = {
 } as const;
 
 const STATE_RING: Record<FlightStage["state"], string> = {
-  pending: "border-border bg-muted/40 text-muted-foreground",
-  active: "border-primary/70 bg-primary/15 text-primary dream-beacon",
-  done: "border-teal-300/40 bg-teal-400/10 text-teal-800",
-  failed: "border-rose-400/50 bg-rose-500/10 text-rose-700",
+  // Explicit light contrast: this panel is a dark flight surface.
+  pending: "border-white/30 bg-white/10 text-white/90",
+  active: "border-amber-300/70 bg-amber-400/20 text-amber-50 dream-beacon",
+  done: "border-teal-200/50 bg-teal-400/20 text-teal-50",
+  failed: "border-rose-300/60 bg-rose-500/20 text-rose-50",
 };
 
 export function StageFlight({ stages, statusLabel, connectionState, countryName }: Props) {
@@ -61,26 +62,26 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
       <div className="relative px-5 pb-6 pt-5 sm:px-8 sm:pt-7">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="dream-rise">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-primary/90">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-amber-200/90">
               Scraping Council · Flight
             </p>
-            <h2 className="mt-1 font-display text-2xl tracking-tight text-foreground sm:text-3xl">
+            <h2 className="mt-1 font-display text-2xl tracking-tight text-white sm:text-3xl">
               {countryName ? `Navigating ${countryName}` : "In flight"}
             </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <p className="mt-1 text-sm text-white/70">
               Stages move as sources open, evidence lands, and facilities crystallize.
             </p>
           </div>
           <div className="dream-rise dream-rise-delay-1 flex items-center gap-2 text-xs">
-            <span className="rounded-full border border-border bg-muted/40 px-3 py-1 text-foreground">
+            <span className="rounded-full border border-white/30 bg-white/10 px-3 py-1 text-white">
               {statusLabel}
             </span>
             <span
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full border px-3 py-1",
                 connectionState === "Live"
-                  ? "border-teal-300/40 bg-teal-400/10 text-teal-800"
-                  : "border-border bg-muted/40 text-muted-foreground",
+                  ? "border-teal-200/50 bg-teal-400/20 text-teal-50"
+                  : "border-white/25 bg-white/10 text-white/80",
               )}
             >
               <span

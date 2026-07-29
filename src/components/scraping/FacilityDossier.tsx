@@ -118,15 +118,21 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
           <div className="flex flex-wrap gap-2">
             <Badge
               variant="secondary"
-              className="border border-primary/35 bg-primary/15 text-primary"
+              className="border border-primary/40 bg-primary/15 font-semibold text-primary"
             >
               {(detail.confidence_score * 100).toFixed(0)}% confidence
             </Badge>
-            <Badge variant="outline" className="border-border text-foreground/80">
-              {detail.human_review_status}
+            <Badge
+              variant="outline"
+              className="border-border bg-muted font-medium capitalize text-foreground"
+            >
+              {(detail.human_review_status || "unknown").replaceAll("_", " ")}
             </Badge>
-            <Badge variant="outline" className="border-border text-foreground/80">
-              {detail.publication_class}
+            <Badge
+              variant="outline"
+              className="border-border bg-muted font-medium capitalize text-foreground"
+            >
+              {(detail.publication_class || "unknown").replaceAll("_", " ")}
             </Badge>
           </div>
         </div>

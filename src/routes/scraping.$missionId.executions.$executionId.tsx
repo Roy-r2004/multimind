@@ -429,7 +429,7 @@ function ScrapingExecutionPage() {
               </div>
             </DreamPanel>
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               <Metric label="Verified" value={execution.result_counts.verified ?? 0} />
               <Metric label="Review" value={execution.result_counts.review ?? 0} />
               <Metric label="Excluded" value={execution.result_counts.excluded ?? 0} />
@@ -667,9 +667,9 @@ function ScrapingExecutionPage() {
 
 function Metric({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-xl border border-border bg-white/[0.03] p-3">
-      <p className="text-xs text-white/45">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-foreground">{value}</p>
+    <div className="min-w-0 rounded-xl border border-border bg-muted/40 p-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 truncate text-lg font-semibold capitalize text-foreground">{value}</p>
     </div>
   );
 }

@@ -27,6 +27,9 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
         facility.primary_region,
         facility.facility_type,
         facility.primary_contact,
+        facility.primary_website,
+        facility.verification_status,
+        facility.publication_class,
       ]
         .filter(Boolean)
         .join(" ")
@@ -36,14 +39,16 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
   }, [facilities, query, typeFilter]);
 
   return (
-    <div className="flex h-full min-h-[28rem] flex-col overflow-hidden rounded-[1.5rem] border border-border bg-card/75 shadow-[0_20px_50px_rgba(0,0,0,0.25)] backdrop-blur-md">
+    <div className="flex h-full min-h-[28rem] flex-col overflow-hidden rounded-[1.5rem] border border-border bg-card shadow-sm">
       <div className="border-b border-border p-4">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-primary/90">Crystallized</p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary">
+              Crystallized
+            </p>
             <h2 className="font-display text-lg text-foreground">Facilities</h2>
           </div>
-          <span className="rounded-full border border-border bg-muted/40 px-2.5 py-0.5 text-xs text-foreground/80">
+          <span className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-foreground">
             {filtered.length}
           </span>
         </div>
@@ -52,12 +57,12 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search name, city, contact…"
-            className="w-full rounded-xl border border-border bg-muted/40 px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/50"
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/50"
           />
           <select
             value={typeFilter}
             onChange={(event) => setTypeFilter(event.target.value)}
-            className="w-full rounded-xl border border-border bg-muted/40 px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
           >
             <option value="all">All types</option>
             {types.map((type) => (
@@ -70,14 +75,15 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {filtered.length === 0 ? (
-          <p className="p-4 text-sm text-white/45">No facilities match this filter.</p>
+          <p className="p-4 text-sm text-muted-foreground">No facilities match this filter.</p>
         ) : (
-          <ul className="divide-y divide-white/10">
+          <ul className="divide-y divide-border">
             {filtered.map((facility) => {
               const selected = facility.id === selectedId;
               const place = [facility.primary_city, facility.primary_region]
                 .filter(Boolean)
                 .join(", ");
+              const chips = buildFacilityChips(facility);
               return (
                 <li key={facility.id}>
                   <button
@@ -85,30 +91,34 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
                     onClick={() => onSelect(facility.id)}
                     className={cn(
                       "w-full px-4 py-3 text-left transition",
-                      selected
-                        ? "bg-primary/12"
-                        : "hover:bg-white/[0.04]",
+                      selected ? "bg-primary/10" : "hover:bg-muted/60",
                     )}
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <p className="truncate font-medium text-foreground">
                           {facility.canonical_name}
                         </p>
-                        <p className="mt-0.5 text-xs text-white/45">
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground">
                           {facility.facility_type}
                           {place ? ` · ${place}` : ""}
                         </p>
                         {facility.primary_contact ? (
-                          <p className="mt-1 truncate text-xs text-muted-foreground">
+                          <p className="mt-1 truncate text-xs text-foreground/80">
                             {facility.primary_contact}
                           </p>
+                        ) : facility.primary_website ? (
+                          <p className="mt-1 truncate text-xs text-foreground/80">
+                            {facility.primary_website}
+                          </p>
                         ) : null}
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          <Chip label={`${facility.location_count ?? 0} loc`} />
-                          <Chip label={`${facility.contact_count ?? 0} contact`} />
-                          <Chip label={`${facility.treatment_service_count ?? 0} services`} />
-                        </div>
+                        {chips.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {chips.map((chip) => (
+                              <Chip key={chip.label} label={chip.label} tone={chip.tone} />
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                       <span className="shrink-0 text-sm font-semibold tabular-nums text-primary">
                         {(facility.confidence_score * 100).toFixed(0)}%
@@ -125,9 +135,49 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
   );
 }
 
-function Chip({ label }: { label: string }) {
+function buildFacilityChips(facility: ScrapingFacilitySummary): Array<{
+  label: string;
+  tone: "neutral" | "good" | "warn";
+}> {
+  const chips: Array<{ label: string; tone: "neutral" | "good" | "warn" }> = [];
+  const status = (facility.verification_status || "").toLowerCase();
+  if (status.includes("verif")) {
+    chips.push({ label: "Verified", tone: "good" });
+  } else if (status.includes("review") || facility.publication_class === "review_required") {
+    chips.push({ label: "Review", tone: "warn" });
+  } else if (status) {
+    chips.push({ label: status.replaceAll("_", " "), tone: "neutral" });
+  }
+
+  const locations = facility.location_count ?? 0;
+  const contacts = facility.contact_count ?? 0;
+  const services = facility.treatment_service_count ?? 0;
+  if (locations > 0) chips.push({ label: `${locations} loc`, tone: "neutral" });
+  if (contacts > 0) chips.push({ label: `${contacts} contact`, tone: "neutral" });
+  if (services > 0) chips.push({ label: `${services} services`, tone: "neutral" });
+
+  if (!facility.primary_contact) {
+    chips.push({ label: "No phone", tone: "warn" });
+  }
+  return chips.slice(0, 4);
+}
+
+function Chip({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: "neutral" | "good" | "warn";
+}) {
   return (
-    <span className="rounded-md border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-white/45">
+    <span
+      className={cn(
+        "rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        tone === "good" && "border-teal-600/30 bg-teal-50 text-teal-800",
+        tone === "warn" && "border-amber-600/30 bg-amber-50 text-amber-900",
+        tone === "neutral" && "border-border bg-muted text-foreground/85",
+      )}
+    >
       {label}
     </span>
   );
