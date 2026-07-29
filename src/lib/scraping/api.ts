@@ -206,7 +206,7 @@ export function deleteScrapingRun(auth: Auth, runId: string) {
   });
 }
 
-export type ScrapingExecutionMode = "real" | "full_census";
+export type ScrapingExecutionMode = "real" | "directory_first" | "full_census";
 export type ScrapingMissionProfile = "full_national_census" | "private_residential";
 
 export function createScrapingExecution(

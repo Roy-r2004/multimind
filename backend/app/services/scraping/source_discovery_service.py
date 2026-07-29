@@ -50,6 +50,9 @@ class SourceDiscoveryQueryPlanner:
         max_queries = _max_queries_for_provider(context.provider, settings, context=context)
         model = get_model("gpt-4.1")
         provider = get_provider_registry().get_provider(model.provider)
+        registry_seed_hints = context.blueprint_context.get("registry_seed_hints")
+        if not isinstance(registry_seed_hints, list):
+            registry_seed_hints = []
         prompt = get_prompt_engine().render(
             "scraping/source_discovery_query_planner.j2",
             max_queries=max_queries,
@@ -64,6 +67,10 @@ class SourceDiscoveryQueryPlanner:
             language_code=context.language_code,
             source_category=context.source_category,
             blueprint_context=context.blueprint_context,
+            discovery_strategy=context.discovery_strategy,
+            registry_seed_hints=[str(item) for item in registry_seed_hints if str(item).strip()][
+                :12
+            ],
         )
         response = await provider.complete(
             system="You return strict JSON for source-discovery query planning.",

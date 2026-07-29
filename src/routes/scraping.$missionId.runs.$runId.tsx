@@ -130,7 +130,9 @@ function ScrapingRunDetailPage() {
     }
   }
 
-  async function handleStartExecution(mode: "real" | "full_census" = "real") {
+  async function handleStartExecution(
+    mode: "real" | "directory_first" | "full_census" = "real",
+  ) {
     const auth = authHeaders();
     if (!auth) {
       void navigate({ to: "/login" });
@@ -225,9 +227,10 @@ function ScrapingRunDetailPage() {
                   </p>
                   {!activeExecution && (
                     <p className="mt-2 text-xs text-white/45">
-                      <strong className="text-primary">Full census</strong> uses much higher
-                      limits (hours, higher cost).{" "}
-                      <strong className="text-primary">Standard</strong> is faster for demos.
+                      <strong className="text-primary">Directory-first</strong> covers all
+                      regions via registries/directories (can take hours).{" "}
+                      <strong className="text-primary">Full census</strong> adds every source
+                      category. <strong className="text-primary">Standard</strong> is for demos.
                     </p>
                   )}
                   {!activeExecution && (
@@ -278,6 +281,16 @@ function ScrapingRunDetailPage() {
                         size="lg"
                         disabled={startingExecution || run.status !== "planned"}
                         className="bg-primary text-primary-foreground hover:bg-primary/90"
+                        onClick={() => void handleStartExecution("directory_first")}
+                      >
+                        {startingExecution ? "Starting…" : "Directory-first census"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="lg"
+                        variant="outline"
+                        disabled={startingExecution || run.status !== "planned"}
+                        className="border-border bg-muted/40 text-foreground hover:bg-accent"
                         onClick={() => void handleStartExecution("full_census")}
                       >
                         {startingExecution ? "Starting…" : "Full census"}
@@ -292,8 +305,9 @@ function ScrapingRunDetailPage() {
               <h2 className="font-display text-lg text-foreground">Results</h2>
               {executions.length === 0 ? (
                 <p className="mt-3 text-sm text-muted-foreground">
-                  No scrape yet. Choose <strong className="text-primary">Standard scrape</strong>{" "}
-                  or <strong className="text-primary">Full census</strong> above.
+                  No scrape yet. Prefer{" "}
+                  <strong className="text-primary">Directory-first census</strong> for
+                  full-region registry coverage, or use Standard / Full census above.
                 </p>
               ) : (
                 <div className="mt-4 space-y-3">
@@ -314,7 +328,11 @@ function ScrapingRunDetailPage() {
                               variant="outline"
                               className="border-primary/35 text-primary"
                             >
-                              {execution.mode === "full_census" ? "Full census" : "Standard"}
+                              {execution.mode === "full_census"
+                                ? "Full census"
+                                : execution.mode === "directory_first"
+                                  ? "Directory-first"
+                                  : "Standard"}
                             </Badge>
                             <span className="text-sm text-muted-foreground">{execution.country_name}</span>
                           </div>

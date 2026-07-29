@@ -26,6 +26,8 @@ def build_registry_seed_list(
         seeds = [
             f"{country_name} health ministry registry",
             f"{country_name} licensed provider directory",
+            f"{country_name} rehabilitation center directory",
+            f"{country_name} addiction treatment registry",
         ]
     return _dedupe(seeds)
 

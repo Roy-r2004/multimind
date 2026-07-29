@@ -27,6 +27,15 @@ Rules:
 - Do not use one English-only suffix for all missions.
 - Do not generate URLs.
 - Deduplicate query ideas before returning.
+{% if discovery_strategy == "directory_first" %}
+
+Directory-first strategy (priority):
+- Prefer registries, ministry lists, licensing boards, and professional association directories.
+- Prefer queries that return multi-facility listing pages over single clinic brand sites.
+- Include directory/registry terms that surface name, address, phone, and website fields.
+- Use the selected region for regional directory coverage; avoid single-clinic brand searches.
+- When registry seed hints are present, adapt them into bounded search queries.
+{% endif %}
 
 Mission goal:
 {{ mission_goal }}
@@ -38,6 +47,14 @@ Country: {{ country_name }} ({{ country_code }})
 Region: {{ region_name }}{% if region_code %} ({{ region_code }}){% endif %}
 Target language: {{ language_name }} ({{ language_code }})
 Source category: {{ source_category }}
+{% if discovery_strategy %}Discovery strategy: {{ discovery_strategy }}{% endif %}
+{% if registry_seed_hints %}
+
+Registry seed hints:
+{% for seed in registry_seed_hints %}
+- {{ seed }}
+{% endfor %}
+{% endif %}
 
 Blueprint context:
 {{ blueprint_context }}

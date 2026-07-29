@@ -1,4 +1,4 @@
-"""Throughput profiles for scrape executions (standard vs full census)."""
+"""Throughput profiles for scrape executions (standard, directory-first, full census)."""
 
 from __future__ import annotations
 
@@ -6,14 +6,45 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 MODE_REAL = "real"
+MODE_DIRECTORY_FIRST = "directory_first"
 MODE_FULL_CENSUS = "full_census"
-SUPPORTED_EXECUTION_MODES = {MODE_REAL, MODE_FULL_CENSUS}
+SUPPORTED_EXECUTION_MODES = {MODE_REAL, MODE_DIRECTORY_FIRST, MODE_FULL_CENSUS}
 
 CENSUS_PER_CELL_FETCH = 40
 CENSUS_RESULTS_PER_QUERY = 20
 CENSUS_MAX_QUERIES_PER_DISCOVERY = 12
 CENSUS_DISCOVERY_QUERY_HARD_CAP = 16
 CENSUS_DISCOVERY_RESULTS_HARD_CAP = 20
+
+# Directory-first: same scaling pattern as full census, higher per-cell fetch for listing pages.
+DIR_PER_CELL_FETCH = 60
+DIR_RESULTS_PER_QUERY = 20
+DIR_MAX_QUERIES_PER_DISCOVERY = 12
+DIR_DISCOVERY_QUERY_HARD_CAP = 16
+DIR_DISCOVERY_RESULTS_HARD_CAP = 20
+DIR_CONTACT_CRAWL_MAX_PAGES = 8
+
+DIRECTORY_CATEGORY_HINTS = (
+    "directory",
+    "registr",
+    "official",
+    "ministry",
+    "association",
+    "licensing",
+    "accreditation",
+    "license",
+    "list",
+    "catalog",
+    "portal",
+    "board",
+)
+
+DEFAULT_DIRECTORY_CATEGORIES = [
+    "official registry",
+    "licensed provider directory",
+    "health ministry list",
+    "professional association directory",
+]
 
 
 @dataclass(frozen=True)
@@ -36,12 +67,12 @@ class ScaleProfile:
 
 
 def resolve_scale_profile(mode: str, settings: Any) -> ScaleProfile:
-    """Resolve a mode profile. Full census without mission size is provisional only."""
+    """Resolve a mode profile. Census modes without mission size are provisional only."""
     normalized = (mode or MODE_REAL).strip().lower()
-    if normalized == MODE_FULL_CENSUS:
+    if normalized in {MODE_FULL_CENSUS, MODE_DIRECTORY_FIRST}:
         # Provisional until orchestrator knows coverage dimensions / expected_pages.
         return resolve_dynamic_scale_profile(
-            MODE_FULL_CENSUS,
+            normalized,
             settings,
             cell_count=0,
             expected_pages=None,
@@ -71,8 +102,30 @@ def resolve_dynamic_scale_profile(
     cell_count: int,
     expected_pages: int | None = None,
 ) -> ScaleProfile:
-    """Size Full census budgets from mission coverage / blueprint pages — no product clamps."""
+    """Size census budgets from mission coverage / blueprint pages — no product clamps."""
     normalized = (mode or MODE_REAL).strip().lower()
+    if normalized == MODE_DIRECTORY_FIRST:
+        cells = max(int(cell_count or 0), 0)
+        pages_hint = max(int(expected_pages or 0), 0)
+        retrieval_max_per_execution = max(pages_hint, cells * DIR_PER_CELL_FETCH)
+        extraction_max_documents = max(1, retrieval_max_per_execution // 2)
+        return ScaleProfile(
+            mode=MODE_DIRECTORY_FIRST,
+            label="Directory-first",
+            serper_results_per_query=DIR_RESULTS_PER_QUERY,
+            serper_max_queries_per_discovery=DIR_MAX_QUERIES_PER_DISCOVERY,
+            retrieval_max_per_cell=DIR_PER_CELL_FETCH,
+            retrieval_max_per_execution=retrieval_max_per_execution,
+            extraction_max_documents=extraction_max_documents,
+            extraction_max_chunks=extraction_max_documents * 3,
+            publication_max_candidates=extraction_max_documents * 4,
+            discovery_query_hard_cap=DIR_DISCOVERY_QUERY_HARD_CAP,
+            discovery_results_hard_cap=DIR_DISCOVERY_RESULTS_HARD_CAP,
+            contact_crawl_max_pages=max(
+                getattr(settings, "contact_crawl_max_pages_full_census", DIR_CONTACT_CRAWL_MAX_PAGES),
+                0,
+            ),
+        )
     if normalized != MODE_FULL_CENSUS:
         return resolve_scale_profile(mode, settings)
 
@@ -94,6 +147,26 @@ def resolve_dynamic_scale_profile(
         discovery_results_hard_cap=CENSUS_DISCOVERY_RESULTS_HARD_CAP,
         contact_crawl_max_pages=max(getattr(settings, "contact_crawl_max_pages_full_census", 8), 0),
     )
+
+
+def shrink_dimensions_for_directory_first(
+    regions: list[dict[str, str | None]],
+    languages: list[dict[str, str | None]],
+    categories: list[str],
+    *,
+    country_code: str,
+    country_name: str,
+) -> tuple[list[dict[str, str | None]], list[dict[str, str | None]], list[str]]:
+    """Keep all regions/languages; restrict categories to directory/registry sources."""
+    del country_code, country_name  # unused; regions already carry country scope
+    preferred = [
+        category
+        for category in categories
+        if any(hint in category.casefold() for hint in DIRECTORY_CATEGORY_HINTS)
+    ]
+    if not preferred:
+        preferred = list(DEFAULT_DIRECTORY_CATEGORIES)
+    return regions, languages, preferred
 
 
 def expected_pages_from_blueprint(blueprint_json: dict[str, Any] | None) -> int | None:

@@ -453,7 +453,7 @@ class ScrapingExecutionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     execution_type: str = "initial_full_country"
-    # real = standard throughput; full_census = high-limit country census run
+    # real = standard; directory_first = national registry pilot; full_census = unbounded
     mode: str = "real"
     mission_profile: str | None = None
 
@@ -704,6 +704,7 @@ class SourceDiscoveryContext(BaseModel):
     results_per_query: int | None = Field(default=None, ge=1, le=100)
     discovery_query_hard_cap: int | None = Field(default=None, ge=1, le=32)
     discovery_results_hard_cap: int | None = Field(default=None, ge=1, le=100)
+    discovery_strategy: str | None = Field(default=None, max_length=64)
 
     @field_validator("requested_fields")
     @classmethod

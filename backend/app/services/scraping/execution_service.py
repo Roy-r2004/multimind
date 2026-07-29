@@ -66,7 +66,11 @@ from app.services.scraping.scraper_policy_service import (
     build_policy_bundle,
     resolve_mission_profile,
 )
-from app.services.scraping.scale_profile import MODE_FULL_CENSUS, SUPPORTED_EXECUTION_MODES
+from app.services.scraping.scale_profile import (
+    MODE_DIRECTORY_FIRST,
+    MODE_FULL_CENSUS,
+    SUPPORTED_EXECUTION_MODES,
+)
 
 ACTIVE_EXECUTION_STATUSES = {
     ScrapingExecutionStatus.QUEUED,
@@ -105,7 +109,8 @@ class ScrapingExecutionService:
             raise ValidationError("This execution type is not startable in this phase.")
         if data.mode not in SUPPORTED_MODES:
             raise ValidationError(
-                "Unsupported scrape mode. Use 'real' (standard) or 'full_census'."
+                "Unsupported scrape mode. Use 'real' (standard), "
+                "'directory_first', or 'full_census'."
             )
 
         team_plan = await self._team_plan_row(db, auth, team_plan_id)
@@ -159,7 +164,12 @@ class ScrapingExecutionService:
                     )
                 )
             await db.flush()
-            mode_label = "Full census" if data.mode == MODE_FULL_CENSUS else "Standard"
+            if data.mode == MODE_FULL_CENSUS:
+                mode_label = "Full census"
+            elif data.mode == MODE_DIRECTORY_FIRST:
+                mode_label = "Directory-first"
+            else:
+                mode_label = "Standard"
             await self.emit_event(
                 db,
                 execution.id,

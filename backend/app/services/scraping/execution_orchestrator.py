@@ -66,13 +66,16 @@ from app.services.scraping.facility_extraction_service import (
     facility_extraction_service,
 )
 from app.services.scraping.source_discovery_service import source_discovery_service
+from app.services.scraping.amplifiers import build_registry_seed_list
 from app.services.scraping.scale_profile import (
+    MODE_DIRECTORY_FIRST,
     MODE_FULL_CENSUS,
     ScaleProfile,
     expected_pages_from_blueprint,
     resolve_dynamic_scale_profile,
     resolve_scale_profile,
     scale_profile_from_country_profile,
+    shrink_dimensions_for_directory_first,
 )
 from app.services.scraping.source_retrieval_service import (
     SourceRetrievalContext,
@@ -499,6 +502,14 @@ class SourceDiscoveryExecutionOrchestrator:
                 execution.country_code,
                 execution.country_name,
             )
+            if (execution.mode or "").strip().lower() == MODE_DIRECTORY_FIRST:
+                regions, languages, categories = shrink_dimensions_for_directory_first(
+                    regions,
+                    languages,
+                    categories,
+                    country_code=execution.country_code or "XX",
+                    country_name=execution.country_name or "National",
+                )
             cell_count = len(regions) * len(languages) * len(categories)
             expected_pages = expected_pages_from_blueprint(blueprint_json)
             self.scale_profile = resolve_dynamic_scale_profile(
@@ -1071,14 +1082,13 @@ class SourceDiscoveryExecutionOrchestrator:
         await self.db.commit()
 
     def _coverage_gap_budget(self) -> int:
-        settings = get_settings()
-        if self.scale_profile.mode == MODE_FULL_CENSUS:
-            return max(settings.contact_crawl_max_pages_full_census, 0)
-        return max(settings.contact_crawl_max_pages_real, 0)
+        return max(self.scale_profile.contact_crawl_max_pages, 0)
 
     def _coverage_gap_mission_profile(self) -> str:
         if self.scale_profile.mode == MODE_FULL_CENSUS:
             return "full_national_census"
+        if self.scale_profile.mode == MODE_DIRECTORY_FIRST:
+            return "directory_first_census"
         return "private_residential"
 
     async def _measure_coverage_gap_state(self, execution_id: str):
@@ -1405,7 +1415,7 @@ class SourceDiscoveryExecutionOrchestrator:
         candidate_count: int,
     ) -> None:
         """Stop scheduling more discovery when census yield dries up or fetch budget is full."""
-        if self.scale_profile.mode != MODE_FULL_CENSUS:
+        if self.scale_profile.mode not in {MODE_FULL_CENSUS, MODE_DIRECTORY_FIRST}:
             return
         if candidate_count > 0:
             self.consecutive_empty_discovery_cells = 0
@@ -1769,6 +1779,21 @@ class SourceDiscoveryExecutionOrchestrator:
         profile = self.scale_profile
         region_code = task.coverage_cell.region_code
         language_code = (task.coverage_cell.language_code or "und")[:16]
+        blueprint_context = (
+            dict(blueprint_json) if isinstance(blueprint_json, dict) else {}
+        )
+        discovery_strategy = None
+        if (execution.mode or "").strip().lower() == MODE_DIRECTORY_FIRST:
+            discovery_strategy = MODE_DIRECTORY_FIRST
+            source_strategy = blueprint_context.get("source_strategy")
+            blueprint_context["discovery_strategy"] = MODE_DIRECTORY_FIRST
+            blueprint_context["registry_seed_hints"] = build_registry_seed_list(
+                country_name=execution.country_name or "Unknown",
+                country_blueprint=blueprint_context,
+                source_strategy=(
+                    source_strategy if isinstance(source_strategy, list) else None
+                ),
+            )[:12]
         return SourceDiscoveryContext(
             organization_id=execution.organization_id,
             execution_id=execution.id,
@@ -1783,12 +1808,13 @@ class SourceDiscoveryExecutionOrchestrator:
             source_category=(task.coverage_cell.source_category or "directory")[:120],
             mission_goal=self._mission_goal(blueprint_json)[:2000],
             requested_fields=self._requested_fields(blueprint_json)[:50],
-            blueprint_context=blueprint_json if isinstance(blueprint_json, dict) else {},
+            blueprint_context=blueprint_context,
             provider=get_settings().source_discovery_provider,
             max_queries_per_discovery=profile.serper_max_queries_per_discovery,
             results_per_query=profile.serper_results_per_query,
             discovery_query_hard_cap=profile.discovery_query_hard_cap,
             discovery_results_hard_cap=profile.discovery_results_hard_cap,
+            discovery_strategy=discovery_strategy,
         )
 
     def _has_profile_dimensions(self, country_profile_json: dict[str, Any] | None) -> bool:
