@@ -1360,6 +1360,7 @@ function AiTurn({
   const { session } = useAuth();
   const [showDisagree, setShowDisagree] = useState(false);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
+  const [expandedAnswerId, setExpandedAnswerId] = useState<string | null>(null);
   const verdictRef = useRef<HTMLDivElement>(null);
   const answerCards = deriveTurnAnswerCards(turn, set.models);
   const cardModelIds = answerCards.map((card) => card.modelId);
@@ -1370,216 +1371,248 @@ function AiTurn({
   const turnStrategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
   const bookmarkState = getVerdictBookmarkState(turn, pendingSavedVerdicts);
   const isPinned = Boolean(turn.verdict && pinnedVerdictId === turn.verdict.id);
+  const hasVerdict = Boolean(turn.verdict);
 
   function openDisagree() {
     verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     setShowDisagree(true);
   }
 
-  return (
-    <div className="space-y-4">
-      {canCollapseAnswers && (
-        <div className="flex items-center justify-between gap-3">
+  const councilRail = !answersCollapsed ? (
+    <aside
+      className={cn(
+        "space-y-3",
+        hasVerdict && "lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:overscroll-contain lg:pr-1",
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
+            AI Council
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {answerCards.length} models · {answerCards.length} perspectives
+          </p>
+        </div>
+        {canCollapseAnswers ? (
           <button
             type="button"
-            onClick={() => setAnswersCollapsed((value) => !value)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
-            aria-expanded={!answersCollapsed}
+            onClick={() => setAnswersCollapsed(true)}
+            className="rounded-lg border border-border bg-card/70 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
           >
-            <ChevronDown
-              className={cn("size-3.5 transition-transform", answersCollapsed && "-rotate-90")}
-            />
-            {answersCollapsed ? "Show AI council answers" : "Hide AI council answers"}
+            Hide
           </button>
-          {answersCollapsed && (
-            <span className="text-xs text-muted-foreground">
-              {answerCards.length} answers hidden
-            </span>
-          )}
-        </div>
-      )}
-
-      {!answersCollapsed && (
-        <div className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            {answerCards.map(({ modelId: id, answer: a, status }, index) => {
-              const baseModel = modelById(id);
-              const m = a?.model_name
-                ? { ...baseModel, name: a.model_name }
-                : baseModel;
-              const failed = status === "failed";
-              const inProgress = status === "pending" || status === "running";
-              const isTopPick = topModelId === id;
-              return (
-                <GlassCard
-                  key={id}
-                  featured={isTopPick}
-                  className={cn(
-                    "elevate-card relative min-h-[180px] overflow-hidden p-4",
-                    index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
-                  )}
-                >
-                  <VendorLogo
-                    vendor={m.vendor}
-                    watermark
-                    className="pointer-events-none absolute -right-2 -bottom-2 size-24"
-                  />
-                  <div className="relative flex items-start gap-2 text-sm">
-                    <VendorLogo vendor={m.vendor} className="size-8 shrink-0" title={m.name} />
-                    <div className="min-w-0 flex-1">
+        ) : null}
+      </div>
+      <div className="space-y-2.5">
+        {answerCards.map(({ modelId: id, answer: a, status }, index) => {
+          const baseModel = modelById(id);
+          const m = a?.model_name ? { ...baseModel, name: a.model_name } : baseModel;
+          const failed = status === "failed";
+          const inProgress = status === "pending" || status === "running";
+          const isTopPick = topModelId === id;
+          const expanded = expandedAnswerId === id || !hasVerdict;
+          return (
+            <GlassCard
+              key={id}
+              featured={isTopPick}
+              className={cn(
+                "elevate-card relative overflow-hidden p-3.5",
+                index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
+                isTopPick && "ring-1 ring-primary/35",
+              )}
+            >
+              <div className="relative flex items-start gap-2.5">
+                <VendorLogo vendor={m.vendor} className="size-8 shrink-0" title={m.name} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium leading-tight">{m.name}</div>
                       <div className="truncate text-[11px] text-muted-foreground">{m.vendor}</div>
-                      <div className="truncate font-medium">{m.name}</div>
                     </div>
-                    {isTopPick && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-                        <Trophy className="size-3" />
-                        Top pick
-                      </span>
-                    )}
-                  </div>
-                  {!inProgress && a?.confidence != null && (
-                    <div className="relative mt-2 flex justify-end">
+                    {!inProgress && a?.confidence != null ? (
                       <ModelConfidenceBadge
                         confidence={a.confidence}
                         isTopPick={isTopPick}
                         strategy={turnStrategy}
                         modelName={m.name}
                       />
-                    </div>
-                  )}
-                  {failed ? (
-                    <p className="relative mt-3 text-xs text-destructive">
-                      <AlertCircle className="mr-1 inline size-3.5" />
-                      {a?.error_message ?? "Failed"}
-                    </p>
-                  ) : inProgress ? (
-                    <div className="relative mt-3 space-y-2">
-                      <div className="h-2 animate-pulse rounded bg-muted" />
-                      <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
-                      <Loader2 className="size-3.5 animate-spin text-primary" />
-                    </div>
-                  ) : (
-                    <div className="relative mt-3">
-                      <MessageContent compact>{a?.text ?? ""}</MessageContent>
-                    </div>
-                  )}
-                </GlassCard>
-              );
-            })}
+                    ) : null}
+                  </div>
+                  {isTopPick ? (
+                    <span className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                      <Trophy className="size-3" />
+                      Top pick
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              {failed ? (
+                <p className="relative mt-3 text-xs text-destructive">
+                  <AlertCircle className="mr-1 inline size-3.5" />
+                  {a?.error_message ?? "Failed"}
+                </p>
+              ) : inProgress ? (
+                <div className="relative mt-3 space-y-2">
+                  <div className="h-2 animate-pulse rounded bg-muted" />
+                  <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+                  <Loader2 className="size-3.5 animate-spin text-primary" />
+                </div>
+              ) : (
+                <div className="relative mt-3">
+                  <div className={cn(!expanded && "max-h-[7.5rem] overflow-hidden")}>
+                    <MessageContent compact>{a?.text ?? ""}</MessageContent>
+                  </div>
+                  {hasVerdict ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedAnswerId((current) => (current === id ? null : id))
+                      }
+                      className="mt-2 text-[11px] font-medium text-primary hover:underline"
+                    >
+                      {expanded ? "Show less" : "Read full answer"}
+                    </button>
+                  ) : null}
+                </div>
+              )}
+            </GlassCard>
+          );
+        })}
+      </div>
+    </aside>
+  ) : (
+    <button
+      type="button"
+      onClick={() => setAnswersCollapsed(false)}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground lg:sticky lg:top-24"
+    >
+      <ChevronDown className="size-3.5 -rotate-90" />
+      Show AI council ({answerCards.length})
+    </button>
+  );
+
+  const verdictBlock = turn.verdict ? (
+    <div
+      ref={verdictRef}
+      id={`verdict-${turn.verdict.id}`}
+      data-verdict-synthesis="true"
+      className={cn(
+        "elevate-verdict scroll-mt-28",
+        isPinned && "rounded-2xl ring-2 ring-amber-400/60 ring-offset-2 ring-offset-background",
+      )}
+    >
+      <GlassCard glow className="p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+            <Sparkles className="size-4" />
+          </span>
+          <span className="font-medium">Verdict</span>
+          {isPinned && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+              <Pin className="size-3 fill-current" /> Pinned
+            </span>
+          )}
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+            {turn.verdict.strategy}
+          </span>
+          {judgeModel && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
+              <VendorLogo vendor={judgeModel.vendor} className="size-4" />
+              Judge: {judgeModel.name}
+            </span>
+          )}
+          {topModelId && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800">
+              <Trophy className="size-3" />
+              Best: {modelById(topModelId).name}
+            </span>
+          )}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
+              title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
+              onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
+                isPinned
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
+                  : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+              )}
+            >
+              <Pin className={cn("size-3.5", isPinned && "fill-current")} />
+              {isPinned ? "Unpin" : "Pin"}
+            </button>
+            {bookmarkState.visible && bookmarkState.verdictId && (
+              <button
+                type="button"
+                aria-label={bookmarkState.label}
+                title={bookmarkState.title}
+                disabled={bookmarkState.disabled}
+                onClick={() =>
+                  onToggleSavedVerdict(bookmarkState.verdictId!, bookmarkState.saved)
+                }
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
+                  bookmarkState.saved
+                    ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                    : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                <Bookmark
+                  className={cn("size-3.5", bookmarkState.filled && "fill-current")}
+                />
+                {bookmarkState.disabled
+                  ? "Saving"
+                  : bookmarkState.saved
+                    ? "Saved"
+                    : "Save"}
+              </button>
+            )}
+            {turn.lesson_id && turn.lesson_status === "completed" ? (
+              <Link
+                to="/lessons/$id"
+                params={{ id: turn.lesson_id }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+              >
+                <BookOpen className="size-3.5" /> View lesson
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={openDisagree}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
+              >
+                <Swords className="size-3.5" /> Challenge
+              </button>
+            )}
           </div>
         </div>
-      )}
-
-      {turn.verdict && (
-        <div
-          ref={verdictRef}
-          id={`verdict-${turn.verdict.id}`}
-          data-verdict-synthesis="true"
-          className={cn(
-            "elevate-verdict scroll-mt-28",
-            isPinned && "rounded-2xl ring-2 ring-amber-400/60 ring-offset-2 ring-offset-background",
+        <div className="mt-4 space-y-3">
+          <MessageContent>{turn.verdict.text}</MessageContent>
+          {turn.verdict.reason && (
+            <MessageContent
+              muted
+              className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
+            >
+              {turn.verdict.reason}
+            </MessageContent>
           )}
-        >
-          <GlassCard glow className="p-5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-                <Sparkles className="size-4" />
-              </span>
-              <span className="font-medium">Verdict</span>
-              {isPinned && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-                  <Pin className="size-3 fill-current" /> Pinned
-                </span>
-              )}
-              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
-                {turn.verdict.strategy}
-              </span>
-              {judgeModel && (
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
-                  <VendorLogo vendor={judgeModel.vendor} className="size-4" />
-                  Judge: {judgeModel.name}
-                </span>
-              )}
-              {topModelId && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800">
-                  <Trophy className="size-3" />
-                  Best: {modelById(topModelId).name}
-                </span>
-              )}
-              <div className="ml-auto flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
-                  title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
-                  onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
-                    isPinned
-                      ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
-                      : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
-                  )}
-                >
-                  <Pin className={cn("size-3.5", isPinned && "fill-current")} />
-                  {isPinned ? "Unpin" : "Pin"}
-                </button>
-                {bookmarkState.visible && bookmarkState.verdictId && (
-                  <button
-                    type="button"
-                    aria-label={bookmarkState.label}
-                    title={bookmarkState.title}
-                    disabled={bookmarkState.disabled}
-                    onClick={() =>
-                      onToggleSavedVerdict(bookmarkState.verdictId!, bookmarkState.saved)
-                    }
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
-                      bookmarkState.saved
-                        ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
-                        : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
-                    )}
-                  >
-                    <Bookmark
-                      className={cn("size-3.5", bookmarkState.filled && "fill-current")}
-                    />
-                    {bookmarkState.disabled
-                      ? "Saving"
-                      : bookmarkState.saved
-                        ? "Saved"
-                        : "Save"}
-                  </button>
-                )}
-                {turn.lesson_id && turn.lesson_status === "completed" ? (
-                  <Link
-                    to="/lessons/$id"
-                    params={{ id: turn.lesson_id }}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
-                  >
-                    <BookOpen className="size-3.5" /> View lesson
-                  </Link>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={openDisagree}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
-                  >
-                    <Swords className="size-3.5" /> Challenge
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="mt-4 space-y-3">
-              <MessageContent>{turn.verdict.text}</MessageContent>
-              {turn.verdict.reason && (
-                <MessageContent
-                  muted
-                  className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
-                >
-                  {turn.verdict.reason}
-                </MessageContent>
-              )}
-            </div>
-          </GlassCard>
         </div>
+      </GlassCard>
+    </div>
+  ) : null;
+
+  return (
+    <div className="space-y-4">
+      {hasVerdict ? (
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,22rem)]">
+          {verdictBlock}
+          {councilRail}
+        </div>
+      ) : (
+        councilRail
       )}
 
       <VerdictDisagreeChat

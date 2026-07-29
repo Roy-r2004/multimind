@@ -95,7 +95,96 @@ function SharedPage() {
 
 function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
+  const [expandedAnswerId, setExpandedAnswerId] = useState<string | null>(null);
   const canCollapseAnswers = Boolean(turn.verdict);
+  const hasVerdict = Boolean(turn.verdict);
+
+  const councilRail = !answersCollapsed ? (
+    <aside className="space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
+            AI Council
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {turn.model_answers.length} models · {turn.model_answers.length} perspectives
+          </p>
+        </div>
+        {canCollapseAnswers ? (
+          <button
+            type="button"
+            onClick={() => setAnswersCollapsed(true)}
+            className="rounded-lg border border-border bg-card/70 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            Hide
+          </button>
+        ) : null}
+      </div>
+      <div className="space-y-2.5">
+        {turn.model_answers.map((a) => {
+          const expanded = expandedAnswerId === a.model_id || !hasVerdict;
+          return (
+            <div key={a.model_id} className="rounded-2xl border border-border bg-card p-3.5">
+              <div className="flex items-center gap-2 text-sm">
+                <span
+                  className="size-2 shrink-0 rounded-full"
+                  style={{ background: modelColor(a.model_id) }}
+                />
+                <span className="min-w-0 flex-1 truncate font-medium">{a.model_name}</span>
+                {a.confidence != null && (
+                  <span className="shrink-0 text-xs text-primary">{a.confidence}%</span>
+                )}
+              </div>
+              <div className="mt-3">
+                <div className={cn(!expanded && "max-h-[7.5rem] overflow-hidden")}>
+                  <MessageContent compact>{a.text ?? "-"}</MessageContent>
+                </div>
+                {hasVerdict ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedAnswerId((current) =>
+                        current === a.model_id ? null : a.model_id,
+                      )
+                    }
+                    className="mt-2 text-[11px] font-medium text-primary hover:underline"
+                  >
+                    {expanded ? "Show less" : "Read full answer"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </aside>
+  ) : (
+    <button
+      type="button"
+      onClick={() => setAnswersCollapsed(false)}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+    >
+      <ChevronDown className="size-3.5 -rotate-90" />
+      Show AI council ({turn.model_answers.length})
+    </button>
+  );
+
+  const verdictBlock = turn.verdict ? (
+    <div className="rounded-2xl border border-primary/30 bg-primary/5 p-5">
+      <div className="flex items-center gap-2">
+        <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
+          <Gavel className="size-3.5" />
+        </span>
+        <div className="font-medium">Verdict AI</div>
+        <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+          {turn.verdict.strategy}
+        </span>
+      </div>
+      <div className="mt-3">
+        <MessageContent>{turn.verdict.text}</MessageContent>
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div className="space-y-6">
@@ -105,66 +194,13 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
         </div>
       </div>
 
-      <div className="space-y-3">
-        {canCollapseAnswers && (
-          <div className="flex items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={() => setAnswersCollapsed((value) => !value)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
-              aria-expanded={!answersCollapsed}
-            >
-              <ChevronDown
-                className={cn("size-3.5 transition-transform", answersCollapsed && "-rotate-90")}
-              />
-              {answersCollapsed ? "Show AI council answers" : "Hide AI council answers"}
-            </button>
-            {answersCollapsed && (
-              <span className="text-xs text-muted-foreground">
-                {turn.model_answers.length} answers hidden
-              </span>
-            )}
-          </div>
-        )}
-
-        {!answersCollapsed && (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            {turn.model_answers.map((a) => (
-              <div key={a.model_id} className="rounded-2xl border border-border bg-card p-4">
-                <div className="flex items-center gap-2 text-sm">
-                  <span
-                    className="size-2 rounded-full"
-                    style={{ background: modelColor(a.model_id) }}
-                  />
-                  <span className="font-medium">{a.model_name}</span>
-                  {a.confidence != null && (
-                    <span className="ml-auto text-xs text-muted-foreground">{a.confidence}%</span>
-                  )}
-                </div>
-                <div className="mt-3">
-                  <MessageContent compact>{a.text ?? "-"}</MessageContent>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {turn.verdict && (
-        <div className="rounded-2xl border border-primary/30 bg-primary/5 p-5">
-          <div className="flex items-center gap-2">
-            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
-              <Gavel className="size-3.5" />
-            </span>
-            <div className="font-medium">Verdict AI</div>
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
-              {turn.verdict.strategy}
-            </span>
-          </div>
-          <div className="mt-3">
-            <MessageContent>{turn.verdict.text}</MessageContent>
-          </div>
+      {hasVerdict ? (
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,22rem)]">
+          {verdictBlock}
+          {councilRail}
         </div>
+      ) : (
+        councilRail
       )}
     </div>
   );
