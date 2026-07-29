@@ -487,18 +487,22 @@ function ScrapingExecutionPage() {
                     ))}
                   </div>
                 </DreamPanel>
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-                <FacilityRoster
-                  facilities={visibleFacilities}
-                  selectedId={selectedFacilityId}
-                  onSelect={setSelectedFacilityId}
-                />
-                <FacilityDossier
-                  detail={facilityDetail}
-                  loading={facilityDetailLoading}
-                  error={facilityDetailError}
-                  onBack={() => setSelectedFacilityId(null)}
-                />
+                <div className="grid h-[min(70vh,42rem)] min-h-[28rem] gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
+                <div className="min-h-0 min-w-0">
+                  <FacilityRoster
+                    facilities={visibleFacilities}
+                    selectedId={selectedFacilityId}
+                    onSelect={setSelectedFacilityId}
+                  />
+                </div>
+                <div className="min-h-0 min-w-0">
+                  <FacilityDossier
+                    detail={facilityDetail}
+                    loading={facilityDetailLoading}
+                    error={facilityDetailError}
+                    onBack={() => setSelectedFacilityId(null)}
+                  />
+                </div>
               </div>
               </div>
             )}

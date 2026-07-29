@@ -93,103 +93,105 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
 
   return (
     <Panel>
-      {onBack ? (
-        <button
-          type="button"
-          onClick={onBack}
-          className="mb-3 text-sm text-muted-foreground hover:text-primary lg:hidden"
-        >
-          ← Back to list
-        </button>
-      ) : null}
+      <div className="shrink-0">
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="mb-3 text-sm text-muted-foreground hover:text-primary lg:hidden"
+          >
+            ← Back to list
+          </button>
+        ) : null}
 
-      <div className="space-y-3 border-b border-border pb-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="font-display text-2xl tracking-tight text-foreground">
-              {detail.canonical_name}
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {[detail.facility_type, detail.primary_city, detail.primary_region, detail.country_name]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
+        <div className="space-y-3 border-b border-border pb-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="font-display text-2xl tracking-tight text-foreground">
+                {detail.canonical_name}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {[detail.facility_type, detail.primary_city, detail.primary_region, detail.country_name]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge
+                variant="secondary"
+                className="border border-primary/40 bg-primary/15 font-semibold text-primary"
+              >
+                {(detail.confidence_score * 100).toFixed(0)}% confidence
+              </Badge>
+              <Badge
+                variant="outline"
+                className="border-border bg-muted font-medium capitalize text-foreground"
+              >
+                {(detail.human_review_status || "unknown").replaceAll("_", " ")}
+              </Badge>
+              <Badge
+                variant="outline"
+                className="border-border bg-muted font-medium capitalize text-foreground"
+              >
+                {(detail.publication_class || "unknown").replaceAll("_", " ")}
+              </Badge>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Badge
-              variant="secondary"
-              className="border border-primary/40 bg-primary/15 font-semibold text-primary"
-            >
-              {(detail.confidence_score * 100).toFixed(0)}% confidence
-            </Badge>
-            <Badge
-              variant="outline"
-              className="border-border bg-muted font-medium capitalize text-foreground"
-            >
-              {(detail.human_review_status || "unknown").replaceAll("_", " ")}
-            </Badge>
-            <Badge
-              variant="outline"
-              className="border-border bg-muted font-medium capitalize text-foreground"
-            >
-              {(detail.publication_class || "unknown").replaceAll("_", " ")}
-            </Badge>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {website ? (
+            {website ? (
+              <Button
+                asChild
+                size="sm"
+                variant="outline"
+                className="border-border bg-muted/40 text-foreground hover:bg-accent"
+              >
+                <a href={website} target="_blank" rel="noreferrer">
+                  Open website
+                </a>
+              </Button>
+            ) : null}
             <Button
-              asChild
+              type="button"
               size="sm"
               variant="outline"
+              disabled={!detail.primary_contact}
               className="border-border bg-muted/40 text-foreground hover:bg-accent"
+              onClick={() => void copyContact()}
             >
-              <a href={website} target="_blank" rel="noreferrer">
-                Open website
-              </a>
+              {copied ? "Copied" : "Copy contact"}
             </Button>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={!detail.primary_contact}
-            className="border-border bg-muted/40 text-foreground hover:bg-accent"
-            onClick={() => void copyContact()}
-          >
-            {copied ? "Copied" : "Copy contact"}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="text-muted-foreground hover:bg-accent hover:text-primary"
-            onClick={() => setTab("Sources & Evidence")}
-          >
-            Jump to sources
-          </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground hover:bg-accent hover:text-primary"
+              onClick={() => setTab("Sources & Evidence")}
+            >
+              Jump to sources
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex gap-1 overflow-x-auto pb-2">
+          {TABS.map((name) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => setTab(name)}
+              className={cn(
+                "shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition",
+                tab === name
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted/40 text-muted-foreground hover:bg-accent",
+              )}
+            >
+              {name}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="mt-4 flex gap-1 overflow-x-auto pb-2">
-        {TABS.map((name) => (
-          <button
-            key={name}
-            type="button"
-            onClick={() => setTab(name)}
-            className={cn(
-              "shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition",
-              tab === name
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted/40 text-muted-foreground hover:bg-accent",
-            )}
-          >
-            {name}
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-4 min-h-[16rem]">
+      <div className="mt-4 min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {tab === "Overview" ? <Overview detail={detail} /> : null}
         {tab === "Locations" ? (
           <LocationCards detail={detail} phonesByLocationId={phonesByLocationId} />
@@ -235,7 +237,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
 
 function Panel({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-full min-h-[28rem] flex-col rounded-[1.5rem] border border-border bg-card/75 p-4 shadow-[0_20px_50px_rgba(0,0,0,0.25)] backdrop-blur-md md:p-5">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] border border-border bg-card/75 p-4 shadow-[0_20px_50px_rgba(0,0,0,0.25)] backdrop-blur-md md:p-5">
       {children}
     </div>
   );

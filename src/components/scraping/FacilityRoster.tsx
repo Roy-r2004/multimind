@@ -39,8 +39,8 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
   }, [facilities, query, typeFilter]);
 
   return (
-    <div className="flex h-full min-h-[28rem] flex-col overflow-hidden rounded-[1.5rem] border border-border bg-card shadow-sm">
-      <div className="border-b border-border p-4">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] border border-border bg-card shadow-sm">
+      <div className="shrink-0 border-b border-border p-4">
         <div className="flex items-center justify-between gap-2">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary">
@@ -73,7 +73,7 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
           </select>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {filtered.length === 0 ? (
           <p className="p-4 text-sm text-muted-foreground">No facilities match this filter.</p>
         ) : (
