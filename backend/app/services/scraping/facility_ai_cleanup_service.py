@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -32,7 +33,10 @@ CLEANUP_ACTIONS = {
     "exclude_bad_source",
     "exclude_duplicate",
 }
-DEFAULT_BATCH_SIZE = 35
+DEFAULT_BATCH_SIZE = 12
+# Hard cap around each provider call so a hung OpenRouter request cannot wedge the
+# whole cleanup job (and starve the background heartbeat) past this window.
+BATCH_LLM_TIMEOUT_SECONDS = 90.0
 MAX_REASON_LEN = 200
 
 
@@ -139,7 +143,7 @@ class FacilityAiCleanupService:
                 batches += 1
                 # Heartbeat before each LLM batch so stale recovery does not re-queue mid-call.
                 await execution_service.touch_heartbeat(db, execution_id)
-                decisions = await self._plan_batch(
+                decisions = await self._plan_batch_with_fallback(
                     provider=provider,
                     model_slug=model.provider_model,
                     country_code=country_code,
@@ -168,6 +172,55 @@ class FacilityAiCleanupService:
             "resumed_from_prior_attempt": len(candidate_pool) - len(pending),
         }
 
+    async def _plan_batch_with_fallback(
+        self,
+        *,
+        provider: Any,
+        model_slug: str,
+        country_code: str,
+        country_name: str,
+        mission_goal: str,
+        facilities: list[RehabilitationFacility],
+    ) -> list[FacilityCleanupDecision]:
+        """Plan a batch; on failure, fall back to solo calls so one hung prompt cannot wedge forever."""
+        decisions = await self._plan_batch(
+            provider=provider,
+            model_slug=model_slug,
+            country_code=country_code,
+            country_name=country_name,
+            mission_goal=mission_goal,
+            facilities=facilities,
+        )
+        if not any(d.reason == "cleanup_batch_failed" for d in decisions):
+            return decisions
+        if len(facilities) == 1:
+            # Solo already failed — mark reviewed so resume does not retry the same poison forever.
+            facility = facilities[0]
+            return [
+                FacilityCleanupDecision(
+                    facility_id=facility.id,
+                    action="keep",
+                    reason="cleanup_skipped_provider_error",
+                )
+            ]
+        logger.warning(
+            "facility_ai_cleanup_batch_falling_back_to_solo count=%s",
+            len(facilities),
+        )
+        solo: list[FacilityCleanupDecision] = []
+        for facility in facilities:
+            solo.extend(
+                await self._plan_batch_with_fallback(
+                    provider=provider,
+                    model_slug=model_slug,
+                    country_code=country_code,
+                    country_name=country_name,
+                    mission_goal=mission_goal,
+                    facilities=[facility],
+                )
+            )
+        return solo
+
     async def _plan_batch(
         self,
         *,
@@ -187,14 +240,17 @@ class FacilityAiCleanupService:
             facilities_json=json.dumps(payload, ensure_ascii=True),
         )
         try:
-            response = await provider.complete(
-                system=(
-                    "You return strict JSON cleanup decisions for rehabilitation facility rosters. "
-                    "Remove non-clinics, bad source pages, and duplicates; fix wrong websites when sure."
+            response = await asyncio.wait_for(
+                provider.complete(
+                    system=(
+                        "You return strict JSON cleanup decisions for rehabilitation facility rosters. "
+                        "Remove non-clinics, bad source pages, and duplicates; fix wrong websites when sure."
+                    ),
+                    user=prompt,
+                    model=model_slug,
+                    max_tokens=3500,
                 ),
-                user=prompt,
-                model=model_slug,
-                max_tokens=3500,
+                timeout=BATCH_LLM_TIMEOUT_SECONDS,
             )
             raw = LLMProvider.parse_json_response(response.text)
             plan = FacilityCleanupPlan.model_validate(_normalize_cleanup_payload(raw))

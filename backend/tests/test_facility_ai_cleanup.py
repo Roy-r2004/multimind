@@ -143,3 +143,22 @@ def test_apply_cleanup_batch_failure_leaves_facility_unreviewed():
 
     assert not _is_ai_reviewed(facility)
     assert facility.hard_gate_results_json == {}
+
+
+def test_apply_cleanup_provider_skip_marks_reviewed_so_poison_cannot_wedge():
+    """After solo fallback also fails, mark reviewed so resume advances past it."""
+    facility = _facility(id="poison", publication_class="review_required")
+
+    apply_cleanup_decisions(
+        facilities_by_id={"poison": facility},
+        decisions=[
+            FacilityCleanupDecision(
+                facility_id="poison",
+                action="keep",
+                reason="cleanup_skipped_provider_error",
+            )
+        ],
+    )
+
+    assert _is_ai_reviewed(facility)
+    assert facility.hard_gate_results_json["ai_cleanup"]["action"] == "keep"

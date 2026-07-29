@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     # Final AI roster cleanup (non-rehabs, bad links, duplicates, website fixes)
     facility_ai_cleanup_enabled: bool = True
     facility_ai_cleanup_model: str = "gpt-4.1"
-    facility_ai_cleanup_batch_size: int = 35
+    facility_ai_cleanup_batch_size: int = 12
 
     # Optional source discovery provider — Brave Search
     brave_search_api_key: str | None = None
