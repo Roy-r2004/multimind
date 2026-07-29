@@ -1975,11 +1975,11 @@ class SourceDiscoveryExecutionOrchestrator:
     ) -> None:
         agent.status = ScrapingExecutionAgentStatus.RUNNING
         agent.current_task_id = task.id
-        agent.current_action = agent_action
+        agent.current_action = _clip_current_action(agent_action)
         agent.started_at = agent.started_at or datetime.now(UTC)
         task.status = ScrapingTaskStatus.RUNNING
         task.started_at = task.started_at or datetime.now(UTC)
-        task.current_action = task_action
+        task.current_action = _clip_current_action(task_action)
         if task.coverage_cell and task.coverage_cell.status == ScrapingCoverageStatus.NOT_STARTED:
             task.coverage_cell.status = ScrapingCoverageStatus.IN_PROGRESS
             task.coverage_cell.started_at = datetime.now(UTC)
@@ -3227,6 +3227,20 @@ class SourceDiscoveryExecutionOrchestrator:
             event,
             extra={"scraping_execution_event": event, **fields},
         )
+
+
+CURRENT_ACTION_MAX_LENGTH = 255
+
+
+def _clip_current_action(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) <= CURRENT_ACTION_MAX_LENGTH:
+        return text
+    return text[: CURRENT_ACTION_MAX_LENGTH - 1].rstrip() + "…"
 
 
 def _trust_tier_rank(value: str | None) -> int:
