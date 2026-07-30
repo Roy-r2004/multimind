@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -654,13 +655,20 @@ class MapsCensusService:
                 await write_db.commit()
 
 
+_LETTER_DIGIT_BOUNDARY = re.compile(r"(?<=[^\W\d_])(?=\d)|(?<=\d)(?=[^\W\d_])", re.UNICODE)
+
+
 def _address_tokens(address: str | None) -> set[str]:
     if not address:
         return set()
-    # Keep house numbers (e.g. "16") — they're often the second signal alongside
-    # a street name that confirms a real match. _tokens() already drops 1-char
-    # tokens and generic stopwords.
-    return _tokens(address)
+    # Google's formatted_address often glues the house number onto the street
+    # name with no separator (e.g. "Гастелло16"), which would otherwise
+    # tokenize as one blob that never matches a real site's "ул. Гастелло, 16".
+    # Insert a boundary at letter/digit transitions so the number tokenizes
+    # separately — it's often the second signal alongside a street name that
+    # confirms a real match. _tokens() already drops 1-char tokens and stopwords.
+    spaced = _LETTER_DIGIT_BOUNDARY.sub(" ", address)
+    return _tokens(spaced)
 
 
 def _match_official_website_by_address(

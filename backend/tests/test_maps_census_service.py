@@ -537,6 +537,31 @@ def test_address_fallback_rescues_transliterated_name_mismatch():
     assert selected.url == "https://gknd.by/"
 
 
+def test_address_fallback_splits_house_number_glued_to_street_name():
+    """Regression test: Google's formatted_address for Belarus glues the house
+    number directly onto the street name with no separator (e.g.
+    "Гастелло16"), which must still split into two tokens so it can match a
+    real site's "ул. Гастелло, 16" (this is the exact real-world address for
+    the gknd.by facility that the naive tokenizer originally missed).
+    """
+    results = [
+        SearchProviderResult(
+            rank=1,
+            url="https://gknd.by/",
+            title="Услуги — Минский городской клинический наркологический центр",
+            snippet="Учреждение здравоохранения, г. Минск, ул. Гастелло, 16",
+        )
+    ]
+    selected = _match_official_website_by_address(
+        address="улица Гастелло16, Minsk, Minskaja voblasć 220035",
+        city="Minsk",
+        country_name="Belarus",
+        results=results,
+    )
+    assert selected is not None
+    assert selected.url == "https://gknd.by/"
+
+
 def test_address_fallback_requires_two_overlapping_tokens():
     """A bare city-name mention in an unrelated result must not count as a match."""
     results = [
@@ -581,7 +606,7 @@ async def test_run_website_refresh_uses_address_fallback_when_name_match_fails(
         raw_name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
         canonical_name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
         city_name="Minsk",
-        formatted_address="улица Гастелло 16, Minsk, Minskaja voblasć 220035",
+        formatted_address="улица Гастелло16, Minsk, Minskaja voblasć 220035",
         is_relevant=True,
     )
     db.add(place)
