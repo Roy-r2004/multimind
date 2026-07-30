@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1153,6 +1154,49 @@ async def test_worker_extraction_phase_partial_failure_continues_and_zero_candid
     assert event.metadata_json["chunks_failed"] == 1
     assert event.metadata_json["chunks_succeeded"] == 1
     assert await db.scalar(select(func.count()).select_from(ScrapingFacilityCandidate)) == 0
+
+
+@pytest.mark.asyncio
+async def test_hanging_provider_call_times_out_and_marks_attempt_retryable(
+    db: AsyncSession, auth, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "facility_extraction_timeout_seconds", 0.05)
+    execution = await create_execution(db, auth)
+    document = await create_document(
+        db, auth, execution, content_type="text/plain", body="Centre Alpha"
+    )
+
+    class HangingProvider(FakeProvider):
+        async def extract(self, *, chunk_text: str, language_hint: str | None = None):
+            self.call_count += 1
+            await asyncio.sleep(30)
+            return self.output
+
+    provider = HangingProvider(
+        FacilityExtractionOutput(document_relevant=False, facilities=[])
+    )
+    service = FacilityExtractionService(provider)
+
+    summary = await asyncio.wait_for(
+        service.extract_one_chunk(
+            db,
+            FacilityExtractionContext(
+                organization_id=auth.org_id,
+                execution_id=execution.id,
+                source_document_id=document.id,
+                idempotency_key="extract-timeout",
+            ),
+        ),
+        timeout=5,
+    )
+
+    assert summary.status == "failed"
+    assert summary.failure_classification == "timeout"
+    attempt = await db.scalar(select(ScrapingFacilityExtractionAttempt))
+    assert attempt is not None
+    assert attempt.failure_classification == "timeout"
+    assert attempt.completed_at is not None
+    assert attempt.metadata_json["retryable"] is True
 
 
 @pytest.mark.asyncio

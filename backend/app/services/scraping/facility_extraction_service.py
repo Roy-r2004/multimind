@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -140,10 +141,19 @@ class FacilityExtractionService:
                 raise
 
         try:
-            provider_result = await self.provider.extract(
-                chunk_text=chunk_text,
-                language_hint=context.language_hint or prepared_language,
-            )
+            try:
+                # A hung provider call must not stall the whole census run.
+                provider_result = await asyncio.wait_for(
+                    self.provider.extract(
+                        chunk_text=chunk_text,
+                        language_hint=context.language_hint or prepared_language,
+                    ),
+                    timeout=get_settings().facility_extraction_timeout_seconds,
+                )
+            except TimeoutError as exc:
+                raise FacilityProviderError(
+                    "timeout", "Provider request timed out", retryable=True
+                ) from exc
             if isinstance(provider_result, FacilityExtractionProviderResult):
                 output = provider_result.output
                 provider_diagnostics = provider_result.diagnostics
