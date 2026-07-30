@@ -864,3 +864,13 @@ async def test_website_enrichment_persists_official_homepage_and_preserves_exist
     assert contact is not None
     assert contact.value == "https://centre-alpha.fr/"
     assert contact.label == "Official website (search matched)"
+    evidence = await db.scalar(
+        select(RehabilitationFieldEvidence).where(
+            RehabilitationFieldEvidence.facility_id == missing.id,
+            RehabilitationFieldEvidence.field_path == "contacts.website",
+        )
+    )
+    assert evidence is not None
+    assert evidence.extracted_value == "https://centre-alpha.fr/"
+    assert evidence.source_url_snapshot == "https://centre-alpha.fr/services"
+    assert evidence.extraction_method == "official_website_search_v1"

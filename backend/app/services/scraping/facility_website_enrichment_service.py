@@ -13,7 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
-from app.db.models import RehabilitationFacility, RehabilitationFacilityContact
+from app.db.models import (
+    RehabilitationFacility,
+    RehabilitationFacilityContact,
+    RehabilitationFieldEvidence,
+)
 from app.services.scraping.search_providers import create_search_provider
 from app.services.scraping.search_providers.base import (
     SearchProvider,
@@ -305,6 +309,36 @@ class FacilityWebsiteEnrichmentService:
                             verification_status="search_name_match",
                             confidence_score=Decimal(str(min(selected.score / 100, 0.95))),
                             contact_discovery_status="found_unverified",
+                            is_mock=False,
+                        )
+                    )
+                evidence = await write_db.scalar(
+                    select(RehabilitationFieldEvidence.id).where(
+                        RehabilitationFieldEvidence.facility_id == facility.id,
+                        RehabilitationFieldEvidence.field_path == "contacts.website",
+                        RehabilitationFieldEvidence.extracted_value == selected.url,
+                        RehabilitationFieldEvidence.extraction_method
+                        == "official_website_search_v1",
+                    )
+                )
+                if evidence is None:
+                    write_db.add(
+                        RehabilitationFieldEvidence(
+                            facility_id=facility.id,
+                            source_id=None,
+                            field_path="contacts.website",
+                            extracted_value=selected.url,
+                            evidence_text=(
+                                f"Search result matched the facility name: {selected.title}"
+                            )[:1000],
+                            page_title=selected.title[:255],
+                            source_url_snapshot=selected.source_url[:512],
+                            language_code=None,
+                            extraction_method="official_website_search_v1",
+                            verification_status="search_name_match",
+                            confidence_score=Decimal(
+                                str(min(selected.score / 100, 0.95))
+                            ),
                             is_mock=False,
                         )
                     )
