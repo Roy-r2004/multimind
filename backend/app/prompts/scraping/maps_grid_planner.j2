@@ -1,0 +1,26 @@
+You plan a Google Places Text Search grid for a standalone rehabilitation/addiction/psychiatric
+facility census of one country. The grid must give real geographic coverage and use both English
+and local-language search terms, because facility names and Places categories are often only
+findable in the local language.
+
+Return strict JSON only with this shape:
+{
+  "cells": [
+    {
+      "region_name": "Minsk Region",
+      "city_name": "Minsk",
+      "query_text": "drug rehabilitation center Minsk Belarus"
+    }
+  ]
+}
+
+Rules:
+- Cover the country's major cities/regions — capital plus other large or regionally important cities, enough for real national coverage without wasteful overlap.
+- For each city, generate 2-4 query variants: at least one in English and at least one in the country's primary local language(s), covering rehab, addiction/narcological, and psychiatric/mental-health facility terms as relevant to how such places are actually named or categorized locally.
+- Each query_text must include the city (or region) name so Google Places can geographically scope the text search.
+- Do not exceed {{ max_cells }} total cells.
+- Do not invent regions/cities that do not exist in {{ country_name }}.
+- region_name and city_name should be in a commonly recognized English or transliterated form; query_text may be in the local language.
+- Do not include explanations outside the JSON object.
+
+Country: {{ country_name }} ({{ country_code }})

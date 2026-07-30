@@ -2268,3 +2268,128 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True, nullable=False
     )
+
+
+class MapsCensusStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class MapsCensusCellStatus(str, enum.Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A standalone Google Places census run for one country — independent of the
+    Scraping Council pipeline so it can later be compared against it."""
+
+    __tablename__ = "maps_census_runs"
+    __table_args__ = (
+        Index("ix_maps_census_runs_org_id", "organization_id"),
+        Index("ix_maps_census_runs_status", "status"),
+        Index("ix_maps_census_runs_created_at", "created_at"),
+    )
+
+    organization_id: Mapped[str] = UuidFK("organizations")
+    created_by: Mapped[str] = UuidFK("users")
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    country_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[MapsCensusStatus] = mapped_column(
+        Enum(
+            MapsCensusStatus,
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
+            native_enum=False,
+        ),
+        default=MapsCensusStatus.QUEUED,
+        nullable=False,
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cells_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cells_completed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    places_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    places_classified_relevant: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    places_with_website: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    cells: Mapped[list["MapsCensusCell"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="MapsCensusCell.created_at",
+    )
+    places: Mapped[list["MapsPlace"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="MapsPlace.canonical_name",
+    )
+
+
+class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One city/region x query-term unit of work within a Maps census run."""
+
+    __tablename__ = "maps_census_cells"
+    __table_args__ = (
+        Index("ix_maps_census_cells_run_id", "run_id"),
+        Index("ix_maps_census_cells_status", "status"),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("maps_census_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    region_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    city_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    query_text: Mapped[str] = mapped_column(String(300), nullable=False)
+    status: Mapped[MapsCensusCellStatus] = mapped_column(
+        Enum(
+            MapsCensusCellStatus,
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
+            native_enum=False,
+        ),
+        default=MapsCensusCellStatus.PENDING,
+        nullable=False,
+    )
+    places_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    run: Mapped["MapsCensusRun"] = relationship(back_populates="cells")
+
+
+class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A distinct Google Places result discovered during a Maps census run."""
+
+    __tablename__ = "maps_places"
+    __table_args__ = (
+        UniqueConstraint("run_id", "google_place_id", name="uq_maps_place_run_google_id"),
+        Index("ix_maps_places_run_id", "run_id"),
+        Index("ix_maps_places_is_relevant", "is_relevant"),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("maps_census_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    google_place_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    raw_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    place_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    formatted_address: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    city_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    region_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    international_phone_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    official_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_relevant: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    relevance_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    confidence_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    discovered_via_query: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    run: Mapped["MapsCensusRun"] = relationship(back_populates="places")

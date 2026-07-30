@@ -13,6 +13,10 @@ from app.services.scraping.execution_orchestrator import (
     run_facility_ai_cleanup_job,
     run_scraping_execution,
 )
+from app.services.scraping.maps_census_service import (
+    recover_maps_census_runs,
+    run_maps_census_job,
+)
 
 
 def _redis_settings() -> RedisSettings:
@@ -39,10 +43,17 @@ _MIN_JOB_TIMEOUT_SECONDS = 21600
 
 
 class WorkerSettings:
-    functions = [run_scraping_execution, run_facility_ai_cleanup_job, recover_scraping_executions]
+    functions = [
+        run_scraping_execution,
+        run_facility_ai_cleanup_job,
+        recover_scraping_executions,
+        run_maps_census_job,
+        recover_maps_census_runs,
+    ]
     cron_jobs = [
         # Reclaim zombie "running" executions if the worker/job died mid-flight.
         cron(recover_scraping_executions, second={0, 30}, run_at_startup=False),
+        cron(recover_maps_census_runs, second={15, 45}, run_at_startup=False),
     ]
     on_startup = startup
     on_shutdown = shutdown

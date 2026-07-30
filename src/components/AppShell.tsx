@@ -8,6 +8,7 @@ import {
   LogOut,
   Bookmark,
   FileText,
+  Map as MapIcon,
   Menu,
   MessageSquare,
   Search,
@@ -34,6 +35,7 @@ const NAV = [
 const WORKSPACES = [
   { to: "/chat", label: "Chat Council", icon: MessageSquare },
   { to: "/scraping", label: "Scraping Council", icon: Search },
+  { to: "/maps", label: "Maps Census", icon: MapIcon },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -42,6 +44,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const { session, signOut } = useAuth();
   const isScraping = path.startsWith("/scraping");
+  const isMaps = path.startsWith("/maps");
   const initials = session?.user.full_name?.slice(0, 1).toUpperCase() ?? "?";
 
   function closeSidebar() {
@@ -50,7 +53,11 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="relative flex min-h-screen w-full text-foreground">
-      {isScraping ? <ScrapingDreamSky intensity="calm" className="fixed inset-0 -z-10" /> : <CinematicBackdrop />}
+      {isScraping ? (
+        <ScrapingDreamSky intensity="calm" className="fixed inset-0 -z-10" />
+      ) : (
+        <CinematicBackdrop />
+      )}
 
       <header className="fixed top-0 right-0 left-0 z-30 flex h-14 items-center justify-between border-b border-border bg-sidebar/95 px-4 shadow-sm backdrop-blur-md md:hidden">
         <button onClick={() => setOpen(true)} className="p-2 -ml-2">
@@ -87,7 +94,12 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <nav className="space-y-1 px-3 py-3">
           {WORKSPACES.map((n) => {
-            const active = n.to === "/scraping" ? isScraping : !isScraping;
+            const active =
+              n.to === "/scraping"
+                ? isScraping
+                : n.to === "/maps"
+                  ? isMaps
+                  : !isScraping && !isMaps;
             return (
               <Link
                 key={n.to}
@@ -126,7 +138,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         {isScraping ? (
           <ScrapingSidebarContent onNavigate={closeSidebar} />
-        ) : (
+        ) : isMaps ? null : (
           <ChatSidebarContent onNavigate={closeSidebar} />
         )}
 
@@ -163,10 +175,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       {open && (
-        <div
-          onClick={closeSidebar}
-          className="fixed inset-0 z-30 bg-foreground/25 md:hidden"
-        />
+        <div onClick={closeSidebar} className="fixed inset-0 z-30 bg-foreground/25 md:hidden" />
       )}
 
       <main className="relative min-w-0 flex-1 pt-14 md:pt-0">{children}</main>

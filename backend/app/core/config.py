@@ -123,6 +123,16 @@ class Settings(BaseSettings):
     brave_search_results_per_query: int = 10
     brave_search_max_queries_per_discovery: int = 6
 
+    # Standalone Google Places Maps census (separate from the scraping pipeline)
+    google_places_enabled: bool = True
+    google_places_api_key: str | None = None
+    google_places_base_url: str = "https://places.googleapis.com/v1"
+    google_places_timeout_seconds: float = 20.0
+    maps_census_model: str = "gpt-4.1"
+    maps_census_max_cells_per_run: int = 120
+    maps_census_max_places_per_cell: int = 20
+    maps_census_classification_batch_size: int = 15
+
     # Public URL for share links
     public_app_url: str = Field(default="http://localhost:5173")
 

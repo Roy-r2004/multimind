@@ -682,6 +682,52 @@ class ScrapingExecutionDetail(BaseModel):
     mock: bool = False
 
 
+class MapsCensusRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    country_code: str
+
+
+class MapsCensusRunSummary(BaseModel):
+    id: str
+    country_code: str
+    country_name: str
+    status: str
+    error_message: str | None = None
+    cells_total: int
+    cells_completed: int
+    places_found: int
+    places_classified_relevant: int
+    places_with_website: int
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MapsCensusRunDetail(MapsCensusRunSummary):
+    pass
+
+
+class MapsPlaceItem(BaseModel):
+    id: str
+    google_place_id: str
+    canonical_name: str
+    place_types: list[str]
+    formatted_address: str | None = None
+    city_name: str | None = None
+    region_name: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    international_phone_number: str | None = None
+    raw_website: str | None = None
+    official_website: str | None = None
+    is_relevant: bool | None = None
+    relevance_reason: str | None = None
+    confidence_score: float | None = None
+    discovered_via_query: str | None = None
+
+
 class SourceDiscoveryContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -19,16 +19,20 @@ import { Route as ChatRouteImport } from './routes/chat'
 import { Route as BrainRouteImport } from './routes/brain'
 import { Route as ScrapingRouteRouteImport } from './routes/scraping.route'
 import { Route as ProjectsRouteRouteImport } from './routes/projects.route'
+import { Route as MapsRouteRouteImport } from './routes/maps.route'
 import { Route as LessonsRouteRouteImport } from './routes/lessons.route'
 import { Route as AdminRouteRouteImport } from './routes/admin/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ScrapingIndexRouteImport } from './routes/scraping.index'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
+import { Route as MapsIndexRouteImport } from './routes/maps.index'
 import { Route as LessonsIndexRouteImport } from './routes/lessons.index'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as SharedTokenRouteImport } from './routes/shared.$token'
 import { Route as ScrapingNewRouteImport } from './routes/scraping.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
+import { Route as MapsNewRouteImport } from './routes/maps.new'
+import { Route as MapsRunIdRouteImport } from './routes/maps.$runId'
 import { Route as LessonsIdRouteImport } from './routes/lessons.$id'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
 import { Route as AdminUsageRouteImport } from './routes/admin/usage'
@@ -100,6 +104,11 @@ const ProjectsRouteRoute = ProjectsRouteRouteImport.update({
   path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MapsRouteRoute = MapsRouteRouteImport.update({
+  id: '/maps',
+  path: '/maps',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LessonsRouteRoute = LessonsRouteRouteImport.update({
   id: '/lessons',
   path: '/lessons',
@@ -125,6 +134,11 @@ const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ProjectsRouteRoute,
 } as any)
+const MapsIndexRoute = MapsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => MapsRouteRoute,
+} as any)
 const LessonsIndexRoute = LessonsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -149,6 +163,16 @@ const ProjectsIdRoute = ProjectsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => ProjectsRouteRoute,
+} as any)
+const MapsNewRoute = MapsNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => MapsRouteRoute,
+} as any)
+const MapsRunIdRoute = MapsRunIdRouteImport.update({
+  id: '/$runId',
+  path: '/$runId',
+  getParentRoute: () => MapsRouteRoute,
 } as any)
 const LessonsIdRoute = LessonsIdRouteImport.update({
   id: '/$id',
@@ -260,6 +284,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteRouteWithChildren
   '/lessons': typeof LessonsRouteRouteWithChildren
+  '/maps': typeof MapsRouteRouteWithChildren
   '/projects': typeof ProjectsRouteRouteWithChildren
   '/scraping': typeof ScrapingRouteRouteWithChildren
   '/brain': typeof BrainRoute
@@ -282,11 +307,14 @@ export interface FileRoutesByFullPath {
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
+  '/maps/$runId': typeof MapsRunIdRoute
+  '/maps/new': typeof MapsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/scraping/new': typeof ScrapingNewRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin/': typeof AdminIndexRoute
   '/lessons/': typeof LessonsIndexRoute
+  '/maps/': typeof MapsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/scraping/': typeof ScrapingIndexRoute
   '/scraping/$missionId/runs': typeof ScrapingMissionIdRunsRouteRouteWithChildren
@@ -319,11 +347,14 @@ export interface FileRoutesByTo {
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
+  '/maps/$runId': typeof MapsRunIdRoute
+  '/maps/new': typeof MapsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/scraping/new': typeof ScrapingNewRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin': typeof AdminIndexRoute
   '/lessons': typeof LessonsIndexRoute
+  '/maps': typeof MapsIndexRoute
   '/projects': typeof ProjectsIndexRoute
   '/scraping': typeof ScrapingIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
@@ -339,6 +370,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteRouteWithChildren
   '/lessons': typeof LessonsRouteRouteWithChildren
+  '/maps': typeof MapsRouteRouteWithChildren
   '/projects': typeof ProjectsRouteRouteWithChildren
   '/scraping': typeof ScrapingRouteRouteWithChildren
   '/brain': typeof BrainRoute
@@ -361,11 +393,14 @@ export interface FileRoutesById {
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/lessons/$id': typeof LessonsIdRoute
+  '/maps/$runId': typeof MapsRunIdRoute
+  '/maps/new': typeof MapsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/scraping/new': typeof ScrapingNewRoute
   '/shared/$token': typeof SharedTokenRoute
   '/admin/': typeof AdminIndexRoute
   '/lessons/': typeof LessonsIndexRoute
+  '/maps/': typeof MapsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/scraping/': typeof ScrapingIndexRoute
   '/scraping/$missionId/runs': typeof ScrapingMissionIdRunsRouteRouteWithChildren
@@ -383,6 +418,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/lessons'
+    | '/maps'
     | '/projects'
     | '/scraping'
     | '/brain'
@@ -405,11 +441,14 @@ export interface FileRouteTypes {
     | '/admin/usage'
     | '/admin/users'
     | '/lessons/$id'
+    | '/maps/$runId'
+    | '/maps/new'
     | '/projects/$id'
     | '/scraping/new'
     | '/shared/$token'
     | '/admin/'
     | '/lessons/'
+    | '/maps/'
     | '/projects/'
     | '/scraping/'
     | '/scraping/$missionId/runs'
@@ -442,11 +481,14 @@ export interface FileRouteTypes {
     | '/admin/usage'
     | '/admin/users'
     | '/lessons/$id'
+    | '/maps/$runId'
+    | '/maps/new'
     | '/projects/$id'
     | '/scraping/new'
     | '/shared/$token'
     | '/admin'
     | '/lessons'
+    | '/maps'
     | '/projects'
     | '/scraping'
     | '/admin/chats/$chatId'
@@ -461,6 +503,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/lessons'
+    | '/maps'
     | '/projects'
     | '/scraping'
     | '/brain'
@@ -483,11 +526,14 @@ export interface FileRouteTypes {
     | '/admin/usage'
     | '/admin/users'
     | '/lessons/$id'
+    | '/maps/$runId'
+    | '/maps/new'
     | '/projects/$id'
     | '/scraping/new'
     | '/shared/$token'
     | '/admin/'
     | '/lessons/'
+    | '/maps/'
     | '/projects/'
     | '/scraping/'
     | '/scraping/$missionId/runs'
@@ -504,6 +550,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRouteRoute: typeof AdminRouteRouteWithChildren
   LessonsRouteRoute: typeof LessonsRouteRouteWithChildren
+  MapsRouteRoute: typeof MapsRouteRouteWithChildren
   ProjectsRouteRoute: typeof ProjectsRouteRouteWithChildren
   ScrapingRouteRoute: typeof ScrapingRouteRouteWithChildren
   BrainRoute: typeof BrainRoute
@@ -589,6 +636,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/maps': {
+      id: '/maps'
+      path: '/maps'
+      fullPath: '/maps'
+      preLoaderRoute: typeof MapsRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/lessons': {
       id: '/lessons'
       path: '/lessons'
@@ -624,6 +678,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsIndexRouteImport
       parentRoute: typeof ProjectsRouteRoute
     }
+    '/maps/': {
+      id: '/maps/'
+      path: '/'
+      fullPath: '/maps/'
+      preLoaderRoute: typeof MapsIndexRouteImport
+      parentRoute: typeof MapsRouteRoute
+    }
     '/lessons/': {
       id: '/lessons/'
       path: '/'
@@ -658,6 +719,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/projects/$id'
       preLoaderRoute: typeof ProjectsIdRouteImport
       parentRoute: typeof ProjectsRouteRoute
+    }
+    '/maps/new': {
+      id: '/maps/new'
+      path: '/new'
+      fullPath: '/maps/new'
+      preLoaderRoute: typeof MapsNewRouteImport
+      parentRoute: typeof MapsRouteRoute
+    }
+    '/maps/$runId': {
+      id: '/maps/$runId'
+      path: '/$runId'
+      fullPath: '/maps/$runId'
+      preLoaderRoute: typeof MapsRunIdRouteImport
+      parentRoute: typeof MapsRouteRoute
     }
     '/lessons/$id': {
       id: '/lessons/$id'
@@ -872,6 +947,22 @@ const LessonsRouteRouteWithChildren = LessonsRouteRoute._addFileChildren(
   LessonsRouteRouteChildren,
 )
 
+interface MapsRouteRouteChildren {
+  MapsRunIdRoute: typeof MapsRunIdRoute
+  MapsNewRoute: typeof MapsNewRoute
+  MapsIndexRoute: typeof MapsIndexRoute
+}
+
+const MapsRouteRouteChildren: MapsRouteRouteChildren = {
+  MapsRunIdRoute: MapsRunIdRoute,
+  MapsNewRoute: MapsNewRoute,
+  MapsIndexRoute: MapsIndexRoute,
+}
+
+const MapsRouteRouteWithChildren = MapsRouteRoute._addFileChildren(
+  MapsRouteRouteChildren,
+)
+
 interface ProjectsRouteRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
   ProjectsIndexRoute: typeof ProjectsIndexRoute
@@ -944,6 +1035,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRouteRoute: AdminRouteRouteWithChildren,
   LessonsRouteRoute: LessonsRouteRouteWithChildren,
+  MapsRouteRoute: MapsRouteRouteWithChildren,
   ProjectsRouteRoute: ProjectsRouteRouteWithChildren,
   ScrapingRouteRoute: ScrapingRouteRouteWithChildren,
   BrainRoute: BrainRoute,
