@@ -154,6 +154,27 @@
     isolation: isolate;
   }
 
+  .brain-anatomy {
+    mix-blend-mode: multiply;
+    opacity: 0.94;
+    -webkit-mask-image: radial-gradient(
+      ellipse 76% 72% at 50% 48%,
+      #000 52%,
+      transparent 90%
+    );
+    mask-image: radial-gradient(
+      ellipse 76% 72% at 50% 48%,
+      #000 52%,
+      transparent 90%
+    );
+    filter: saturate(1.2) contrast(1.04)
+      drop-shadow(0 18px 28px oklch(0.58 0.14 240 / 0.18));
+    transform-origin: 52% 50%;
+    animation: brain-breathe 7s ease-in-out infinite;
+    pointer-events: none;
+    user-select: none;
+  }
+
   .brain-orb {
     position: absolute;
     border-radius: 9999px;
@@ -186,7 +207,8 @@
       oklch(0.58 0.14 240 / 0.6),
       transparent
     );
-    box-shadow: 0 0 12px oklch(0.58 0.14 240 / 0.4);
+    box-shadow: 0 0 12px oklch(0.58 0.14 240 / 0.25);
+    opacity: 0.55;
     animation: brain-scan 4s ease-in-out infinite;
     z-index: 15;
     pointer-events: none;
@@ -197,10 +219,15 @@
   }
 
   .brain-node {
+    transform-box: fill-box;
+    transform-origin: center;
+    filter: drop-shadow(0 0 1.5px oklch(0.62 0.18 245 / 0.9));
     animation: brain-pulse 2.4s ease-in-out infinite;
   }
 
   .brain-node-pulse {
+    transform-box: fill-box;
+    transform-origin: center;
     animation: brain-ring 2.4s ease-in-out infinite;
   }
 
@@ -288,6 +315,16 @@
   }
   50% {
     transform: translate(6%, -4%) scale(1.05);
+  }
+}
+
+@keyframes brain-breathe {
+  0%,
+  100% {
+    transform: scale(1.18) translateY(1px);
+  }
+  50% {
+    transform: scale(1.22) translateY(-2px);
   }
 }
 
@@ -801,7 +838,14 @@
   .scrape-explosion-particle,
   .scrape-explosion-ray,
   .scrape-explosion-caption,
-  .scrape-crystallize {
+  .scrape-crystallize,
+  .brain-anatomy,
+  .brain-orb,
+  .brain-scan-line,
+  .brain-node,
+  .brain-node-pulse,
+  .brain-synapse,
+  .brain-orbit {
     animation: none !important;
   }
 }
