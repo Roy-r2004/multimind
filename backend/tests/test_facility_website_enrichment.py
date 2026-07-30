@@ -1,5 +1,13 @@
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.services.scraping.execution_orchestrator import (
+    run_standalone_facility_website_enrichment,
+)
 from app.services.scraping.facility_website_enrichment_service import (
     build_official_website_query,
+    facility_website_enrichment_service,
     select_official_website,
 )
 from app.services.scraping.search_providers.base import SearchProviderResult
@@ -93,4 +101,28 @@ def test_selection_returns_none_when_results_are_ambiguous():
             results=candidates,
         )
         is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_standalone_cleanup_enriches_websites_before_ai_review(monkeypatch):
+    enrich = AsyncMock(return_value={"enriched": 7})
+    monkeypatch.setattr(
+        facility_website_enrichment_service,
+        "enrich_execution",
+        enrich,
+    )
+
+    summary = await run_standalone_facility_website_enrichment(
+        execution_id="exec-1",
+        organization_id="org-1",
+        max_facilities=25,
+    )
+
+    assert summary == {"enriched": 7}
+    enrich.assert_awaited_once_with(
+        None,
+        organization_id="org-1",
+        execution_id="exec-1",
+        max_facilities=25,
     )

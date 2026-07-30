@@ -215,6 +215,21 @@ async def run_scraping_execution(ctx: dict, execution_id: str) -> None:
             await heartbeat
 
 
+async def run_standalone_facility_website_enrichment(
+    *,
+    execution_id: str,
+    organization_id: str,
+    max_facilities: int,
+) -> dict[str, int]:
+    """Enrich a published roster before standalone AI cleanup reviews it."""
+    return await facility_website_enrichment_service.enrich_execution(
+        None,
+        organization_id=organization_id,
+        execution_id=execution_id,
+        max_facilities=max_facilities,
+    )
+
+
 async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
     """Apply AI facility cleanup to an already-published execution.
 
@@ -251,6 +266,7 @@ async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
                 return
             execution_meta = {
                 "id": execution.id,
+                "organization_id": execution.organization_id,
                 "country_code": execution.country_code,
                 "country_name": execution.country_name,
             }
@@ -268,6 +284,39 @@ async def run_facility_ai_cleanup_job(ctx: dict, execution_id: str) -> None:
                 },
             )
             await db.commit()
+
+        if settings.facility_website_enrichment_enabled:
+            try:
+                website_summary = await run_standalone_facility_website_enrichment(
+                    execution_id=execution_meta["id"],
+                    organization_id=execution_meta["organization_id"],
+                    max_facilities=(
+                        settings.facility_website_enrichment_max_facilities_per_execution
+                    ),
+                )
+                async with AsyncSessionLocal() as db:
+                    await execution_service.emit_event(
+                        db,
+                        execution_meta["id"],
+                        "facility_website_enrichment_completed",
+                        "Official website enrichment completed before standalone AI cleanup.",
+                        metadata={**website_summary, "source": "standalone_cleanup_job"},
+                    )
+                    await db.commit()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "standalone_facility_website_enrichment_failed execution_id=%s",
+                    execution_meta["id"],
+                )
+                async with AsyncSessionLocal() as db:
+                    await execution_service.emit_event(
+                        db,
+                        execution_meta["id"],
+                        "facility_website_enrichment_failed",
+                        f"Official website enrichment failed: {exc}",
+                        metadata={"source": "standalone_cleanup_job"},
+                    )
+                    await db.commit()
 
         try:
             summary = await facility_ai_cleanup_service.run_for_execution(
