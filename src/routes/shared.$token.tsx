@@ -3,10 +3,10 @@ import { useEffect, useState } from "react";
 import { ChevronDown, Copy, ExternalLink, Gavel, Loader2 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { MessageContent } from "@/components/chat/MessageContent";
+import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
 import { api } from "@/lib/api";
 import type { ApiSharedChat } from "@/lib/api/types";
 import { modelColor } from "@/lib/models";
-import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/shared/$token")({
   head: () => ({ meta: [{ title: "Shared chat — MultiAI" }] }),
@@ -135,24 +135,18 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
                   <span className="shrink-0 text-xs text-primary">{a.confidence}%</span>
                 )}
               </div>
-              <div className="mt-3">
-                <div className={cn(!expanded && "max-h-[7.5rem] overflow-hidden")}>
-                  <MessageContent compact>{a.text ?? "-"}</MessageContent>
-                </div>
-                {hasVerdict ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExpandedAnswerId((current) =>
-                        current === a.model_id ? null : a.model_id,
-                      )
-                    }
-                    className="mt-2 text-[11px] font-medium text-primary hover:underline"
-                  >
-                    {expanded ? "Show less" : "Read full answer"}
-                  </button>
-                ) : null}
-              </div>
+              <ExpandableAnswer
+                collapsible={hasVerdict}
+                expanded={expanded}
+                onToggle={() =>
+                  setExpandedAnswerId((current) =>
+                    current === a.model_id ? null : a.model_id,
+                  )
+                }
+                className="mt-3"
+              >
+                <MessageContent compact>{a.text ?? "-"}</MessageContent>
+              </ExpandableAnswer>
             </div>
           );
         })}

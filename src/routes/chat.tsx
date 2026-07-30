@@ -43,6 +43,7 @@ import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { MessageContent } from "@/components/chat/MessageContent";
+import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
 import { SaveTurnDialog } from "@/components/chat/SaveTurnDialog";
 import { useChatStore } from "@/lib/store";
@@ -1459,22 +1460,16 @@ function AiTurn({
                   <Loader2 className="size-3.5 animate-spin text-primary" />
                 </div>
               ) : (
-                <div className="relative mt-3">
-                  <div className={cn(!expanded && "max-h-[7.5rem] overflow-hidden")}>
-                    <MessageContent compact>{a?.text ?? ""}</MessageContent>
-                  </div>
-                  {hasVerdict ? (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setExpandedAnswerId((current) => (current === id ? null : id))
-                      }
-                      className="mt-2 text-[11px] font-medium text-primary hover:underline"
-                    >
-                      {expanded ? "Show less" : "Read full answer"}
-                    </button>
-                  ) : null}
-                </div>
+                <ExpandableAnswer
+                  collapsible={hasVerdict}
+                  expanded={expanded}
+                  onToggle={() =>
+                    setExpandedAnswerId((current) => (current === id ? null : id))
+                  }
+                  className="relative mt-3"
+                >
+                  <MessageContent compact>{a?.text ?? ""}</MessageContent>
+                </ExpandableAnswer>
               )}
             </GlassCard>
           );
