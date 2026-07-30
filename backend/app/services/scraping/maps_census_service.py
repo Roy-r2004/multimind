@@ -610,40 +610,55 @@ class MapsCensusService:
                     run.heartbeat_at = datetime.now(UTC)
                     await heartbeat_db.commit()
 
-            try:
-                results = await asyncio.wait_for(
-                    provider.search(
-                        SearchProviderRequest(
-                            query=build_official_website_query(
-                                name=item["name"], city=item["city"], country_name=country_name
-                            ),
-                            country_code=country_code,
-                            search_language="en",
-                            result_limit=settings.facility_website_enrichment_results_per_facility,
-                            metadata={"purpose": "maps_census_official_website", "place_id": item["id"]},
-                        )
-                    ),
-                    timeout=settings.facility_website_enrichment_timeout_seconds,
-                )
-            except (TimeoutError, SearchProviderError):
-                continue
+            selected = None
+            # Quoted Latin transliterations often return zero Serper hits for
+            # non-Latin-script countries. Try unquoted + address queries next.
+            for query in _maps_website_search_queries(
+                name=item["name"],
+                city=item["city"],
+                country_name=country_name,
+                address=item["address"],
+            ):
+                try:
+                    results = await asyncio.wait_for(
+                        provider.search(
+                            SearchProviderRequest(
+                                query=query,
+                                country_code=country_code,
+                                search_language="en",
+                                result_limit=settings.facility_website_enrichment_results_per_facility,
+                                metadata={
+                                    "purpose": "maps_census_official_website",
+                                    "place_id": item["id"],
+                                },
+                            )
+                        ),
+                        timeout=settings.facility_website_enrichment_timeout_seconds,
+                    )
+                except (TimeoutError, SearchProviderError):
+                    continue
+                if not results:
+                    continue
 
-            selected = select_official_website(
-                facility_name=item["name"], city=item["city"], country_name=country_name, results=results
-            )
-            if selected is None:
-                # Google Places names for non-Latin-script countries are often garbled
-                # Latin transliterations (e.g. "Dispanser Narkologicheskii Klinicheskii
-                # Gorodskoi") that never token-match the real (native-script) site
-                # content — even when the search found the right result. Retry the
-                # match against the address instead, which Google often leaves
-                # partially in the native script (e.g. a Cyrillic street name).
-                selected = _match_official_website_by_address(
-                    address=item["address"],
+                selected = select_official_website(
+                    facility_name=item["name"],
                     city=item["city"],
                     country_name=country_name,
                     results=results,
                 )
+                if selected is None:
+                    # Google Places names for non-Latin-script countries are often
+                    # garbled Latin transliterations that never token-match native
+                    # site content. Match on address tokens instead.
+                    selected = _match_official_website_by_address(
+                        address=item["address"],
+                        city=item["city"],
+                        country_name=country_name,
+                        results=results,
+                    )
+                if selected is not None:
+                    break
+
             if selected is None:
                 continue
 
@@ -658,6 +673,57 @@ class MapsCensusService:
 _LETTER_DIGIT_BOUNDARY = re.compile(r"(?<=[^\W\d_])(?=\d)|(?<=\d)(?=[^\W\d_])", re.UNICODE)
 
 
+def _split_glued_house_numbers(value: str) -> str:
+    return _LETTER_DIGIT_BOUNDARY.sub(" ", value)
+
+
+def _maps_website_search_queries(
+    *,
+    name: str,
+    city: str | None,
+    country_name: str,
+    address: str | None,
+) -> list[str]:
+    """Ordered Serper queries for Maps missing-website backfill.
+
+    The shared quoted ``"name" … official website`` query is great for Latin
+    facility names, but Google Places often returns Latin *transliterations*
+    of Cyrillic names — quoting those yields zero hits. Fall back to an
+    unquoted name query, then a street-address query that keeps the native
+    script Google left in ``formatted_address``.
+    """
+    queries: list[str] = []
+    quoted = build_official_website_query(name=name, city=city, country_name=country_name)
+    if quoted:
+        queries.append(quoted)
+
+    geography = " ".join(part for part in (city, country_name) if part)
+    unquoted = f"{name.strip()} {geography} official website".strip()[:240]
+    if unquoted and unquoted not in queries:
+        queries.append(unquoted)
+
+    street = _street_query_fragment(address)
+    if street:
+        city_part = (city or "").strip()
+        address_query = f"{street} {city_part} official website".strip()[:240]
+        if address_query and address_query not in queries:
+            queries.append(address_query)
+    return queries
+
+
+def _street_query_fragment(address: str | None) -> str | None:
+    if not address:
+        return None
+    # Prefer the street/house portion before the first comma — that's where
+    # Google usually keeps native-script street names for Belarus etc.
+    head = address.split(",", 1)[0].strip()
+    spaced = _split_glued_house_numbers(head).strip()
+    tokens = _address_tokens(spaced)
+    if len(tokens) < 2:
+        return None
+    return spaced[:160] or None
+
+
 def _address_tokens(address: str | None) -> set[str]:
     if not address:
         return set()
@@ -667,8 +733,7 @@ def _address_tokens(address: str | None) -> set[str]:
     # Insert a boundary at letter/digit transitions so the number tokenizes
     # separately — it's often the second signal alongside a street name that
     # confirms a real match. _tokens() already drops 1-char tokens and stopwords.
-    spaced = _LETTER_DIGIT_BOUNDARY.sub(" ", address)
-    return _tokens(spaced)
+    return _tokens(_split_glued_house_numbers(address))
 
 
 def _match_official_website_by_address(

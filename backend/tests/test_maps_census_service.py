@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.dependencies import AuthContext
 from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
 from app.services.scraping.maps_census_service import (
+    _maps_website_search_queries,
     _match_official_website_by_address,
     auto_refresh_maps_census_websites,
     maps_census_service,
@@ -504,6 +505,74 @@ def _tracking_create_task(monkeypatch, *, marker: str):
 
     monkeypatch.setattr("asyncio.create_task", wrapper)
     return captured
+
+
+def test_maps_website_search_queries_fall_back_from_quoted_to_address():
+    queries = _maps_website_search_queries(
+        name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
+        city="Minsk",
+        country_name="Belarus",
+        address="улица Гастелло16, Minsk, Minskaja voblasć 220035",
+    )
+    assert queries[0].startswith('"Dispanser Narkologicheskii Klinicheskii Gorodskoi"')
+    assert queries[1].startswith("Dispanser Narkologicheskii Klinicheskii Gorodskoi")
+    assert '"' not in queries[1] or queries[1].count('"') == 0
+    assert "улица Гастелло 16" in queries[2]
+    assert "Minsk" in queries[2]
+
+
+@pytest.mark.asyncio
+async def test_run_website_refresh_retries_unquoted_when_quoted_query_empty(
+    db, auth, monkeypatch
+):
+    """Live Belarus gap: quoting the Latin transliteration returns 0 Serper hits;
+    the unquoted retry surfaces the real homepage which address-matching accepts.
+    """
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.COMPLETED
+    run.cells_total = 1
+    run.cells_completed = 1
+    run.places_found = 1
+    run.places_classified_relevant = 1
+    await db.commit()
+
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-transliterated-empty-quoted",
+        raw_name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
+        canonical_name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
+        city_name="Minsk",
+        formatted_address="улица Гастелло16, Minsk, Minskaja voblasć 220035",
+        is_relevant=True,
+    )
+    db.add(place)
+    await db.commit()
+
+    class _FakeSearchProvider:
+        name = "fake"
+
+        async def search(self, request) -> list[SearchProviderResult]:
+            if request.query.startswith('"'):
+                return []
+            return [
+                SearchProviderResult(
+                    rank=1,
+                    url="https://www.gknd.by/",
+                    title="Учреждение здравоохранения «Минский городской клинический наркологический центр»",
+                    snippet="г. Минск, ул. Гастелло, 16",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_search_provider",
+        lambda: _FakeSearchProvider(),
+    )
+
+    summary = await maps_census_service.run_website_refresh(db, run_id=run.id)
+    assert summary["places_with_website"] == 1
+    await db.refresh(place)
+    assert place.official_website == "https://www.gknd.by/"
+    assert place.website_source == "search"
 
 
 def test_address_fallback_rescues_transliterated_name_mismatch():
