@@ -173,6 +173,7 @@ function ScrapingMissionPage() {
                 to="/scraping/$missionId/executions/$executionId"
                 params={{ missionId, executionId: latestExecution.id }}
                 className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm"
+                onClick={() => sessionStorage.setItem("scrape-enter-results", latestExecution.id)}
               >
                 Open flight
               </Link>
@@ -208,12 +209,13 @@ function ScrapingMissionPage() {
                 type="button"
                 size="lg"
                 className="bg-primary text-primary-foreground hover:bg-primary/90"
-                onClick={() =>
+                onClick={() => {
+                  sessionStorage.setItem("scrape-enter-results", latestExecution.id);
                   void navigate({
                     to: "/scraping/$missionId/executions/$executionId",
                     params: { missionId, executionId: latestExecution.id },
-                  })
-                }
+                  });
+                }}
               >
                 Enter dreamflight
               </Button>

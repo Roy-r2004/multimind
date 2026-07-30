@@ -1,13 +1,13 @@
-/** Atmospheric dreamscape backdrop for Scraping Council surfaces. */
+/** Light cinematic atmosphere for Scraping Council pages. */
 
 type Props = {
   className?: string;
-  /** denser particles when live scrape is running */
+  /** denser motion when a scrape is live */
   intensity?: "calm" | "live";
 };
 
 export function ScrapingDreamSky({ className, intensity = "calm" }: Props) {
-  const stars = intensity === "live" ? 28 : 16;
+  const motes = intensity === "live" ? 22 : 12;
 
   return (
     <div
@@ -18,69 +18,65 @@ export function ScrapingDreamSky({ className, intensity = "calm" }: Props) {
         className="absolute inset-0"
         style={{
           background:
-            "radial-gradient(120% 80% at 50% -10%, #1a3d45 0%, #0b161c 42%, #070c10 100%)",
+            "radial-gradient(110% 70% at 12% -8%, rgba(125,211,252,0.42), transparent 58%), radial-gradient(90% 60% at 92% 0%, rgba(167,243,208,0.34), transparent 52%), radial-gradient(80% 55% at 70% 100%, rgba(253,230,138,0.28), transparent 48%), linear-gradient(180deg, #f7fbff 0%, #eef7f4 46%, #f8f5eb 100%)",
         }}
       />
+
       <div
-        className="dream-drift absolute -left-[20%] top-[-25%] h-[70%] w-[70%] rounded-full blur-[90px]"
-        style={{ background: "rgba(46, 120, 130, 0.28)" }}
+        className="dream-drift absolute -left-[18%] top-[-20%] h-[62%] w-[62%] rounded-full blur-[90px]"
+        style={{ background: "rgba(56, 189, 248, 0.28)" }}
       />
       <div
-        className="dream-drift-alt absolute -right-[15%] top-[10%] h-[55%] w-[55%] rounded-full blur-[100px]"
-        style={{ background: "rgba(212, 168, 75, 0.12)" }}
+        className="dream-drift-alt absolute -right-[12%] top-[4%] h-[52%] w-[52%] rounded-full blur-[100px]"
+        style={{ background: "rgba(52, 211, 153, 0.22)" }}
       />
       <div
-        className="dream-drift absolute bottom-[-20%] left-[20%] h-[50%] w-[60%] rounded-full blur-[110px]"
-        style={{ background: "rgba(24, 70, 90, 0.35)" }}
+        className="dream-drift absolute bottom-[-18%] left-[28%] h-[46%] w-[56%] rounded-full blur-[110px]"
+        style={{ background: "rgba(251, 191, 36, 0.16)" }}
       />
 
-      {/* horizon band */}
+      {/* soft horizon wash */}
       <div
-        className="absolute inset-x-0 bottom-0 h-1/3 opacity-70"
+        className="absolute inset-x-0 bottom-0 h-1/3"
         style={{
           background:
-            "linear-gradient(to top, rgba(7,12,16,0.95), rgba(26,61,69,0.25), transparent)",
+            "linear-gradient(to top, rgba(248,245,235,0.9), rgba(238,247,244,0.35), transparent)",
         }}
       />
 
-      {/* constellation dust */}
-      {Array.from({ length: stars }).map((_, i) => (
+      {Array.from({ length: motes }).map((_, i) => (
         <span
           key={i}
-          className="dream-twinkle absolute rounded-full bg-[#f3e6c4]"
+          className="scrape-mote absolute rounded-full"
           style={{
-            width: i % 5 === 0 ? 3 : 2,
-            height: i % 5 === 0 ? 3 : 2,
-            left: `${(i * 37) % 100}%`,
-            top: `${(i * 53) % 70}%`,
-            animationDelay: `${(i % 9) * 0.35}s`,
-            opacity: 0.35,
+            width: i % 4 === 0 ? 5 : 3,
+            height: i % 4 === 0 ? 5 : 3,
+            left: `${(i * 41) % 100}%`,
+            bottom: `${6 + (i % 9) * 4}%`,
+            background:
+              i % 3 === 0
+                ? "rgba(14,116,144,0.45)"
+                : i % 3 === 1
+                  ? "rgba(16,185,129,0.4)"
+                  : "rgba(245,158,11,0.38)",
+            animationDelay: `${(i % 11) * 0.45}s`,
+            animationDuration: `${5.5 + (i % 5) * 0.7}s`,
           }}
         />
       ))}
 
-      {/* floating navigation shards */}
-      {Array.from({ length: intensity === "live" ? 6 : 3 }).map((_, i) => (
-        <span
-          key={`shard-${i}`}
-          className="dream-shard absolute h-8 w-px bg-gradient-to-t from-transparent via-[#d4a84b]/70 to-transparent"
-          style={{
-            left: `${12 + i * 14}%`,
-            bottom: "8%",
-            animationDelay: `${i * 1.1}s`,
-          }}
-        />
-      ))}
-
-      <div
-        className="absolute inset-0 opacity-[0.07]"
-        style={{
-          backgroundImage:
-            "linear-gradient(rgba(243,230,196,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(243,230,196,0.5) 1px, transparent 1px)",
-          backgroundSize: "72px 72px",
-          maskImage: "radial-gradient(ellipse at center, black 20%, transparent 75%)",
-        }}
-      />
+      {intensity === "live" &&
+        Array.from({ length: 5 }).map((_, i) => (
+          <span
+            key={`beam-${i}`}
+            className="scrape-sky-beam absolute bottom-0 w-px bg-gradient-to-t from-transparent via-sky-400/50 to-transparent"
+            style={{
+              left: `${14 + i * 16}%`,
+              height: `${28 + i * 8}%`,
+              animationDelay: `${i * 0.8}s`,
+            }}
+          />
+        ))}
     </div>
   );
 }

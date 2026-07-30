@@ -569,6 +569,220 @@
   animation: dream-shard 7s linear infinite;
 }
 
+@keyframes scrape-mote {
+  0% {
+    transform: translate3d(0, 12px, 0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate3d(8px, -64px, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes scrape-sky-beam {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: scaleY(0.85);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scaleY(1);
+  }
+}
+
+@keyframes scrape-explosion-flash {
+  0% {
+    opacity: 0;
+    background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.95), rgba(186, 230, 253, 0.55) 28%, transparent 62%);
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes scrape-explosion-shockwave {
+  0% {
+    width: 12px;
+    height: 12px;
+    opacity: 0.9;
+    border-width: 3px;
+  }
+  100% {
+    width: 140vmin;
+    height: 140vmin;
+    opacity: 0;
+    border-width: 1px;
+  }
+}
+
+@keyframes scrape-explosion-core {
+  0% {
+    width: 18px;
+    height: 18px;
+    opacity: 1;
+    filter: blur(0);
+  }
+  35% {
+    width: 120px;
+    height: 120px;
+    opacity: 1;
+  }
+  100% {
+    width: 260px;
+    height: 260px;
+    opacity: 0;
+    filter: blur(24px);
+  }
+}
+
+@keyframes scrape-explosion-particle {
+  0% {
+    transform: translate(-50%, -50%) scale(0.4);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty))) scale(0.15);
+    opacity: 0;
+  }
+}
+
+@keyframes scrape-explosion-ray {
+  0% {
+    height: 0;
+    opacity: 0;
+  }
+  25% {
+    height: 42vmin;
+    opacity: 0.85;
+  }
+  100% {
+    height: 58vmin;
+    opacity: 0;
+  }
+}
+
+@keyframes scrape-explosion-caption {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.94);
+    filter: blur(8px);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes scrape-crystallize {
+  0% {
+    opacity: 0;
+    filter: blur(10px);
+    transform: translateY(14px) scale(0.96);
+  }
+  60% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1.015);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+.scrape-mote {
+  animation: scrape-mote 6s linear infinite;
+}
+
+.scrape-sky-beam {
+  animation: scrape-sky-beam 3.6s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+
+.scrape-explosion-flash {
+  animation: scrape-explosion-flash 1.2s ease-out both;
+}
+
+.scrape-explosion-replay .scrape-explosion-flash {
+  animation-duration: 0.75s;
+}
+
+.scrape-explosion-shockwave {
+  border-radius: 9999px;
+  border-style: solid;
+  border-color: rgba(14, 116, 144, 0.45);
+  box-shadow: 0 0 40px rgba(56, 189, 248, 0.35);
+  animation: scrape-explosion-shockwave 1.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.scrape-explosion-shockwave-delay {
+  animation-delay: 0.12s;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.scrape-explosion-replay .scrape-explosion-shockwave {
+  animation-duration: 0.95s;
+}
+
+.scrape-explosion-core {
+  border-radius: 9999px;
+  background: radial-gradient(circle, #ffffff 0%, #7dd3fc 35%, #5eead4 55%, transparent 70%);
+  animation: scrape-explosion-core 1.3s ease-out both;
+}
+
+.scrape-explosion-replay .scrape-explosion-core {
+  animation-duration: 0.8s;
+}
+
+.scrape-explosion-particle {
+  animation-name: scrape-explosion-particle;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: both;
+}
+
+.scrape-explosion-ray {
+  width: 3px;
+  border-radius: 9999px;
+  background: linear-gradient(to top, transparent, rgba(14, 116, 144, 0.75), rgba(255, 255, 255, 0.95));
+  animation: scrape-explosion-ray 1.1s ease-out both;
+}
+
+.scrape-explosion-replay .scrape-explosion-ray {
+  animation-duration: 0.7s;
+}
+
+.scrape-explosion-caption {
+  animation: scrape-explosion-caption 2.2s ease both;
+}
+
+.scrape-explosion-replay .scrape-explosion-caption {
+  animation-duration: 1.25s;
+}
+
+.scrape-crystallize {
+  animation: scrape-crystallize 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dream-drift,
   .dream-drift-alt,
@@ -578,7 +792,16 @@
   .dream-flight-path,
   .dream-beacon,
   .dream-rise,
-  .dream-shard {
+  .dream-shard,
+  .scrape-mote,
+  .scrape-sky-beam,
+  .scrape-explosion-flash,
+  .scrape-explosion-shockwave,
+  .scrape-explosion-core,
+  .scrape-explosion-particle,
+  .scrape-explosion-ray,
+  .scrape-explosion-caption,
+  .scrape-crystallize {
     animation: none !important;
   }
 }

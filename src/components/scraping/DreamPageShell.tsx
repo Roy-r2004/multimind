@@ -1,20 +1,25 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { ScrapingDreamSky } from "@/components/scraping/ScrapingDreamSky";
 import { cn } from "@/lib/utils";
 
-/** Content column for Scraping Council pages (sky comes from AppShell). */
+/** Content column for Scraping Council pages with a living light sky. */
 export function DreamPageShell({
   children,
   className,
   maxWidth = "max-w-5xl",
+  intensity = "calm",
 }: {
   children: ReactNode;
   className?: string;
   maxWidth?: string;
-  /** @deprecated kept for call-site compat */
   intensity?: "calm" | "live";
 }) {
   return (
     <div className={cn("relative mx-auto px-6 py-10", maxWidth, className)}>
+      {/* Live intensity overlays denser sky motion over the shell backdrop. */}
+      {intensity === "live" && (
+        <ScrapingDreamSky intensity="live" className="pointer-events-none fixed inset-0 -z-10 opacity-90" />
+      )}
       <div className="relative">{children}</div>
     </div>
   );

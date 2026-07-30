@@ -12,6 +12,10 @@ import { FacilityDossier } from "@/components/scraping/FacilityDossier";
 import { FacilityRoster } from "@/components/scraping/FacilityRoster";
 import { LiveSiteActivity } from "@/components/scraping/LiveSiteActivity";
 import { StageFlight, buildFlightStages } from "@/components/scraping/StageFlight";
+import {
+  ResultsExplosion,
+  type ExplosionMode,
+} from "@/components/scraping/ResultsExplosion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -87,8 +91,11 @@ function ScrapingExecutionPage() {
   const [downloadingExcel, setDownloadingExcel] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [explosionMode, setExplosionMode] = useState<ExplosionMode>(null);
   const lastSequenceRef = useRef(0);
   const refreshTimerRef = useRef<number | null>(null);
+  const previousStatusRef = useRef<string | null>(null);
+  const replayPlayedRef = useRef(false);
 
   const loadAll = useCallback(async () => {
     const auth = authHeaders();
@@ -203,6 +210,29 @@ function ScrapingExecutionPage() {
     : false;
 
   useEffect(() => {
+    if (!executionStatus) return;
+    const previous = previousStatusRef.current;
+    previousStatusRef.current = executionStatus;
+
+    const nowTerminal = TERMINAL_EXECUTION_STATUSES.includes(executionStatus);
+    if (!nowTerminal) return;
+
+    // Live landing: status crossed into terminal while this page was open.
+    if (previous && !TERMINAL_EXECUTION_STATUSES.includes(previous)) {
+      setExplosionMode("full");
+      return;
+    }
+
+    // Reopening completed results: shorter burst once per visit.
+    if (previous === null && !replayPlayedRef.current) {
+      replayPlayedRef.current = true;
+      const fromMission = sessionStorage.getItem("scrape-enter-results") === executionId;
+      if (fromMission) sessionStorage.removeItem("scrape-enter-results");
+      setExplosionMode("replay");
+    }
+  }, [executionId, executionStatus]);
+
+  useEffect(() => {
     const auth = authHeaders();
     if (!auth) {
       return;
@@ -266,6 +296,7 @@ function ScrapingExecutionPage() {
               if (TERMINAL_EVENT_TYPES.includes(event.event_type)) {
                 cancelled = true;
                 controller?.abort();
+                setExplosionMode("full");
                 void loadAll();
                 return;
               }
@@ -411,7 +442,16 @@ function ScrapingExecutionPage() {
 
   return (
     <AppShell>
-      <DreamPageShell maxWidth="max-w-7xl">
+      <ResultsExplosion
+        mode={explosionMode}
+        label={
+          explosionMode === "full"
+            ? `${keptFacilities.length || "Census"} facilities crystallized`
+            : `${keptFacilities.length || "Flight"} results ready`
+        }
+        onDone={() => setExplosionMode(null)}
+      />
+      <DreamPageShell maxWidth="max-w-7xl" intensity={isTerminal ? "calm" : "live"}>
         <DreamHeader
           eyebrow="Scraping Council · Live flight"
           title={

@@ -42,3 +42,4 @@ backend/*.db
 *.njsproj
 *.sln
 *.sw?
+.superpowers/

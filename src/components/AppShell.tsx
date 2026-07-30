@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { CinematicBackdrop } from "@/components/cinematic/PageChrome";
+import { ScrapingDreamSky } from "@/components/scraping/ScrapingDreamSky";
 import { ChatSidebarContent } from "@/components/sidebar/ChatSidebarContent";
 import { ScrapingSidebarContent } from "@/components/sidebar/ScrapingSidebarContent";
 import { useAuth } from "@/lib/auth";
@@ -49,7 +50,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="relative flex min-h-screen w-full text-foreground">
-      <CinematicBackdrop />
+      {isScraping ? <ScrapingDreamSky intensity="calm" className="fixed inset-0 -z-10" /> : <CinematicBackdrop />}
 
       <header className="fixed top-0 right-0 left-0 z-30 flex h-14 items-center justify-between border-b border-border bg-sidebar/95 px-4 shadow-sm backdrop-blur-md md:hidden">
         <button onClick={() => setOpen(true)} className="p-2 -ml-2">

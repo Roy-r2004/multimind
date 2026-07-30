@@ -26,11 +26,10 @@ const ICONS = {
 } as const;
 
 const STATE_RING: Record<FlightStage["state"], string> = {
-  // Explicit light contrast: this panel is a dark flight surface.
-  pending: "border-white/30 bg-white/10 text-white/90",
-  active: "border-amber-300/70 bg-amber-400/20 text-amber-50 dream-beacon",
-  done: "border-teal-200/50 bg-teal-400/20 text-teal-50",
-  failed: "border-rose-300/60 bg-rose-500/20 text-rose-50",
+  pending: "border-slate-200/80 bg-white/55 text-slate-600",
+  active: "border-sky-300/80 bg-sky-50/90 text-sky-900 dream-beacon",
+  done: "border-teal-300/70 bg-teal-50/90 text-teal-900",
+  failed: "border-rose-300/70 bg-rose-50/90 text-rose-900",
 };
 
 export function StageFlight({ stages, statusLabel, connectionState, countryName }: Props) {
@@ -46,48 +45,52 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
         (stages.length - 0.001);
 
   return (
-    <section className="relative overflow-hidden rounded-[1.75rem] border border-border text-white shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
+    <section className="relative overflow-hidden rounded-[1.75rem] border border-white/70 bg-white/55 text-slate-900 shadow-[0_24px_60px_rgba(22,48,58,0.08)] backdrop-blur-xl">
       <div
         className="absolute inset-0"
         style={{
           background:
-            "radial-gradient(90% 120% at 20% 0%, #245863 0%, #102229 45%, #0a1218 100%)",
+            "radial-gradient(90% 120% at 12% 0%, rgba(125,211,252,0.35) 0%, transparent 48%), radial-gradient(80% 100% at 90% 10%, rgba(167,243,208,0.28) 0%, transparent 45%), linear-gradient(180deg, rgba(255,255,255,0.72), rgba(248,250,252,0.55))",
         }}
       />
       <div
         className="dream-drift absolute -right-10 top-0 h-56 w-56 rounded-full blur-3xl"
-        style={{ background: "rgba(212,168,75,0.18)" }}
+        style={{ background: "rgba(56,189,248,0.22)" }}
+      />
+      <div
+        className="dream-drift-alt absolute -left-8 bottom-0 h-44 w-44 rounded-full blur-3xl"
+        style={{ background: "rgba(52,211,153,0.18)" }}
       />
 
       <div className="relative px-5 pb-6 pt-5 sm:px-8 sm:pt-7">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="dream-rise">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-amber-200/90">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-sky-700/90">
               Scraping Council · Flight
             </p>
-            <h2 className="mt-1 font-display text-2xl tracking-tight text-white sm:text-3xl">
+            <h2 className="mt-1 font-display text-2xl tracking-tight text-slate-900 sm:text-3xl">
               {countryName ? `Navigating ${countryName}` : "In flight"}
             </h2>
-            <p className="mt-1 text-sm text-white/70">
+            <p className="mt-1 text-sm text-slate-600">
               Stages move as sources open, evidence lands, and facilities crystallize.
             </p>
           </div>
           <div className="dream-rise dream-rise-delay-1 flex items-center gap-2 text-xs">
-            <span className="rounded-full border border-white/30 bg-white/10 px-3 py-1 text-white">
+            <span className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-slate-700">
               {statusLabel}
             </span>
             <span
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full border px-3 py-1",
                 connectionState === "Live"
-                  ? "border-teal-200/50 bg-teal-400/20 text-teal-50"
-                  : "border-white/25 bg-white/10 text-white/80",
+                  ? "border-teal-300/70 bg-teal-50 text-teal-800"
+                  : "border-slate-200 bg-white/70 text-slate-600",
               )}
             >
               <span
                 className={cn(
                   "size-1.5 rounded-full",
-                  connectionState === "Live" ? "bg-teal-300 dream-twinkle" : "bg-white/40",
+                  connectionState === "Live" ? "bg-teal-500 dream-twinkle" : "bg-slate-400",
                 )}
               />
               {connectionState}
@@ -95,24 +98,22 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
           </div>
         </div>
 
-        {/* flight path */}
         <div className="relative mt-8 hidden h-28 md:block">
           <svg className="absolute inset-0 h-full w-full" viewBox="0 0 1000 120" fill="none">
             <path
               d="M40 80 C 220 20, 380 120, 500 55 S 780 10, 960 70"
-              stroke="rgba(243,230,196,0.18)"
+              stroke="rgba(14,116,144,0.12)"
               strokeWidth="2"
             />
             <path
               className="dream-flight-path"
               d="M40 80 C 220 20, 380 120, 500 55 S 780 10, 960 70"
-              stroke="rgba(212,168,75,0.75)"
+              stroke="rgba(14,116,144,0.75)"
               strokeWidth="2.5"
             />
-            {/* moving vessel */}
             <circle
-              r="7"
-              fill="oklch(0.58 0.14 240)"
+              r="8"
+              fill="oklch(0.62 0.14 210)"
               className="dream-float"
               cx={40 + progress * 920}
               cy={80 - Math.sin(progress * Math.PI) * 35}
@@ -141,11 +142,11 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
                 )}
               >
                 {stage.state === "active" && (
-                  <span className="dream-pulse-ring absolute left-1/2 top-1/2 size-24 -translate-x-1/2 -translate-y-1/2 rounded-full border border-primary/40" />
+                  <span className="dream-pulse-ring absolute left-1/2 top-1/2 size-24 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-400/40" />
                 )}
                 <div className="relative flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="flex size-8 items-center justify-center rounded-full border border-current/20 bg-black/20">
+                    <span className="flex size-8 items-center justify-center rounded-full border border-current/15 bg-white/70">
                       <Icon className="size-3.5" />
                     </span>
                     <div>
@@ -164,7 +165,7 @@ export function StageFlight({ stages, statusLabel, connectionState, countryName 
                 </p>
                 <p className="relative mt-1 text-xs opacity-70">{stage.hint}</p>
                 {index === activeIndex && stage.state === "active" && (
-                  <p className="relative mt-3 text-[11px] uppercase tracking-[0.18em] text-primary">
+                  <p className="relative mt-3 text-[11px] uppercase tracking-[0.18em] text-sky-700">
                     Vessel is here
                   </p>
                 )}

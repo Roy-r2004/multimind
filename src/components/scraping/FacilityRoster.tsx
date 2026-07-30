@@ -78,14 +78,18 @@ export function FacilityRoster({ facilities, selectedId, onSelect }: Props) {
           <p className="p-4 text-sm text-muted-foreground">No facilities match this filter.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {filtered.map((facility) => {
+            {filtered.map((facility, index) => {
               const selected = facility.id === selectedId;
               const place = [facility.primary_city, facility.primary_region]
                 .filter(Boolean)
                 .join(", ");
               const chips = buildFacilityChips(facility);
               return (
-                <li key={facility.id}>
+                <li
+                  key={facility.id}
+                  className="scrape-crystallize"
+                  style={{ animationDelay: `${Math.min(index, 12) * 0.04}s` }}
+                >
                   <button
                     type="button"
                     onClick={() => onSelect(facility.id)}
