@@ -59,6 +59,10 @@ from app.services.scraping.facility_candidate_publication_service import (
     FacilityCandidatePublicationService,
     facility_candidate_publication_service,
 )
+from app.services.scraping.facility_website_enrichment_service import (
+    FacilityWebsiteEnrichmentService,
+)
+from app.services.scraping.search_providers.base import SearchProviderRequest, SearchProviderResult
 from conftest import create_model_set, create_other_auth, valid_blueprint
 
 
@@ -772,3 +776,91 @@ def test_publication_is_connected_to_worker_but_not_excel_export():
     # Publishing must not automatically enable or modify Excel export.
     assert "FacilityCandidatePublicationService" not in export_text
     assert "facility_candidate_publication_service" not in export_text
+
+
+@pytest.mark.asyncio
+async def test_website_enrichment_persists_official_homepage_and_preserves_existing(
+    db: AsyncSession, auth
+):
+    execution = await create_execution(db, auth)
+    missing = RehabilitationFacility(
+        execution_id=execution.id,
+        organization_id=auth.org_id,
+        stable_key="missing-site",
+        canonical_name="Centre Alpha",
+        original_language_name="Centre Alpha",
+        facility_type="rehabilitation",
+        organization_type="clinic",
+        operational_status="not_verified",
+        country_code="FR",
+        country_name="France",
+        primary_city="Paris",
+        primary_website=None,
+        verification_status="verified_from_staging",
+        confidence_score=0.9,
+        duplicate_status="unique",
+        human_review_status="required",
+        is_mock=False,
+    )
+    existing = RehabilitationFacility(
+        execution_id=execution.id,
+        organization_id=auth.org_id,
+        stable_key="existing-site",
+        canonical_name="Centre Beta",
+        original_language_name="Centre Beta",
+        facility_type="rehabilitation",
+        organization_type="clinic",
+        operational_status="not_verified",
+        country_code="FR",
+        country_name="France",
+        primary_city="Lyon",
+        primary_website="https://centre-beta.fr/",
+        verification_status="verified_from_staging",
+        confidence_score=0.9,
+        duplicate_status="unique",
+        human_review_status="required",
+        is_mock=False,
+    )
+    db.add_all([missing, existing])
+    await db.commit()
+
+    class FakeSearchProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.requests: list[SearchProviderRequest] = []
+
+        async def search(self, request: SearchProviderRequest) -> list[SearchProviderResult]:
+            self.requests.append(request)
+            return [
+                SearchProviderResult(
+                    rank=1,
+                    url="https://centre-alpha.fr/services",
+                    title="Centre Alpha — rehabilitation clinic",
+                    snippet="Official website of Centre Alpha in Paris, France",
+                )
+            ]
+
+    provider = FakeSearchProvider()
+    summary = await FacilityWebsiteEnrichmentService(provider).enrich_execution(
+        db,
+        organization_id=auth.org_id,
+        execution_id=execution.id,
+    )
+
+    await db.refresh(missing)
+    await db.refresh(existing)
+    assert missing.primary_website == "https://centre-alpha.fr/"
+    assert existing.primary_website == "https://centre-beta.fr/"
+    assert len(provider.requests) == 1
+    assert summary["enriched"] == 1
+    assert summary["preserved"] == 1
+    contact = await db.scalar(
+        select(RehabilitationFacilityContact).where(
+            RehabilitationFacilityContact.facility_id == missing.id,
+            RehabilitationFacilityContact.contact_type == "website",
+        )
+    )
+    assert contact is not None
+    assert contact.value == "https://centre-alpha.fr/"
+    assert contact.label == "Official website (search matched)"

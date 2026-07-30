@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     facility_publication_max_candidates_per_execution: int = 300
     facility_publication_duplicate_match_threshold: float = 0.82
 
+    # Post-publication official website lookup
+    facility_website_enrichment_enabled: bool = True
+    facility_website_enrichment_max_facilities_per_execution: int = 300
+    facility_website_enrichment_results_per_facility: int = 5
+    facility_website_enrichment_timeout_seconds: float = 20.0
+
     # Final AI roster cleanup (non-rehabs, bad links, duplicates, website fixes)
     facility_ai_cleanup_enabled: bool = True
     facility_ai_cleanup_model: str = "gpt-4.1"

@@ -67,6 +67,9 @@ from app.services.scraping.facility_extraction_service import (
     FacilityExtractionContext,
     facility_extraction_service,
 )
+from app.services.scraping.facility_website_enrichment_service import (
+    facility_website_enrichment_service,
+)
 from app.services.scraping.source_discovery_service import source_discovery_service
 from app.services.scraping.amplifiers import build_registry_seed_list
 from app.services.scraping.official_source_seed_service import (
@@ -642,6 +645,10 @@ class SourceDiscoveryExecutionOrchestrator:
                     metadata={"mode": MODE_DIRECTORY_FIRST},
                 )
                 await self.db.commit()
+            await self._check_cancelled(execution)
+            # Single choke point after publication (+ gap-loop republication) so
+            # newly published facilities are included before AI cleanup.
+            await self._run_facility_website_enrichment_phase(execution)
             await self._check_cancelled(execution)
             await self._run_facility_ai_cleanup_phase(execution)
             await self._check_cancelled(execution)
@@ -1513,6 +1520,83 @@ class SourceDiscoveryExecutionOrchestrator:
         await self.db.commit()
         self._log(
             "facility_publication_phase_completed",
+            execution_id=execution.id,
+            **summary,
+        )
+
+    async def _run_facility_website_enrichment_phase(
+        self, execution: ScrapingExecution
+    ) -> None:
+        self.current_stage = "facility_website_enrichment"
+        settings = get_settings()
+        if not settings.facility_website_enrichment_enabled:
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_website_enrichment_skipped",
+                "Official facility website enrichment is disabled.",
+                metadata={"enabled": False},
+            )
+            await self.db.commit()
+            return
+        if await self._phase_already_completed(
+            execution.id, "facility_website_enrichment_completed"
+        ):
+            await execution_service.emit_event(
+                self.db,
+                execution.id,
+                "facility_website_enrichment_resumed",
+                "Official website enrichment already finished; skipping ahead.",
+                metadata={"reason": "phase_already_completed"},
+            )
+            await self.db.commit()
+            return
+
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "facility_website_enrichment_started",
+            "Searching for official websites for facilities with missing or suspicious links.",
+            metadata={
+                "max_facilities": settings.facility_website_enrichment_max_facilities_per_execution,
+                "results_per_facility": settings.facility_website_enrichment_results_per_facility,
+            },
+        )
+        await self.db.commit()
+        await execution_service.touch_heartbeat(self.db, execution.id)
+        try:
+            # Pass None so enrichment opens short-lived sessions and never holds
+            # the orchestrator connection across Serper/Brave awaits.
+            summary = await facility_website_enrichment_service.enrich_execution(
+                None,
+                organization_id=execution.organization_id,
+                execution_id=execution.id,
+                max_facilities=settings.facility_website_enrichment_max_facilities_per_execution,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log(
+                "facility_website_enrichment_failed",
+                execution_id=execution.id,
+                error_type=type(exc).__name__,
+            )
+            summary = {
+                "considered": 0,
+                "searched": 0,
+                "enriched": 0,
+                "preserved": 0,
+                "ambiguous": 0,
+                "failed": 1,
+            }
+        await execution_service.emit_event(
+            self.db,
+            execution.id,
+            "facility_website_enrichment_completed",
+            "Official facility website enrichment completed.",
+            metadata=summary,
+        )
+        await self.db.commit()
+        self._log(
+            "facility_website_enrichment_completed",
             execution_id=execution.id,
             **summary,
         )

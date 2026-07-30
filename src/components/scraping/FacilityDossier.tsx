@@ -36,7 +36,10 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
     if (!detail) return new Map<string, string[]>();
     const map = new Map<string, string[]>();
     for (const contact of detail.contacts) {
-      if (!["phone", "hotline", "whatsapp"].includes(contact.contact_type) || !contact.location_id) {
+      if (
+        !["phone", "hotline", "whatsapp"].includes(contact.contact_type) ||
+        !contact.location_id
+      ) {
         continue;
       }
       const current = map.get(contact.location_id) ?? [];
@@ -108,10 +111,26 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <h2 className="font-display text-2xl tracking-tight text-foreground">
-                {detail.canonical_name}
+                {website ? (
+                  <a
+                    href={website}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline-offset-4 transition-colors hover:text-primary hover:underline"
+                  >
+                    {detail.canonical_name}
+                  </a>
+                ) : (
+                  detail.canonical_name
+                )}
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                {[detail.facility_type, detail.primary_city, detail.primary_region, detail.country_name]
+                {[
+                  detail.facility_type,
+                  detail.primary_city,
+                  detail.primary_region,
+                  detail.country_name,
+                ]
                   .filter(Boolean)
                   .join(" · ")}
               </p>
@@ -196,9 +215,7 @@ export function FacilityDossier({ detail, loading, error, onBack }: Props) {
         {tab === "Locations" ? (
           <LocationCards detail={detail} phonesByLocationId={phonesByLocationId} />
         ) : null}
-        {tab === "Contacts" ? (
-          <ContactCards detail={detail} />
-        ) : null}
+        {tab === "Contacts" ? <ContactCards detail={detail} /> : null}
         {tab === "Treatment Services" ? (
           <ListOrEmpty
             items={treatmentServices.map((attr) => ({
@@ -338,14 +355,13 @@ function ContactCards({ detail }: { detail: ScrapingFacilityDetail }) {
   if (detail.contacts.length === 0) {
     return <p className="text-sm text-white/45">{EMPTY}</p>;
   }
-  const locationNameById = new Map(detail.locations.map((location) => [location.id, location.location_name]));
+  const locationNameById = new Map(
+    detail.locations.map((location) => [location.id, location.location_name]),
+  );
   return (
     <ul className="space-y-2">
       {detail.contacts.map((contact) => (
-        <li
-          key={contact.id}
-          className="rounded-lg border border-border bg-white/[0.03] px-3 py-2"
-        >
+        <li key={contact.id} className="rounded-lg border border-border bg-white/[0.03] px-3 py-2">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <p className="font-medium text-foreground">
@@ -370,11 +386,7 @@ function ContactCards({ detail }: { detail: ScrapingFacilityDetail }) {
   );
 }
 
-function ListOrEmpty({
-  items,
-}: {
-  items: Array<{ title: string; body?: string; href?: string }>;
-}) {
+function ListOrEmpty({ items }: { items: Array<{ title: string; body?: string; href?: string }> }) {
   if (items.length === 0) {
     return <p className="text-sm text-white/45">{EMPTY}</p>;
   }
