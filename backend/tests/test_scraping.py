@@ -3,7 +3,7 @@ import hashlib
 from io import BytesIO
 from decimal import Decimal
 from pathlib import Path
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -1024,6 +1024,22 @@ async def test_deleting_a_generating_mission_fails(db: AsyncSession, auth: AuthC
     await db.flush()
     with pytest.raises(Exception, match="cannot be deleted while its blueprint is generating"):
         await mission_service.delete_mission(db, auth, mission_id)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_stale_generating_mission_succeeds(
+    db: AsyncSession, auth: AuthContext
+):
+    mission_id = await create_mission(db, auth)
+    mission = await db.get(ScrapingMission, mission_id)
+    assert mission is not None
+    mission.status = ScrapingMissionStatus.BLUEPRINT_GENERATING
+    mission.updated_at = datetime.now(UTC) - timedelta(minutes=20)
+    await db.flush()
+
+    await mission_service.delete_mission(db, auth, mission_id)
+
+    assert await db.get(ScrapingMission, mission_id) is None
 
 
 @pytest.mark.asyncio

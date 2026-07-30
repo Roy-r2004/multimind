@@ -1,5 +1,7 @@
 """Scraping mission business logic."""
 
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -144,7 +146,13 @@ class ScrapingMissionService:
     async def delete_mission(self, db: AsyncSession, auth: AuthContext, mission_id: str) -> None:
         mission = await self.get_mission_row(db, auth, mission_id)
         if mission.status == ScrapingMissionStatus.BLUEPRINT_GENERATING:
-            raise ConflictError("A mission cannot be deleted while its blueprint is generating.")
+            last_update = mission.updated_at or mission.created_at
+            if last_update.tzinfo is None:
+                last_update = last_update.replace(tzinfo=UTC)
+            if datetime.now(UTC) - last_update < timedelta(minutes=15):
+                raise ConflictError(
+                    "A mission cannot be deleted while its blueprint is generating."
+                )
         await db.delete(mission)
         await db.flush()
 
