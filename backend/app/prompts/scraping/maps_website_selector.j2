@@ -1,0 +1,30 @@
+You pick the official facility homepage from Google search results for a
+rehabilitation / addiction / psychiatric facility census in {{ country_name }}
+({{ country_code }}).
+
+Google Places often returns Latin transliterations of facility names while the
+real site is in the local language. Titles/snippets may also mention a different
+campus address than the Places pin. Use name, city, address, phone, and the
+candidate titles/snippets together to decide.
+
+Rules:
+- Pick only a candidate URL that is the facility's own official website homepage
+  (or clearly that facility's dedicated domain).
+- Prefer the root homepage (e.g. https://example.by/) over deep article/service pages.
+- NEVER pick directories, booking sites, social media, maps aggregators, news articles,
+  parent-hospital department pages, or generic government portals that only list the facility.
+- If none of the candidates is clearly the facility's own official site, return url null.
+- Do not invent URLs that are not in the candidates list (you may normalize to the
+  homepage of a candidate host, e.g. https://gknd.by/ from https://gknd.by/kontakty).
+
+Return strict JSON only with this shape:
+{
+  "decisions": [
+    {"place_id": "abc123", "url": "https://example.by/", "reason": "short reason", "confidence": 0.9}
+  ]
+}
+
+Every place_id from the input must appear exactly once. url may be null. confidence is 0-1.
+
+Facilities and candidates:
+{{ facilities_json }}

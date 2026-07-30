@@ -269,6 +269,15 @@ function PlaceRow({ place }: { place: MapsPlaceItem }) {
 }
 
 function GroupedPlaceCard({ group }: { group: PlaceGroup }) {
+  const websites = [
+    ...new Set(
+      group.places
+        .map((place) => place.official_website)
+        .filter((url): url is string => Boolean(url)),
+    ),
+  ];
+  const sharedWebsite = websites.length === 1 ? websites[0] : null;
+
   return (
     <div className="rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
       <div className="flex flex-wrap items-center gap-2">
@@ -278,10 +287,22 @@ function GroupedPlaceCard({ group }: { group: PlaceGroup }) {
           {group.places.length} locations
         </span>
       </div>
+      {sharedWebsite ? (
+        <a
+          href={sharedWebsite}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
+        >
+          <Globe className="size-3" />
+          {sharedWebsite}
+          <ExternalLink className="size-3" />
+        </a>
+      ) : null}
       <div className="mt-3 space-y-3 divide-y divide-border/70">
         {group.places.map((place) => (
           <div key={place.id} className="pt-3 first:mt-0 first:border-0 first:pt-0">
-            <PlaceLocationDetails place={place} />
+            <PlaceLocationDetails place={place} hideWebsite={Boolean(sharedWebsite)} />
           </div>
         ))}
       </div>
@@ -289,7 +310,13 @@ function GroupedPlaceCard({ group }: { group: PlaceGroup }) {
   );
 }
 
-function PlaceLocationDetails({ place }: { place: MapsPlaceItem }) {
+function PlaceLocationDetails({
+  place,
+  hideWebsite = false,
+}: {
+  place: MapsPlaceItem;
+  hideWebsite?: boolean;
+}) {
   return (
     <>
       {place.formatted_address && (
@@ -307,20 +334,21 @@ function PlaceLocationDetails({ place }: { place: MapsPlaceItem }) {
         ) : (
           <span className="text-muted-foreground/60">no phone found</span>
         )}
-        {place.official_website ? (
-          <a
-            href={place.official_website}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1.5 text-primary hover:underline"
-          >
-            <Globe className="size-3" />
-            {place.official_website}
-            <ExternalLink className="size-3" />
-          </a>
-        ) : (
-          <span className="text-muted-foreground/60">no verified official website found</span>
-        )}
+        {!hideWebsite &&
+          (place.official_website ? (
+            <a
+              href={place.official_website}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-primary hover:underline"
+            >
+              <Globe className="size-3" />
+              {place.official_website}
+              <ExternalLink className="size-3" />
+            </a>
+          ) : (
+            <span className="text-muted-foreground/60">no verified official website found</span>
+          ))}
       </div>
     </>
   );

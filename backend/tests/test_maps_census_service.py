@@ -14,8 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.dependencies import AuthContext
 from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
 from app.services.scraping.maps_census_service import (
+    _accepted_llm_website_url,
     _maps_website_search_queries,
     _match_official_website_by_address,
+    _normalize_website_payload,
     auto_refresh_maps_census_websites,
     maps_census_service,
 )
@@ -505,6 +507,204 @@ def _tracking_create_task(monkeypatch, *, marker: str):
 
     monkeypatch.setattr("asyncio.create_task", wrapper)
     return captured
+
+
+def test_accepted_llm_website_url_requires_candidate_host_and_homepage():
+    candidates = [
+        SearchProviderResult(
+            rank=1,
+            url="https://www.gknd.by/kontakty",
+            title="Contacts",
+            snippet="Minsk",
+        ),
+        SearchProviderResult(
+            rank=2,
+            url="https://facebook.com/gknd",
+            title="Social",
+            snippet="",
+        ),
+    ]
+    assert (
+        _accepted_llm_website_url("https://www.gknd.by/kontakty", candidates=candidates)
+        == "https://www.gknd.by/"
+    )
+    assert _accepted_llm_website_url("https://evil.example/", candidates=candidates) is None
+    assert _accepted_llm_website_url("https://facebook.com/gknd", candidates=candidates) is None
+
+
+def test_normalize_website_payload_accepts_url_aliases():
+    payload = _normalize_website_payload(
+        [{"id": "p1", "website": "https://gknd.by/", "confidence": 0.8}]
+    )
+    assert payload["decisions"][0]["place_id"] == "p1"
+    assert payload["decisions"][0]["url"] == "https://gknd.by/"
+
+
+@pytest.mark.asyncio
+async def test_propagate_shared_website_across_same_name_locations(db, auth):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.COMPLETED
+    await db.commit()
+
+    with_site = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-branch-1",
+        raw_name="Centre Alpha Rehab",
+        canonical_name="Centre Alpha Rehab",
+        city_name="Minsk",
+        is_relevant=True,
+        official_website="https://centre-alpha.by/",
+        website_source="search",
+    )
+    without_site = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-branch-2",
+        raw_name="Centre Alpha Rehab",
+        canonical_name="Centre Alpha Rehab",
+        city_name="Brest",
+        is_relevant=True,
+    )
+    different_name = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-other",
+        raw_name="Other Clinic",
+        canonical_name="Other Clinic",
+        city_name="Minsk",
+        is_relevant=True,
+    )
+    db.add_all([with_site, without_site, different_name])
+    await db.commit()
+
+    session_factory = maps_census_service._session_factory(db)
+    await maps_census_service._propagate_shared_websites(session_factory, run_id=run.id)
+
+    await db.refresh(without_site)
+    await db.refresh(different_name)
+    assert without_site.official_website == "https://centre-alpha.by/"
+    assert without_site.website_source == "search"
+    assert different_name.official_website is None
+
+
+@pytest.mark.asyncio
+async def test_propagate_does_not_overwrite_conflicting_websites(db, auth):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.COMPLETED
+    await db.commit()
+
+    a = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-a",
+        raw_name="Dispanser Psihonevrologicheskii",
+        canonical_name="Dispanser Psihonevrologicheskii",
+        city_name="Lida",
+        is_relevant=True,
+        official_website="https://lida.example/",
+        website_source="search",
+    )
+    b = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-b",
+        raw_name="Dispanser Psihonevrologicheskii",
+        canonical_name="Dispanser Psihonevrologicheskii",
+        city_name="Mozyr",
+        is_relevant=True,
+        official_website="https://mozyr.example/",
+        website_source="search",
+    )
+    c = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-c",
+        raw_name="Dispanser Psihonevrologicheskii",
+        canonical_name="Dispanser Psihonevrologicheskii",
+        city_name="Polotsk",
+        is_relevant=True,
+    )
+    db.add_all([a, b, c])
+    await db.commit()
+
+    session_factory = maps_census_service._session_factory(db)
+    await maps_census_service._propagate_shared_websites(session_factory, run_id=run.id)
+
+    await db.refresh(c)
+    assert c.official_website is None
+
+
+@pytest.mark.asyncio
+async def test_run_website_refresh_uses_llm_when_rule_matchers_fail(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.COMPLETED
+    run.cells_total = 1
+    run.cells_completed = 1
+    run.places_found = 1
+    run.places_classified_relevant = 1
+    await db.commit()
+
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-llm",
+        raw_name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
+        canonical_name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
+        city_name="Minsk",
+        formatted_address="улица Гастелло16, Minsk, Minskaja voblasć 220035",
+        is_relevant=True,
+    )
+    db.add(place)
+    await db.commit()
+
+    class _FakeSearchProvider:
+        name = "fake"
+
+        async def search(self, request) -> list[SearchProviderResult]:
+            # Snippet deliberately omits the street so address matching fails —
+            # same real-world Serper behaviour we observed for gknd.by.
+            return [
+                SearchProviderResult(
+                    rank=1,
+                    url="https://www.gknd.by/",
+                    title="Учреждение здравоохранения «Минский городской клинический наркологический центр»",
+                    snippet="Городской клинический наркологический диспансер г. Минска",
+                )
+            ]
+
+    class _FakeLLMProvider:
+        async def complete(self, **_kwargs):
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "place_id": place.id,
+                                "url": "https://www.gknd.by/",
+                                "reason": "official narcological centre domain",
+                                "confidence": 0.95,
+                            }
+                        ]
+                    }
+                )
+            )
+
+    class _FakeRegistry:
+        def get_provider(self, _name):
+            return _FakeLLMProvider()
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_search_provider",
+        lambda: _FakeSearchProvider(),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="openai/gpt-4.1"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeRegistry(),
+    )
+
+    summary = await maps_census_service.run_website_refresh(db, run_id=run.id)
+    assert summary["places_with_website"] == 1
+    await db.refresh(place)
+    assert place.official_website == "https://www.gknd.by/"
+    assert place.website_source == "search"
 
 
 def test_maps_website_search_queries_fall_back_from_quoted_to_address():

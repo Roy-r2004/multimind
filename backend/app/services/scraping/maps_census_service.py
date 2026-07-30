@@ -60,6 +60,7 @@ from app.services.scraping.search_providers.base import (
 logger = logging.getLogger(__name__)
 
 CLASSIFICATION_BATCH_TIMEOUT_SECONDS = 90.0
+WEBSITE_LLM_BATCH_TIMEOUT_SECONDS = 90.0
 
 
 class MapsRelevanceDecision(BaseModel):
@@ -75,6 +76,21 @@ class MapsRelevancePlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     decisions: list[MapsRelevanceDecision] = Field(default_factory=list)
+
+
+class MapsWebsiteDecision(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    place_id: str = Field(min_length=1, max_length=64)
+    url: str | None = Field(default=None, max_length=512)
+    reason: str = Field(default="", max_length=300)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class MapsWebsitePlan(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    decisions: list[MapsWebsiteDecision] = Field(default_factory=list)
 
 
 class MapsCensusService:
@@ -218,6 +234,7 @@ class MapsCensusService:
     async def run_website_refresh(self, db: AsyncSession | None, *, run_id: str) -> dict[str, int]:
         session_factory = self._session_factory(db)
         await self._search_missing_websites(session_factory, run_id=run_id)
+        await self._propagate_shared_websites(session_factory, run_id=run_id)
         async with session_factory() as final_db:
             run = await final_db.get(MapsCensusRun, run_id)
             summary = {"places_with_website": 0}
@@ -568,6 +585,53 @@ class MapsCensusService:
 
         if settings.maps_census_website_search_enabled:
             await self._search_missing_websites(session_factory, run_id=run_id)
+        await self._propagate_shared_websites(session_factory, run_id=run_id)
+
+    async def _propagate_shared_websites(self, session_factory, *, run_id: str) -> None:
+        """Same-name multi-location facilities share one official website when unambiguous.
+
+        If every known website in a canonical-name group is the same URL, copy it to
+        sibling locations that are still missing one. If the group already has
+        conflicting websites (different municipal facilities that happen to share a
+        generic name), leave each location alone.
+        """
+        async with session_factory() as db:
+            places = (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.is_relevant.is_(True),
+                    )
+                )
+            ).scalars().all()
+            by_name: dict[str, list[MapsPlace]] = {}
+            for place in places:
+                key = (place.canonical_name or "").strip().casefold()
+                if not key:
+                    continue
+                by_name.setdefault(key, []).append(place)
+
+            changed = False
+            for group in by_name.values():
+                if len(group) < 2:
+                    continue
+                known = {
+                    (p.official_website or "").strip()
+                    for p in group
+                    if (p.official_website or "").strip()
+                }
+                if len(known) != 1:
+                    continue
+                shared_url = next(iter(known))
+                donor = next(p for p in group if (p.official_website or "").strip() == shared_url)
+                for place in group:
+                    if place.official_website:
+                        continue
+                    place.official_website = shared_url
+                    place.website_source = donor.website_source or "search"
+                    changed = True
+            if changed:
+                await db.commit()
 
     async def _search_missing_websites(self, session_factory, *, run_id: str) -> None:
         settings = get_settings()
@@ -594,6 +658,7 @@ class MapsCensusService:
                     "name": place.canonical_name,
                     "city": place.city_name or place.region_name,
                     "address": place.formatted_address,
+                    "phone": place.international_phone_number,
                 }
                 for place in pending
             ]
@@ -603,6 +668,7 @@ class MapsCensusService:
             return
 
         provider = create_search_provider()
+        llm_queue: list[dict[str, Any]] = []
         for item in pending_items:
             async with session_factory() as heartbeat_db:
                 run = await heartbeat_db.get(MapsCensusRun, run_id)
@@ -610,64 +676,207 @@ class MapsCensusService:
                     run.heartbeat_at = datetime.now(UTC)
                     await heartbeat_db.commit()
 
-            selected = None
-            # Quoted Latin transliterations often return zero Serper hits for
-            # non-Latin-script countries. Try unquoted + address queries next.
-            for query in _maps_website_search_queries(
-                name=item["name"],
+            results = await self._search_website_candidates(
+                provider,
+                item=item,
+                country_code=country_code,
+                country_name=country_name,
+            )
+            if not results:
+                continue
+
+            selected = select_official_website(
+                facility_name=item["name"],
                 city=item["city"],
                 country_name=country_name,
-                address=item["address"],
-            ):
-                try:
-                    results = await asyncio.wait_for(
-                        provider.search(
-                            SearchProviderRequest(
-                                query=query,
-                                country_code=country_code,
-                                search_language="en",
-                                result_limit=settings.facility_website_enrichment_results_per_facility,
-                                metadata={
-                                    "purpose": "maps_census_official_website",
-                                    "place_id": item["id"],
-                                },
-                            )
-                        ),
-                        timeout=settings.facility_website_enrichment_timeout_seconds,
-                    )
-                except (TimeoutError, SearchProviderError):
-                    continue
-                if not results:
-                    continue
-
-                selected = select_official_website(
-                    facility_name=item["name"],
+                results=results,
+            )
+            if selected is None:
+                selected = _match_official_website_by_address(
+                    address=item["address"],
                     city=item["city"],
                     country_name=country_name,
                     results=results,
                 )
-                if selected is None:
-                    # Google Places names for non-Latin-script countries are often
-                    # garbled Latin transliterations that never token-match native
-                    # site content. Match on address tokens instead.
-                    selected = _match_official_website_by_address(
-                        address=item["address"],
-                        city=item["city"],
-                        country_name=country_name,
-                        results=results,
-                    )
-                if selected is not None:
-                    break
-
-            if selected is None:
+            if selected is not None:
+                async with session_factory() as write_db:
+                    place = await write_db.get(MapsPlace, item["id"])
+                    if place is not None and place.official_website is None:
+                        place.official_website = selected.url
+                        place.website_source = "search"
+                    await write_db.commit()
                 continue
 
-            async with session_factory() as write_db:
-                place = await write_db.get(MapsPlace, item["id"])
-                if place is not None and place.official_website is None:
-                    place.official_website = selected.url
-                    place.website_source = "search"
-                await write_db.commit()
+            if settings.maps_census_website_llm_enabled:
+                llm_queue.append({**item, "candidates": results})
+
+        if not llm_queue:
+            return
+
+        model = get_model(settings.maps_census_model)
+        llm_provider = get_provider_registry().get_provider(model.provider)
+        batch_size = max(1, settings.maps_census_website_llm_batch_size)
+        for offset in range(0, len(llm_queue), batch_size):
+            batch = llm_queue[offset : offset + batch_size]
+            async with session_factory() as heartbeat_db:
+                run = await heartbeat_db.get(MapsCensusRun, run_id)
+                if run is not None:
+                    run.heartbeat_at = datetime.now(UTC)
+                    await heartbeat_db.commit()
+
+            decisions = await self._select_websites_llm_batch(
+                provider=llm_provider,
+                model_slug=model.provider_model,
+                country_code=country_code,
+                country_name=country_name,
+                batch=batch,
+            )
+            by_id = {d.place_id: d for d in decisions}
+            for item in batch:
+                decision = by_id.get(item["id"])
+                url = _accepted_llm_website_url(
+                    decision.url if decision is not None else None,
+                    candidates=item["candidates"],
+                )
+                if not url:
+                    continue
+                async with session_factory() as write_db:
+                    place = await write_db.get(MapsPlace, item["id"])
+                    if place is not None and place.official_website is None:
+                        place.official_website = url
+                        place.website_source = "search"
+                    await write_db.commit()
+
+    async def _search_website_candidates(
+        self,
+        provider: Any,
+        *,
+        item: dict[str, Any],
+        country_code: str,
+        country_name: str,
+    ) -> list[SearchProviderResult]:
+        settings = get_settings()
+        merged: list[SearchProviderResult] = []
+        seen_urls: set[str] = set()
+        for query in _maps_website_search_queries(
+            name=item["name"],
+            city=item["city"],
+            country_name=country_name,
+            address=item["address"],
+        ):
+            try:
+                results = await asyncio.wait_for(
+                    provider.search(
+                        SearchProviderRequest(
+                            query=query,
+                            country_code=country_code,
+                            search_language="en",
+                            result_limit=settings.facility_website_enrichment_results_per_facility,
+                            metadata={
+                                "purpose": "maps_census_official_website",
+                                "place_id": item["id"],
+                            },
+                        )
+                    ),
+                    timeout=settings.facility_website_enrichment_timeout_seconds,
+                )
+            except (TimeoutError, SearchProviderError):
+                continue
+            for result in results:
+                key = (result.url or "").strip().casefold()
+                if not key or key in seen_urls:
+                    continue
+                seen_urls.add(key)
+                merged.append(
+                    SearchProviderResult(
+                        rank=len(merged) + 1,
+                        url=result.url,
+                        title=result.title,
+                        snippet=result.snippet,
+                    )
+                )
+            # First non-empty query is enough — further variants are only needed
+            # when the previous query returned nothing (e.g. quoted transliteration).
+            if merged:
+                break
+        return merged
+
+    async def _select_websites_llm_batch(
+        self,
+        *,
+        provider: Any,
+        model_slug: str,
+        country_code: str,
+        country_name: str,
+        batch: list[dict[str, Any]],
+    ) -> list[MapsWebsiteDecision]:
+        payloads = []
+        for item in batch:
+            candidates = []
+            for result in item.get("candidates") or []:
+                if _is_rejected_result(result):
+                    continue
+                candidates.append(
+                    {
+                        "url": result.url,
+                        "title": (result.title or "")[:200],
+                        "snippet": (result.snippet or "")[:240],
+                    }
+                )
+            payloads.append(
+                {
+                    "place_id": item["id"],
+                    "name": item["name"],
+                    "city": item.get("city"),
+                    "address": item.get("address"),
+                    "phone": item.get("phone"),
+                    "candidates": candidates[:8],
+                }
+            )
+        if not any(p["candidates"] for p in payloads):
+            return [
+                MapsWebsiteDecision(place_id=p["place_id"], url=None, reason="no_candidates")
+                for p in payloads
+            ]
+
+        prompt = get_prompt_engine().render(
+            "scraping/maps_website_selector.j2",
+            country_code=(country_code or "XX")[:2].upper(),
+            country_name=(country_name or "Unknown")[:120],
+            facilities_json=json.dumps(payloads, ensure_ascii=False),
+        )
+        try:
+            response = await asyncio.wait_for(
+                provider.complete(
+                    system=(
+                        "You return strict JSON picking official facility homepage URLs "
+                        "from provided search candidates only."
+                    ),
+                    user=prompt,
+                    model=model_slug,
+                    max_tokens=2500,
+                ),
+                timeout=WEBSITE_LLM_BATCH_TIMEOUT_SECONDS,
+            )
+            raw = LLMProvider.parse_json_response(response.text)
+            plan = MapsWebsitePlan.model_validate(_normalize_website_payload(raw))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "maps_census_website_llm_batch_failed count=%s error=%s",
+                len(payloads),
+                exc,
+            )
+            return [
+                MapsWebsiteDecision(place_id=p["place_id"], url=None, reason="llm_failed")
+                for p in payloads
+            ]
+
+        by_id = {d.place_id: d for d in plan.decisions}
+        return [
+            by_id.get(p["place_id"])
+            or MapsWebsiteDecision(place_id=p["place_id"], url=None, reason="missing_decision")
+            for p in payloads
+        ]
 
 
 _LETTER_DIGIT_BOUNDARY = re.compile(r"(?<=[^\W\d_])(?=\d)|(?<=\d)(?=[^\W\d_])", re.UNICODE)
@@ -833,6 +1042,66 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         confidence_score=float(place.confidence_score) if place.confidence_score is not None else None,
         discovered_via_query=place.discovered_via_query,
     )
+
+
+def _normalize_website_payload(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        items = raw.get("decisions") or raw.get("results") or raw.get("websites") or []
+    else:
+        items = []
+    if not isinstance(items, list):
+        items = []
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or item.get("website") or item.get("official_website")
+        if isinstance(url, str):
+            url = url.strip() or None
+        else:
+            url = None
+        normalized.append(
+            {
+                "place_id": item.get("place_id") or item.get("id"),
+                "url": url,
+                "reason": item.get("reason") or item.get("explanation") or "",
+                "confidence": item.get("confidence", 0.5),
+            }
+        )
+    return {"decisions": normalized}
+
+
+def _accepted_llm_website_url(
+    url: str | None,
+    *,
+    candidates: list[SearchProviderResult],
+) -> str | None:
+    """Accept an LLM pick only if it maps to a non-blocked candidate host homepage."""
+    if not url:
+        return None
+    parsed = _safe_url(url)
+    if parsed is None:
+        return None
+    host = (parsed.hostname or "").casefold()
+    if not host:
+        return None
+    allowed_hosts = set()
+    for candidate in candidates:
+        if _is_rejected_result(candidate):
+            continue
+        candidate_parsed = _safe_url(candidate.url)
+        if candidate_parsed is None or not candidate_parsed.hostname:
+            continue
+        allowed_hosts.add(candidate_parsed.hostname.casefold())
+    if host not in allowed_hosts:
+        return None
+    homepage = _homepage_url(parsed)
+    probe = SearchProviderResult(rank=1, url=homepage, title="", snippet="")
+    if _is_rejected_result(probe):
+        return None
+    return homepage
 
 
 def _normalize_relevance_payload(raw: Any) -> dict[str, Any]:

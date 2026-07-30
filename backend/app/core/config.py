@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # (or an untrustworthy) website — reuses the scraping pipeline's search provider.
     maps_census_website_search_enabled: bool = True
     maps_census_website_search_max_places_per_run: int = 250
+    # When deterministic name/address matchers miss, batch Serper candidates through
+    # the census LLM (OpenRouter) to pick the official homepage.
+    maps_census_website_llm_enabled: bool = True
+    maps_census_website_llm_batch_size: int = 6
     # Background cron: automatically retry the website search for completed runs that
     # still have gaps, so nobody has to click a "find missing websites" button.
     maps_census_auto_website_refresh_enabled: bool = True
