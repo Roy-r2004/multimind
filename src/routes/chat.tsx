@@ -753,19 +753,14 @@ export function ChatPage() {
                   {set.models.map((id, index) => {
                     const model = modelById(id);
                     return (
-                      <div
+                      <ModelPill
                         key={id}
-                        className={cn(
-                          "elevate-card",
-                          index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
-                        )}
-                      >
-                        <ModelPill
-                          name={model.name}
-                          vendor={model.vendor}
-                          color={model.color}
-                        />
-                      </div>
+                        name={model.name}
+                        vendor={model.vendor}
+                        color={model.color}
+                        variant="cinematic"
+                        index={index}
+                      />
                     );
                   })}
                 </div>

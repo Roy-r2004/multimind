@@ -820,6 +820,220 @@
   animation: scrape-crystallize 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Chat Council — Aurora Command Deck pills */
+.council-pill {
+  --pill-accent: oklch(0.55 0.12 240);
+  position: relative;
+  display: flex;
+  min-height: 7.25rem;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.85rem;
+  overflow: hidden;
+  border-radius: 1.25rem;
+  border: 1px solid color-mix(in oklab, var(--pill-accent) 28%, white 72%);
+  background:
+    linear-gradient(
+      155deg,
+      color-mix(in oklab, white 88%, var(--pill-accent) 12%) 0%,
+      color-mix(in oklab, white 96%, var(--pill-accent) 4%) 48%,
+      color-mix(in oklab, white 90%, var(--pill-accent) 10%) 100%
+    );
+  padding: 1.05rem 1rem 0.95rem;
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.9) inset,
+    0 0 0 1px color-mix(in oklab, var(--pill-accent) 12%, transparent),
+    0 18px 40px color-mix(in oklab, var(--pill-accent) 16%, transparent),
+    0 8px 20px oklch(0.45 0.04 240 / 0.08);
+  backdrop-filter: blur(10px);
+  transform: translateZ(0);
+  transition:
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.45s ease,
+    border-color 0.45s ease;
+  animation: council-pill-enter 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.council-pill:hover {
+  transform: translateY(-5px);
+  border-color: color-mix(in oklab, var(--pill-accent) 48%, white 52%);
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.95) inset,
+    0 0 0 1px color-mix(in oklab, var(--pill-accent) 22%, transparent),
+    0 24px 52px color-mix(in oklab, var(--pill-accent) 24%, transparent),
+    0 12px 28px oklch(0.45 0.04 240 / 0.1);
+}
+
+.council-pill-delay-0 {
+  animation-delay: 0s;
+}
+.council-pill-delay-1 {
+  animation-delay: 0.07s;
+}
+.council-pill-delay-2 {
+  animation-delay: 0.14s;
+}
+.council-pill-delay-3 {
+  animation-delay: 0.21s;
+}
+.council-pill-delay-4 {
+  animation-delay: 0.28s;
+}
+
+.council-pill-aurora,
+.council-pill-bloom,
+.council-pill-sheen {
+  pointer-events: none;
+  position: absolute;
+}
+
+.council-pill-aurora {
+  left: -18%;
+  top: -40%;
+  height: 7.5rem;
+  width: 7.5rem;
+  border-radius: 9999px;
+  background: radial-gradient(
+    circle,
+    color-mix(in oklab, var(--pill-accent) 42%, transparent) 0%,
+    transparent 70%
+  );
+  filter: blur(8px);
+  opacity: 0.7;
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+
+.council-pill:hover .council-pill-aurora {
+  opacity: 1;
+  transform: scale(1.12);
+}
+
+.council-pill-bloom {
+  right: -10%;
+  bottom: -35%;
+  height: 6rem;
+  width: 7rem;
+  border-radius: 9999px;
+  background: radial-gradient(
+    circle,
+    color-mix(in oklab, var(--pill-accent) 28%, transparent) 0%,
+    transparent 72%
+  );
+  filter: blur(14px);
+  opacity: 0.55;
+}
+
+.council-pill-sheen {
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 28%,
+    color-mix(in oklab, white 70%, var(--pill-accent) 30%) 48%,
+    transparent 64%
+  );
+  opacity: 0.18;
+  transform: translateX(-120%);
+  animation: council-pill-sheen 5.8s ease-in-out infinite;
+}
+
+.council-pill-delay-1 .council-pill-sheen {
+  animation-delay: 0.45s;
+}
+.council-pill-delay-2 .council-pill-sheen {
+  animation-delay: 0.9s;
+}
+.council-pill-delay-3 .council-pill-sheen {
+  animation-delay: 1.35s;
+}
+.council-pill-delay-4 .council-pill-sheen {
+  animation-delay: 1.8s;
+}
+
+.council-pill-beacon {
+  position: absolute;
+  top: 0.8rem;
+  right: 0.8rem;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in oklab, var(--pill-accent) 35%, white);
+  background: color-mix(in oklab, white 72%, var(--pill-accent) 28%);
+  color: color-mix(in oklab, var(--pill-accent) 75%, oklch(0.35 0.08 240));
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--pill-accent) 12%, transparent),
+    0 0 18px color-mix(in oklab, var(--pill-accent) 35%, transparent);
+}
+
+.council-pill-logo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  border-radius: 1.05rem;
+  padding: 0.15rem;
+  background: linear-gradient(
+    145deg,
+    color-mix(in oklab, white 85%, var(--pill-accent) 15%),
+    white
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--pill-accent) 18%, transparent),
+    0 0 24px color-mix(in oklab, var(--pill-accent) 22%, transparent);
+}
+
+.council-pill-rail {
+  height: 1px;
+  flex: 1;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--pill-accent) 55%, transparent),
+    color-mix(in oklab, var(--pill-accent) 8%, transparent)
+  );
+}
+
+.council-pill-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 9999px;
+  background: var(--pill-accent);
+  box-shadow: 0 0 12px var(--pill-accent);
+}
+
+@keyframes council-pill-enter {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(18px) perspective(700px) rotateX(6deg) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) perspective(700px) rotateX(0deg) scale(1);
+  }
+}
+
+@keyframes council-pill-sheen {
+  0%,
+  28% {
+    transform: translateX(-130%);
+    opacity: 0;
+  }
+  42% {
+    opacity: 0.28;
+  }
+  58% {
+    transform: translateX(130%);
+    opacity: 0;
+  }
+  100% {
+    transform: translateX(130%);
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dream-drift,
   .dream-drift-alt,
@@ -845,7 +1059,13 @@
   .brain-node,
   .brain-node-pulse,
   .brain-synapse,
-  .brain-orbit {
+  .brain-orbit,
+  .council-pill,
+  .council-pill-sheen {
     animation: none !important;
+  }
+
+  .council-pill:hover {
+    transform: none;
   }
 }
