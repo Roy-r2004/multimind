@@ -1,15 +1,37 @@
 import { Link } from "@tanstack/react-router";
-import { MapPin, ExternalLink } from "lucide-react";
+import { MapPin, ExternalLink, Trash2 } from "lucide-react";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
 import type { MapsCensusRunSummary } from "@/lib/maps/types";
 
-export function MapsRunCard({ run }: { run: MapsCensusRunSummary }) {
+export function MapsRunCard({
+  run,
+  onDelete,
+}: {
+  run: MapsCensusRunSummary;
+  onDelete?: (runId: string) => void;
+}) {
   return (
     <Link
       to="/maps/$runId"
       params={{ runId: run.id }}
       className="dream-rise group relative block overflow-hidden rounded-[1.5rem] border border-border/90 bg-card/95 p-5 shadow-[0_8px_28px_oklch(0.45_0.04_240/0.06)] transition hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-[0_12px_36px_oklch(0.55_0.1_240/0.12)]"
     >
+      {onDelete && (
+        <button
+          type="button"
+          aria-label={`Delete ${run.country_name} Maps census run`}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (window.confirm(`Delete the Maps census run for ${run.country_name}?`)) {
+              onDelete(run.id);
+            }
+          }}
+          className="absolute right-4 top-4 z-10 rounded-lg p-1.5 text-muted-foreground opacity-0 transition hover:bg-rose-50 hover:text-rose-600 group-hover:opacity-100 focus:opacity-100"
+        >
+          <Trash2 className="size-4" />
+        </button>
+      )}
       <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">

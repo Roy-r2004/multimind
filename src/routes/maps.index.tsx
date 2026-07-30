@@ -5,7 +5,7 @@ import { AppShell } from "@/components/AppShell";
 import { DreamHeader, DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { MapsRunCard } from "@/components/maps/MapsRunCard";
 import { useAuth } from "@/lib/auth";
-import { listMapsCensusRuns } from "@/lib/maps/api";
+import { deleteMapsCensusRun, listMapsCensusRuns } from "@/lib/maps/api";
 import type { MapsCensusRunSummary } from "@/lib/maps/types";
 
 export const Route = createFileRoute("/maps/")({
@@ -35,6 +35,17 @@ function MapsPage() {
       )
       .finally(() => setLoading(false));
   }, [authHeaders, navigate]);
+
+  function handleDelete(runId: string) {
+    const auth = authHeaders();
+    if (!auth) return;
+    const previous = runs;
+    setRuns((current) => current.filter((run) => run.id !== runId));
+    deleteMapsCensusRun(auth, runId).catch((err) => {
+      setRuns(previous);
+      setError(err instanceof Error ? err.message : "Failed to delete Maps census run");
+    });
+  }
 
   return (
     <AppShell>
@@ -75,7 +86,9 @@ function MapsPage() {
               </Link>
             </DreamPanel>
           )}
-          {!loading && !error && runs.map((run) => <MapsRunCard key={run.id} run={run} />)}
+          {!loading &&
+            !error &&
+            runs.map((run) => <MapsRunCard key={run.id} run={run} onDelete={handleDelete} />)}
         </div>
       </DreamPageShell>
     </AppShell>

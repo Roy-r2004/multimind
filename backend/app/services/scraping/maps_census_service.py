@@ -36,9 +36,18 @@ from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
 from app.schemas.api import MapsCensusRunDetail, MapsCensusRunSummary, MapsPlaceItem
 from app.services.scraping.countries import resolve_country
-from app.services.scraping.facility_website_enrichment_service import website_needs_enrichment
+from app.services.scraping.facility_website_enrichment_service import (
+    build_official_website_query,
+    select_official_website,
+    website_needs_enrichment,
+)
 from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
 from app.services.scraping.maps_places_client import PlacesProviderError, create_places_client
+from app.services.scraping.search_providers import create_search_provider
+from app.services.scraping.search_providers.base import (
+    SearchProviderError,
+    SearchProviderRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +131,18 @@ class MapsCensusService:
         return [_place_item(place) for place in rows]
 
     async def _enqueue(self, run_id: str) -> None:
+        await self._enqueue_job(
+            "run_maps_census_job", run_id, inline_runner=lambda: run_maps_census_job({}, run_id)
+        )
+
+    async def _enqueue_refresh(self, run_id: str) -> None:
+        await self._enqueue_job(
+            "refresh_maps_census_websites_job",
+            run_id,
+            inline_runner=lambda: refresh_maps_census_websites_job({}, run_id),
+        )
+
+    async def _enqueue_job(self, job_name: str, run_id: str, *, inline_runner) -> None:
         settings = get_settings()
         inline = (
             settings.scraping_inline_execution
@@ -146,20 +167,67 @@ class MapsCensusService:
                     )
                 )
                 await redis.enqueue_job(
-                    "run_maps_census_job",
+                    job_name,
                     run_id,
-                    _job_id=f"maps-census:{run_id}:{uuid4().hex[:12]}",
+                    _job_id=f"{job_name}:{run_id}:{uuid4().hex[:12]}",
                 )
                 await redis.close()
                 queued_on_redis = True
             except Exception:
                 logger.warning(
-                    "maps_census_enqueue_redis_failed run_id=%s; falling back to inline",
+                    "maps_census_enqueue_redis_failed job=%s run_id=%s; falling back to inline",
+                    job_name,
                     run_id,
                     exc_info=True,
                 )
         if inline or not queued_on_redis:
-            asyncio.create_task(run_maps_census_job({}, run_id))
+            asyncio.create_task(inline_runner())
+
+    async def delete_run(self, db: AsyncSession, auth: AuthContext, run_id: str) -> None:
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        await db.delete(run)
+        await db.commit()
+
+    async def request_website_refresh(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCensusRunDetail:
+        """Re-run the missing-website search fallback for a completed run — used to
+        backfill facilities that didn't get an official website on the original pass.
+        """
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        if run.status != MapsCensusStatus.COMPLETED:
+            raise ValidationError("Only a completed Maps census run can refresh missing websites.")
+        run.status = MapsCensusStatus.RUNNING
+        run.heartbeat_at = datetime.now(UTC)
+        await db.commit()
+        await self._enqueue_refresh(run_id)
+        return await self.get_run(db, auth, run_id)
+
+    async def run_website_refresh(self, db: AsyncSession | None, *, run_id: str) -> dict[str, int]:
+        session_factory = self._session_factory(db)
+        await self._search_missing_websites(session_factory, run_id=run_id)
+        async with session_factory() as final_db:
+            run = await final_db.get(MapsCensusRun, run_id)
+            summary = {"places_with_website": 0}
+            if run is not None:
+                relevant_places = (
+                    await final_db.execute(
+                        select(MapsPlace).where(
+                            MapsPlace.run_id == run_id, MapsPlace.is_relevant.is_(True)
+                        )
+                    )
+                ).scalars().all()
+                run.places_with_website = sum(1 for p in relevant_places if p.official_website)
+                run.status = MapsCensusStatus.COMPLETED
+                run.completed_at = datetime.now(UTC)
+                run.heartbeat_at = datetime.now(UTC)
+                summary["places_with_website"] = run.places_with_website
+                await final_db.commit()
+        return summary
 
     @staticmethod
     def _session_factory(db: AsyncSession | None):
@@ -468,6 +536,10 @@ class MapsCensusService:
         ]
 
     async def _validate_websites(self, session_factory, *, run_id: str) -> None:
+        """Trust a Places-provided website when it passes strict validation; otherwise
+        fall back to a name+geography search for any relevant place still missing one.
+        """
+        settings = get_settings()
         async with session_factory() as db:
             places = (
                 await db.execute(
@@ -481,7 +553,78 @@ class MapsCensusService:
             for place in places:
                 if not website_needs_enrichment(place.raw_website):
                     place.official_website = place.raw_website
+                    place.website_source = "places"
             await db.commit()
+
+        if settings.maps_census_website_search_enabled:
+            await self._search_missing_websites(session_factory, run_id=run_id)
+
+    async def _search_missing_websites(self, session_factory, *, run_id: str) -> None:
+        settings = get_settings()
+        limit = max(1, settings.maps_census_website_search_max_places_per_run)
+        async with session_factory() as scan_db:
+            run = await scan_db.get(MapsCensusRun, run_id)
+            country_name = run.country_name if run is not None else ""
+            country_code = run.country_code if run is not None else ""
+            pending = (
+                await scan_db.execute(
+                    select(MapsPlace)
+                    .where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.is_relevant.is_(True),
+                        MapsPlace.official_website.is_(None),
+                    )
+                    .order_by(MapsPlace.canonical_name)
+                    .limit(limit)
+                )
+            ).scalars().all()
+            pending_items = [
+                {"id": place.id, "name": place.canonical_name, "city": place.city_name or place.region_name}
+                for place in pending
+            ]
+            await scan_db.commit()
+
+        if not pending_items:
+            return
+
+        provider = create_search_provider()
+        for item in pending_items:
+            async with session_factory() as heartbeat_db:
+                run = await heartbeat_db.get(MapsCensusRun, run_id)
+                if run is not None:
+                    run.heartbeat_at = datetime.now(UTC)
+                    await heartbeat_db.commit()
+
+            try:
+                results = await asyncio.wait_for(
+                    provider.search(
+                        SearchProviderRequest(
+                            query=build_official_website_query(
+                                name=item["name"], city=item["city"], country_name=country_name
+                            ),
+                            country_code=country_code,
+                            search_language="en",
+                            result_limit=settings.facility_website_enrichment_results_per_facility,
+                            metadata={"purpose": "maps_census_official_website", "place_id": item["id"]},
+                        )
+                    ),
+                    timeout=settings.facility_website_enrichment_timeout_seconds,
+                )
+            except (TimeoutError, SearchProviderError):
+                continue
+
+            selected = select_official_website(
+                facility_name=item["name"], city=item["city"], country_name=country_name, results=results
+            )
+            if selected is None:
+                continue
+
+            async with session_factory() as write_db:
+                place = await write_db.get(MapsPlace, item["id"])
+                if place is not None and place.official_website is None:
+                    place.official_website = selected.url
+                    place.website_source = "search"
+                await write_db.commit()
 
 
 def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
@@ -517,6 +660,7 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         international_phone_number=place.international_phone_number,
         raw_website=place.raw_website,
         official_website=place.official_website,
+        website_source=place.website_source,
         is_relevant=place.is_relevant,
         relevance_reason=place.relevance_reason,
         confidence_score=float(place.confidence_score) if place.confidence_score is not None else None,
@@ -566,6 +710,25 @@ async def run_maps_census_job(ctx: dict, run_id: str) -> None:
             if run is not None and run.status != MapsCensusStatus.COMPLETED:
                 run.status = MapsCensusStatus.FAILED
                 run.error_message = "Unexpected error during Maps census execution."
+                run.completed_at = datetime.now(UTC)
+                await db.commit()
+
+
+async def refresh_maps_census_websites_job(ctx: dict, run_id: str) -> None:
+    """ARQ entrypoint: backfill missing official websites for a completed run."""
+    del ctx
+    logger.info("maps_census_refresh_websites_job_entered", extra={"run_id": run_id})
+    try:
+        await maps_census_service.run_website_refresh(None, run_id=run_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("maps_census_refresh_websites_job_failed", extra={"run_id": run_id})
+        from app.db.session import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            run = await db.get(MapsCensusRun, run_id)
+            if run is not None and run.status != MapsCensusStatus.COMPLETED:
+                run.status = MapsCensusStatus.FAILED
+                run.error_message = "Unexpected error while refreshing missing websites."
                 run.completed_at = datetime.now(UTC)
                 await db.commit()
 

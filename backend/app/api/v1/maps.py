@@ -57,3 +57,21 @@ async def list_maps_census_places(
         relevant_only=relevant_only,
         with_website_only=with_website_only,
     )
+
+
+@router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_maps_census_run(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    await maps_census_service.delete_run(db, auth, run_id)
+
+
+@router.post("/runs/{run_id}/refresh-websites", response_model=MapsCensusRunDetail)
+async def refresh_maps_census_run_websites(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await maps_census_service.request_website_refresh(db, auth, run_id)

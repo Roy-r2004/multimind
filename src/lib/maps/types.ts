@@ -36,6 +36,7 @@ export type MapsPlaceItem = {
   international_phone_number: string | null;
   raw_website: string | null;
   official_website: string | null;
+  website_source: "places" | "search" | null;
   is_relevant: boolean | null;
   relevance_reason: string | null;
   confidence_score: number | null;

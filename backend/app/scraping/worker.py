@@ -15,6 +15,7 @@ from app.services.scraping.execution_orchestrator import (
 )
 from app.services.scraping.maps_census_service import (
     recover_maps_census_runs,
+    refresh_maps_census_websites_job,
     run_maps_census_job,
 )
 
@@ -49,6 +50,7 @@ class WorkerSettings:
         recover_scraping_executions,
         run_maps_census_job,
         recover_maps_census_runs,
+        refresh_maps_census_websites_job,
     ]
     cron_jobs = [
         # Reclaim zombie "running" executions if the worker/job died mid-flight.

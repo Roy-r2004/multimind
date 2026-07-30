@@ -45,3 +45,19 @@ export function listMapsCensusPlaces(
     orgId: auth.orgId,
   });
 }
+
+export function deleteMapsCensusRun(auth: Auth, runId: string) {
+  return apiRequest<void>(`/maps/runs/${runId}`, {
+    method: "DELETE",
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function refreshMapsCensusWebsites(auth: Auth, runId: string) {
+  return apiRequest<MapsCensusRunDetail>(`/maps/runs/${runId}/refresh-websites`, {
+    method: "POST",
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}

@@ -156,3 +156,99 @@ async def test_list_maps_census_places_filters(db: AsyncSession, auth: AuthConte
         places = relevant_response.json()
         assert len(places) == 1
         assert places[0]["google_place_id"] == "p1"
+
+
+@pytest.mark.asyncio
+async def test_delete_maps_census_run(db: AsyncSession, auth: AuthContext):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="BY",
+        country_name="Belarus",
+        status=MapsCensusStatus.FAILED,
+        error_message="Google Places API key is not configured.",
+    )
+    db.add(run)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        delete_response = await client.delete(f"/api/v1/maps/runs/{run.id}")
+        assert delete_response.status_code == 204
+
+        get_response = await client.get(f"/api/v1/maps/runs/{run.id}")
+        assert get_response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_maps_census_run_scoped_to_org(db: AsyncSession, auth: AuthContext):
+    from tests.conftest import create_other_auth
+
+    other_auth = await create_other_auth(db)
+    run = MapsCensusRun(
+        organization_id=other_auth.org_id,
+        created_by=other_auth.user.id,
+        country_code="BY",
+        country_name="Belarus",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.delete(f"/api/v1/maps/runs/{run.id}")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_refresh_websites_requires_completed_run(db: AsyncSession, auth: AuthContext):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="BY",
+        country_name="Belarus",
+        status=MapsCensusStatus.QUEUED,
+    )
+    db.add(run)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(f"/api/v1/maps/runs/{run.id}/refresh-websites")
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_refresh_websites_marks_completed_run_running(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    async def fake_enqueue_refresh(self, run_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._enqueue_refresh",
+        fake_enqueue_refresh,
+    )
+
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="BY",
+        country_name="Belarus",
+        status=MapsCensusStatus.COMPLETED,
+        places_classified_relevant=5,
+        places_with_website=2,
+    )
+    db.add(run)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(f"/api/v1/maps/runs/{run.id}/refresh-websites")
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"

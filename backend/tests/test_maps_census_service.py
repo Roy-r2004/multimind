@@ -13,6 +13,7 @@ from app.db.models import MapsCensusCellStatus, MapsCensusRun, MapsCensusStatus,
 from app.services.scraping.maps_census_service import maps_census_service
 from app.services.scraping.maps_grid_planner import MapsGridCell
 from app.services.scraping.maps_places_client import PlaceResult
+from app.services.scraping.search_providers.base import SearchProviderResult
 
 
 class _FakeGridPlanner:
@@ -177,6 +178,93 @@ async def test_run_census_dedupes_places_and_applies_website_validation(db, auth
 
 
 @pytest.mark.asyncio
+async def test_run_census_falls_back_to_search_when_places_has_no_website(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+
+    cells = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
+    # Google Places found the facility but returned no website for it at all.
+    no_website_place = PlaceResult(
+        google_place_id="place-no-site",
+        raw_name="Centre Gamma Rehab",
+        formatted_address="5 Hope St, Minsk, Belarus",
+        place_types=["health"],
+        latitude=53.9,
+        longitude=27.5667,
+        website=None,
+    )
+    by_query = {"rehab Minsk": [no_website_place]}
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner",
+        _FakeGridPlanner(cells),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient(by_query),
+    )
+
+    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
+        from app.services.scraping.maps_census_service import MapsRelevanceDecision
+
+        return [
+            MapsRelevanceDecision(
+                place_id=item["place_id"], is_relevant=True, reason="rehab facility", confidence=0.9
+            )
+            for item in payloads
+        ]
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._classify_batch",
+        fake_classify_batch,
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="openai/gpt-4.1"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
+    )
+
+    class _FakeSearchProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.requests: list[str] = []
+
+        async def search(self, request) -> list[SearchProviderResult]:
+            self.requests.append(request.query)
+            return [
+                SearchProviderResult(
+                    rank=1,
+                    url="https://centre-gamma.by/",
+                    title="Centre Gamma — official site",
+                    snippet="Official rehabilitation center in Minsk, Belarus",
+                )
+            ]
+
+    fake_search_provider = _FakeSearchProvider()
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_search_provider",
+        lambda: fake_search_provider,
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.COMPLETED
+    assert run.places_with_website == 1
+    assert len(fake_search_provider.requests) == 1
+
+    place = (
+        await db.execute(select(MapsPlace).where(MapsPlace.google_place_id == "place-no-site"))
+    ).scalar_one()
+    assert place.is_relevant is True
+    assert place.official_website == "https://centre-gamma.by/"
+    assert place.website_source == "search"
+
+
+@pytest.mark.asyncio
 async def test_run_census_fails_when_places_api_key_missing(db, auth, monkeypatch):
     run = await _create_run(db, auth)
     cells = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
@@ -272,3 +360,119 @@ async def test_create_run_queues_and_list_get_places_scoped_to_org(db, auth, mon
     )
     assert len(with_website) == 1
     assert with_website[0].google_place_id == "p1"
+
+
+@pytest.mark.asyncio
+async def test_delete_run_removes_run_and_places(db, auth):
+    run = await _create_run(db, auth)
+    db.add(
+        MapsPlace(
+            run_id=run.id,
+            google_place_id="p1",
+            raw_name="Some Clinic",
+            canonical_name="Some Clinic",
+            is_relevant=True,
+        )
+    )
+    await db.commit()
+
+    await maps_census_service.delete_run(db, auth, run.id)
+
+    assert await db.get(MapsCensusRun, run.id) is None
+    remaining_places = (
+        await db.execute(select(MapsPlace).where(MapsPlace.run_id == run.id))
+    ).scalars().all()
+    assert remaining_places == []
+
+
+@pytest.mark.asyncio
+async def test_delete_run_raises_not_found_for_other_org(db, auth):
+    from app.core.exceptions import NotFoundError
+
+    run = await _create_run(db, auth)
+    other_auth = AuthContext(
+        user=auth.user, org_id="00000000-0000-0000-0000-000000000000", role=auth.role
+    )
+    with pytest.raises(NotFoundError):
+        await maps_census_service.delete_run(db, other_auth, run.id)
+
+
+@pytest.mark.asyncio
+async def test_request_website_refresh_rejects_non_completed_run(db, auth):
+    from app.core.exceptions import ValidationError
+
+    run = await _create_run(db, auth)  # left in QUEUED status
+    with pytest.raises(ValidationError):
+        await maps_census_service.request_website_refresh(db, auth, run.id)
+
+
+@pytest.mark.asyncio
+async def test_request_website_refresh_enqueues_and_marks_running(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.COMPLETED
+    await db.commit()
+
+    captured: dict[str, str] = {}
+
+    async def fake_enqueue_refresh(self, run_id: str) -> None:
+        captured["run_id"] = run_id
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._enqueue_refresh",
+        fake_enqueue_refresh,
+    )
+
+    detail = await maps_census_service.request_website_refresh(db, auth, run.id)
+    assert detail.status == "running"
+    assert captured["run_id"] == run.id
+
+
+@pytest.mark.asyncio
+async def test_run_website_refresh_backfills_missing_website_and_completes(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.RUNNING
+    run.cells_total = 1
+    run.cells_completed = 1
+    run.places_found = 1
+    run.places_classified_relevant = 1
+    await db.commit()
+
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-missing-site",
+        raw_name="Centre Delta Rehab",
+        canonical_name="Centre Delta Rehab",
+        city_name="Minsk",
+        is_relevant=True,
+    )
+    db.add(place)
+    await db.commit()
+
+    class _FakeSearchProvider:
+        name = "fake"
+
+        async def search(self, request) -> list[SearchProviderResult]:
+            return [
+                SearchProviderResult(
+                    rank=1,
+                    url="https://centre-delta.by/",
+                    title="Centre Delta — official site",
+                    snippet="Official rehabilitation center in Minsk, Belarus",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_search_provider",
+        lambda: _FakeSearchProvider(),
+    )
+
+    summary = await maps_census_service.run_website_refresh(db, run_id=run.id)
+    assert summary["places_with_website"] == 1
+
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.COMPLETED
+    assert run.places_with_website == 1
+
+    await db.refresh(place)
+    assert place.official_website == "https://centre-delta.by/"
+    assert place.website_source == "search"

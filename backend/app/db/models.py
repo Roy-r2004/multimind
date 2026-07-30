@@ -2387,6 +2387,7 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     international_phone_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     raw_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
     official_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    website_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     is_relevant: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     relevance_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)

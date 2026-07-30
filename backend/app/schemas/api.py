@@ -722,6 +722,7 @@ class MapsPlaceItem(BaseModel):
     international_phone_number: str | None = None
     raw_website: str | None = None
     official_website: str | None = None
+    website_source: str | None = None
     is_relevant: bool | None = None
     relevance_reason: str | None = None
     confidence_score: float | None = None
