@@ -51,21 +51,39 @@ _BLOCKED_HOST_PARTS = {
     "bmeia.gv.at",
     "directory",
     "listing",
+    "sanatorii.by",
+    "booking.com",
+    "tripadvisor.",
 }
 _BLOCKED_PATH_TERMS = {
     "article",
     "catalog",
+    "category",
     "directory",
     "document",
     "download",
+    "itemlist",
     "listing",
     "news",
+    "photos",
+    "podrazdeleniya",
     "profile",
     "registry",
     "search",
+    "uslugi",
     "список",
     "реестр",
 }
+_BLOCKED_PATH_FRAGMENTS = (
+    "/item/",
+    "/itemlist/",
+    "/category/",
+    "/podrazdeleniya/",
+    "/uslugi/",
+    "/social/",
+    "/photos",
+    "index.php/",
+)
 _DOCUMENT_SUFFIXES = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv")
 _NAME_STOPWORDS = {
     "a",
@@ -82,6 +100,13 @@ _NAME_STOPWORDS = {
     "der",
     "die",
     "das",
+    "gov",
+    "www",
+    "http",
+    "https",
+    "com",
+    "org",
+    "net",
 }
 
 
@@ -124,6 +149,8 @@ def select_official_website(
         host_coverage = len(name_tokens & host_tokens) / len(name_tokens)
         if title_coverage < 0.65:
             continue
+        if _is_weak_official_candidate(parsed, host_coverage=host_coverage):
+            continue
         blob = f"{item.title} {item.snippet}".casefold()
         score = round(title_coverage * 55 + host_coverage * 25)
         if country_name.casefold() in blob:
@@ -133,9 +160,11 @@ def select_official_website(
         if "official" in blob:
             score += 8
         if parsed.path in {"", "/"}:
-            score += 5
+            score += 10
+        elif host_coverage >= 0.35:
+            score += 3
         score += max(0, 6 - max(item.rank, 1))
-        if score < 65:
+        if score < 70:
             continue
         scored.append(
             OfficialWebsiteCandidate(
@@ -214,6 +243,7 @@ class FacilityWebsiteEnrichmentService:
                 "enriched": 0,
                 "preserved": 0,
                 "ambiguous": 0,
+                "cleared": 0,
                 "failed": 0,
             }
             for facility in rows:
@@ -275,7 +305,18 @@ class FacilityWebsiteEnrichmentService:
                 results=results,
             )
             if selected is None:
-                summary["ambiguous"] += 1
+                async with session_factory() as write_db:
+                    facility = await write_db.get(RehabilitationFacility, facility_id)
+                    if facility is None:
+                        summary["failed"] += 1
+                        continue
+                    existing_url = (facility.primary_website or "").strip()
+                    if existing_url and website_needs_enrichment(existing_url):
+                        await _clear_untrusted_website(write_db, facility)
+                        await write_db.commit()
+                        summary["cleared"] += 1
+                    else:
+                        summary["ambiguous"] += 1
                 continue
 
             async with session_factory() as write_db:
@@ -288,12 +329,27 @@ class FacilityWebsiteEnrichmentService:
                     await write_db.commit()
                     continue
                 facility.primary_website = selected.url
-                existing = await write_db.scalar(
-                    select(RehabilitationFacilityContact.id).where(
-                        RehabilitationFacilityContact.facility_id == facility.id,
-                        RehabilitationFacilityContact.contact_type == "website",
-                        RehabilitationFacilityContact.value == selected.url,
-                    )
+                # Replace any prior untrusted website contact with the matched homepage.
+                stale_contacts = list(
+                    (
+                        await write_db.execute(
+                            select(RehabilitationFacilityContact).where(
+                                RehabilitationFacilityContact.facility_id == facility.id,
+                                RehabilitationFacilityContact.contact_type == "website",
+                            )
+                        )
+                    ).scalars()
+                )
+                for contact in stale_contacts:
+                    if (contact.value or "").strip() != selected.url:
+                        await write_db.delete(contact)
+                existing = next(
+                    (
+                        contact
+                        for contact in stale_contacts
+                        if (contact.value or "").strip() == selected.url
+                    ),
+                    None,
                 )
                 if existing is None:
                     write_db.add(
@@ -388,12 +444,49 @@ def _is_rejected_result(item: SearchProviderResult) -> bool:
         return True
     host = (parsed.hostname or "").casefold()
     path = parsed.path.casefold()
-    blob = f"{host} {path} {item.title} {item.snippet}".casefold()
+    query = (parsed.query or "").casefold()
+    blob = f"{host} {path} {query} {item.title} {item.snippet}".casefold()
     if any(part in host for part in _BLOCKED_HOST_PARTS):
         return True
     if path.endswith(_DOCUMENT_SUFFIXES):
         return True
-    return any(re.search(rf"(^|[/_\-\s]){re.escape(term)}([/_\-\s]|$)", blob) for term in _BLOCKED_PATH_TERMS)
+    if any(fragment in path for fragment in _BLOCKED_PATH_FRAGMENTS):
+        return True
+    if any(re.search(rf"(^|[/_\-\s]){re.escape(term)}([/_\-\s]|$)", blob) for term in _BLOCKED_PATH_TERMS):
+        return True
+    if host.endswith(".gov.by") and path not in {"", "/"}:
+        # Municipal/district portals are not facility homepages.
+        return True
+    return False
+
+
+def _is_weak_official_candidate(parsed, *, host_coverage: float) -> bool:
+    host = (parsed.hostname or "").casefold()
+    path = parsed.path.casefold()
+    if host.endswith(".gov.by"):
+        return host_coverage < 0.5 or path not in {"", "/"}
+    segments = [part for part in path.split("/") if part]
+    if len(segments) >= 2 and host_coverage < 0.35:
+        return True
+    if len(segments) >= 3:
+        return True
+    return False
+
+
+async def _clear_untrusted_website(db: AsyncSession, facility: RehabilitationFacility) -> None:
+    facility.primary_website = None
+    contacts = list(
+        (
+            await db.execute(
+                select(RehabilitationFacilityContact).where(
+                    RehabilitationFacilityContact.facility_id == facility.id,
+                    RehabilitationFacilityContact.contact_type == "website",
+                )
+            )
+        ).scalars()
+    )
+    for contact in contacts:
+        await db.delete(contact)
 
 
 def _homepage_url(parsed) -> str:

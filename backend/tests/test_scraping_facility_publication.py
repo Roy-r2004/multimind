@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -874,3 +875,78 @@ async def test_website_enrichment_persists_official_homepage_and_preserves_exist
     assert evidence.extracted_value == "https://centre-alpha.fr/"
     assert evidence.source_url_snapshot == "https://centre-alpha.fr/services"
     assert evidence.extraction_method == "official_website_search_v1"
+
+
+@pytest.mark.asyncio
+async def test_website_enrichment_clears_district_gov_url_when_no_real_homepage(
+    db: AsyncSession, auth
+):
+    execution = await create_execution(db, auth)
+    bad = RehabilitationFacility(
+        execution_id=execution.id,
+        organization_id=auth.org_id,
+        stable_key="bad-gov-site",
+        canonical_name="Bykhov Psycho-Neurological Boarding House",
+        original_language_name="Bykhov Psycho-Neurological Boarding House",
+        facility_type="rehabilitation",
+        organization_type="clinic",
+        operational_status="not_verified",
+        country_code="BY",
+        country_name="Belarus",
+        primary_city="Bykhov",
+        primary_website="http://bykhov.gov.by/index.php/ytz/item/1693-internat",
+        verification_status="verified_from_staging",
+        confidence_score=0.9,
+        duplicate_status="unique",
+        human_review_status="required",
+        is_mock=False,
+    )
+    db.add(bad)
+    await db.flush()
+    db.add(
+        RehabilitationFacilityContact(
+            facility_id=bad.id,
+            location_id=None,
+            contact_type="website",
+            label="Directory page",
+            value="http://bykhov.gov.by/index.php/ytz/item/1693-internat",
+            normalized_value="http://bykhov.gov.by/index.php/ytz/item/1693-internat",
+            is_primary=True,
+            available_24_7=False,
+            verification_status="extracted",
+            confidence_score=Decimal("0.5"),
+            contact_discovery_status="found_unverified",
+            is_mock=False,
+        )
+    )
+    await db.commit()
+
+    class FakeSearchProvider:
+        name = "fake"
+
+        async def search(self, request: SearchProviderRequest) -> list[SearchProviderResult]:
+            return [
+                SearchProviderResult(
+                    rank=1,
+                    url="http://bykhov.gov.by/index.php/ytz/item/1693-internat",
+                    title="Bykhov Psycho-Neurological Boarding House",
+                    snippet="District portal listing",
+                )
+            ]
+
+    summary = await FacilityWebsiteEnrichmentService(FakeSearchProvider()).enrich_execution(
+        db,
+        organization_id=auth.org_id,
+        execution_id=execution.id,
+    )
+
+    await db.refresh(bad)
+    assert bad.primary_website is None
+    assert summary["cleared"] == 1
+    remaining = await db.scalar(
+        select(RehabilitationFacilityContact).where(
+            RehabilitationFacilityContact.facility_id == bad.id,
+            RehabilitationFacilityContact.contact_type == "website",
+        )
+    )
+    assert remaining is None
