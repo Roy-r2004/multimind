@@ -5,6 +5,7 @@ import {
   ExternalLink,
   Globe,
   Grid2x2,
+  Layers,
   Loader2,
   MapPin,
   Phone,
@@ -178,9 +179,13 @@ function MapsRunDetailPage() {
                     : "No rehab facilities were confirmed for this country."}
                 </DreamPanel>
               )}
-              {places.map((place) => (
-                <PlaceRow key={place.id} place={place} />
-              ))}
+              {groupPlacesByName(places).map((group) =>
+                group.places.length > 1 ? (
+                  <GroupedPlaceCard key={group.key} group={group} />
+                ) : (
+                  <PlaceRow key={group.places[0].id} place={group.places[0]} />
+                ),
+              )}
             </div>
           </>
         )}
@@ -234,10 +239,59 @@ function MapsStatCard({
   );
 }
 
+interface PlaceGroup {
+  key: string;
+  name: string;
+  places: MapsPlaceItem[];
+}
+
+function groupPlacesByName(places: MapsPlaceItem[]): PlaceGroup[] {
+  const groups = new Map<string, PlaceGroup>();
+  for (const place of places) {
+    const key = place.canonical_name.trim().toLowerCase();
+    const existing = groups.get(key);
+    if (existing) {
+      existing.places.push(place);
+    } else {
+      groups.set(key, { key, name: place.canonical_name, places: [place] });
+    }
+  }
+  return Array.from(groups.values());
+}
+
 function PlaceRow({ place }: { place: MapsPlaceItem }) {
   return (
     <div className="rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
       <h3 className="truncate font-display text-base text-foreground">{place.canonical_name}</h3>
+      <PlaceLocationDetails place={place} />
+    </div>
+  );
+}
+
+function GroupedPlaceCard({ group }: { group: PlaceGroup }) {
+  return (
+    <div className="rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="truncate font-display text-base text-foreground">{group.name}</h3>
+        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-primary">
+          <Layers className="size-3" />
+          {group.places.length} locations
+        </span>
+      </div>
+      <div className="mt-3 space-y-3 divide-y divide-border/70">
+        {group.places.map((place) => (
+          <div key={place.id} className="pt-3 first:mt-0 first:border-0 first:pt-0">
+            <PlaceLocationDetails place={place} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PlaceLocationDetails({ place }: { place: MapsPlaceItem }) {
+  return (
+    <>
       {place.formatted_address && (
         <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
           <MapPin className="size-3 shrink-0" />
@@ -268,6 +322,6 @@ function PlaceRow({ place }: { place: MapsPlaceItem }) {
           <span className="text-muted-foreground/60">no verified official website found</span>
         )}
       </div>
-    </div>
+    </>
   );
 }
