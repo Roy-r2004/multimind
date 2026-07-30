@@ -88,15 +88,19 @@ export function ModelPill({
   subtitle?: string;
 }) {
   return (
-    <div className="elevate-card group relative flex flex-col gap-3 rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/35 hover:shadow-md">
-      <span className="absolute top-3 right-3 grid size-5 place-items-center rounded-full bg-primary/10 text-primary ring-1 ring-primary/20">
+    <div className="elevate-card group relative flex min-h-20 flex-col justify-between gap-3 overflow-hidden rounded-2xl border border-border/80 bg-card/90 p-4 transition duration-300 hover:-translate-y-0.5 hover:border-primary/30 hover:bg-card hover:shadow-[0_14px_36px_oklch(0.55_0.08_240/0.12)]">
+      <span className="absolute top-3 right-3 grid size-5 place-items-center rounded-full border border-primary/15 bg-primary/8 text-primary shadow-sm">
         <Check className="size-3" strokeWidth={3} />
       </span>
-      <div className="flex items-center gap-3">
-        <VendorLogo vendor={vendor} className="size-9 shrink-0 rounded-xl" title={name} />
-        <div className="min-w-0">
-          <div className="truncate font-medium text-foreground">{name}</div>
-          <div className="text-xs text-muted-foreground">{vendor}</div>
+      <div className="relative flex min-w-0 items-center gap-3 pr-5">
+        <VendorLogo
+          vendor={vendor}
+          className="size-10 shrink-0 rounded-[0.9rem] shadow-[0_6px_18px_rgba(15,23,42,0.14)] ring-1 ring-white/80 transition-transform duration-300 group-hover:scale-105"
+          title={name}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium leading-tight text-foreground">{name}</div>
+          <div className="mt-1 truncate text-[11px] text-muted-foreground">{vendor}</div>
           {subtitle && (
             <div className="truncate font-mono text-[10px] text-muted-foreground/80">{subtitle}</div>
           )}
@@ -105,11 +109,6 @@ export function ModelPill({
       <span
         className="size-1.5 rounded-full shadow-[0_0_8px_currentColor]"
         style={{ color, background: color }}
-      />
-      <VendorLogo
-        vendor={vendor}
-        watermark
-        className="pointer-events-none absolute -right-1 -bottom-1 size-14 opacity-30"
       />
     </div>
   );

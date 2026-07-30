@@ -23,15 +23,15 @@ export function VendorLogo({ vendor, className, watermark, title }: Props) {
   return (
     <span
       className={cn(
-        "inline-grid place-items-center rounded-full",
-        watermark ? "opacity-20" : "ring-1 ring-black/10",
+        "inline-grid place-items-center overflow-hidden rounded-full",
+        watermark ? "opacity-10" : "ring-1 ring-black/10",
         className,
       )}
       style={{ background: watermark ? "transparent" : mark.bg }}
       title={title}
       aria-hidden={!title}
     >
-      <svg viewBox="0 0 24 24" className={cn("size-[60%]", watermark && "size-full")}>
+      <svg viewBox="0 0 24 24" className={cn("size-[56%]", watermark && "size-[82%]")}>
         {mark.svg}
       </svg>
     </span>
@@ -67,10 +67,10 @@ const MARKS: Record<string, { bg: string; svg: ReactNode }> = {
     ),
   },
   xai: {
-    bg: "linear-gradient(135deg,#e5e7eb,#9ca3af)",
+    bg: "linear-gradient(145deg,#24272b,#050607)",
     svg: (
       <path
-        fill="#111"
+        fill="white"
         d="M4.5 4.5h4.1L12 9.2l3.4-4.7h4.1L13.9 12l6.2 7.5h-4.1L12 14.8l-3.9 4.7H4l6.1-7.5L4.5 4.5z"
       />
     ),
