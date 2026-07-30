@@ -77,7 +77,7 @@ function ScrapingExecutionPage() {
   const [discoveryQueries, setDiscoveryQueries] = useState<SourceDiscoveryQuery[]>([]);
   const [retrievalAttempts, setRetrievalAttempts] = useState<SourceRetrievalAttempt[]>([]);
   const [sourceDocuments, setSourceDocuments] = useState<SourceDocument[]>([]);
-  const [facilityFilter, setFacilityFilter] = useState<"all" | "verified" | "review">("all");
+  const [facilityFilter, setFacilityFilter] = useState<"all" | "review">("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<
     "Live" | "Reconnecting" | "Disconnected" | "Finished"
@@ -150,14 +150,12 @@ function ScrapingExecutionPage() {
 
   const visibleFacilities = useMemo(() => {
     if (facilityFilter === "all") return keptFacilities;
-    const target = facilityFilter === "review" ? "review_required" : facilityFilter;
-    return keptFacilities.filter((facility) => facility.publication_class === target);
+    return keptFacilities.filter((facility) => facility.publication_class === "review_required");
   }, [keptFacilities, facilityFilter]);
 
   const facilityCounts = useMemo(() => {
-    const verified = keptFacilities.filter((f) => f.publication_class === "verified").length;
     const review = keptFacilities.filter((f) => f.publication_class === "review_required").length;
-    return { all: keptFacilities.length, verified, review };
+    return { all: keptFacilities.length, review };
   }, [keptFacilities]);
 
   useEffect(() => {
@@ -474,8 +472,7 @@ function ScrapingExecutionPage() {
               </div>
             </DreamPanel>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <Metric label="Verified" value={execution.result_counts.verified ?? 0} />
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <Metric label="Review" value={execution.result_counts.review ?? 0} />
               <Metric label="Completeness" value={`${execution.completeness_percent.toFixed(0)}%`} />
               <Metric
@@ -508,7 +505,6 @@ function ScrapingExecutionPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     {([
                       ["all", "All", facilityCounts.all],
-                      ["verified", "Verified", facilityCounts.verified],
                       ["review", "Review", facilityCounts.review],
                     ] as const).map(([value, label, count]) => (
                       <Button

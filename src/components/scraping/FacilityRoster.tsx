@@ -141,11 +141,9 @@ function buildFacilityChips(facility: ScrapingFacilitySummary): Array<{
 }> {
   const chips: Array<{ label: string; tone: "neutral" | "good" | "warn" }> = [];
   const status = (facility.verification_status || "").toLowerCase();
-  if (status.includes("verif")) {
-    chips.push({ label: "Verified", tone: "good" });
-  } else if (status.includes("review") || facility.publication_class === "review_required") {
+  if (status.includes("review") || facility.publication_class === "review_required") {
     chips.push({ label: "Review", tone: "warn" });
-  } else if (status) {
+  } else if (status && !status.includes("verif")) {
     chips.push({ label: status.replaceAll("_", " "), tone: "neutral" });
   }
 
