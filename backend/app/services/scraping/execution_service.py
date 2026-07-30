@@ -346,22 +346,32 @@ class ScrapingExecutionService:
         limit: int = 200,
         execution_agent_id: str | None = None,
         event_type: str | None = None,
+        tail: bool = False,
     ) -> list[ScrapingEventResponse]:
+        """List events chronologically.
+
+        ``tail`` returns the newest ``limit`` events instead of the oldest. A live viewer
+        needs the tail: seeding a log panel from the oldest page leaves its stream cursor
+        far behind the run, which makes the server replay the backlog indefinitely.
+        """
         await self._execution_row(db, auth, execution_id)
-        query = (
-            select(ScrapingEvent)
-            .where(ScrapingEvent.execution_id == execution_id)
-            .order_by(ScrapingEvent.sequence_number)
-            .limit(min(max(limit, 1), 1000))
-        )
+        query = select(ScrapingEvent).where(ScrapingEvent.execution_id == execution_id)
         if after_sequence is not None:
             query = query.where(ScrapingEvent.sequence_number > after_sequence)
         if execution_agent_id:
             query = query.where(ScrapingEvent.execution_agent_id == execution_agent_id)
         if event_type:
             query = query.where(ScrapingEvent.event_type == event_type)
-        result = await db.execute(query)
-        return [self._event_response(event) for event in result.scalars().all()]
+
+        bounded_limit = min(max(limit, 1), 1000)
+        order = (
+            ScrapingEvent.sequence_number.desc() if tail else ScrapingEvent.sequence_number.asc()
+        )
+        result = await db.execute(query.order_by(order).limit(bounded_limit))
+        rows = list(result.scalars().all())
+        if tail:
+            rows.reverse()
+        return [self._event_response(event) for event in rows]
 
     async def list_facilities(
         self,

@@ -49,6 +49,17 @@ export const Route = createFileRoute("/scraping/$missionId/executions/$execution
   component: ScrapingExecutionPage,
 });
 
+const TERMINAL_EXECUTION_STATUSES = ["completed", "failed", "cancelled"];
+const TERMINAL_EVENT_TYPES = [
+  "execution_completed",
+  "execution_failed",
+  "execution_cancelled",
+];
+/** A refresh refetches nine endpoints, so keep bursts of events from stacking them up. */
+const REFRESH_DEBOUNCE_MS = 3000;
+/** Long censuses emit thousands of events; rendering them all is what stalls the page. */
+const MAX_RETAINED_EVENTS = 1000;
+
 function ScrapingExecutionPage() {
   const { missionId, executionId } = Route.useParams();
   const { authHeaders } = useAuth();
@@ -68,9 +79,9 @@ function ScrapingExecutionPage() {
   const [sourceDocuments, setSourceDocuments] = useState<SourceDocument[]>([]);
   const [facilityFilter, setFacilityFilter] = useState<"all" | "verified" | "review">("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [connectionState, setConnectionState] = useState<"Live" | "Reconnecting" | "Disconnected">(
-    "Disconnected",
-  );
+  const [connectionState, setConnectionState] = useState<
+    "Live" | "Reconnecting" | "Disconnected" | "Finished"
+  >("Disconnected");
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [downloadingExcel, setDownloadingExcel] = useState(false);
@@ -115,7 +126,12 @@ function ScrapingExecutionPage() {
     setDiscoveryQueries(loadedQueries);
     setRetrievalAttempts(loadedRetrievalAttempts);
     setSourceDocuments(loadedSourceDocuments);
-    lastSequenceRef.current = Math.max(0, ...loadedEvents.map((event) => event.sequence_number));
+    // Only ever advance: rewinding the cursor makes the server replay events the stream
+    // already delivered, which refreshes on every replayed event and never settles.
+    lastSequenceRef.current = Math.max(
+      lastSequenceRef.current,
+      ...loadedEvents.map((event) => event.sequence_number),
+    );
   }, [authHeaders, executionId, navigate]);
 
   useEffect(() => {
@@ -183,9 +199,20 @@ function ScrapingExecutionPage() {
     };
   }, [authHeaders, executionId, selectedFacilityId]);
 
+  const executionStatus = detail?.execution.status;
+  const isTerminal = executionStatus
+    ? TERMINAL_EXECUTION_STATUSES.includes(executionStatus)
+    : false;
+
   useEffect(() => {
     const auth = authHeaders();
     if (!auth) {
+      return;
+    }
+    // A finished run emits nothing more, so holding the stream open only burns a server
+    // connection and keeps the page re-rendering.
+    if (isTerminal) {
+      setConnectionState("Finished");
       return;
     }
     let cancelled = false;
@@ -231,10 +258,18 @@ function ScrapingExecutionPage() {
               const event = JSON.parse(dataLine.slice(6)) as ScrapingEvent;
               if (event.sequence_number <= lastSequenceRef.current) continue;
               lastSequenceRef.current = event.sequence_number;
-              setEvents((current) => [...current, event]);
+              setEvents((current) => {
+                const next = [...current, event];
+                return next.length > MAX_RETAINED_EVENTS
+                  ? next.slice(next.length - MAX_RETAINED_EVENTS)
+                  : next;
+              });
               scheduleRefresh();
-              if (["execution_completed", "execution_failed", "execution_cancelled"].includes(event.event_type)) {
+              if (TERMINAL_EVENT_TYPES.includes(event.event_type)) {
+                cancelled = true;
+                controller?.abort();
                 void loadAll();
+                return;
               }
             }
           }
@@ -252,7 +287,7 @@ function ScrapingExecutionPage() {
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
         void loadAll().catch(() => undefined);
-      }, 1000);
+      }, REFRESH_DEBOUNCE_MS);
     }
 
     void connect();
@@ -262,9 +297,10 @@ function ScrapingExecutionPage() {
       setConnectionState("Disconnected");
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
       }
     };
-  }, [authHeaders, executionId, loadAll]);
+  }, [authHeaders, executionId, isTerminal, loadAll]);
 
   const execution = detail?.execution;
   const filteredEvents = selectedAgentId
@@ -280,9 +316,6 @@ function ScrapingExecutionPage() {
     ["covered", "covered_no_results", "partially_covered"].includes(cell.status),
   ).length;
   const activeAgents = detail?.agents.filter((agent) => agent.status === "running").length ?? 0;
-  const isTerminal = execution
-    ? ["completed", "failed", "cancelled"].includes(execution.status)
-    : false;
   const uniqueDomainCount = useMemo(
     () => new Set(sourceCandidates.map((candidate) => candidate.domain)).size,
     [sourceCandidates],

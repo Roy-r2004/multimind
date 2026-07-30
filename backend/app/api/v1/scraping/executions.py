@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import AuthContext, get_auth_context
+from app.core.dependencies import AuthContext, get_auth_context, get_streaming_auth_context
 from app.db.session import AsyncSessionLocal, get_db
 from app.schemas.api import (
     ScrapingCoverageCellResponse,
@@ -118,6 +118,7 @@ async def list_events(
     limit: int = 200,
     execution_agent_id: str | None = None,
     event_type: str | None = None,
+    tail: bool = False,
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -129,6 +130,7 @@ async def list_events(
         limit=limit,
         execution_agent_id=execution_agent_id,
         event_type=event_type,
+        tail=tail,
     )
 
 
@@ -532,10 +534,13 @@ async def stream_events(
     request: Request,
     execution_id: str,
     after_sequence: int | None = None,
-    auth: AuthContext = Depends(get_auth_context),
-    db: AsyncSession = Depends(get_db),
+    auth: AuthContext = Depends(get_streaming_auth_context),
 ):
-    await execution_service.get_detail(db, auth, execution_id)
+    # Every dependency here must avoid Depends(get_db): FastAPI only unwinds
+    # yield-dependencies once the response finishes, so an injected session would stay
+    # checked out for the whole life of the stream and drain the pool one viewer at a time.
+    async with AsyncSessionLocal() as access_db:
+        await execution_service.get_detail(access_db, auth, execution_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         last_sequence = after_sequence or 0

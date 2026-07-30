@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.dependencies import AuthContext, get_auth_context
+from app.core.dependencies import AuthContext, get_auth_context, get_streaming_auth_context
 from app.core.logging import get_logger
 from app.db.session import AsyncSessionLocal, get_db
 from app.schemas.api import (
@@ -211,7 +211,7 @@ async def upload_attachment(
 @router.get("/turns/{turn_id}/stream")
 async def stream_turn(
     turn_id: UUID,
-    auth: AuthContext = Depends(get_auth_context),
+    auth: AuthContext = Depends(get_streaming_auth_context),
 ):
     async def event_generator():
         async with AsyncSessionLocal() as db:

@@ -257,10 +257,11 @@ export function listScrapingExecutionEvents(
   executionId: string,
   afterSequence?: number,
 ) {
-  const query = afterSequence ? `?after_sequence=${afterSequence}` : "";
-  // Events use a cursor (`after_sequence`), not offset pagination.
+  const cursor = afterSequence ? `&after_sequence=${afterSequence}` : "";
+  // Events use a cursor (`after_sequence`), not offset pagination. `tail` asks for the
+  // newest page so the live stream cursor starts at the run's head rather than its start.
   return apiRequest<ScrapingEvent[]>(
-    `/scraping/executions/${executionId}/events${query}${query ? "&" : "?"}limit=1000`,
+    `/scraping/executions/${executionId}/events?limit=1000&tail=true${cursor}`,
     {
       token: auth.token,
       orgId: auth.orgId,

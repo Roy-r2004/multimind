@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.security import decode_access_token
 from app.db.models import OrgMembership, OrgRole, User
-from app.db.session import get_db
+from app.db.session import AsyncSessionLocal, get_db
 
 security = HTTPBearer(auto_error=False)
 
@@ -23,9 +23,9 @@ class AuthContext:
     role: OrgRole
 
 
-async def get_current_user(
-    db: AsyncSession = Depends(get_db),
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+async def resolve_current_user(
+    db: AsyncSession,
+    credentials: HTTPAuthorizationCredentials | None,
 ) -> User:
     if credentials is None:
         raise UnauthorizedError()
@@ -45,10 +45,10 @@ async def get_current_user(
     return user
 
 
-async def get_auth_context(
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-    x_org_id: str | None = Header(default=None, alias="X-Org-Id"),
+async def resolve_auth_context(
+    db: AsyncSession,
+    user: User,
+    x_org_id: str | None,
 ) -> AuthContext:
     result = await db.execute(
         select(OrgMembership)
@@ -67,6 +67,37 @@ async def get_auth_context(
         membership = match
 
     return AuthContext(user=user, org_id=membership.org_id, role=membership.role)
+
+
+async def get_current_user(
+    db: AsyncSession = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> User:
+    return await resolve_current_user(db, credentials)
+
+
+async def get_auth_context(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    x_org_id: str | None = Header(default=None, alias="X-Org-Id"),
+) -> AuthContext:
+    return await resolve_auth_context(db, user, x_org_id)
+
+
+async def get_streaming_auth_context(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    x_org_id: str | None = Header(default=None, alias="X-Org-Id"),
+) -> AuthContext:
+    """Auth for never-ending responses.
+
+    Deliberately avoids ``Depends(get_db)``: FastAPI unwinds yield-dependencies only
+    after the response finishes, so a session injected here would stay checked out for
+    the entire life of the stream. Resolving in a short-lived session hands the
+    connection back before the stream body starts.
+    """
+    async with AsyncSessionLocal() as db:
+        user = await resolve_current_user(db, credentials)
+        return await resolve_auth_context(db, user, x_org_id)
 
 
 async def require_org_admin(

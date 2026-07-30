@@ -32,6 +32,13 @@ class Settings(BaseSettings):
 
     # Database — SQLite for local dev, PostgreSQL for production
     database_url: str = Field(default="sqlite+aiosqlite:///./multiai.db")
+    # SQLAlchemy's 5+10 default is too small: a single execution page fires 9 parallel
+    # requests, so a few concurrent viewers would queue past pool_timeout and 500.
+    database_pool_size: int = 20
+    database_max_overflow: int = 20
+    database_pool_timeout_seconds: int = 15
+    # Recycle below typical proxy/Postgres idle cutoffs so pooled sockets never go stale.
+    database_pool_recycle_seconds: int = 1800
 
     # Redis / job queue
     redis_url: str = Field(default="redis://localhost:6379/0")
