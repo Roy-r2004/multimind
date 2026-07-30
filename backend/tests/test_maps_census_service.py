@@ -541,6 +541,46 @@ def test_normalize_website_payload_accepts_url_aliases():
 
 
 @pytest.mark.asyncio
+async def test_drop_untrusted_websites_clears_blocklisted_directory_urls(db, auth):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.COMPLETED
+    await db.commit()
+
+    directory = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-directory",
+        raw_name="Mogilovskaya Psikhiatricheskaya Bol'nitsa",
+        canonical_name="Mogilovskaya Psikhiatricheskaya Bol'nitsa",
+        city_name="Mogilev",
+        is_relevant=True,
+        official_website="https://www.yoys.by/",
+        website_source="search",
+    )
+    genuine = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-genuine",
+        raw_name="Centre Alpha Rehab",
+        canonical_name="Centre Alpha Rehab",
+        city_name="Minsk",
+        is_relevant=True,
+        official_website="https://centre-alpha.by/",
+        website_source="search",
+    )
+    db.add_all([directory, genuine])
+    await db.commit()
+
+    session_factory = maps_census_service._session_factory(db)
+    dropped = await maps_census_service._drop_untrusted_websites(session_factory, run_id=run.id)
+    assert dropped == 1
+
+    await db.refresh(directory)
+    await db.refresh(genuine)
+    assert directory.official_website is None
+    assert directory.website_source is None
+    assert genuine.official_website == "https://centre-alpha.by/"
+
+
+@pytest.mark.asyncio
 async def test_propagate_shared_website_across_same_name_locations(db, auth):
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED

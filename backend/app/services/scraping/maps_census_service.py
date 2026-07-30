@@ -587,6 +587,33 @@ class MapsCensusService:
             await self._search_missing_websites(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
 
+    async def _drop_untrusted_websites(self, session_factory, *, run_id: str) -> int:
+        """Re-validate stored websites so blocklist changes apply retroactively.
+
+        A directory that slipped through earlier (e.g. a B2B listing site added to
+        the blocklist later) is cleared here, which also re-queues that place for
+        the search pass below.
+        """
+        async with session_factory() as db:
+            places = (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.is_relevant.is_(True),
+                        MapsPlace.official_website.is_not(None),
+                    )
+                )
+            ).scalars().all()
+            dropped = 0
+            for place in places:
+                if website_needs_enrichment(place.official_website):
+                    place.official_website = None
+                    place.website_source = None
+                    dropped += 1
+            if dropped:
+                await db.commit()
+            return dropped
+
     async def _propagate_shared_websites(self, session_factory, *, run_id: str) -> None:
         """Same-name multi-location facilities share one official website when unambiguous.
 
@@ -636,6 +663,7 @@ class MapsCensusService:
     async def _search_missing_websites(self, session_factory, *, run_id: str) -> None:
         settings = get_settings()
         limit = max(1, settings.maps_census_website_search_max_places_per_run)
+        await self._drop_untrusted_websites(session_factory, run_id=run_id)
         async with session_factory() as scan_db:
             run = await scan_db.get(MapsCensusRun, run_id)
             country_name = run.country_name if run is not None else ""

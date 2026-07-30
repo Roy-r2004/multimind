@@ -54,6 +54,9 @@ _BLOCKED_HOST_PARTS = {
     "sanatorii.by",
     "booking.com",
     "tripadvisor.",
+    "yoys.",
+    "belorussia.su",
+    "yellowpages",
 }
 _BLOCKED_PATH_TERMS = {
     "article",
