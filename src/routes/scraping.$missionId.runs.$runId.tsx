@@ -337,8 +337,9 @@ function ScrapingRunDetailPage() {
                             <span className="text-sm text-muted-foreground">{execution.country_name}</span>
                           </div>
                           <p className="mt-2 text-sm text-muted-foreground">
-                            {execution.records_verified} facilities · {execution.documents_found}{" "}
-                            pages · {execution.sources_discovered} sources
+                            {execution.result_counts.kept ?? execution.records_verified} facilities ·{" "}
+                            {execution.documents_found} pages · {execution.sources_discovered}{" "}
+                            sources
                           </p>
                           <p className="mt-1 text-xs text-muted-foreground">
                             Profile: {(execution.mission_profile ?? "full_national_census").replaceAll("_", " ")}

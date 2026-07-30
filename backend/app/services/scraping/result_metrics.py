@@ -25,11 +25,21 @@ def bucket_label(value: Any) -> str:
     return publication_class
 
 
+def empty_result_counts() -> dict[str, int]:
+    return {"verified": 0, "review": 0, "excluded": 0, "kept": 0}
+
+
+def with_kept_total(counts: dict[str, int]) -> dict[str, int]:
+    """``kept`` is the roster the UI shows: everything AI cleanup did not exclude."""
+    counts["kept"] = counts["verified"] + counts["review"]
+    return counts
+
+
 def result_counts(facilities: Iterable[Any]) -> dict[str, int]:
-    counts = {"verified": 0, "review": 0, "excluded": 0}
+    counts = empty_result_counts()
     for facility in facilities:
         counts[bucket_label(getattr(facility, "publication_class", None))] += 1
-    return counts
+    return with_kept_total(counts)
 
 
 def facility_completeness_percent(facility: Any) -> float:

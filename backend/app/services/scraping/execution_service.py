@@ -56,11 +56,14 @@ from app.schemas.api import (
 )
 from app.services.scraping.execution_outcome import execution_outcome_label
 from app.services.scraping.result_metrics import (
+    bucket_label,
+    empty_result_counts,
     execution_completeness_percent,
     facility_completeness_percent,
     primary_phone_for_facility,
     primary_phone_for_location,
     result_counts,
+    with_kept_total,
 )
 from app.services.scraping.scraper_policy_service import (
     build_policy_bundle,
@@ -200,7 +203,41 @@ class ScrapingExecutionService:
             )
             .order_by(ScrapingExecution.created_at.desc())
         )
-        return [self._summary(execution) for execution in result.scalars().all()]
+        executions = list(result.scalars().all())
+        # Mission-level callers headline these counts, so they must reflect the roster
+        # after AI cleanup rather than the pre-cleanup publish counters on the row.
+        counts_by_execution = await self._result_counts_by_execution(
+            db, [execution.id for execution in executions]
+        )
+        return [
+            self._summary(execution, counts=counts_by_execution.get(execution.id))
+            for execution in executions
+        ]
+
+    async def _result_counts_by_execution(
+        self, db: AsyncSession, execution_ids: list[str]
+    ) -> dict[str, dict[str, int]]:
+        if not execution_ids:
+            return {}
+        result = await db.execute(
+            select(
+                RehabilitationFacility.execution_id,
+                RehabilitationFacility.publication_class,
+                func.count(RehabilitationFacility.id),
+            )
+            .where(RehabilitationFacility.execution_id.in_(execution_ids))
+            .group_by(
+                RehabilitationFacility.execution_id,
+                RehabilitationFacility.publication_class,
+            )
+        )
+        counts: dict[str, dict[str, int]] = {}
+        for execution_id, publication_class, count in result.all():
+            bucket = counts.setdefault(execution_id, empty_result_counts())
+            bucket[bucket_label(publication_class)] += int(count)
+        return {
+            execution_id: with_kept_total(bucket) for execution_id, bucket in counts.items()
+        }
 
     async def get_detail(
         self, db: AsyncSession, auth: AuthContext, execution_id: str
@@ -790,6 +827,7 @@ class ScrapingExecutionService:
         execution: ScrapingExecution,
         *,
         facilities: list[RehabilitationFacility] | None = None,
+        counts: dict[str, int] | None = None,
     ) -> ScrapingExecutionSummary:
         persisted_profile = execution.country_profile_json if isinstance(execution.country_profile_json, dict) else {}
         mission_profile = persisted_profile.get("mission_profile") or resolve_mission_profile(
@@ -811,7 +849,7 @@ class ScrapingExecutionService:
             country_code=execution.country_code,
             country_name=execution.country_name,
             mission_profile=mission_profile,
-            result_counts=result_counts(facility_rows),
+            result_counts=counts if counts is not None else result_counts(facility_rows),
             completeness_percent=execution_completeness_percent(facility_rows),
             started_at=execution.started_at,
             completed_at=execution.completed_at,

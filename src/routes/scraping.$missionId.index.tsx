@@ -199,8 +199,9 @@ function ScrapingMissionPage() {
                 <p className="text-[11px] uppercase tracking-[0.28em] text-teal-700/80">Landed</p>
                 <p className="mt-1 font-display text-2xl text-foreground">Flight results ready</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {latestExecution.records_verified} facilities · {latestExecution.documents_found}{" "}
-                  pages · {latestExecution.sources_discovered} sources
+                  {latestExecution.result_counts.kept ?? latestExecution.records_verified} facilities
+                  · {latestExecution.documents_found} pages ·{" "}
+                  {latestExecution.sources_discovered} sources
                 </p>
               </div>
               <Button
