@@ -2318,6 +2318,10 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     places_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     places_classified_relevant: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     places_with_website: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    website_refresh_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    website_refresh_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     cells: Mapped[list["MapsCensusCell"]] = relationship(
         back_populates="run",

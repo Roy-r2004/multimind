@@ -136,6 +136,11 @@ class Settings(BaseSettings):
     # (or an untrustworthy) website — reuses the scraping pipeline's search provider.
     maps_census_website_search_enabled: bool = True
     maps_census_website_search_max_places_per_run: int = 250
+    # Background cron: automatically retry the website search for completed runs that
+    # still have gaps, so nobody has to click a "find missing websites" button.
+    maps_census_auto_website_refresh_enabled: bool = True
+    maps_census_auto_website_refresh_cooldown_hours: int = 6
+    maps_census_auto_website_refresh_max_attempts: int = 3
 
     # Public URL for share links
     public_app_url: str = Field(default="http://localhost:5173")

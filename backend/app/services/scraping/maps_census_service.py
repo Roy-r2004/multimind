@@ -37,6 +37,12 @@ from app.llm.providers import LLMProvider, get_provider_registry
 from app.schemas.api import MapsCensusRunDetail, MapsCensusRunSummary, MapsPlaceItem
 from app.services.scraping.countries import resolve_country
 from app.services.scraping.facility_website_enrichment_service import (
+    OfficialWebsiteCandidate,
+    _homepage_url,
+    _is_rejected_result,
+    _is_weak_official_candidate,
+    _safe_url,
+    _tokens,
     build_official_website_query,
     select_official_website,
     website_needs_enrichment,
@@ -47,6 +53,7 @@ from app.services.scraping.search_providers import create_search_provider
 from app.services.scraping.search_providers.base import (
     SearchProviderError,
     SearchProviderRequest,
+    SearchProviderResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,6 +232,8 @@ class MapsCensusService:
                 run.status = MapsCensusStatus.COMPLETED
                 run.completed_at = datetime.now(UTC)
                 run.heartbeat_at = datetime.now(UTC)
+                run.website_refresh_attempts += 1
+                run.website_refresh_completed_at = datetime.now(UTC)
                 summary["places_with_website"] = run.places_with_website
                 await final_db.commit()
         return summary
@@ -579,7 +588,12 @@ class MapsCensusService:
                 )
             ).scalars().all()
             pending_items = [
-                {"id": place.id, "name": place.canonical_name, "city": place.city_name or place.region_name}
+                {
+                    "id": place.id,
+                    "name": place.canonical_name,
+                    "city": place.city_name or place.region_name,
+                    "address": place.formatted_address,
+                }
                 for place in pending
             ]
             await scan_db.commit()
@@ -617,6 +631,19 @@ class MapsCensusService:
                 facility_name=item["name"], city=item["city"], country_name=country_name, results=results
             )
             if selected is None:
+                # Google Places names for non-Latin-script countries are often garbled
+                # Latin transliterations (e.g. "Dispanser Narkologicheskii Klinicheskii
+                # Gorodskoi") that never token-match the real (native-script) site
+                # content — even when the search found the right result. Retry the
+                # match against the address instead, which Google often leaves
+                # partially in the native script (e.g. a Cyrillic street name).
+                selected = _match_official_website_by_address(
+                    address=item["address"],
+                    city=item["city"],
+                    country_name=country_name,
+                    results=results,
+                )
+            if selected is None:
                 continue
 
             async with session_factory() as write_db:
@@ -625,6 +652,73 @@ class MapsCensusService:
                     place.official_website = selected.url
                     place.website_source = "search"
                 await write_db.commit()
+
+
+def _address_tokens(address: str | None) -> set[str]:
+    if not address:
+        return set()
+    # Keep house numbers (e.g. "16") — they're often the second signal alongside
+    # a street name that confirms a real match. _tokens() already drops 1-char
+    # tokens and generic stopwords.
+    return _tokens(address)
+
+
+def _match_official_website_by_address(
+    *,
+    address: str | None,
+    city: str | None,
+    country_name: str,
+    results: list[SearchProviderResult],
+) -> OfficialWebsiteCandidate | None:
+    """Fallback matcher for when Places' transliterated name can't be matched
+    against native-script site content — matches on address tokens instead
+    (street name, house number), which Google often leaves partially untransliterated.
+    """
+    address_tokens = _address_tokens(address)
+    if len(address_tokens) < 2:
+        return None
+    scored: list[OfficialWebsiteCandidate] = []
+    for item in results:
+        if _is_rejected_result(item):
+            continue
+        parsed = _safe_url(item.url)
+        if parsed is None:
+            continue
+        blob_tokens = _tokens(f"{item.title} {item.snippet}")
+        overlap = address_tokens & blob_tokens
+        # Require at least two distinct address tokens (e.g. street name + house
+        # number) so a bare city-name mention alone can't count as a match.
+        if len(overlap) < 2:
+            continue
+        host_tokens = _tokens(parsed.hostname or "")
+        host_coverage = len(address_tokens & host_tokens) / len(address_tokens)
+        if _is_weak_official_candidate(parsed, host_coverage=host_coverage):
+            continue
+        blob = f"{item.title} {item.snippet}".casefold()
+        score = len(overlap) * 12
+        if country_name.casefold() in blob:
+            score += 8
+        if city and city.casefold() in blob:
+            score += 5
+        if parsed.path in {"", "/"}:
+            score += 10
+        score += max(0, 6 - max(item.rank, 1))
+        if score < 35:
+            continue
+        scored.append(
+            OfficialWebsiteCandidate(
+                url=_homepage_url(parsed),
+                score=score,
+                source_url=item.url,
+                title=item.title[:500],
+            )
+        )
+    if not scored:
+        return None
+    scored.sort(key=lambda candidate: (-candidate.score, candidate.url))
+    if len(scored) > 1 and scored[0].score - scored[1].score < 8:
+        return None
+    return scored[0]
 
 
 def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
@@ -756,3 +850,47 @@ async def recover_maps_census_runs(ctx: dict) -> None:
     for run_id in run_ids:
         logger.warning("maps_census_recovering_stale_run", extra={"run_id": run_id})
         asyncio.create_task(run_maps_census_job({}, run_id))
+
+
+async def auto_refresh_maps_census_websites(ctx: dict) -> None:
+    """Periodically retry the missing-website search for completed runs that still
+    have relevant facilities without an official website — fully automatic, no
+    manual "find missing websites" click required.
+    """
+    del ctx
+    settings = get_settings()
+    if not settings.maps_census_auto_website_refresh_enabled:
+        return
+    from datetime import timedelta
+
+    from app.db.session import AsyncSessionLocal
+
+    cooldown = timedelta(hours=max(1, settings.maps_census_auto_website_refresh_cooldown_hours))
+    max_attempts = max(1, settings.maps_census_auto_website_refresh_max_attempts)
+    now = datetime.now(UTC)
+
+    async with AsyncSessionLocal() as db:
+        candidates = (
+            await db.execute(
+                select(MapsCensusRun).where(
+                    MapsCensusRun.status == MapsCensusStatus.COMPLETED,
+                    MapsCensusRun.places_classified_relevant > MapsCensusRun.places_with_website,
+                    MapsCensusRun.website_refresh_attempts < max_attempts,
+                )
+            )
+        ).scalars().all()
+        due_run_ids: list[str] = []
+        for run in candidates:
+            last_attempt = run.website_refresh_completed_at or run.completed_at
+            if last_attempt is not None and last_attempt.tzinfo is None:
+                last_attempt = last_attempt.replace(tzinfo=UTC)
+            if last_attempt is not None and now - last_attempt < cooldown:
+                continue
+            run.status = MapsCensusStatus.RUNNING
+            run.heartbeat_at = now
+            due_run_ids.append(run.id)
+        await db.commit()
+
+    for run_id in due_run_ids:
+        logger.info("maps_census_auto_refresh_websites", extra={"run_id": run_id})
+        asyncio.create_task(refresh_maps_census_websites_job({}, run_id))

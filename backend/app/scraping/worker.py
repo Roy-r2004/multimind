@@ -14,6 +14,7 @@ from app.services.scraping.execution_orchestrator import (
     run_scraping_execution,
 )
 from app.services.scraping.maps_census_service import (
+    auto_refresh_maps_census_websites,
     recover_maps_census_runs,
     refresh_maps_census_websites_job,
     run_maps_census_job,
@@ -56,6 +57,9 @@ class WorkerSettings:
         # Reclaim zombie "running" executions if the worker/job died mid-flight.
         cron(recover_scraping_executions, second={0, 30}, run_at_startup=False),
         cron(recover_maps_census_runs, second={15, 45}, run_at_startup=False),
+        # Backfill missing official websites on completed Maps census runs — fully
+        # automatic, replaces needing to click "Find missing websites" manually.
+        cron(auto_refresh_maps_census_websites, minute={0, 30}, run_at_startup=True),
     ]
     on_startup = startup
     on_shutdown = shutdown

@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import json
+from asyncio import gather as asyncio_gather
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.dependencies import AuthContext
-from app.db.models import MapsCensusCellStatus, MapsCensusRun, MapsCensusStatus, MapsPlace
-from app.services.scraping.maps_census_service import maps_census_service
+from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
+from app.services.scraping.maps_census_service import (
+    _match_official_website_by_address,
+    auto_refresh_maps_census_websites,
+    maps_census_service,
+)
 from app.services.scraping.maps_grid_planner import MapsGridCell
 from app.services.scraping.maps_places_client import PlaceResult
 from app.services.scraping.search_providers.base import SearchProviderResult
@@ -476,3 +483,229 @@ async def test_run_website_refresh_backfills_missing_website_and_completes(db, a
     await db.refresh(place)
     assert place.official_website == "https://centre-delta.by/"
     assert place.website_source == "search"
+
+
+def _tracking_create_task(monkeypatch, *, marker: str):
+    """Delegates to the real asyncio.create_task for everything (so SQLAlchemy's own
+    internal task scheduling on session close keeps working) but records tasks whose
+    coroutine was produced by a function named ``marker``.
+    """
+    import asyncio
+
+    real_create_task = asyncio.create_task
+    captured: list[asyncio.Task] = []
+
+    def wrapper(coro, *args, **kwargs):
+        task = real_create_task(coro, *args, **kwargs)
+        code = getattr(coro, "cr_code", None)
+        if code is not None and code.co_name == marker:
+            captured.append(task)
+        return task
+
+    monkeypatch.setattr("asyncio.create_task", wrapper)
+    return captured
+
+
+def test_address_fallback_rescues_transliterated_name_mismatch():
+    """Regression test for the Belarus gap: Google Places gives a garbled Latin
+    transliteration of the name ("Dispanser Narkologicheskii Klinicheskii
+    Gorodskoi"), so name-token matching against the real Cyrillic site content
+    always fails — but the address ("ulica Gastello 16, Minsk") is partially
+    left in Cyrillic by Google and does overlap with the real site's content.
+    """
+    results = [
+        SearchProviderResult(
+            rank=1,
+            url="https://gknd.by/",
+            title="Услуги — Минский городской клинический наркологический центр",
+            snippet="Учреждение здравоохранения, г. Минск, ул. Гастелло, 16",
+        ),
+        SearchProviderResult(
+            rank=2,
+            url="https://narco-dispanser.relax.by/rubric/addiction/",
+            title="Наркологический центр в Минске — цены, отзывы",
+            snippet="Каталог клиник Минска, юридический адрес ул. Гастелло, 16",
+        ),
+    ]
+    selected = _match_official_website_by_address(
+        address="улица Гастелло 16, Minsk, Minskaja voblasć 220035",
+        city="Minsk",
+        country_name="Belarus",
+        results=results,
+    )
+    assert selected is not None
+    assert selected.url == "https://gknd.by/"
+
+
+def test_address_fallback_requires_two_overlapping_tokens():
+    """A bare city-name mention in an unrelated result must not count as a match."""
+    results = [
+        SearchProviderResult(
+            rank=1,
+            url="https://unrelated-directory.example/clinics",
+            title="Minsk clinics directory",
+            snippet="A list of clinics in Minsk, Belarus",
+        )
+    ]
+    selected = _match_official_website_by_address(
+        address="улица Гастелло 16, Minsk, Minskaja voblasć 220035",
+        city="Minsk",
+        country_name="Belarus",
+        results=results,
+    )
+    assert selected is None
+
+
+def test_address_fallback_returns_none_for_short_address():
+    selected = _match_official_website_by_address(
+        address="Minsk", city="Minsk", country_name="Belarus", results=[]
+    )
+    assert selected is None
+
+
+@pytest.mark.asyncio
+async def test_run_website_refresh_uses_address_fallback_when_name_match_fails(
+    db, auth, monkeypatch
+):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.COMPLETED
+    run.cells_total = 1
+    run.cells_completed = 1
+    run.places_found = 1
+    run.places_classified_relevant = 1
+    await db.commit()
+
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-transliterated",
+        raw_name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
+        canonical_name="Dispanser Narkologicheskii Klinicheskii Gorodskoi",
+        city_name="Minsk",
+        formatted_address="улица Гастелло 16, Minsk, Minskaja voblasć 220035",
+        is_relevant=True,
+    )
+    db.add(place)
+    await db.commit()
+
+    class _FakeSearchProvider:
+        name = "fake"
+
+        async def search(self, request) -> list[SearchProviderResult]:
+            return [
+                SearchProviderResult(
+                    rank=1,
+                    url="https://gknd.by/",
+                    title="Услуги — Минский городской клинический наркологический центр",
+                    snippet="Учреждение здравоохранения, г. Минск, ул. Гастелло, 16",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_search_provider",
+        lambda: _FakeSearchProvider(),
+    )
+
+    summary = await maps_census_service.run_website_refresh(db, run_id=run.id)
+    assert summary["places_with_website"] == 1
+
+    await db.refresh(place)
+    assert place.official_website == "https://gknd.by/"
+    assert place.website_source == "search"
+
+
+@pytest.mark.asyncio
+async def test_auto_refresh_selects_only_eligible_completed_runs(db, auth, monkeypatch):
+    """Cron-driven backfill: due runs flip to RUNNING and get a refresh job kicked
+    off; runs within cooldown, at the attempt cap, or with no gap are left alone.
+    """
+    bind = db.bind or db.get_bind()
+    session_factory = async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr("app.db.session.AsyncSessionLocal", session_factory)
+
+    now = datetime.now(UTC)
+
+    def make_run(**overrides):
+        defaults = dict(
+            organization_id=auth.org_id,
+            created_by=auth.user.id,
+            country_code="BY",
+            country_name="Belarus",
+            status=MapsCensusStatus.COMPLETED,
+            places_classified_relevant=10,
+            places_with_website=5,
+            completed_at=now - timedelta(hours=10),
+        )
+        defaults.update(overrides)
+        run = MapsCensusRun(**defaults)
+        db.add(run)
+        return run
+
+    eligible = make_run()
+    within_cooldown = make_run(website_refresh_completed_at=now - timedelta(hours=1))
+    max_attempts_hit = make_run(website_refresh_attempts=3)
+    no_gap = make_run(places_with_website=10)
+    await db.commit()
+
+    triggered_run_ids: list[str] = []
+
+    async def fake_refresh_job(ctx, run_id):
+        triggered_run_ids.append(run_id)
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.refresh_maps_census_websites_job",
+        fake_refresh_job,
+    )
+    captured_tasks = _tracking_create_task(monkeypatch, marker="fake_refresh_job")
+
+    await auto_refresh_maps_census_websites({})
+    await asyncio_gather(*captured_tasks)
+
+    assert triggered_run_ids == [eligible.id]
+
+    await db.refresh(eligible)
+    await db.refresh(within_cooldown)
+    await db.refresh(max_attempts_hit)
+    await db.refresh(no_gap)
+    assert eligible.status == MapsCensusStatus.RUNNING
+    assert within_cooldown.status == MapsCensusStatus.COMPLETED
+    assert max_attempts_hit.status == MapsCensusStatus.COMPLETED
+    assert no_gap.status == MapsCensusStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_auto_refresh_noop_when_disabled(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_auto_website_refresh_enabled", False)
+
+    bind = db.bind or db.get_bind()
+    session_factory = async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr("app.db.session.AsyncSessionLocal", session_factory)
+
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="BY",
+        country_name="Belarus",
+        status=MapsCensusStatus.COMPLETED,
+        places_classified_relevant=10,
+        places_with_website=0,
+        completed_at=datetime.now(UTC) - timedelta(hours=10),
+    )
+    db.add(run)
+    await db.commit()
+
+    async def fake_refresh_job(ctx, run_id):
+        raise AssertionError("should not be called when auto-refresh is disabled")
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.refresh_maps_census_websites_job",
+        fake_refresh_job,
+    )
+    captured_tasks = _tracking_create_task(monkeypatch, marker="fake_refresh_job")
+
+    await auto_refresh_maps_census_websites({})
+    assert captured_tasks == []
+
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.COMPLETED
