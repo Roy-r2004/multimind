@@ -49,8 +49,7 @@ export function MapsRunCard({
               {run.cells_completed}/{run.cells_total} cells
             </span>
             <span>{run.places_found} places found</span>
-            <span>{run.places_classified_relevant} relevant</span>
-            <span>{run.places_with_website} with official website</span>
+            <span>{run.places_with_website} verified locations</span>
             <span>Updated {new Date(run.updated_at).toLocaleString()}</span>
           </div>
           {run.error_message && <p className="mt-2 text-xs text-rose-600">{run.error_message}</p>}

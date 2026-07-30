@@ -19,7 +19,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
@@ -235,6 +235,7 @@ class MapsCensusService:
         session_factory = self._session_factory(db)
         await self._search_missing_websites(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
+        await self._delete_unverified_places(session_factory, run_id=run_id)
         async with session_factory() as final_db:
             run = await final_db.get(MapsCensusRun, run_id)
             summary = {"places_with_website": 0}
@@ -246,6 +247,7 @@ class MapsCensusService:
                         )
                     )
                 ).scalars().all()
+                run.places_classified_relevant = len(relevant_places)
                 run.places_with_website = sum(1 for p in relevant_places if p.official_website)
                 run.status = MapsCensusStatus.COMPLETED
                 run.completed_at = datetime.now(UTC)
@@ -586,6 +588,20 @@ class MapsCensusService:
         if settings.maps_census_website_search_enabled:
             await self._search_missing_websites(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
+        await self._delete_unverified_places(session_factory, run_id=run_id)
+
+    async def _delete_unverified_places(self, session_factory, *, run_id: str) -> int:
+        """Permanently remove relevant facilities lacking a verified official site."""
+        async with session_factory() as db:
+            result = await db.execute(
+                delete(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.is_relevant.is_(True),
+                    MapsPlace.official_website.is_(None),
+                )
+            )
+            await db.commit()
+            return int(result.rowcount or 0)
 
     async def _drop_untrusted_websites(self, session_factory, *, run_id: str) -> int:
         """Re-validate stored websites so blocklist changes apply retroactively.
@@ -741,7 +757,7 @@ class MapsCensusService:
         if not llm_queue:
             return
 
-        model = get_model(settings.maps_census_model)
+        model = get_model(settings.maps_census_website_llm_model)
         llm_provider = get_provider_registry().get_provider(model.provider)
         batch_size = max(1, settings.maps_census_website_llm_batch_size)
         for offset in range(0, len(llm_queue), batch_size):

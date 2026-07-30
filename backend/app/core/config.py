@@ -139,7 +139,8 @@ class Settings(BaseSettings):
     # When deterministic name/address matchers miss, batch Serper candidates through
     # the census LLM (OpenRouter) to pick the official homepage.
     maps_census_website_llm_enabled: bool = True
-    maps_census_website_llm_batch_size: int = 6
+    maps_census_website_llm_model: str = "claude"
+    maps_census_website_llm_batch_size: int = 3
     # Background cron: automatically retry the website search for completed runs that
     # still have gaps, so nobody has to click a "find missing websites" button.
     maps_census_auto_website_refresh_enabled: bool = True

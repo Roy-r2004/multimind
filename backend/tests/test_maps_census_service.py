@@ -731,9 +731,15 @@ async def test_run_website_refresh_uses_llm_when_rule_matchers_fail(db, auth, mo
         "app.services.scraping.maps_census_service.create_search_provider",
         lambda: _FakeSearchProvider(),
     )
+    requested_models: list[str] = []
+
+    def fake_get_model(name: str):
+        requested_models.append(name)
+        return SimpleNamespace(provider="openrouter", provider_model="anthropic/claude-sonnet-4")
+
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.get_model",
-        lambda _name: SimpleNamespace(provider="openrouter", provider_model="openai/gpt-4.1"),
+        fake_get_model,
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.get_provider_registry",
@@ -745,6 +751,92 @@ async def test_run_website_refresh_uses_llm_when_rule_matchers_fail(db, auth, mo
     await db.refresh(place)
     assert place.official_website == "https://www.gknd.by/"
     assert place.website_source == "search"
+    assert requested_models == ["claude"]
+
+
+@pytest.mark.asyncio
+async def test_delete_unverified_places_removes_only_relevant_rows_without_websites(db, auth):
+    run = await _create_run(db, auth)
+    verified = MapsPlace(
+        run_id=run.id,
+        google_place_id="verified",
+        raw_name="Verified Rehab",
+        canonical_name="Verified Rehab",
+        is_relevant=True,
+        official_website="https://verified.example/",
+        website_source="search",
+    )
+    unverified = MapsPlace(
+        run_id=run.id,
+        google_place_id="unverified",
+        raw_name="Unverified Rehab",
+        canonical_name="Unverified Rehab",
+        is_relevant=True,
+    )
+    irrelevant = MapsPlace(
+        run_id=run.id,
+        google_place_id="irrelevant",
+        raw_name="Unrelated Hotel",
+        canonical_name="Unrelated Hotel",
+        is_relevant=False,
+    )
+    db.add_all([verified, unverified, irrelevant])
+    await db.commit()
+
+    session_factory = maps_census_service._session_factory(db)
+    deleted = await maps_census_service._delete_unverified_places(session_factory, run_id=run.id)
+    assert deleted == 1
+
+    remaining = (
+        await db.execute(select(MapsPlace).where(MapsPlace.run_id == run.id))
+    ).scalars().all()
+    assert {place.google_place_id for place in remaining} == {"verified", "irrelevant"}
+
+
+@pytest.mark.asyncio
+async def test_refresh_recounts_only_retained_verified_facilities(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.COMPLETED
+    run.places_found = 2
+    run.places_classified_relevant = 2
+    await db.commit()
+
+    db.add_all(
+        [
+            MapsPlace(
+                run_id=run.id,
+                google_place_id="verified-count",
+                raw_name="Verified Rehab",
+                canonical_name="Verified Rehab",
+                is_relevant=True,
+                official_website="https://verified.example/",
+                website_source="search",
+            ),
+            MapsPlace(
+                run_id=run.id,
+                google_place_id="unverified-count",
+                raw_name="Unverified Rehab",
+                canonical_name="Unverified Rehab",
+                is_relevant=True,
+            ),
+        ]
+    )
+    await db.commit()
+
+    class _EmptySearchProvider:
+        async def search(self, _request):
+            return []
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_search_provider",
+        lambda: _EmptySearchProvider(),
+    )
+
+    await maps_census_service.run_website_refresh(db, run_id=run.id)
+    await db.refresh(run)
+    assert run.places_found == 2
+    assert run.places_classified_relevant == 1
+    assert run.places_with_website == 1
 
 
 def test_maps_website_search_queries_fall_back_from_quoted_to_address():

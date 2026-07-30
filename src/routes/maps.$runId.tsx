@@ -19,6 +19,7 @@ import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { getMapsCensusRun, listMapsCensusPlaces, refreshMapsCensusWebsites } from "@/lib/maps/api";
+import { groupVerifiedPlaces, type PlaceGroup } from "@/lib/maps/groupPlaces";
 import type { MapsCensusRunDetail, MapsPlaceItem } from "@/lib/maps/types";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
@@ -53,7 +54,7 @@ function MapsRunDetailPage() {
       try {
         const [runDetail, placeItems] = await Promise.all([
           getMapsCensusRun(auth!, runId),
-          listMapsCensusPlaces(auth!, runId, { relevantOnly: true }),
+          listMapsCensusPlaces(auth!, runId, { relevantOnly: true, withWebsiteOnly: true }),
         ]);
         if (cancelled) return;
         setRun(runDetail);
@@ -94,6 +95,8 @@ function MapsRunDetailPage() {
       setRefreshing(false);
     }
   }
+
+  const groupedPlaces = groupVerifiedPlaces(places);
 
   return (
     <AppShell>
@@ -146,15 +149,15 @@ function MapsRunDetailPage() {
             <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
               <MapsStatCard
                 icon={<Building2 className="size-4" />}
-                label="Rehab facilities"
-                value={run.places_classified_relevant}
+                label="Verified rehab centers"
+                value={groupedPlaces.length}
                 tone="teal"
                 emphasize
               />
               <MapsStatCard
                 icon={<Globe className="size-4" />}
-                label="With verified website"
-                value={run.places_with_website}
+                label="Verified locations"
+                value={places.length}
                 tone="sky"
               />
               <MapsStatCard
@@ -179,7 +182,7 @@ function MapsRunDetailPage() {
                     : "No rehab facilities were confirmed for this country."}
                 </DreamPanel>
               )}
-              {groupPlacesByName(places).map((group) =>
+              {groupedPlaces.map((group) =>
                 group.places.length > 1 ? (
                   <GroupedPlaceCard key={group.key} group={group} />
                 ) : (
@@ -237,26 +240,6 @@ function MapsStatCard({
       </div>
     </div>
   );
-}
-
-interface PlaceGroup {
-  key: string;
-  name: string;
-  places: MapsPlaceItem[];
-}
-
-function groupPlacesByName(places: MapsPlaceItem[]): PlaceGroup[] {
-  const groups = new Map<string, PlaceGroup>();
-  for (const place of places) {
-    const key = place.canonical_name.trim().toLowerCase();
-    const existing = groups.get(key);
-    if (existing) {
-      existing.places.push(place);
-    } else {
-      groups.set(key, { key, name: place.canonical_name, places: [place] });
-    }
-  }
-  return Array.from(groups.values());
 }
 
 function PlaceRow({ place }: { place: MapsPlaceItem }) {
