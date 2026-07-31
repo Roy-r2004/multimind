@@ -703,6 +703,7 @@ class MapsCensusRunSummary(BaseModel):
     completed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    hero_image_url: str | None = None
 
 
 class MapsCensusRunDetail(MapsCensusRunSummary):
@@ -727,6 +728,7 @@ class MapsPlaceItem(BaseModel):
     relevance_reason: str | None = None
     confidence_score: float | None = None
     discovered_via_query: str | None = None
+    has_photo: bool = False
 
 
 class SourceDiscoveryContext(BaseModel):

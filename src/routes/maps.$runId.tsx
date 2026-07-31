@@ -14,8 +14,11 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { DreamHeader, DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
+import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
+import { CountryOutline } from "@/components/maps/CountryOutline";
+import { MapsPlacePhoto } from "@/components/maps/MapsPlacePhoto";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
+import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { getMapsCensusRun, listMapsCensusPlaces, refreshMapsCensusWebsites } from "@/lib/maps/api";
@@ -101,13 +104,15 @@ function MapsRunDetailPage() {
   return (
     <AppShell>
       <DreamPageShell maxWidth="max-w-6xl">
-        <Link
-          to="/maps"
-          className="mb-8 inline-flex w-fit items-center gap-2 text-sm text-muted-foreground transition hover:text-primary"
-        >
-          <ArrowLeft className="size-3.5" />
-          All Maps census runs
-        </Link>
+        {!run && (
+          <Link
+            to="/maps"
+            className="mb-8 inline-flex w-fit items-center gap-2 text-sm text-muted-foreground transition hover:text-primary"
+          >
+            <ArrowLeft className="size-3.5" />
+            All Maps census runs
+          </Link>
+        )}
 
         {loading && !run && (
           <DreamPanel className="text-sm text-muted-foreground">Loading run…</DreamPanel>
@@ -116,31 +121,10 @@ function MapsRunDetailPage() {
 
         {run && (
           <>
-            <DreamHeader
-              eyebrow="Maps Census"
-              title={run.country_name}
-              description="Rehabilitation, addiction, and psychiatric facilities discovered via Google Places and verified by AI."
-              action={
-                <div className="flex items-center gap-3">
-                  {run.status === "completed" &&
-                    run.places_classified_relevant > run.places_with_website && (
-                      <button
-                        type="button"
-                        onClick={() => void handleFindMissingWebsites()}
-                        disabled={refreshing}
-                        className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
-                      >
-                        {refreshing ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <Sparkles className="size-3.5" />
-                        )}
-                        Find missing websites
-                      </button>
-                    )}
-                  <MapsRunStatusBadge status={run.status} />
-                </div>
-              }
+            <MapsRunHero
+              run={run}
+              refreshing={refreshing}
+              onFindMissingWebsites={() => void handleFindMissingWebsites()}
             />
             {run.error_message && (
               <DreamPanel className="mt-6 text-sm text-rose-600">{run.error_message}</DreamPanel>
@@ -184,9 +168,9 @@ function MapsRunDetailPage() {
               )}
               {groupedPlaces.map((group) =>
                 group.places.length > 1 ? (
-                  <GroupedPlaceCard key={group.key} group={group} />
+                  <GroupedPlaceCard key={group.key} runId={run.id} group={group} />
                 ) : (
-                  <PlaceRow key={group.places[0].id} place={group.places[0]} />
+                  <PlaceRow key={group.places[0].id} runId={run.id} place={group.places[0]} />
                 ),
               )}
             </div>
@@ -194,6 +178,98 @@ function MapsRunDetailPage() {
         )}
       </DreamPageShell>
     </AppShell>
+  );
+}
+
+function MapsRunHero({
+  run,
+  refreshing,
+  onFindMissingWebsites,
+}: {
+  run: MapsCensusRunDetail;
+  refreshing: boolean;
+  onFindMissingWebsites: () => void;
+}) {
+  const [primary, secondary] = getFlagColors(run.country_code);
+  const showFindMissingWebsites =
+    run.status === "completed" && run.places_classified_relevant > run.places_with_website;
+
+  return (
+    <div className="dream-rise relative isolate overflow-hidden rounded-[1.75rem] border border-border/90 bg-slate-900 shadow-[0_12px_36px_oklch(0.55_0.1_240/0.12)]">
+      {run.hero_image_url && (
+        <img
+          src={run.hero_image_url}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 size-full object-cover"
+        />
+      )}
+      <div
+        className={cn(
+          "absolute inset-0",
+          run.hero_image_url
+            ? "bg-gradient-to-t from-slate-950/92 via-slate-950/65 to-slate-950/25"
+            : undefined,
+        )}
+        style={
+          run.hero_image_url
+            ? undefined
+            : { backgroundImage: `linear-gradient(135deg, ${primary}, ${secondary})` }
+        }
+      />
+      <CountryOutline
+        countryCode={run.country_code}
+        className="absolute -right-6 -top-10 h-[22rem] w-[22rem] opacity-90 sm:h-[26rem] sm:w-[26rem]"
+      />
+
+      <div className="relative flex flex-col gap-6 p-6 sm:p-8">
+        <Link
+          to="/maps"
+          className="inline-flex w-fit items-center gap-2 text-sm text-white/70 transition hover:text-white"
+        >
+          <ArrowLeft className="size-3.5" />
+          All Maps census runs
+        </Link>
+
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-white/70">
+              Maps Census
+            </p>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <span aria-hidden="true" className="text-2xl leading-none">
+                {countryFlagEmoji(run.country_code)}
+              </span>
+              <h1 className="font-display text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+                {run.country_name}
+              </h1>
+            </div>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/75">
+              Rehabilitation, addiction, and psychiatric facilities discovered via Google Places
+              and verified by AI.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {showFindMissingWebsites && (
+              <button
+                type="button"
+                onClick={onFindMissingWebsites}
+                disabled={refreshing}
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-slate-900 shadow-sm transition hover:bg-white/90 disabled:opacity-50"
+              >
+                {refreshing ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="size-3.5" />
+                )}
+                Find missing websites
+              </button>
+            )}
+            <MapsRunStatusBadge status={run.status} />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -225,33 +301,38 @@ function MapsStatCard({
           : "border-border/90 bg-card/95 shadow-[0_8px_24px_oklch(0.45_0.04_240/0.06)]",
       )}
     >
-      <div className="flex items-start gap-3">
-        <span className={cn("grid size-9 shrink-0 place-items-center rounded-full", tones[tone])}>
-          {icon}
-        </span>
-        <div className="min-w-0">
-          <div className="font-display text-2xl font-semibold tracking-tight text-foreground">
-            {value}
-          </div>
-          <div className="mt-0.5 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
-            {label}
-          </div>
-        </div>
+      <span className={cn("grid size-9 place-items-center rounded-full", tones[tone])}>
+        {icon}
+      </span>
+      <div className="mt-3 font-display text-2xl font-semibold tracking-tight text-foreground">
+        {value}
+      </div>
+      <div className="mt-0.5 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
+        {label}
       </div>
     </div>
   );
 }
 
-function PlaceRow({ place }: { place: MapsPlaceItem }) {
+function PlaceRow({ runId, place }: { runId: string; place: MapsPlaceItem }) {
   return (
-    <div className="rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
-      <h3 className="truncate font-display text-base text-foreground">{place.canonical_name}</h3>
-      <PlaceLocationDetails place={place} />
+    <div className="flex gap-3 rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
+      <MapsPlacePhoto
+        runId={runId}
+        placeId={place.id}
+        hasPhoto={place.has_photo}
+        alt={place.canonical_name}
+        className="size-14"
+      />
+      <div className="min-w-0 flex-1">
+        <h3 className="truncate font-display text-base text-foreground">{place.canonical_name}</h3>
+        <PlaceLocationDetails place={place} />
+      </div>
     </div>
   );
 }
 
-function GroupedPlaceCard({ group }: { group: PlaceGroup }) {
+function GroupedPlaceCard({ runId, group }: { runId: string; group: PlaceGroup }) {
   const websites = [
     ...new Set(
       group.places
@@ -260,34 +341,44 @@ function GroupedPlaceCard({ group }: { group: PlaceGroup }) {
     ),
   ];
   const sharedWebsite = websites.length === 1 ? websites[0] : null;
+  const coverPlace = group.places.find((place) => place.has_photo) ?? group.places[0];
 
   return (
-    <div className="rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="truncate font-display text-base text-foreground">{group.name}</h3>
-        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-primary">
-          <Layers className="size-3" />
-          {group.places.length} locations
-        </span>
-      </div>
-      {sharedWebsite ? (
-        <a
-          href={sharedWebsite}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
-        >
-          <Globe className="size-3" />
-          {sharedWebsite}
-          <ExternalLink className="size-3" />
-        </a>
-      ) : null}
-      <div className="mt-3 space-y-3 divide-y divide-border/70">
-        {group.places.map((place) => (
-          <div key={place.id} className="pt-3 first:mt-0 first:border-0 first:pt-0">
-            <PlaceLocationDetails place={place} hideWebsite={Boolean(sharedWebsite)} />
-          </div>
-        ))}
+    <div className="flex gap-3 rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
+      <MapsPlacePhoto
+        runId={runId}
+        placeId={coverPlace.id}
+        hasPhoto={coverPlace.has_photo}
+        alt={group.name}
+        className="size-14"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="truncate font-display text-base text-foreground">{group.name}</h3>
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-primary">
+            <Layers className="size-3" />
+            {group.places.length} locations
+          </span>
+        </div>
+        {sharedWebsite ? (
+          <a
+            href={sharedWebsite}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
+          >
+            <Globe className="size-3" />
+            {sharedWebsite}
+            <ExternalLink className="size-3" />
+          </a>
+        ) : null}
+        <div className="mt-3 space-y-3 divide-y divide-border/70">
+          {group.places.map((place) => (
+            <div key={place.id} className="pt-3 first:mt-0 first:border-0 first:pt-0">
+              <PlaceLocationDetails place={place} hideWebsite={Boolean(sharedWebsite)} />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

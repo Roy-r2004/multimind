@@ -373,6 +373,120 @@ async def test_create_run_queues_and_list_get_places_scoped_to_org(db, auth, mon
 
 
 @pytest.mark.asyncio
+async def test_create_run_fetches_hero_image_in_background(db, auth, monkeypatch):
+    async def fake_enqueue(self, run_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._enqueue", fake_enqueue
+    )
+
+    class _FakePexelsClient:
+        async def search_landscape(self, query: str) -> str:
+            assert query == "Belarus landscape"
+            return "https://images.pexels.com/belarus-hero.jpg"
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_pexels_client",
+        lambda: _FakePexelsClient(),
+    )
+    bind = db.bind or db.get_bind()
+    session_factory = async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr("app.db.session.AsyncSessionLocal", session_factory)
+    captured_tasks = _tracking_create_task(monkeypatch, marker="_fetch_hero_image")
+
+    detail = await maps_census_service.create_run(db, auth, "by")
+    assert detail.hero_image_url is None  # not resolved yet — background task still pending
+    await asyncio_gather(*captured_tasks)
+
+    run = await db.get(MapsCensusRun, detail.id)
+    await db.refresh(run)
+    assert run.hero_image_url == "https://images.pexels.com/belarus-hero.jpg"
+
+
+@pytest.mark.asyncio
+async def test_create_run_survives_hero_image_fetch_failure(db, auth, monkeypatch):
+    async def fake_enqueue(self, run_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._enqueue", fake_enqueue
+    )
+
+    class _FailingPexelsClient:
+        async def search_landscape(self, query: str) -> str:
+            raise RuntimeError("pexels is down")
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_pexels_client",
+        lambda: _FailingPexelsClient(),
+    )
+    captured_tasks = _tracking_create_task(monkeypatch, marker="_fetch_hero_image")
+
+    detail = await maps_census_service.create_run(db, auth, "by")
+    assert detail.status == "queued"
+    # The failing background task must not raise into the test/event loop.
+    await asyncio_gather(*captured_tasks, return_exceptions=True)
+
+    run = await db.get(MapsCensusRun, detail.id)
+    await db.refresh(run)
+    assert run.hero_image_url is None
+
+
+@pytest.mark.asyncio
+async def test_run_census_persists_photo_reference(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+    cells = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
+    place_with_photo = PlaceResult(
+        google_place_id="place-with-photo",
+        raw_name="Centre Photo Rehab",
+        formatted_address="1 Main St, Minsk, Belarus",
+        place_types=["health"],
+        website="https://centre-photo.by/",
+        photo_reference="places/place-with-photo/photos/photo-1",
+    )
+    by_query = {"rehab Minsk": [place_with_photo]}
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner",
+        _FakeGridPlanner(cells),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient(by_query),
+    )
+
+    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
+        from app.services.scraping.maps_census_service import MapsRelevanceDecision
+
+        return [
+            MapsRelevanceDecision(
+                place_id=item["place_id"], is_relevant=True, reason="rehab facility", confidence=0.9
+            )
+            for item in payloads
+        ]
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._classify_batch",
+        fake_classify_batch,
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="openai/gpt-4.1"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
+    )
+
+    await maps_census_service.run_census(db, run_id=run.id)
+
+    place = (
+        await db.execute(select(MapsPlace).where(MapsPlace.google_place_id == "place-with-photo"))
+    ).scalar_one()
+    assert place.photo_reference == "places/place-with-photo/photos/photo-1"
+
+
+@pytest.mark.asyncio
 async def test_delete_run_removes_run_and_places(db, auth):
     run = await _create_run(db, auth)
     db.add(

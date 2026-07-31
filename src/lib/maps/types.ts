@@ -15,6 +15,7 @@ export type MapsCensusRunSummary = {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  hero_image_url: string | null;
 };
 
 export type MapsCensusRunDetail = MapsCensusRunSummary;
@@ -41,4 +42,5 @@ export type MapsPlaceItem = {
   relevance_reason: string | null;
   confidence_score: number | null;
   discovered_via_query: string | null;
+  has_photo: boolean;
 };

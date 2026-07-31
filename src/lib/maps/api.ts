@@ -61,3 +61,10 @@ export function refreshMapsCensusWebsites(auth: Auth, runId: string) {
     orgId: auth.orgId,
   });
 }
+
+/** Path (relative to the API base) for a facility photo — fetched as a blob by
+ * `MapsPlacePhoto` since it needs the Authorization header, unlike a plain `<img src>`.
+ */
+export function mapsPlacePhotoPath(runId: string, placeId: string): string {
+  return `/maps/runs/${runId}/places/${placeId}/photo`;
+}

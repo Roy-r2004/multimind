@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
 from app.db.session import get_db
@@ -252,3 +254,132 @@ async def test_refresh_websites_marks_completed_run_running(
         response = await client.post(f"/api/v1/maps/runs/{run.id}/refresh-websites")
     assert response.status_code == 200
     assert response.json()["status"] == "running"
+
+
+class _FakePhotoAsyncClient:
+    """Minimal httpx.AsyncClient stand-in for the Google Places Photo media call."""
+
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+        self.request_count = 0
+
+    def __call__(self, *, timeout: float) -> "_FakePhotoAsyncClient":
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def get(self, url, *, params):
+        self.request_count += 1
+        return self._response
+
+
+@pytest.mark.asyncio
+async def test_place_photo_404s_without_photo_reference(db: AsyncSession, auth: AuthContext):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="AT",
+        country_name="Austria",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-no-photo",
+        raw_name="No Photo Clinic",
+        canonical_name="No Photo Clinic",
+        is_relevant=True,
+    )
+    db.add(place)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/v1/maps/runs/{run.id}/places/{place.id}/photo")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_place_photo_fetches_and_caches_on_first_request(
+    db: AsyncSession, auth: AuthContext, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "test-places-key")
+    monkeypatch.setenv("MAPS_CENSUS_PHOTO_CACHE_DIR", str(tmp_path / "maps_photos"))
+    get_settings.cache_clear()
+
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="AT",
+        country_name="Austria",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-with-photo",
+        raw_name="Photo Clinic",
+        canonical_name="Photo Clinic",
+        is_relevant=True,
+        photo_reference="places/p-with-photo/photos/photo-1",
+    )
+    db.add(place)
+    await db.commit()
+
+    fake_client = _FakePhotoAsyncClient(httpx.Response(200, content=b"\xff\xd8\xff\xd9fakejpeg"))
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            first = await client.get(f"/api/v1/maps/runs/{run.id}/places/{place.id}/photo")
+            assert first.status_code == 200
+            assert first.content == b"\xff\xd8\xff\xd9fakejpeg"
+            assert fake_client.request_count == 1
+
+            # Second request must be served from disk cache — no second Google call.
+            second = await client.get(f"/api/v1/maps/runs/{run.id}/places/{place.id}/photo")
+            assert second.status_code == 200
+            assert fake_client.request_count == 1
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_place_photo_scoped_to_org(db: AsyncSession, auth: AuthContext):
+    from tests.conftest import create_other_auth
+
+    other_auth = await create_other_auth(db)
+    run = MapsCensusRun(
+        organization_id=other_auth.org_id,
+        created_by=other_auth.user.id,
+        country_code="AT",
+        country_name="Austria",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-other-org",
+        raw_name="Other Org Clinic",
+        canonical_name="Other Org Clinic",
+        is_relevant=True,
+        photo_reference="places/p-other-org/photos/photo-1",
+    )
+    db.add(place)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/v1/maps/runs/{run.id}/places/{place.id}/photo")
+    assert response.status_code == 404

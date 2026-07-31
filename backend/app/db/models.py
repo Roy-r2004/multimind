@@ -2322,6 +2322,7 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     website_refresh_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    hero_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     cells: Mapped[list["MapsCensusCell"]] = relationship(
         back_populates="run",
@@ -2392,6 +2393,7 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     raw_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
     official_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
     website_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    photo_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
     is_relevant: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     relevance_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)

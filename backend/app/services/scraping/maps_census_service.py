@@ -15,9 +15,11 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -50,6 +52,7 @@ from app.services.scraping.facility_website_enrichment_service import (
 )
 from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
 from app.services.scraping.maps_places_client import PlacesProviderError, create_places_client
+from app.services.scraping.pexels_client import create_pexels_client
 from app.services.scraping.search_providers import create_search_provider
 from app.services.scraping.search_providers.base import (
     SearchProviderError,
@@ -113,7 +116,28 @@ class MapsCensusService:
         run_id = run.id
         await db.commit()
         await self._enqueue(run_id)
+        asyncio.create_task(self._fetch_hero_image(run_id, country.name))
         return await self.get_run(db, auth, run_id)
+
+    async def _fetch_hero_image(self, run_id: str, country_name: str) -> None:
+        """Best-effort Pexels lookup for a country hero photo — never raises,
+        never blocks or fails the census run if Pexels is slow or unavailable.
+        """
+        try:
+            client = create_pexels_client()
+            url = await client.search_landscape(f"{country_name} landscape")
+        except Exception:  # noqa: BLE001
+            logger.warning("maps_census_hero_image_failed run_id=%s", run_id, exc_info=True)
+            return
+        if not url:
+            return
+        from app.db.session import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            run = await db.get(MapsCensusRun, run_id)
+            if run is not None:
+                run.hero_image_url = url
+                await db.commit()
 
     async def list_runs(self, db: AsyncSession, auth: AuthContext) -> list[MapsCensusRunSummary]:
         rows = (
@@ -153,6 +177,48 @@ class MapsCensusService:
             query = query.where(MapsPlace.official_website.is_not(None))
         rows = (await db.execute(query.order_by(MapsPlace.canonical_name))).scalars().all()
         return [_place_item(place) for place in rows]
+
+    async def get_place_photo(
+        self, db: AsyncSession, auth: AuthContext, run_id: str, place_id: str
+    ) -> Path:
+        """Return a local cache path for a facility photo, fetching it from Google
+        Places once (and caching to disk) on first request. Never re-bills Google
+        for a place we've already cached.
+        """
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        place = await db.get(MapsPlace, place_id)
+        if place is None or place.run_id != run_id:
+            raise NotFoundError("Maps place", place_id)
+        if not place.photo_reference:
+            raise NotFoundError("Maps place photo", place_id)
+
+        settings = get_settings()
+        cache_dir = Path(settings.maps_census_photo_cache_dir)
+        cache_path = cache_dir / f"{place.id}.jpg"
+        if cache_path.exists():
+            return cache_path
+
+        if not settings.google_places_api_key:
+            raise NotFoundError("Maps place photo", place_id)
+
+        media_url = f"{settings.google_places_base_url}/{place.photo_reference}/media"
+        try:
+            async with httpx.AsyncClient(timeout=settings.google_places_timeout_seconds) as client:
+                response = await client.get(
+                    media_url,
+                    params={"maxWidthPx": 480, "key": settings.google_places_api_key},
+                )
+        except httpx.HTTPError as exc:
+            raise NotFoundError("Maps place photo", place_id) from exc
+
+        if response.status_code != 200 or not response.content:
+            raise NotFoundError("Maps place photo", place_id)
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(response.content)
+        return cache_path
 
     async def _enqueue(self, run_id: str) -> None:
         await self._enqueue_job(
@@ -405,6 +471,7 @@ class MapsCensusService:
                             international_phone_number=result.international_phone_number,
                             raw_website=result.website,
                             discovered_via_query=query_text,
+                            photo_reference=result.photo_reference,
                         )
                     )
                     new_places += 1
@@ -1063,6 +1130,7 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
         completed_at=run.completed_at,
         created_at=run.created_at,
         updated_at=run.updated_at,
+        hero_image_url=run.hero_image_url,
     )
 
 
@@ -1085,6 +1153,7 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         relevance_reason=place.relevance_reason,
         confidence_score=float(place.confidence_score) if place.confidence_score is not None else None,
         discovered_via_query=place.discovered_via_query,
+        has_photo=bool(place.photo_reference),
     )
 
 

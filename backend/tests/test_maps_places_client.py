@@ -22,6 +22,7 @@ def test_parse_extracts_core_fields():
                 "types": ["health", "point_of_interest"],
                 "internationalPhoneNumber": "+375 17 123 4567",
                 "websiteUri": "https://centre-alpha.by/",
+                "photos": [{"name": "places/place-123/photos/photo-abc"}],
             }
         ]
     }
@@ -34,6 +35,28 @@ def test_parse_extracts_core_fields():
     assert place.longitude == 27.5667
     assert place.website == "https://centre-alpha.by/"
     assert place.place_types == ["health", "point_of_interest"]
+    assert place.photo_reference == "places/place-123/photos/photo-abc"
+
+
+def test_parse_handles_missing_photos():
+    client = _client()
+    payload = {"places": [{"id": "place-no-photo", "displayName": {"text": "No Photo Clinic"}}]}
+    results = client._parse(payload)
+    assert len(results) == 1
+    assert results[0].photo_reference is None
+
+
+def test_parse_handles_malformed_photos_field():
+    client = _client()
+    payload = {
+        "places": [
+            {"id": "p1", "displayName": {"text": "A"}, "photos": "not-a-list"},
+            {"id": "p2", "displayName": {"text": "B"}, "photos": [{"no_name_key": "x"}]},
+            {"id": "p3", "displayName": {"text": "C"}, "photos": []},
+        ]
+    }
+    results = client._parse(payload)
+    assert [r.photo_reference for r in results] == [None, None, None]
 
 
 def test_parse_skips_places_missing_id():

@@ -24,6 +24,7 @@ _FIELD_MASK = ",".join(
         "places.types",
         "places.internationalPhoneNumber",
         "places.websiteUri",
+        "places.photos",
     ]
 )
 
@@ -69,6 +70,7 @@ class PlaceResult:
     longitude: float | None = None
     international_phone_number: str | None = None
     website: str | None = None
+    photo_reference: str | None = None
 
 
 class GooglePlacesClient:
@@ -178,6 +180,7 @@ class GooglePlacesClient:
                         raw.get("internationalPhoneNumber"), 64
                     ),
                     website=_bounded_optional(raw.get("websiteUri"), 512),
+                    photo_reference=_first_photo_reference(raw.get("photos")),
                 )
             )
         return results
@@ -188,6 +191,15 @@ def _bounded_optional(value: Any, max_length: int) -> str | None:
         return None
     text = str(value).strip()
     return text[:max_length] or None
+
+
+def _first_photo_reference(photos: Any) -> str | None:
+    if not isinstance(photos, list) or not photos:
+        return None
+    first = photos[0]
+    if not isinstance(first, dict):
+        return None
+    return _bounded_optional(first.get("name"), 300)
 
 
 def create_places_client() -> GooglePlacesClient:

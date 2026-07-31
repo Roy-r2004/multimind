@@ -1,6 +1,7 @@
 """Standalone Google Places Maps census endpoints."""
 
 from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext, get_auth_context
@@ -57,6 +58,17 @@ async def list_maps_census_places(
         relevant_only=relevant_only,
         with_website_only=with_website_only,
     )
+
+
+@router.get("/runs/{run_id}/places/{place_id}/photo")
+async def get_maps_census_place_photo(
+    run_id: str,
+    place_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    path = await maps_census_service.get_place_photo(db, auth, run_id, place_id)
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -22,6 +22,7 @@ function place(id: string, name: string, website: string | null): MapsPlaceItem 
     relevance_reason: null,
     confidence_score: null,
     discovered_via_query: null,
+    has_photo: false,
   };
 }
 

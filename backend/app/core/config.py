@@ -147,6 +147,12 @@ class Settings(BaseSettings):
     maps_census_auto_website_refresh_cooldown_hours: int = 6
     maps_census_auto_website_refresh_max_attempts: int = 3
 
+    # Pexels — country hero photography for the Maps Census UI (never sent to the browser)
+    pexels_api_key: str | None = None
+    pexels_search_timeout_seconds: float = 6.0
+    # Local disk cache for Google Places facility photos (fetched once, reused after)
+    maps_census_photo_cache_dir: str = "data/maps_photos"
+
     # Public URL for share links
     public_app_url: str = Field(default="http://localhost:5173")
 
