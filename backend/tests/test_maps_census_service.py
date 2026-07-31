@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
 from app.services.scraping.maps_census_service import (
+    MapsWebsitePlan,
     _accepted_direct_llm_website_url,
     _accepted_llm_website_url,
     _maps_website_search_queries,
@@ -697,6 +698,21 @@ def test_normalize_website_payload_accepts_url_aliases():
     )
     assert payload["decisions"][0]["place_id"] == "p1"
     assert payload["decisions"][0]["url"] == "https://gknd.by/"
+
+
+def test_normalize_website_payload_truncates_long_sonar_reasons():
+    long_reason = "x" * 500
+    payload = _normalize_website_payload(
+        [{"place_id": "p1", "url": None, "reason": long_reason, "confidence": 0.5}]
+    )
+    assert len(payload["decisions"][0]["reason"]) <= 2000
+    MapsWebsitePlan.model_validate(payload)
+
+    payload = _normalize_website_payload(
+        [{"place_id": "p1", "url": None, "reason": "y" * 2500, "confidence": 0.5}]
+    )
+    assert len(payload["decisions"][0]["reason"]) == 2000
+    MapsWebsitePlan.model_validate(payload)
 
 
 @pytest.mark.asyncio

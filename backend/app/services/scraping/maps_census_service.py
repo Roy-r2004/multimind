@@ -109,7 +109,7 @@ class MapsWebsiteDecision(BaseModel):
 
     place_id: str = Field(min_length=1, max_length=64)
     url: str | None = Field(default=None, max_length=512)
-    reason: str = Field(default="", max_length=300)
+    reason: str = Field(default="", max_length=2000)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
@@ -1539,7 +1539,7 @@ def _normalize_website_payload(raw: Any) -> dict[str, Any]:
             {
                 "place_id": item.get("place_id") or item.get("id"),
                 "url": url,
-                "reason": item.get("reason") or item.get("explanation") or "",
+                "reason": str(item.get("reason") or item.get("explanation") or "")[:2000],
                 "confidence": item.get("confidence", 0.5),
             }
         )
