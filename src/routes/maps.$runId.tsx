@@ -4,26 +4,32 @@ import {
   Building2,
   Download,
   ExternalLink,
-  Globe,
   Grid2x2,
-  Layers,
   Loader2,
-  MapPin,
-  Phone,
   Search,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { CountryOutline } from "@/components/maps/CountryOutline";
-import { MapsPlacePhoto } from "@/components/maps/MapsPlacePhoto";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
+import {
+  EXPORT_COLUMNS,
+  placeToExportRow,
+  sortPlacesForExport,
+} from "@/lib/maps/exportDisplay";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { downloadMapsCensusExport, enrichMapsCensusRun, getMapsCensusRun, listMapsCensusCells, listMapsCensusPlaces, refreshMapsCensusWebsites } from "@/lib/maps/api";
-import { groupVerifiedPlaces, type PlaceGroup } from "@/lib/maps/groupPlaces";
+import {
+  downloadMapsCensusExport,
+  enrichMapsCensusRun,
+  getMapsCensusRun,
+  listMapsCensusCells,
+  listMapsCensusPlaces,
+  refreshMapsCensusWebsites,
+} from "@/lib/maps/api";
 import type { MapsCensusCellItem, MapsCensusRunDetail, MapsPlaceItem } from "@/lib/maps/types";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
@@ -47,6 +53,7 @@ function MapsRunDetailPage() {
   const [exporting, setExporting] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [pollTick, setPollTick] = useState(0);
+  const [showExportOnly, setShowExportOnly] = useState(false);
 
   useEffect(() => {
     const auth = authHeaders();
@@ -61,7 +68,7 @@ function MapsRunDetailPage() {
       try {
         const [runDetail, placeItems, cellItems] = await Promise.all([
           getMapsCensusRun(auth!, runId),
-          listMapsCensusPlaces(auth!, runId, { relevantOnly: true, withWebsiteOnly: true }),
+          listMapsCensusPlaces(auth!, runId, { relevantOnly: true }),
           listMapsCensusCells(auth!, runId),
         ]);
         if (cancelled) return;
@@ -135,11 +142,17 @@ function MapsRunDetailPage() {
     }
   }
 
-  const groupedPlaces = groupVerifiedPlaces(places);
+  const exportRows = useMemo(() => {
+    if (!run) return [];
+    const filtered = showExportOnly ? places.filter((place) => place.export_eligible) : places;
+    return sortPlacesForExport(filtered).map((place) => placeToExportRow(place, run.country_name));
+  }, [places, run, showExportOnly]);
+
+  const exportEligibleCount = places.filter((place) => place.export_eligible).length;
 
   return (
     <AppShell>
-      <DreamPageShell maxWidth="max-w-6xl">
+      <DreamPageShell maxWidth="max-w-[96rem]">
         {!run && (
           <Link
             to="/maps"
@@ -173,15 +186,15 @@ function MapsRunDetailPage() {
             <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
               <MapsStatCard
                 icon={<Building2 className="size-4" />}
-                label="Verified rehab centers"
-                value={groupedPlaces.length}
+                label="Relevant facilities"
+                value={places.length}
                 tone="teal"
                 emphasize
               />
               <MapsStatCard
-                icon={<Globe className="size-4" />}
-                label="Verified locations"
-                value={places.length}
+                icon={<Download className="size-4" />}
+                label="Export-ready rows"
+                value={exportEligibleCount}
                 tone="sky"
               />
               <MapsStatCard
@@ -192,30 +205,22 @@ function MapsRunDetailPage() {
               />
               <MapsStatCard
                 icon={<Grid2x2 className="size-4" />}
-                label="Cells searched"
-                value={`${run.cells_completed}/${run.cells_total}`}
+                label="Search queries"
+                value={searchCells.length}
                 tone="violet"
               />
             </div>
 
-            <SearchKeywordsPanel cells={searchCells} isRunning={ACTIVE_STATUSES.has(run.status)} />
+            <SearchKeywordsTable cells={searchCells} isRunning={ACTIVE_STATUSES.has(run.status)} />
 
-            <div className="mt-10 space-y-3">
-              {places.length === 0 && (
-                <DreamPanel className="text-sm text-muted-foreground">
-                  {ACTIVE_STATUSES.has(run.status)
-                    ? "Census still running — rehab facilities will appear here as they're found and verified."
-                    : "No rehab facilities were confirmed for this country."}
-                </DreamPanel>
-              )}
-              {groupedPlaces.map((group) =>
-                group.places.length > 1 ? (
-                  <GroupedPlaceCard key={group.key} runId={run.id} group={group} />
-                ) : (
-                  <PlaceRow key={group.places[0].id} runId={run.id} place={group.places[0]} />
-                ),
-              )}
-            </div>
+            <FacilitiesExportTable
+              rows={exportRows}
+              isRunning={ACTIVE_STATUSES.has(run.status)}
+              showExportOnly={showExportOnly}
+              onToggleExportOnly={() => setShowExportOnly((value) => !value)}
+              exportEligibleCount={exportEligibleCount}
+              totalCount={places.length}
+            />
           </>
         )}
       </DreamPageShell>
@@ -223,115 +228,197 @@ function MapsRunDetailPage() {
   );
 }
 
-function SearchKeywordsPanel({
+function SearchKeywordsTable({
   cells,
   isRunning,
 }: {
   cells: MapsCensusCellItem[];
   isRunning: boolean;
 }) {
-  const grouped = groupSearchCells(cells);
+  const [open, setOpen] = useState(true);
 
   return (
-    <DreamPanel className="mt-8">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <DreamPanel className="mt-8 p-0 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition hover:bg-muted/30"
+      >
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-muted-foreground">
-            Search grid
-          </p>
-          <h2 className="mt-1 font-display text-lg font-semibold text-foreground">
-            Keywords searched
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            LLM-planned Google Places queries for this country — English and local-language
-            inpatient addiction rehab terms, scoped by city.
+          <h2 className="font-display text-base font-semibold text-foreground">Search keywords</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {cells.length} Google Places queries used for this run
           </p>
         </div>
-        <span className="rounded-full border border-border/80 bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
-          {cells.length} {cells.length === 1 ? "query" : "queries"}
-        </span>
-      </div>
+        <span className="text-sm text-muted-foreground">{open ? "Hide" : "Show"}</span>
+      </button>
 
-      {cells.length === 0 && (
-        <p className="mt-4 text-sm text-muted-foreground">
-          {isRunning
-            ? "Planning search grid… keywords will appear here once the run starts."
-            : "No search keywords were recorded for this run."}
-        </p>
-      )}
-
-      {grouped.length > 0 && (
-        <div className="mt-5 space-y-4">
-          {grouped.map((group) => (
-            <div
-              key={group.key}
-              className="rounded-xl border border-border/80 bg-background/60 p-4"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <MapPin className="size-3.5 text-primary" />
-                <h3 className="font-medium text-foreground">{group.label}</h3>
-                <span className="text-xs text-muted-foreground">
-                  {group.cells.length} {group.cells.length === 1 ? "query" : "queries"}
-                </span>
-              </div>
-              <ul className="mt-3 space-y-2">
-                {group.cells.map((cell) => (
-                  <li
-                    key={cell.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2"
+      {open && (
+        <div className="max-h-72 overflow-auto border-t border-border/80">
+          <table className="w-full min-w-[640px] border-collapse text-sm">
+            <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
+              <tr className="border-b border-border/80 text-left text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                <th className="px-4 py-2.5 font-semibold w-12">#</th>
+                <th className="px-4 py-2.5 font-semibold w-36">City</th>
+                <th className="px-4 py-2.5 font-semibold w-40">Region</th>
+                <th className="px-4 py-2.5 font-semibold">Keyword</th>
+                <th className="px-4 py-2.5 font-semibold w-24 text-right">Found</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cells.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-4 py-4 text-sm text-muted-foreground"
                   >
-                    <code className="text-sm text-foreground">{cell.query_text}</code>
-                    <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.08em]">
-                      <SearchCellStatusBadge status={cell.status} />
-                      <span className="text-muted-foreground">
-                        {cell.places_found} found
-                      </span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
+                    {isRunning
+                      ? "Planning search grid… keyword rows will appear here once the run starts."
+                      : "No search keywords recorded."}
+                  </td>
+                </tr>
+              ) : (
+                cells.map((cell, index) => (
+                  <tr
+                    key={cell.id}
+                    className="border-b border-border/50 odd:bg-background even:bg-muted/20"
+                  >
+                    <td className="px-4 py-2 text-muted-foreground tabular-nums">{index + 1}</td>
+                    <td className="px-4 py-2 text-foreground">{cell.city_name || "—"}</td>
+                    <td className="px-4 py-2 text-foreground">{cell.region_name}</td>
+                    <td className="px-4 py-2 font-mono text-[13px] text-foreground">{cell.query_text}</td>
+                    <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
+                      {cell.places_found}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       )}
     </DreamPanel>
   );
 }
 
-function SearchCellStatusBadge({ status }: { status: MapsCensusCellItem["status"] }) {
-  const styles: Record<MapsCensusCellItem["status"], string> = {
-    pending: "bg-muted text-muted-foreground",
-    in_progress: "bg-amber-100 text-amber-800",
-    completed: "bg-teal-100 text-teal-800",
-    failed: "bg-rose-100 text-rose-700",
-  };
-  const labels: Record<MapsCensusCellItem["status"], string> = {
-    pending: "Pending",
-    in_progress: "Running",
-    completed: "Done",
-    failed: "Failed",
-  };
+function FacilitiesExportTable({
+  rows,
+  isRunning,
+  showExportOnly,
+  onToggleExportOnly,
+  exportEligibleCount,
+  totalCount,
+}: {
+  rows: ReturnType<typeof placeToExportRow>[];
+  isRunning: boolean;
+  showExportOnly: boolean;
+  onToggleExportOnly: () => void;
+  exportEligibleCount: number;
+  totalCount: number;
+}) {
   return (
-    <span className={cn("rounded-full px-2 py-0.5 font-medium", styles[status])}>
-      {labels[status]}
-    </span>
+    <DreamPanel className="mt-8 p-0 overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 px-5 py-4">
+        <div>
+          <h2 className="font-display text-base font-semibold text-foreground">
+            Rehabilitation facilities
+          </h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            All 7 export columns are always shown. Addictions, languages, and price use placeholders
+            until website enrichment fills them in.
+          </p>
+        </div>
+        <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={showExportOnly}
+            onChange={onToggleExportOnly}
+            className="size-4 rounded border-border"
+          />
+          Export-ready only ({exportEligibleCount}/{totalCount})
+        </label>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[1100px] border-collapse text-sm">
+          <thead className="sticky top-0 z-10 bg-emerald-50/95 text-left text-[11px] uppercase tracking-[0.06em] text-emerald-900 dark:bg-emerald-950/90 dark:text-emerald-100">
+            <tr className="border-b border-emerald-200/80 dark:border-emerald-900">
+              {EXPORT_COLUMNS.map((column) => (
+                <th key={column} className="px-3 py-2.5 font-semibold whitespace-nowrap">
+                  {column}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={EXPORT_COLUMNS.length}
+                  className="px-5 py-8 text-sm text-muted-foreground"
+                >
+                  {isRunning
+                    ? "Census still running — facility rows will appear here as they are classified."
+                    : showExportOnly
+                      ? "No export-ready rows yet. Turn off the filter or run website enrichment."
+                      : "No relevant rehabilitation facilities were confirmed for this country."}
+                </td>
+              </tr>
+            ) : (
+              rows.map(({ place, cells }) => (
+                <tr
+                  key={place.id}
+                  className={cn(
+                    "border-b border-border/60 align-top",
+                    "odd:bg-background even:bg-muted/15",
+                    !place.export_eligible && "opacity-75",
+                  )}
+                >
+                  {EXPORT_COLUMNS.map((column) => (
+                    <ExportTableCell
+                      key={`${place.id}-${column}`}
+                      column={column}
+                      value={cells[column]}
+                    />
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </DreamPanel>
   );
 }
 
-function groupSearchCells(cells: MapsCensusCellItem[]) {
-  const byKey = new Map<string, { key: string; label: string; cells: MapsCensusCellItem[] }>();
-  for (const cell of cells) {
-    const city = cell.city_name?.trim() || "Region-wide";
-    const key = `${cell.region_name}::${city}`;
-    const label = city === "Region-wide" ? cell.region_name : `${city}, ${cell.region_name}`;
-    const existing = byKey.get(key);
-    if (existing) {
-      existing.cells.push(cell);
-    } else {
-      byKey.set(key, { key, label, cells: [cell] });
-    }
-  }
-  return [...byKey.values()];
+function ExportTableCell({ column, value }: { column: string; value: string }) {
+  const isPlaceholder = value === "Not Specified" || value === "Contact for pricing";
+  const isLink = column === "Website" && !isPlaceholder;
+
+  return (
+    <td className="min-w-[8rem] max-w-[18rem] px-3 py-2.5 align-top text-foreground">
+      {isLink ? (
+        <a
+          href={value}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex max-w-full items-start gap-1 text-primary hover:underline"
+        >
+          <span className="break-all">{value}</span>
+          <ExternalLink className="mt-0.5 size-3 shrink-0" />
+        </a>
+      ) : (
+        <span
+          className={cn(
+            "block whitespace-pre-wrap break-words",
+            isPlaceholder && "italic text-muted-foreground",
+          )}
+        >
+          {value}
+        </span>
+      )}
+    </td>
+  );
 }
 
 function MapsRunHero({
@@ -411,8 +498,8 @@ function MapsRunHero({
               </h1>
             </div>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/75">
-              Non-government inpatient addiction rehab facilities from Google Places, classified by
-              AI, with CSV export and searchable keyword grid.
+              Inpatient addiction rehab census — search keywords and export columns in spreadsheet
+              view.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -429,6 +516,21 @@ function MapsRunHero({
                   <Download className="size-3.5" />
                 )}
                 Download CSV
+              </button>
+            )}
+            {showEnrichWebsites && (
+              <button
+                type="button"
+                onClick={onEnrichWebsites}
+                disabled={enriching}
+                className="inline-flex items-center gap-2 rounded-xl bg-white/90 px-3.5 py-2 text-xs font-semibold text-slate-900 shadow-sm transition hover:bg-white disabled:opacity-50"
+              >
+                {enriching ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="size-3.5" />
+                )}
+                Enrich from websites
               </button>
             )}
             {showFindMissingWebsites && (
@@ -492,119 +594,5 @@ function MapsStatCard({
         {label}
       </div>
     </div>
-  );
-}
-
-function PlaceRow({ runId, place }: { runId: string; place: MapsPlaceItem }) {
-  return (
-    <div className="flex gap-3 rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
-      <MapsPlacePhoto
-        runId={runId}
-        placeId={place.id}
-        hasPhoto={place.has_photo}
-        alt={place.canonical_name}
-        className="size-14"
-      />
-      <div className="min-w-0 flex-1">
-        <h3 className="truncate font-display text-base text-foreground">{place.canonical_name}</h3>
-        <PlaceLocationDetails place={place} />
-      </div>
-    </div>
-  );
-}
-
-function GroupedPlaceCard({ runId, group }: { runId: string; group: PlaceGroup }) {
-  const websites = [
-    ...new Set(
-      group.places
-        .map((place) => place.official_website)
-        .filter((url): url is string => Boolean(url)),
-    ),
-  ];
-  const sharedWebsite = websites.length === 1 ? websites[0] : null;
-  const coverPlace = group.places.find((place) => place.has_photo) ?? group.places[0];
-
-  return (
-    <div className="flex gap-3 rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
-      <MapsPlacePhoto
-        runId={runId}
-        placeId={coverPlace.id}
-        hasPhoto={coverPlace.has_photo}
-        alt={group.name}
-        className="size-14"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="truncate font-display text-base text-foreground">{group.name}</h3>
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-primary">
-            <Layers className="size-3" />
-            {group.places.length} locations
-          </span>
-        </div>
-        {sharedWebsite ? (
-          <a
-            href={sharedWebsite}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
-          >
-            <Globe className="size-3" />
-            {sharedWebsite}
-            <ExternalLink className="size-3" />
-          </a>
-        ) : null}
-        <div className="mt-3 space-y-3 divide-y divide-border/70">
-          {group.places.map((place) => (
-            <div key={place.id} className="pt-3 first:mt-0 first:border-0 first:pt-0">
-              <PlaceLocationDetails place={place} hideWebsite={Boolean(sharedWebsite)} />
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PlaceLocationDetails({
-  place,
-  hideWebsite = false,
-}: {
-  place: MapsPlaceItem;
-  hideWebsite?: boolean;
-}) {
-  return (
-    <>
-      {place.formatted_address && (
-        <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <MapPin className="size-3 shrink-0" />
-          {place.formatted_address}
-        </p>
-      )}
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
-        {place.international_phone_number ? (
-          <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-            <Phone className="size-3" />
-            {place.international_phone_number}
-          </span>
-        ) : (
-          <span className="text-muted-foreground/60">no phone found</span>
-        )}
-        {!hideWebsite &&
-          (place.official_website ? (
-            <a
-              href={place.official_website}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-primary hover:underline"
-            >
-              <Globe className="size-3" />
-              {place.official_website}
-              <ExternalLink className="size-3" />
-            </a>
-          ) : (
-            <span className="text-muted-foreground/60">no verified official website found</span>
-          ))}
-      </div>
-    </>
   );
 }
