@@ -195,28 +195,29 @@ function MapsRunHero({
     run.status === "completed" && run.places_classified_relevant > run.places_with_website;
 
   return (
-    <div className="dream-rise relative isolate overflow-hidden rounded-[1.75rem] border border-border/90 bg-slate-900 shadow-[0_12px_36px_oklch(0.55_0.1_240/0.12)]">
-      {run.hero_image_url && (
-        <img
-          src={run.hero_image_url}
-          alt=""
-          aria-hidden="true"
-          className="absolute inset-0 size-full object-cover"
-        />
+    <div className="dream-rise relative isolate overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950 shadow-[0_16px_44px_oklch(0.2_0.06_240/0.35)]">
+      {run.hero_image_url ? (
+        <>
+          <img
+            src={run.hero_image_url}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 size-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/92 via-slate-950/65 to-slate-950/25" />
+        </>
+      ) : (
+        <>
+          <div className="absolute inset-0 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950" />
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 opacity-90"
+            style={{
+              backgroundImage: `radial-gradient(120% 120% at 90% 8%, ${primary}66 0%, transparent 44%), radial-gradient(120% 120% at 4% 118%, ${secondary}55 0%, transparent 48%)`,
+            }}
+          />
+        </>
       )}
-      <div
-        className={cn(
-          "absolute inset-0",
-          run.hero_image_url
-            ? "bg-gradient-to-t from-slate-950/92 via-slate-950/65 to-slate-950/25"
-            : undefined,
-        )}
-        style={
-          run.hero_image_url
-            ? undefined
-            : { backgroundImage: `linear-gradient(135deg, ${primary}, ${secondary})` }
-        }
-      />
       <CountryOutline
         countryCode={run.country_code}
         className="absolute -right-6 -top-10 h-[22rem] w-[22rem] opacity-90 sm:h-[26rem] sm:w-[26rem]"
