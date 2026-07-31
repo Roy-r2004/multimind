@@ -14,6 +14,7 @@ from app.schemas.api import (
     MapsPlaceItem,
 )
 from app.services.scraping.maps_census_service import maps_census_service
+from app.services.scraping.maps_export_service import MIME_XLSX, maps_export_service
 
 router = APIRouter()
 
@@ -83,6 +84,20 @@ async def export_maps_census_run_csv(
     return Response(
         content=f"\ufeff{csv_body}",
         media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/runs/{run_id}/export.xlsx")
+async def export_maps_census_run_xlsx(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    content, filename = await maps_export_service.build_workbook(db, auth, run_id)
+    return Response(
+        content=content,
+        media_type=MIME_XLSX,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

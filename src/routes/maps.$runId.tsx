@@ -120,7 +120,7 @@ function MapsRunDetailPage() {
     try {
       await downloadMapsCensusExport(auth, runId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to download CSV export");
+      setError(err instanceof Error ? err.message : "Failed to download Excel export");
     } finally {
       setExporting(false);
     }
@@ -325,7 +325,7 @@ function FacilitiesExportTable({
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
             All 7 export columns are always shown. Addictions, languages, and price use placeholders
-            until website enrichment fills them in.
+            until website enrichment fills them in. Download Excel exports every relevant row.
           </p>
         </div>
         <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
@@ -335,7 +335,7 @@ function FacilitiesExportTable({
             onChange={onToggleExportOnly}
             className="size-4 rounded border-border"
           />
-          Export-ready only ({exportEligibleCount}/{totalCount})
+          Show export-ready only ({exportEligibleCount}/{totalCount})
         </label>
       </div>
 
@@ -515,7 +515,7 @@ function MapsRunHero({
                 ) : (
                   <Download className="size-3.5" />
                 )}
-                Download CSV
+                {exporting ? "Preparing Excel…" : "Download Excel"}
               </button>
             )}
             {showEnrichWebsites && (

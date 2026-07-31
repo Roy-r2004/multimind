@@ -1586,11 +1586,19 @@ def _export_tier_matches(place: MapsPlace, tier: str) -> bool:
     return _verification_tier(place) == tier
 
 
+def normalized_export_website(place: MapsPlace) -> str | None:
+    """Public: the website shown in exports, prefixed to a clickable URL."""
+    website = (place.official_website or place.raw_website or "").strip()
+    if not website:
+        return None
+    if not website.lower().startswith(("http://", "https://")):
+        website = f"https://{website}"
+    return website
+
+
 def _export_csv_row(place: MapsPlace, *, country_name: str) -> list[str]:
     name = (place.canonical_name or place.raw_name or "").strip()
-    website = (place.official_website or place.raw_website or "").strip()
-    if website and not website.lower().startswith(("http://", "https://")):
-        website = f"https://{website}"
+    website = normalized_export_website(place) or ""
     phone = (place.international_phone_number or "").strip()
     price = (place.treatment_price or "").strip() or EXPORT_CONTACT_PRICING
     return [

@@ -92,12 +92,19 @@ export function mapsCensusExportPath(runId: string, tier: "all" | "verified" | "
   return `/maps/runs/${runId}/export.csv${query ? `?${query}` : ""}`;
 }
 
-export async function downloadMapsCensusExport(
-  auth: Auth,
-  runId: string,
-  tier: "all" | "verified" | "flagged" = "all",
-): Promise<void> {
-  const response = await fetch(`${getApiBase()}${mapsCensusExportPath(runId, tier)}`, {
+/** Excel export path — always exports every relevant row; takes no tier filter. */
+export function mapsCensusExportXlsxPath(runId: string): string {
+  return `/maps/runs/${runId}/export.xlsx`;
+}
+
+export function parseExportFilename(disposition: string | null, fallback: string): string {
+  const match = (disposition ?? "").match(/filename="([^"]+)"/);
+  return match?.[1] ?? fallback;
+}
+
+/** Downloads the full two-sheet Excel workbook for a run (all relevant rows). */
+export async function downloadMapsCensusExport(auth: Auth, runId: string): Promise<void> {
+  const response = await fetch(`${getApiBase()}${mapsCensusExportXlsxPath(runId)}`, {
     headers: {
       Authorization: `Bearer ${auth.token}`,
       "X-Org-Id": auth.orgId,
@@ -107,9 +114,10 @@ export async function downloadMapsCensusExport(
     throw new Error(`Export failed (${response.status})`);
   }
   const blob = await response.blob();
-  const disposition = response.headers.get("Content-Disposition") ?? "";
-  const match = disposition.match(/filename="([^"]+)"/);
-  const filename = match?.[1] ?? `${runId}-maps-census-export.csv`;
+  const filename = parseExportFilename(
+    response.headers.get("Content-Disposition"),
+    `${runId}-maps-census-export.xlsx`,
+  );
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
