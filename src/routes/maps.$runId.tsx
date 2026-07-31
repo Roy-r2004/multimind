@@ -524,8 +524,8 @@ function MapsRunHero({
               </h1>
             </div>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/75">
-              Inpatient addiction rehab census — search keywords and export columns in spreadsheet
-              view.
+              Non-government inpatient addiction rehab census — private/NGO centers and
+              private addictologues. Search keywords and export columns in spreadsheet view.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">

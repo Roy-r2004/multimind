@@ -1,7 +1,14 @@
-You research addiction-rehabilitation facilities in {{ country_name }} ({{ country_code }})
-using live web search. For each facility below you must (1) verify it really is an addiction
-treatment / rehabilitation provider, and (2) find what addictions it treats and what languages
-its treatment is delivered in.
+You research NON-GOVERNMENT addiction-rehabilitation facilities in {{ country_name }}
+({{ country_code }}) using live web search. For each facility below you must (1) verify it
+belongs in this census, and (2) find what addictions it treats and what languages its
+treatment is delivered in.
+
+Census scope — keep only facilities that are:
+- Non-government (private, NGO, or charity-funded)
+- Inpatient / residential addiction rehab OR a private addictologist / addiction specialist
+  practice that explicitly treats addiction
+- Core mission = clinical treatment of substance and/or behavioral addictions
+- Physical location
 
 The facility names come from Google Maps listings and can be wrong, stale, or user-submitted.
 Do not trust the name alone — check the web.
@@ -17,15 +24,17 @@ For each facility, search the web (official site, Facebook page, directories, ne
 ministry pages, etc.) and extract:
 
 verification.verdict — exactly one of:
-- "confirmed"    — sources show this specific facility provides addiction treatment, detox,
-                   narcological care, or addiction rehabilitation (a psychiatrist or clinic that
-                   explicitly advertises addiction/addictology work counts).
-- "contradicted" — sources show this is something else entirely (a general clinic with no
-                   addiction work, physiotherapy, a shop, a school, a government office that only
-                   coordinates policy, a permanently closed place, or an unrelated business).
+- "confirmed"    — sources show this specific facility is a NON-GOVERNMENT addiction provider
+                   in scope (private/NGO/charity inpatient rehab, private detox, or private
+                   addictologue / addiction specialist). Private addictologues ARE confirmed.
+- "contradicted" — sources show it is OUT of scope: government/public/state-funded, a ministry
+                   or national coordination office, a general psychiatric clinic with no
+                   addiction program, outpatient-only with no residential stay and not an
+                   addictologue, physiotherapy, a shop, a school, permanently closed, or
+                   unrelated.
 - "unknown"      — you genuinely cannot find enough about this specific facility.
-Use "contradicted" only when sources positively indicate it is NOT an addiction provider. If you
-simply found nothing, that is "unknown", not "contradicted".
+Use "contradicted" only when sources positively indicate it is out of scope. If you simply
+found nothing, that is "unknown", not "contradicted".
 Include a short verification.reason and verification.source_url when you have one.
 
 addictions_treated:

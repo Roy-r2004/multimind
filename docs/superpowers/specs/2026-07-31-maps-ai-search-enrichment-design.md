@@ -7,6 +7,21 @@ relevant facility in a Maps Census run — including facilities that have no web
 or only a Facebook page — by asking a web-search-capable LLM directly instead of
 crawling facility websites. Treatment price stays out of scope.
 
+## Census scope (classification + verification)
+
+The Maps Census keeps only **non-government** facilities whose core mission is
+clinical addiction treatment:
+
+- Private, NGO, or charity-funded
+- Inpatient / residential addiction rehab, **or** a private addictologue / addiction
+  specialist practice that explicitly treats addiction
+- Physical street address
+- Explicit addiction / detox / narcology / named-substance evidence
+
+Excluded: government/public/state centers, general psychiatric clinics without
+addiction work, outpatient-only (except private addictologues), and non-addiction
+facilities.
+
 ## Problem
 
 The current Phase-2 enrichment crawls each facility's official website. In
@@ -38,8 +53,8 @@ an addiction provider rather than trusting the name. Each facility gets a verdic
 
 | Verdict | Meaning | Action |
 | --- | --- | --- |
-| `confirmed` | Sources show addiction treatment / detox / narcology work | keep + enrich |
-| `contradicted` | Sources show it is something else (general clinic, shop, policy office, closed) | `is_relevant = False`, columns cleared |
+| `confirmed` | Sources show a non-government addiction provider in scope (private/NGO inpatient rehab or private addictologue) | keep + enrich |
+| `contradicted` | Sources show out of scope (government/public, general clinic, outpatient-only non-addictologue, shop, closed, policy office) | `is_relevant = False`, columns cleared |
 | `unknown` | Nothing findable about this specific facility | keep, flagged |
 
 `contradicted` requires positive evidence that it is *not* an addiction provider.
