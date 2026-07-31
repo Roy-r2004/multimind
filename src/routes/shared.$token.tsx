@@ -4,6 +4,7 @@ import { ChevronDown, Copy, ExternalLink, Gavel, Loader2 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
+import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
 import { api } from "@/lib/api";
 import type { ApiSharedChat } from "@/lib/api/types";
 import { modelColor } from "@/lib/models";
@@ -170,14 +171,21 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
   const verdictBlock = turn.verdict ? (
     <div className="pt-2">
       <div className="rounded-2xl border-2 border-primary/30 bg-primary/[0.04] p-5 shadow-[0_1px_0_oklch(1_0_0/0.9)_inset,0_16px_44px_oklch(0.55_0.1_240/0.14)] sm:p-6">
-        <div className="flex flex-wrap items-center gap-2 border-b border-primary/15 pb-4">
-          <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+        <div className="flex flex-wrap items-start gap-3 border-b border-primary/15 pb-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
             <Gavel className="size-5" />
           </span>
-          <h3 className="text-lg font-semibold tracking-tight sm:text-xl">Verdict</h3>
-          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
-            {turn.verdict.strategy}
-          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-lg font-semibold tracking-tight sm:text-xl">Verdict</h3>
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+                {turn.verdict.strategy}
+              </span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <VerdictCopyButton text={turn.verdict.text} />
+          </div>
         </div>
         <div className="mt-5">
           <MessageContent>{turn.verdict.text}</MessageContent>

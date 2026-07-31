@@ -41,6 +41,7 @@ import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/Ch
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
+import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
@@ -1545,6 +1546,7 @@ function AiTurn({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <VerdictCopyButton text={turn.verdict.text} />
             <button
               type="button"
               aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
