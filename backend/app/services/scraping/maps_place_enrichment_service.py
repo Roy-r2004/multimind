@@ -269,6 +269,23 @@ class MapsPlaceEnrichmentService:
             return 0
 
         by_place = {result.place_id: result for result in results}
+        if not by_place:
+            # A parseable but empty response is almost always a bad generation. Treat it
+            # as a batch failure so a single bad reply can never demote a whole census.
+            logger.warning(
+                "maps_place_enrichment_batch_returned_no_results count=%s", len(payloads)
+            )
+            async with session_factory() as db:
+                places = (
+                    await db.execute(select(MapsPlace).where(MapsPlace.id.in_(place_ids)))
+                ).scalars().all()
+                for place in places:
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                    place.enrichment_error_message = "verification returned no results"
+                    place.enrichment_completed_at = datetime.now(UTC)
+                await db.commit()
+            return 0
+
         enriched = 0
         async with session_factory() as db:
             places = (
@@ -276,29 +293,35 @@ class MapsPlaceEnrichmentService:
             ).scalars().all()
             for place in places:
                 result = by_place.get(place.id)
-                verdict = (
-                    result.verification.normalized_verdict() if result else VERDICT_UNKNOWN
-                )
-                place.verification_verdict = verdict
-                if result is not None:
-                    place.verification_reason = (result.verification.reason or "").strip()[:400]
-                    place.verification_source_url = (
-                        result.verification.source_url or ""
-                    ).strip()[:1024] or None
+                if result is None:
+                    # The model skipped this facility. That is not a verdict, so keep the
+                    # place and let the next enrichment pass retry it.
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                    place.enrichment_error_message = "no verification returned for this place"
+                    place.enrichment_completed_at = datetime.now(UTC)
+                    continue
 
-                if verdict == VERDICT_CONTRADICTED:
-                    # Web sources say this listing is not an addiction provider — drop it
-                    # from the census instead of enriching it.
+                verdict = result.verification.normalized_verdict()
+                place.verification_verdict = verdict
+                place.verification_reason = (result.verification.reason or "").strip()[:400]
+                place.verification_source_url = (
+                    result.verification.source_url or ""
+                ).strip()[:1024] or None
+
+                if verdict != VERDICT_CONFIRMED:
+                    # Being on Google Maps is not evidence. Only facilities the web search
+                    # positively confirms as in-scope providers stay in the census.
                     place.is_relevant = False
                     place.addictions_treated = []
                     place.languages_spoken = []
+                    place.relevance_reason = (
+                        "excluded: web sources contradict an addiction facility"
+                        if verdict == VERDICT_CONTRADICTED
+                        else "excluded: could not verify this is a real addiction facility"
+                    )
                 else:
-                    addictions = (
-                        _normalize_addictions(result.addictions_treated) if result else []
-                    )
-                    languages = (
-                        _normalize_languages(result.languages_spoken) if result else []
-                    )
+                    addictions = _normalize_addictions(result.addictions_treated)
+                    languages = _normalize_languages(result.languages_spoken)
                     place.addictions_treated = addictions
                     place.languages_spoken = languages
                     if addictions or languages:

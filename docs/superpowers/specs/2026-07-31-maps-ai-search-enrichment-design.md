@@ -49,18 +49,25 @@ any), country name/code.
 ### Verification
 
 Google Maps names are noisy, so the same pass also verifies the listing really is
-an addiction provider rather than trusting the name. Each facility gets a verdict:
+an addiction provider rather than trusting the name. A Maps pin is not evidence:
+only a facility the web search positively confirms stays in the census.
 
 | Verdict | Meaning | Action |
 | --- | --- | --- |
-| `confirmed` | Sources show a non-government addiction provider in scope (private/NGO inpatient rehab or private addictologue) | keep + enrich |
+| `confirmed` | Sources beyond the Maps pin (site, Facebook page, registry, directory, news) show a non-government addiction provider in scope (private/NGO inpatient rehab or private addictologue) | keep + enrich |
 | `contradicted` | Sources show out of scope (government/public, general clinic, outpatient-only non-addictologue, shop, closed, policy office) | `is_relevant = False`, columns cleared |
-| `unknown` | Nothing findable about this specific facility | keep, flagged |
+| `unknown` | Nothing corroborating this specific facility | `is_relevant = False`, columns cleared |
 
-`contradicted` requires positive evidence that it is *not* an addiction provider.
-"Found nothing" is `unknown`, never `contradicted` — Sonar is conservative and
-many small clinics have no web footprint. An unrecognized/missing verdict falls
-back to `unknown`, so a malformed response can never delete facilities.
+Both non-confirmed verdicts drop the row, with distinct `relevance_reason` values
+so the difference stays auditable. This trades recall for precision deliberately:
+a facility with no web footprint at all cannot be distinguished from a mislabelled
+or defunct pin, and unverifiable rows were the main source of junk in the export.
+
+Two guards keep a bad generation from wiping a census:
+
+- A place the model omits from its results has no verdict, so it is left relevant
+  and marked `failed` for the next enrichment pass to retry.
+- A batch that parses but yields zero results is treated as a batch failure.
 
 Verdicts persist on `maps_places` as `verification_verdict`,
 `verification_reason`, and `verification_source_url` (migration `030`) and are
@@ -134,8 +141,10 @@ pass.
 - Unit: addictions normalized to taxonomy; non-taxonomy dropped.
 - Unit: `run.places_enriched` counts only rows with data.
 - Unit: `contradicted` verdict demotes the place and clears its columns.
-- Unit: `unknown` verdict keeps the place.
-- Unit: missing/invalid verdict defaults to `unknown` (never deletes).
+- Unit: `unknown` verdict demotes the place (a promising Maps name alone is not enough).
+- Unit: an unrecognized verdict is treated as `unknown` and demoted.
+- Unit: a place the model omits stays relevant and is marked `failed` for retry.
+- Unit: an empty result set fails the batch without demoting anyone.
 - Manual: run against the local completed Algeria run and confirm columns fill
   for phone-only / Facebook-only facilities.
 
