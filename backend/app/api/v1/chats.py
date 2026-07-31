@@ -21,8 +21,10 @@ from app.schemas.api import (
     MessageResponse,
     PinVerdictRequest,
     ShareLinkResponse,
-    TurnDeleteResponse,
     TurnCreateRequest,
+    TurnDeleteResponse,
+    TurnRegenerateRequest,
+    TurnRegenerateResponse,
     TurnResponse,
 )
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
@@ -146,6 +148,23 @@ async def restore_turn(
     db: AsyncSession = Depends(get_db),
 ):
     return await chat_service.restore_turn(db, auth, str(chat_id), str(turn_id))
+
+
+@router.post(
+    "/{chat_id}/turns/{turn_id}/regenerate",
+    response_model=TurnRegenerateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def regenerate_turn(
+    chat_id: UUID,
+    turn_id: UUID,
+    data: TurnRegenerateRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.regenerate_turn(
+        db, auth, str(chat_id), str(turn_id), data
+    )
 
 
 @router.get("/turns/{turn_id}", response_model=TurnResponse)

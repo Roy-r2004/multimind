@@ -42,6 +42,7 @@ import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
 import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
+import { UserPromptBubble } from "@/components/chat/UserPromptBubble";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
@@ -75,6 +76,11 @@ import {
   isHistoricalTurnDeleteDisabled,
   removeTurnFromList,
 } from "@/lib/turnState";
+import {
+  canEditUserPrompt,
+  countLaterTurns,
+  LATER_TURNS_EDIT_WARNING,
+} from "@/lib/promptEdit";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
 import { resolveModelSetIdFromTurns } from "@/lib/modelSetSelection";
@@ -245,6 +251,10 @@ export function ChatPage() {
   const [saveTurnId, setSaveTurnId] = useState<string | null>(null);
   const [deletedTurns, setDeletedTurns] = useState<ApiTurn[]>([]);
   const [restoringTurnId, setRestoringTurnId] = useState<string | null>(null);
+  const [regeneratingTurnId, setRegeneratingTurnId] = useState<string | null>(null);
+  const [pendingEdit, setPendingEdit] = useState<{ turn: ApiTurn; prompt: string } | null>(
+    null,
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -593,6 +603,56 @@ export function ChatPage() {
     }
   }
 
+  async function regenerateEditedPrompt(turn: ApiTurn, prompt: string) {
+    const auth = authHeaders();
+    if (!auth || !activeChatId || regeneratingTurnId) {
+      throw new Error("Cannot regenerate right now");
+    }
+    if (!canEditUserPrompt(turn, apiTurns)) {
+      toast.error("Wait for generation to finish before editing a prompt.");
+      throw new Error("Turn is not editable");
+    }
+
+    setRegeneratingTurnId(turn.id);
+    try {
+      const result = await api.chats.regenerateTurn(auth, activeChatId, turn.id, { prompt });
+      for (const supersededId of result.superseded_turn_ids) {
+        removeTurn(activeChatId, supersededId);
+      }
+      setApiTurns((prev) => {
+        const remaining = prev.filter((item) => !result.superseded_turn_ids.includes(item.id));
+        return [...remaining, result.new_turn].sort((a, b) =>
+          a.created_at.localeCompare(b.created_at),
+        );
+      });
+      setPendingEdit(null);
+      if (result.model_set_fallback) {
+        toast.warning(
+          "Original model set was unavailable. Regenerated with a fallback model set.",
+        );
+      }
+      scrollThreadToLatest("smooth");
+      void runTurnInBackground(auth, activeChatId, result.new_turn).catch((error) => {
+        console.error(error);
+        toast.error(error instanceof Error ? error.message : "Failed to regenerate turn");
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to regenerate turn";
+      toast.error(message);
+      throw error instanceof Error ? error : new Error(message);
+    } finally {
+      setRegeneratingTurnId(null);
+    }
+  }
+
+  async function requestPromptEdit(turn: ApiTurn, prompt: string) {
+    if (countLaterTurns(apiTurns, turn.id) > 0) {
+      setPendingEdit({ turn, prompt });
+      return;
+    }
+    await regenerateEditedPrompt(turn, prompt);
+  }
+
   async function undoDeletedTurn(turnId: string) {
     const auth = authHeaders();
     if (!auth || !activeChatId || restoringTurnId) return;
@@ -811,6 +871,13 @@ export function ChatPage() {
             {set &&
               apiTurns.map((turn) => {
                 const showTurnDelete = canShowHistoricalTurnDelete(turn);
+                const showPromptEdit = canShowHistoricalTurnDelete(turn);
+                const promptDisabledReason =
+                  regeneratingTurnId && regeneratingTurnId !== turn.id
+                    ? "Regeneration in progress"
+                    : anyTurnGenerating
+                      ? "Wait for generation to finish"
+                      : undefined;
                 return (
                   <div
                     key={turn.id}
@@ -849,9 +916,18 @@ export function ChatPage() {
                           )}
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
-                        <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
-                      </div>
+                      <UserPromptBubble
+                        turnId={turn.id}
+                        message={turn.user_message}
+                        editable={showPromptEdit}
+                        disabledReason={
+                          canEditUserPrompt(turn, apiTurns) && !regeneratingTurnId
+                            ? undefined
+                            : promptDisabledReason
+                        }
+                        submitting={regeneratingTurnId === turn.id}
+                        onSubmit={(prompt) => requestPromptEdit(turn, prompt)}
+                      />
                     </div>
                     <AiTurn
                       set={set}
@@ -1239,6 +1315,41 @@ export function ChatPage() {
             className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
           >
             {deletingTurn ? "Deleting..." : "Delete turn"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!pendingEdit}
+        onClose={() => {
+          if (regeneratingTurnId) return;
+          setPendingEdit(null);
+        }}
+        title="Regenerate this turn?"
+        size="sm"
+      >
+        <p className="text-sm text-muted-foreground">{LATER_TURNS_EDIT_WARNING}</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setPendingEdit(null)}
+            disabled={Boolean(regeneratingTurnId)}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!pendingEdit || Boolean(regeneratingTurnId)}
+            onClick={() => {
+              if (!pendingEdit) return;
+              void regenerateEditedPrompt(pendingEdit.turn, pendingEdit.prompt).catch(() => {
+                // Error toast handled in regenerateEditedPrompt; keep modal open on failure.
+              });
+            }}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
+            {regeneratingTurnId ? "Regenerating…" : "Save and regenerate"}
           </button>
         </div>
       </Modal>
