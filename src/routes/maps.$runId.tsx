@@ -235,7 +235,7 @@ function SearchKeywordsTable({
   cells: MapsCensusCellItem[];
   isRunning: boolean;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
 
   return (
     <DreamPanel className="mt-8 p-0 overflow-hidden">
