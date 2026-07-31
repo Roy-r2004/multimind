@@ -131,6 +131,7 @@ function LoginPage() {
                   setLoading(false);
                 }
               }}
+              autoComplete="off"
               className="mt-8 space-y-4"
             >
               {error && (
@@ -146,7 +147,8 @@ function LoginPage() {
                     name="email"
                     type="email"
                     required
-                    defaultValue={isAdminRedirect ? "admin@gmail.com" : "chafic@gmail.com"}
+                    autoComplete="off"
+                    placeholder="Enter your email"
                     className="w-full rounded-xl border border-border bg-card py-2.5 pr-3 pl-10 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
                 </div>
@@ -159,7 +161,8 @@ function LoginPage() {
                     name="password"
                     type={showPassword ? "text" : "password"}
                     required
-                    defaultValue="password123"
+                    autoComplete="new-password"
+                    placeholder="Enter your password"
                     className="w-full rounded-xl border border-border bg-card py-2.5 pr-10 pl-10 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
                   <button
