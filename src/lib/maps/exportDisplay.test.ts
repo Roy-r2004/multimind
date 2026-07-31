@@ -27,6 +27,9 @@ const basePlace: MapsPlaceItem = {
   addictions_treated: ["Alcohol"],
   languages_spoken: [],
   treatment_price: null,
+  verification_verdict: null,
+  verification_reason: null,
+  verification_source_url: null,
 };
 
 describe("placeToExportRow", () => {

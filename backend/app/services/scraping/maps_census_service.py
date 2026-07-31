@@ -389,6 +389,8 @@ class MapsCensusService:
             raise NotFoundError("Maps census run", run_id)
         if run.status != MapsCensusStatus.COMPLETED:
             raise ValidationError("Only a completed Maps census run can enrich facility websites.")
+        run.enrichment_refresh_completed_at = None
+        await db.commit()
         await self._enqueue_enrichment(run_id)
         return await self.get_run(db, auth, run_id)
 
@@ -1682,6 +1684,7 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
         places_classified_relevant=run.places_classified_relevant,
         places_with_website=run.places_with_website,
         places_enriched=run.places_enriched,
+        enrichment_refresh_completed_at=run.enrichment_refresh_completed_at,
         started_at=run.started_at,
         completed_at=run.completed_at,
         created_at=run.created_at,

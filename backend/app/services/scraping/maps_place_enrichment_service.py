@@ -138,6 +138,11 @@ class MapsPlaceEnrichmentService:
         session_factory = self._session_factory(db)
         settings = get_settings()
         if not settings.maps_census_enrichment_enabled:
+            async with session_factory() as db:
+                run = await db.get(MapsCensusRun, run_id)
+                if run is not None:
+                    run.enrichment_refresh_completed_at = datetime.now(UTC)
+                    await db.commit()
             return {"enriched": 0}
 
         async with session_factory() as scan_db:

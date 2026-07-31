@@ -34,6 +34,27 @@ import type { MapsCensusCellItem, MapsCensusRunDetail, MapsPlaceItem } from "@/l
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const POLL_INTERVAL_MS = 5000;
+const ENRICHMENT_BUSY = new Set(["pending", "running"]);
+
+function enrichmentStillRunning(
+  run: {
+    status: string;
+    completed_at?: string | null;
+    enrichment_refresh_completed_at?: string | null;
+  },
+  places: { enrichment_status: string }[],
+  enrichmentPollUntil: number | null,
+): boolean {
+  if (run.status !== "completed") return false;
+  // Enrichment job finished — stop even if some rows stayed empty.
+  if (run.enrichment_refresh_completed_at) return false;
+  if (!places.some((place) => ENRICHMENT_BUSY.has(place.enrichment_status))) return false;
+  if (enrichmentPollUntil != null && Date.now() < enrichmentPollUntil) return true;
+  // Don't poll forever on old runs that never started enrichment.
+  if (!run.completed_at) return false;
+  const ageMs = Date.now() - new Date(run.completed_at).getTime();
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 15 * 60 * 1000;
+}
 
 export const Route = createFileRoute("/maps/$runId")({
   head: () => ({ meta: [{ title: "Maps Census Run - MultiAI" }] }),
@@ -54,6 +75,7 @@ function MapsRunDetailPage() {
   const [enriching, setEnriching] = useState(false);
   const [pollTick, setPollTick] = useState(0);
   const [showExportOnly, setShowExportOnly] = useState(false);
+  const [enrichmentPollUntil, setEnrichmentPollUntil] = useState<number | null>(null);
 
   useEffect(() => {
     const auth = authHeaders();
@@ -76,7 +98,10 @@ function MapsRunDetailPage() {
         setPlaces(placeItems);
         setSearchCells(cellItems);
         setError(null);
-        if (ACTIVE_STATUSES.has(runDetail.status)) {
+        if (
+          ACTIVE_STATUSES.has(runDetail.status) ||
+          enrichmentStillRunning(runDetail, placeItems, enrichmentPollUntil)
+        ) {
           timer = setTimeout(load, POLL_INTERVAL_MS);
         }
       } catch (err) {
@@ -94,7 +119,7 @@ function MapsRunDetailPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [authHeaders, navigate, runId, pollTick]);
+  }, [authHeaders, navigate, runId, pollTick, enrichmentPollUntil]);
 
   async function handleFindMissingWebsites() {
     const auth = authHeaders();
@@ -131,6 +156,7 @@ function MapsRunDetailPage() {
     if (!auth) return;
     setEnriching(true);
     setError(null);
+    setEnrichmentPollUntil(Date.now() + 15 * 60 * 1000);
     try {
       const updated = await enrichMapsCensusRun(auth, runId);
       setRun(updated);

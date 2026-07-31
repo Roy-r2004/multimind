@@ -700,6 +700,7 @@ class MapsCensusRunSummary(BaseModel):
     places_classified_relevant: int
     places_with_website: int
     places_enriched: int = 0
+    enrichment_refresh_completed_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime

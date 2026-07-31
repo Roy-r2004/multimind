@@ -12,6 +12,7 @@ export type MapsCensusRunSummary = {
   places_classified_relevant: number;
   places_with_website: number;
   places_enriched: number;
+  enrichment_refresh_completed_at: string | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -61,4 +62,7 @@ export type MapsPlaceItem = {
   addictions_treated: string[];
   languages_spoken: string[];
   treatment_price: string | null;
+  verification_verdict: "confirmed" | "contradicted" | "unknown" | null;
+  verification_reason: string | null;
+  verification_source_url: string | null;
 };
