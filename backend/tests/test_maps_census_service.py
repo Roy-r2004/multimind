@@ -11,9 +11,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
 from app.services.scraping.maps_census_service import (
+    _accepted_direct_llm_website_url,
     _accepted_llm_website_url,
     _maps_website_search_queries,
     _match_official_website_by_address,
@@ -64,6 +66,37 @@ class _FakeProviderRegistry:
 
     def get_provider(self, _name: str) -> _FakeProvider:
         return self._provider
+
+
+def _use_serper_website_search(monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "maps_census_website_search_mode", "serper")
+
+
+def _patch_direct_llm_website_finder(monkeypatch, *, url: str, confidence: float = 0.95) -> None:
+    async def fake_find_batch(self, *, provider, model_slug, country_code, country_name, batch):
+        from app.services.scraping.maps_census_service import MapsWebsiteDecision
+
+        return [
+            MapsWebsiteDecision(
+                place_id=item["id"],
+                url=url,
+                reason="known facility",
+                confidence=confidence,
+            )
+            for item in batch
+        ]
+
+    async def verify_always(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._find_websites_llm_batch",
+        fake_find_batch,
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service._verify_website_reachable",
+        verify_always,
+    )
 
 
 async def _create_run(db, auth: AuthContext) -> MapsCensusRun:
@@ -188,7 +221,7 @@ async def test_run_census_dedupes_places_and_applies_website_validation(db, auth
 
 
 @pytest.mark.asyncio
-async def test_run_census_falls_back_to_search_when_places_has_no_website(db, auth, monkeypatch):
+async def test_run_census_falls_back_to_llm_when_places_has_no_website(db, auth, monkeypatch):
     run = await _create_run(db, auth)
 
     cells = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
@@ -235,27 +268,14 @@ async def test_run_census_falls_back_to_search_when_places_has_no_website(db, au
         lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
     )
 
-    class _FakeSearchProvider:
-        name = "fake"
-
-        def __init__(self) -> None:
-            self.requests: list[str] = []
-
-        async def search(self, request) -> list[SearchProviderResult]:
-            self.requests.append(request.query)
-            return [
-                SearchProviderResult(
-                    rank=1,
-                    url="https://centre-gamma.by/",
-                    title="Centre Gamma — official site",
-                    snippet="Official rehabilitation center in Minsk, Belarus",
-                )
-            ]
-
-    fake_search_provider = _FakeSearchProvider()
+    _patch_direct_llm_website_finder(monkeypatch, url="https://centre-gamma.by/")
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_search_provider",
-        lambda: fake_search_provider,
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="anthropic/claude-sonnet-4"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -264,14 +284,13 @@ async def test_run_census_falls_back_to_search_when_places_has_no_website(db, au
     await db.refresh(run)
     assert run.status == MapsCensusStatus.COMPLETED
     assert run.places_with_website == 1
-    assert len(fake_search_provider.requests) == 1
 
     place = (
         await db.execute(select(MapsPlace).where(MapsPlace.google_place_id == "place-no-site"))
     ).scalar_one()
     assert place.is_relevant is True
     assert place.official_website == "https://centre-gamma.by/"
-    assert place.website_source == "search"
+    assert place.website_source == "llm"
 
 
 @pytest.mark.asyncio
@@ -572,22 +591,14 @@ async def test_run_website_refresh_backfills_missing_website_and_completes(db, a
     db.add(place)
     await db.commit()
 
-    class _FakeSearchProvider:
-        name = "fake"
-
-        async def search(self, request) -> list[SearchProviderResult]:
-            return [
-                SearchProviderResult(
-                    rank=1,
-                    url="https://centre-delta.by/",
-                    title="Centre Delta — official site",
-                    snippet="Official rehabilitation center in Minsk, Belarus",
-                )
-            ]
-
+    _patch_direct_llm_website_finder(monkeypatch, url="https://centre-delta.by/")
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_search_provider",
-        lambda: _FakeSearchProvider(),
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="anthropic/claude-sonnet-4"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider("{}")),
     )
 
     summary = await maps_census_service.run_website_refresh(db, run_id=run.id)
@@ -599,7 +610,7 @@ async def test_run_website_refresh_backfills_missing_website_and_completes(db, a
 
     await db.refresh(place)
     assert place.official_website == "https://centre-delta.by/"
-    assert place.website_source == "search"
+    assert place.website_source == "llm"
 
 
 def _tracking_create_task(monkeypatch, *, marker: str):
@@ -644,6 +655,40 @@ def test_accepted_llm_website_url_requires_candidate_host_and_homepage():
     )
     assert _accepted_llm_website_url("https://evil.example/", candidates=candidates) is None
     assert _accepted_llm_website_url("https://facebook.com/gknd", candidates=candidates) is None
+
+
+@pytest.mark.asyncio
+async def test_accepted_direct_llm_website_url_requires_confidence_and_rejects_social(
+    monkeypatch,
+):
+    async def verify_ok(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service._verify_website_reachable",
+        verify_ok,
+    )
+    assert (
+        await _accepted_direct_llm_website_url(
+            "https://rehab-center-alger.com/",
+            confidence=0.95,
+        )
+        == "https://rehab-center-alger.com/"
+    )
+    assert (
+        await _accepted_direct_llm_website_url(
+            "https://facebook.com/clinic",
+            confidence=0.95,
+        )
+        is None
+    )
+    assert (
+        await _accepted_direct_llm_website_url(
+            "https://rehab-center-alger.com/",
+            confidence=0.5,
+        )
+        is None
+    )
 
 
 def test_normalize_website_payload_accepts_url_aliases():
@@ -785,6 +830,7 @@ async def test_propagate_does_not_overwrite_conflicting_websites(db, auth):
 
 @pytest.mark.asyncio
 async def test_run_website_refresh_uses_llm_when_rule_matchers_fail(db, auth, monkeypatch):
+    _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
     run.cells_total = 1
@@ -909,6 +955,7 @@ async def test_delete_unverified_places_removes_only_relevant_rows_without_websi
 
 @pytest.mark.asyncio
 async def test_refresh_recounts_only_retained_verified_facilities(db, auth, monkeypatch):
+    _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
     run.places_found = 2
@@ -974,6 +1021,7 @@ async def test_run_website_refresh_retries_unquoted_when_quoted_query_empty(
     """Live Belarus gap: quoting the Latin transliteration returns 0 Serper hits;
     the unquoted retry surfaces the real homepage which address-matching accepts.
     """
+    _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
     run.cells_total = 1
@@ -1107,6 +1155,7 @@ def test_address_fallback_returns_none_for_short_address():
 async def test_run_website_refresh_uses_address_fallback_when_name_match_fails(
     db, auth, monkeypatch
 ):
+    _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
     run.cells_total = 1

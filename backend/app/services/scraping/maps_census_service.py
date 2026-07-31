@@ -902,6 +902,82 @@ class MapsCensusService:
         if not pending_items:
             return
 
+        mode = (settings.maps_census_website_search_mode or "llm").strip().lower()
+        if mode == "llm":
+            await self._find_missing_websites_llm(
+                session_factory,
+                run_id=run_id,
+                pending_items=pending_items,
+                country_code=country_code,
+                country_name=country_name,
+            )
+            return
+
+        await self._find_missing_websites_serper(
+            session_factory,
+            run_id=run_id,
+            pending_items=pending_items,
+            country_code=country_code,
+            country_name=country_name,
+        )
+
+    async def _find_missing_websites_llm(
+        self,
+        session_factory,
+        *,
+        run_id: str,
+        pending_items: list[dict[str, Any]],
+        country_code: str,
+        country_name: str,
+    ) -> None:
+        settings = get_settings()
+        if not settings.maps_census_website_llm_enabled:
+            return
+
+        model = get_model(settings.maps_census_website_llm_model)
+        llm_provider = get_provider_registry().get_provider(model.provider)
+        batch_size = max(1, settings.maps_census_website_llm_batch_size)
+        for offset in range(0, len(pending_items), batch_size):
+            batch = pending_items[offset : offset + batch_size]
+            async with session_factory() as heartbeat_db:
+                run = await heartbeat_db.get(MapsCensusRun, run_id)
+                if run is not None:
+                    run.heartbeat_at = datetime.now(UTC)
+                    await heartbeat_db.commit()
+
+            decisions = await self._find_websites_llm_batch(
+                provider=llm_provider,
+                model_slug=model.provider_model,
+                country_code=country_code,
+                country_name=country_name,
+                batch=batch,
+            )
+            by_id = {d.place_id: d for d in decisions}
+            for item in batch:
+                decision = by_id.get(item["id"])
+                url = await _accepted_direct_llm_website_url(
+                    decision.url if decision is not None else None,
+                    confidence=float(decision.confidence if decision is not None else 0),
+                )
+                if not url:
+                    continue
+                async with session_factory() as write_db:
+                    place = await write_db.get(MapsPlace, item["id"])
+                    if place is not None and place.official_website is None:
+                        place.official_website = url
+                        place.website_source = "llm"
+                    await write_db.commit()
+
+    async def _find_missing_websites_serper(
+        self,
+        session_factory,
+        *,
+        run_id: str,
+        pending_items: list[dict[str, Any]],
+        country_code: str,
+        country_name: str,
+    ) -> None:
+        settings = get_settings()
         provider = create_search_provider()
         llm_queue: list[dict[str, Any]] = []
         for item in pending_items:
@@ -981,6 +1057,64 @@ class MapsCensusService:
                         place.official_website = url
                         place.website_source = "search"
                     await write_db.commit()
+
+    async def _find_websites_llm_batch(
+        self,
+        *,
+        provider: Any,
+        model_slug: str,
+        country_code: str,
+        country_name: str,
+        batch: list[dict[str, Any]],
+    ) -> list[MapsWebsiteDecision]:
+        payloads = [
+            {
+                "place_id": item["id"],
+                "name": item["name"],
+                "city": item.get("city"),
+                "address": item.get("address"),
+                "phone": item.get("phone"),
+            }
+            for item in batch
+        ]
+        prompt = get_prompt_engine().render(
+            "scraping/maps_website_finder.j2",
+            country_code=(country_code or "XX")[:2].upper(),
+            country_name=(country_name or "Unknown")[:120],
+            facilities_json=json.dumps(payloads, ensure_ascii=False),
+        )
+        try:
+            response = await asyncio.wait_for(
+                provider.complete(
+                    system=(
+                        "You return strict JSON with official rehabilitation facility "
+                        "homepage URLs when confident, otherwise null."
+                    ),
+                    user=prompt,
+                    model=model_slug,
+                    max_tokens=2500,
+                ),
+                timeout=WEBSITE_LLM_BATCH_TIMEOUT_SECONDS,
+            )
+            raw = LLMProvider.parse_json_response(response.text)
+            plan = MapsWebsitePlan.model_validate(_normalize_website_payload(raw))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "maps_census_website_finder_batch_failed count=%s error=%s",
+                len(payloads),
+                exc,
+            )
+            return [
+                MapsWebsiteDecision(place_id=p["place_id"], url=None, reason="llm_failed")
+                for p in payloads
+            ]
+
+        by_id = {d.place_id: d for d in plan.decisions}
+        return [
+            by_id.get(p["place_id"])
+            or MapsWebsiteDecision(place_id=p["place_id"], url=None, reason="missing_decision")
+            for p in payloads
+        ]
 
     async def _search_website_candidates(
         self,
@@ -1436,6 +1570,43 @@ def _accepted_llm_website_url(
     if _is_rejected_result(probe):
         return None
     return homepage
+
+
+async def _accepted_direct_llm_website_url(
+    url: str | None,
+    *,
+    confidence: float,
+) -> str | None:
+    """Accept a direct Claude website find after blocklist and optional HTTP checks."""
+    settings = get_settings()
+    if not url or confidence < settings.maps_census_website_llm_min_confidence:
+        return None
+    parsed = _safe_url(url)
+    if parsed is None:
+        return None
+    homepage = _homepage_url(parsed)
+    probe = SearchProviderResult(rank=1, url=homepage, title="", snippet="")
+    if _is_rejected_result(probe):
+        return None
+    if settings.maps_census_website_llm_verify_reachable:
+        if not await _verify_website_reachable(homepage):
+            return None
+    return homepage
+
+
+async def _verify_website_reachable(url: str) -> bool:
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(8.0, connect=4.0),
+            headers={"User-Agent": "MultiAI-MapsCensus/1.0"},
+        ) as client:
+            response = await client.head(url)
+            if response.status_code >= 400 or response.status_code < 200:
+                response = await client.get(url)
+            return 200 <= response.status_code < 400
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _normalize_relevance_payload(raw: Any) -> dict[str, Any]:

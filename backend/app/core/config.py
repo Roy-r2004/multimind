@@ -132,15 +132,17 @@ class Settings(BaseSettings):
     maps_census_max_cells_per_run: int = 120
     maps_census_max_places_per_cell: int = 20
     maps_census_classification_batch_size: int = 15
-    # Fallback web search for relevant places Google Places returned with no
-    # (or an untrustworthy) website — reuses the scraping pipeline's search provider.
+    # Fallback website discovery for relevant places Google Places returned with no
+    # (or an untrustworthy) website. "llm" asks Claude directly; "serper" uses Google
+    # search candidates plus optional Claude selection (legacy).
     maps_census_website_search_enabled: bool = True
+    maps_census_website_search_mode: str = "llm"
     maps_census_website_search_max_places_per_run: int = 250
-    # When deterministic name/address matchers miss, batch Serper candidates through
-    # the census LLM (OpenRouter) to pick the official homepage.
     maps_census_website_llm_enabled: bool = True
     maps_census_website_llm_model: str = "claude"
     maps_census_website_llm_batch_size: int = 3
+    maps_census_website_llm_min_confidence: float = 0.75
+    maps_census_website_llm_verify_reachable: bool = True
     # Background cron: automatically retry the website search for completed runs that
     # still have gaps, so nobody has to click a "find missing websites" button.
     maps_census_auto_website_refresh_enabled: bool = True
