@@ -911,7 +911,7 @@ async def test_run_website_refresh_uses_llm_when_rule_matchers_fail(db, auth, mo
     await db.refresh(place)
     assert place.official_website == "https://www.gknd.by/"
     assert place.website_source == "search"
-    assert requested_models == ["claude"]
+    assert requested_models == ["sonar-pro"]
 
 
 @pytest.mark.asyncio

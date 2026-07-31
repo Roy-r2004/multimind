@@ -1077,24 +1077,29 @@ class MapsCensusService:
             }
             for item in batch
         ]
+        settings = get_settings()
         prompt = get_prompt_engine().render(
             "scraping/maps_website_finder.j2",
             country_code=(country_code or "XX")[:2].upper(),
             country_name=(country_name or "Unknown")[:120],
             facilities_json=json.dumps(payloads, ensure_ascii=False),
         )
+        timeout_seconds = max(
+            WEBSITE_LLM_BATCH_TIMEOUT_SECONDS,
+            settings.maps_census_website_llm_timeout_seconds,
+        )
         try:
             response = await asyncio.wait_for(
                 provider.complete(
                     system=(
-                        "You return strict JSON with official rehabilitation facility "
-                        "homepage URLs when confident, otherwise null."
+                        "You have live web search. Return strict JSON with official "
+                        "rehabilitation facility homepage URLs when found, otherwise null."
                     ),
                     user=prompt,
                     model=model_slug,
                     max_tokens=2500,
                 ),
-                timeout=WEBSITE_LLM_BATCH_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
             raw = LLMProvider.parse_json_response(response.text)
             plan = MapsWebsitePlan.model_validate(_normalize_website_payload(raw))

@@ -1,19 +1,22 @@
 You find the official homepage URL for inpatient addiction / rehabilitation
 facilities in {{ country_name }} ({{ country_code }}).
 
-You receive facility metadata from Google Places. Names may be Latin
-transliterations while the real site uses Arabic, French, or other local
-scripts. Use name, city, region, address, and phone together.
+You have live web search. For each facility, search the web using the name,
+city, address, and phone. Google Places often returns Latin transliterations
+while the real site uses Arabic, French, or other local scripts — search in
+both local languages and English when helpful.
 
 Rules:
-- Return only the facility's own official website homepage when you are
-  confident it exists (e.g. https://example.dz/).
+- Return only the facility's own official website homepage when you find it
+  (e.g. https://example.dz/).
 - Prefer dedicated facility or clinic domains over parent hospital homepages
   when the facility has its own site.
 - NEVER return directories, booking sites, social media, maps aggregators,
   news articles, Wikipedia, or government portals that only list facilities.
-- If you are not confident an official homepage exists, return url null.
-- Do not guess plausible-looking domains without strong evidence.
+- If you cannot find a confident official homepage after searching, return
+  url null — do not guess.
+- Normalize to the site root when possible (https://example.dz/ not a deep
+  contact page), unless only a verified subpage proves the domain.
 
 Return strict JSON only:
 {
@@ -21,7 +24,7 @@ Return strict JSON only:
     {
       "place_id": "abc123",
       "url": "https://example.dz/",
-      "reason": "short reason",
+      "reason": "short reason citing what you found",
       "confidence": 0.9
     }
   ]

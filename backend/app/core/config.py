@@ -139,10 +139,11 @@ class Settings(BaseSettings):
     maps_census_website_search_mode: str = "llm"
     maps_census_website_search_max_places_per_run: int = 250
     maps_census_website_llm_enabled: bool = True
-    maps_census_website_llm_model: str = "claude"
+    maps_census_website_llm_model: str = "sonar-pro"
     maps_census_website_llm_batch_size: int = 3
     maps_census_website_llm_min_confidence: float = 0.75
     maps_census_website_llm_verify_reachable: bool = True
+    maps_census_website_llm_timeout_seconds: float = 120.0
     # Background cron: automatically retry the website search for completed runs that
     # still have gaps, so nobody has to click a "find missing websites" button.
     maps_census_auto_website_refresh_enabled: bool = True
