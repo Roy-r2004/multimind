@@ -126,6 +126,27 @@ GENERIC_NAME_STOPWORDS = frozenset(
     {"a", "al", "and", "anti", "de", "des", "du", "et", "for", "la", "le", "les", "of", "the", "ال"}
 )
 
+# Facebook paths that belong to the platform rather than to a facility page.
+FACEBOOK_NON_PAGE_SEGMENTS = frozenset(
+    {
+        "events",
+        "groups",
+        "hashtag",
+        "help",
+        "login",
+        "marketplace",
+        "pages",
+        "people",
+        "photo",
+        "photo.php",
+        "search",
+        "sharer",
+        "sharer.php",
+        "story.php",
+        "watch",
+    }
+)
+
 
 class MapsRelevanceDecision(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -149,6 +170,9 @@ class MapsWebsiteDecision(BaseModel):
     url: str | None = Field(default=None, max_length=512)
     reason: str = Field(default="", max_length=2000)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Display name of the page behind ``url``. Required to prove identity when
+    # ``url`` is a social page, whose host alone says nothing about the facility.
+    page_name: str = Field(default="", max_length=300)
 
 
 class MapsWebsitePlan(BaseModel):
@@ -794,7 +818,36 @@ class MapsCensusService:
 
         if settings.maps_census_website_search_enabled:
             await self._search_missing_websites(session_factory, run_id=run_id)
+        await self._apply_places_social_fallbacks(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
+
+    async def _apply_places_social_fallbacks(self, session_factory, *, run_id: str) -> int:
+        """Keep Google-provided Facebook pages when no official domain was found.
+
+        Search still runs first so a dedicated website wins. We only trust social
+        URLs attached directly to the Google Place; Sonar/search candidates remain
+        subject to the strict official-domain policy to avoid identity mismatches.
+        """
+        async with session_factory() as db:
+            places = (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.is_relevant.is_(True),
+                        MapsPlace.official_website.is_(None),
+                        MapsPlace.raw_website.is_not(None),
+                    )
+                )
+            ).scalars().all()
+            applied = 0
+            for place in places:
+                if _is_facebook_url(place.raw_website):
+                    place.official_website = place.raw_website
+                    place.website_source = "places_social"
+                    applied += 1
+            if applied:
+                await db.commit()
+            return applied
 
     async def _apply_post_classification_filters(self, session_factory, *, run_id: str) -> int:
         """Enforce Phase 1 gates in code: minimum confidence and mandatory street address."""
@@ -862,7 +915,9 @@ class MapsCensusService:
             ).scalars().all()
             dropped = 0
             for place in places:
-                if website_needs_enrichment(place.official_website):
+                if website_needs_enrichment(place.official_website) and not _is_facebook_url(
+                    place.official_website
+                ):
                     place.official_website = None
                     place.website_source = None
                     dropped += 1
@@ -1007,6 +1062,8 @@ class MapsCensusService:
                 url = await _accepted_direct_llm_website_url(
                     decision.url if decision is not None else None,
                     confidence=float(decision.confidence if decision is not None else 0),
+                    page_name=decision.page_name if decision is not None else "",
+                    facility_name=item.get("name"),
                 )
                 if not url:
                     continue
@@ -1014,7 +1071,7 @@ class MapsCensusService:
                     place = await write_db.get(MapsPlace, item["id"])
                     if place is not None and place.official_website is None:
                         place.official_website = url
-                        place.website_source = "llm"
+                        place.website_source = "llm_social" if _is_facebook_url(url) else "llm"
                     await write_db.commit()
 
     async def _find_missing_websites_serper(
@@ -1634,6 +1691,9 @@ def _normalize_website_payload(raw: Any) -> dict[str, Any]:
                 "url": url,
                 "reason": str(item.get("reason") or item.get("explanation") or "")[:2000],
                 "confidence": item.get("confidence", 0.5),
+                "page_name": str(
+                    item.get("page_name") or item.get("pageName") or item.get("title") or ""
+                )[:300],
             }
         )
     return {"decisions": normalized}
@@ -1674,14 +1734,23 @@ async def _accepted_direct_llm_website_url(
     url: str | None,
     *,
     confidence: float,
+    page_name: str = "",
+    facility_name: str | None = None,
 ) -> str | None:
-    """Accept a direct Claude website find after blocklist and optional HTTP checks."""
+    """Accept a direct LLM website find after blocklist and optional HTTP checks.
+
+    A Facebook page is accepted as a fallback only when the page's own name
+    shares a distinguishing token with the facility name, so a real page for a
+    *different* clinic can never be attached to this one.
+    """
     settings = get_settings()
     if not url or confidence < settings.maps_census_website_llm_min_confidence:
         return None
     parsed = _safe_url(url)
     if parsed is None:
         return None
+    if _is_facebook_url(url):
+        return _accepted_social_page_url(url, page_name=page_name, facility_name=facility_name)
     homepage = _homepage_url(parsed)
     probe = SearchProviderResult(rank=1, url=homepage, title="", snippet="")
     if _is_rejected_result(probe):
@@ -1690,6 +1759,65 @@ async def _accepted_direct_llm_website_url(
         if not await _verify_website_reachable(homepage):
             return None
     return homepage
+
+
+def _is_facebook_url(url: str | None) -> bool:
+    """True for genuine Facebook hosts, excluding platform (non-page) paths."""
+    parsed = _safe_url(url or "")
+    if parsed is None:
+        return False
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if host != "facebook.com" and not host.endswith(".facebook.com"):
+        return False
+    segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    if segments and segments[0].casefold() in FACEBOOK_NON_PAGE_SEGMENTS:
+        return False
+    return bool(segments) or bool(parsed.query)
+
+
+def _accepted_social_page_url(
+    url: str,
+    *,
+    page_name: str,
+    facility_name: str | None,
+) -> str | None:
+    """Keep a social page only when its name identifies this facility.
+
+    The URL path is included in the comparison so a vanity handle such as
+    ``/EhsFernaneOuedAissi`` can prove identity when no page name came back.
+    """
+    identity = _distinctive_tokens(facility_name)
+    if not identity:
+        return None
+    parsed = _safe_url(url)
+    handle = (parsed.path or "").replace("/", " ") if parsed is not None else ""
+    claimed = _distinctive_tokens(f"{page_name} {handle}")
+    if not claimed & identity:
+        return None
+    return url
+
+
+def _distinctive_tokens(text: str | None) -> set[str]:
+    """Tokens that identify a specific facility, minus generic category words.
+
+    Social vanity handles glue words together ("CliniqueLilasAlger"), so split
+    on case transitions before folding or the whole handle becomes one token.
+    """
+    split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text or "")
+    folded = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", split.lower())
+        if not unicodedata.combining(char)
+    )
+    cleaned = re.sub(r"[^\w\s\u0600-\u06ff]+", " ", folded)
+    return {
+        token
+        for token in cleaned.split()
+        if len(token) > 2
+        and not token.isdigit()
+        and token not in GENERIC_NAME_WORDS
+        and token not in GENERIC_NAME_STOPWORDS
+    }
 
 
 async def _verify_website_reachable(url: str) -> bool:

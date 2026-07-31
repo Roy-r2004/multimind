@@ -21,6 +21,7 @@ from app.services.scraping.maps_census_service import (
     _maps_website_search_queries,
     _match_official_website_by_address,
     _normalize_website_payload,
+    _is_facebook_url,
     auto_refresh_maps_census_websites,
     has_street_address,
     is_generic_facility_name,
@@ -658,6 +659,122 @@ def test_accepted_llm_website_url_requires_candidate_host_and_homepage():
     )
     assert _accepted_llm_website_url("https://evil.example/", candidates=candidates) is None
     assert _accepted_llm_website_url("https://facebook.com/gknd", candidates=candidates) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://facebook.com/ALT.Association/",
+        "https://www.facebook.com/profile.php?id=123",
+        "https://web.facebook.com/clinic/",
+        "https://m.facebook.com/clinic/",
+    ],
+)
+def test_places_facebook_urls_are_accepted_as_social_fallbacks(url):
+    assert _is_facebook_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "not-a-url",
+        "https://facebook.example/clinic",
+        "https://evil.example/?next=facebook.com/clinic",
+        "https://instagram.com/clinic",
+        "https://directory.example/clinic",
+        "https://www.facebook.com/groups/algeria-health",
+        "https://www.facebook.com/login/",
+        "https://www.facebook.com/",
+    ],
+)
+def test_only_real_facebook_hosts_are_places_social_fallbacks(url):
+    assert _is_facebook_url(url) is False
+
+
+@pytest.mark.asyncio
+async def test_llm_facebook_page_accepted_when_page_name_identifies_facility():
+    accepted = await _accepted_direct_llm_website_url(
+        "https://www.facebook.com/EhsFernaneOuedAissi/",
+        confidence=0.9,
+        page_name="Ehs fernane oued aissi",
+        facility_name="Psychiatric Hospital Fernane Hanafi",
+    )
+    assert accepted == "https://www.facebook.com/EhsFernaneOuedAissi/"
+
+
+@pytest.mark.asyncio
+async def test_llm_facebook_page_accepted_via_vanity_handle_without_page_name():
+    accepted = await _accepted_direct_llm_website_url(
+        "https://www.facebook.com/CliniqueLilasAlger/",
+        confidence=0.9,
+        page_name="",
+        facility_name="Clinique Psychiatrique Lilas",
+    )
+    assert accepted == "https://www.facebook.com/CliniqueLilasAlger/"
+
+
+@pytest.mark.asyncio
+async def test_llm_facebook_page_rejected_when_it_belongs_to_another_clinic():
+    accepted = await _accepted_direct_llm_website_url(
+        "https://www.facebook.com/cgsahydra/",
+        confidence=0.95,
+        page_name="Clinique CGSA Hydra",
+        facility_name="مركز معالجة الادمان - يسر.polyclinic",
+    )
+    assert accepted is None
+
+
+@pytest.mark.asyncio
+async def test_llm_opaque_facebook_profile_rejected_without_identity_proof():
+    accepted = await _accepted_direct_llm_website_url(
+        "https://www.facebook.com/profile.php?id=61559475466892",
+        confidence=0.95,
+        page_name="",
+        facility_name="Dr. Fekar psychiatre et addictologue",
+    )
+    assert accepted is None
+
+
+@pytest.mark.asyncio
+async def test_places_facebook_page_is_used_only_when_official_site_is_missing(db, auth):
+    run = await _create_run(db, auth)
+    fallback = MapsPlace(
+        run_id=run.id,
+        google_place_id="place-facebook-only",
+        raw_name="ALT Association",
+        canonical_name="ALT Association",
+        formatted_address="60 Hai Essabah, Oran",
+        city_name="Oran",
+        is_relevant=True,
+        raw_website="https://web.facebook.com/ALT.Association/",
+    )
+    official = MapsPlace(
+        run_id=run.id,
+        google_place_id="place-with-domain",
+        raw_name="Clinic With Domain",
+        canonical_name="Clinic With Domain",
+        formatted_address="1 Main Street, Oran",
+        city_name="Oran",
+        is_relevant=True,
+        raw_website="https://facebook.com/clinic/",
+        official_website="https://clinic.dz/",
+        website_source="llm",
+    )
+    db.add_all([fallback, official])
+    await db.commit()
+
+    applied = await maps_census_service._apply_places_social_fallbacks(
+        maps_census_service._session_factory(db), run_id=run.id
+    )
+
+    assert applied == 1
+    await db.refresh(fallback)
+    await db.refresh(official)
+    assert fallback.official_website == "https://web.facebook.com/ALT.Association/"
+    assert fallback.website_source == "places_social"
+    assert official.official_website == "https://clinic.dz/"
+    assert official.website_source == "llm"
 
 
 @pytest.mark.asyncio

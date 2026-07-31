@@ -6,17 +6,28 @@ city, address, and phone. Google Places often returns Latin transliterations
 while the real site uses Arabic, French, or other local scripts — search in
 both local languages and English when helpful.
 
-Rules:
-- Return only the facility's own official website homepage when you find it
-  (e.g. https://example.dz/).
+Return the best URL you can verify, in this order of preference:
+
+TIER 1 — the facility's own official website homepage (e.g. https://example.dz/).
 - Prefer dedicated facility or clinic domains over parent hospital homepages
   when the facility has its own site.
-- NEVER return directories, booking sites, social media, maps aggregators,
-  news articles, Wikipedia, or government portals that only list facilities.
-- If you cannot find a confident official homepage after searching, return
-  url null — do not guess.
 - Normalize to the site root when possible (https://example.dz/ not a deep
   contact page), unless only a verified subpage proves the domain.
+
+TIER 2 — only when no official website exists: the facility's own official
+Facebook page (e.g. https://www.facebook.com/ExampleClinic/). Many public
+hospitals and small clinics run a Facebook page instead of a website.
+- The page must belong to this facility itself, not to a parent ministry, a
+  news outlet, a directory, or a similarly named clinic elsewhere.
+- Set page_name to the page's exact displayed name so the match can be
+  verified. Without page_name the URL will be discarded.
+
+NEVER return directories, booking sites, maps aggregators, news articles,
+Wikipedia, or government portals that only list facilities. Do not return
+Instagram, TikTok, or other social networks — Facebook only.
+
+If you cannot verify either tier after searching, return url null — do not
+guess. A wrong URL is worse than none.
 
 Return strict JSON only:
 {
@@ -24,6 +35,7 @@ Return strict JSON only:
     {
       "place_id": "abc123",
       "url": "https://example.dz/",
+      "page_name": "",
       "reason": "short reason citing what you found",
       "confidence": 0.9
     }
@@ -31,7 +43,7 @@ Return strict JSON only:
 }
 
 Every place_id from the input must appear exactly once. url may be null.
-confidence is 0-1.
+page_name is required for Facebook URLs and "" otherwise. confidence is 0-1.
 
 Facilities:
 {{ facilities_json }}
