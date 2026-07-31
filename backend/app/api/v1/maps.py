@@ -1,12 +1,13 @@
 """Standalone Google Places Maps census endpoints."""
 
 from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.session import get_db
 from app.schemas.api import (
+    MapsCensusCellItem,
     MapsCensusRunCreate,
     MapsCensusRunDetail,
     MapsCensusRunSummary,
@@ -43,6 +44,15 @@ async def get_maps_census_run(
     return await maps_census_service.get_run(db, auth, run_id)
 
 
+@router.get("/runs/{run_id}/cells", response_model=list[MapsCensusCellItem])
+async def list_maps_census_cells(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await maps_census_service.list_cells(db, auth, run_id)
+
+
 @router.get("/runs/{run_id}/places", response_model=list[MapsPlaceItem])
 async def list_maps_census_places(
     run_id: str,
@@ -57,6 +67,23 @@ async def list_maps_census_places(
         run_id,
         relevant_only=relevant_only,
         with_website_only=with_website_only,
+    )
+
+
+@router.get("/runs/{run_id}/export.csv")
+async def export_maps_census_run_csv(
+    run_id: str,
+    tier: str = Query(default="all"),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    filename, csv_body = await maps_census_service.export_run_csv(
+        db, auth, run_id, tier=tier
+    )
+    return Response(
+        content=f"\ufeff{csv_body}",
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -87,3 +114,12 @@ async def refresh_maps_census_run_websites(
     db: AsyncSession = Depends(get_db),
 ):
     return await maps_census_service.request_website_refresh(db, auth, run_id)
+
+
+@router.post("/runs/{run_id}/enrich", response_model=MapsCensusRunDetail)
+async def enrich_maps_census_run(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await maps_census_service.request_enrichment(db, auth, run_id)

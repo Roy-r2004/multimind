@@ -153,6 +153,14 @@ class Settings(BaseSettings):
     # Local disk cache for Google Places facility photos (fetched once, reused after)
     maps_census_photo_cache_dir: str = "data/maps_photos"
 
+    # Phase 2: website crawl enrichment (off by default until live-validated)
+    maps_census_enrichment_enabled: bool = False
+    maps_census_enrichment_max_places_per_run: int = 250
+    maps_census_enrichment_max_pages_per_place: int = 4
+    maps_census_enrichment_max_bytes_per_page: int = 1_500_000
+    maps_census_enrichment_model: str = "gpt-4.1"
+    maps_census_auto_enrichment_enabled: bool = False
+
     # Public URL for share links
     public_app_url: str = Field(default="http://localhost:5173")
 

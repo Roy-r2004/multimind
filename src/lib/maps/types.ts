@@ -11,6 +11,7 @@ export type MapsCensusRunSummary = {
   places_found: number;
   places_classified_relevant: number;
   places_with_website: number;
+  places_enriched: number;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -19,6 +20,17 @@ export type MapsCensusRunSummary = {
 };
 
 export type MapsCensusRunDetail = MapsCensusRunSummary;
+
+export type MapsCensusCellItem = {
+  id: string;
+  region_name: string;
+  city_name: string | null;
+  query_text: string;
+  status: "pending" | "in_progress" | "completed" | "failed";
+  places_found: number;
+  error_message: string | null;
+  completed_at: string | null;
+};
 
 export type MapsCensusRunCreateInput = {
   country_code: string;
@@ -43,4 +55,10 @@ export type MapsPlaceItem = {
   confidence_score: number | null;
   discovered_via_query: string | null;
   has_photo: boolean;
+  verification_tier: "verified" | "flagged" | "excluded";
+  export_eligible: boolean;
+  enrichment_status: "pending" | "running" | "completed" | "failed" | "skipped";
+  addictions_treated: string[];
+  languages_spoken: string[];
+  treatment_price: string | null;
 };

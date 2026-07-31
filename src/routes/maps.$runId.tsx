@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-r
 import {
   ArrowLeft,
   Building2,
+  Download,
   ExternalLink,
   Globe,
   Grid2x2,
@@ -21,9 +22,9 @@ import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { getMapsCensusRun, listMapsCensusPlaces, refreshMapsCensusWebsites } from "@/lib/maps/api";
+import { downloadMapsCensusExport, enrichMapsCensusRun, getMapsCensusRun, listMapsCensusCells, listMapsCensusPlaces, refreshMapsCensusWebsites } from "@/lib/maps/api";
 import { groupVerifiedPlaces, type PlaceGroup } from "@/lib/maps/groupPlaces";
-import type { MapsCensusRunDetail, MapsPlaceItem } from "@/lib/maps/types";
+import type { MapsCensusCellItem, MapsCensusRunDetail, MapsPlaceItem } from "@/lib/maps/types";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const POLL_INTERVAL_MS = 5000;
@@ -39,9 +40,12 @@ function MapsRunDetailPage() {
   const navigate = useNavigate();
   const [run, setRun] = useState<MapsCensusRunDetail | null>(null);
   const [places, setPlaces] = useState<MapsPlaceItem[]>([]);
+  const [searchCells, setSearchCells] = useState<MapsCensusCellItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const [pollTick, setPollTick] = useState(0);
 
   useEffect(() => {
@@ -55,13 +59,15 @@ function MapsRunDetailPage() {
 
     async function load() {
       try {
-        const [runDetail, placeItems] = await Promise.all([
+        const [runDetail, placeItems, cellItems] = await Promise.all([
           getMapsCensusRun(auth!, runId),
           listMapsCensusPlaces(auth!, runId, { relevantOnly: true, withWebsiteOnly: true }),
+          listMapsCensusCells(auth!, runId),
         ]);
         if (cancelled) return;
         setRun(runDetail);
         setPlaces(placeItems);
+        setSearchCells(cellItems);
         setError(null);
         if (ACTIVE_STATUSES.has(runDetail.status)) {
           timer = setTimeout(load, POLL_INTERVAL_MS);
@@ -99,6 +105,36 @@ function MapsRunDetailPage() {
     }
   }
 
+  async function handleDownloadExport() {
+    const auth = authHeaders();
+    if (!auth || run?.status !== "completed") return;
+    setExporting(true);
+    setError(null);
+    try {
+      await downloadMapsCensusExport(auth, runId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to download CSV export");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleEnrichWebsites() {
+    const auth = authHeaders();
+    if (!auth) return;
+    setEnriching(true);
+    setError(null);
+    try {
+      const updated = await enrichMapsCensusRun(auth, runId);
+      setRun(updated);
+      setPollTick((tick) => tick + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start website enrichment");
+    } finally {
+      setEnriching(false);
+    }
+  }
+
   const groupedPlaces = groupVerifiedPlaces(places);
 
   return (
@@ -124,7 +160,11 @@ function MapsRunDetailPage() {
             <MapsRunHero
               run={run}
               refreshing={refreshing}
+              exporting={exporting}
+              enriching={enriching}
               onFindMissingWebsites={() => void handleFindMissingWebsites()}
+              onDownloadExport={() => void handleDownloadExport()}
+              onEnrichWebsites={() => void handleEnrichWebsites()}
             />
             {run.error_message && (
               <DreamPanel className="mt-6 text-sm text-rose-600">{run.error_message}</DreamPanel>
@@ -158,6 +198,8 @@ function MapsRunDetailPage() {
               />
             </div>
 
+            <SearchKeywordsPanel cells={searchCells} isRunning={ACTIVE_STATUSES.has(run.status)} />
+
             <div className="mt-10 space-y-3">
               {places.length === 0 && (
                 <DreamPanel className="text-sm text-muted-foreground">
@@ -181,18 +223,141 @@ function MapsRunDetailPage() {
   );
 }
 
+function SearchKeywordsPanel({
+  cells,
+  isRunning,
+}: {
+  cells: MapsCensusCellItem[];
+  isRunning: boolean;
+}) {
+  const grouped = groupSearchCells(cells);
+
+  return (
+    <DreamPanel className="mt-8">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-muted-foreground">
+            Search grid
+          </p>
+          <h2 className="mt-1 font-display text-lg font-semibold text-foreground">
+            Keywords searched
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            LLM-planned Google Places queries for this country — English and local-language
+            inpatient addiction rehab terms, scoped by city.
+          </p>
+        </div>
+        <span className="rounded-full border border-border/80 bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
+          {cells.length} {cells.length === 1 ? "query" : "queries"}
+        </span>
+      </div>
+
+      {cells.length === 0 && (
+        <p className="mt-4 text-sm text-muted-foreground">
+          {isRunning
+            ? "Planning search grid… keywords will appear here once the run starts."
+            : "No search keywords were recorded for this run."}
+        </p>
+      )}
+
+      {grouped.length > 0 && (
+        <div className="mt-5 space-y-4">
+          {grouped.map((group) => (
+            <div
+              key={group.key}
+              className="rounded-xl border border-border/80 bg-background/60 p-4"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <MapPin className="size-3.5 text-primary" />
+                <h3 className="font-medium text-foreground">{group.label}</h3>
+                <span className="text-xs text-muted-foreground">
+                  {group.cells.length} {group.cells.length === 1 ? "query" : "queries"}
+                </span>
+              </div>
+              <ul className="mt-3 space-y-2">
+                {group.cells.map((cell) => (
+                  <li
+                    key={cell.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2"
+                  >
+                    <code className="text-sm text-foreground">{cell.query_text}</code>
+                    <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.08em]">
+                      <SearchCellStatusBadge status={cell.status} />
+                      <span className="text-muted-foreground">
+                        {cell.places_found} found
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </DreamPanel>
+  );
+}
+
+function SearchCellStatusBadge({ status }: { status: MapsCensusCellItem["status"] }) {
+  const styles: Record<MapsCensusCellItem["status"], string> = {
+    pending: "bg-muted text-muted-foreground",
+    in_progress: "bg-amber-100 text-amber-800",
+    completed: "bg-teal-100 text-teal-800",
+    failed: "bg-rose-100 text-rose-700",
+  };
+  const labels: Record<MapsCensusCellItem["status"], string> = {
+    pending: "Pending",
+    in_progress: "Running",
+    completed: "Done",
+    failed: "Failed",
+  };
+  return (
+    <span className={cn("rounded-full px-2 py-0.5 font-medium", styles[status])}>
+      {labels[status]}
+    </span>
+  );
+}
+
+function groupSearchCells(cells: MapsCensusCellItem[]) {
+  const byKey = new Map<string, { key: string; label: string; cells: MapsCensusCellItem[] }>();
+  for (const cell of cells) {
+    const city = cell.city_name?.trim() || "Region-wide";
+    const key = `${cell.region_name}::${city}`;
+    const label = city === "Region-wide" ? cell.region_name : `${city}, ${cell.region_name}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.cells.push(cell);
+    } else {
+      byKey.set(key, { key, label, cells: [cell] });
+    }
+  }
+  return [...byKey.values()];
+}
+
 function MapsRunHero({
   run,
   refreshing,
+  exporting,
+  enriching,
   onFindMissingWebsites,
+  onDownloadExport,
+  onEnrichWebsites,
 }: {
   run: MapsCensusRunDetail;
   refreshing: boolean;
+  exporting: boolean;
+  enriching: boolean;
   onFindMissingWebsites: () => void;
+  onDownloadExport: () => void;
+  onEnrichWebsites: () => void;
 }) {
   const [primary, secondary] = getFlagColors(run.country_code);
   const showFindMissingWebsites =
     run.status === "completed" && run.places_classified_relevant > run.places_with_website;
+  const showEnrichWebsites =
+    run.status === "completed" &&
+    run.places_with_website > 0 &&
+    run.places_enriched < run.places_with_website;
 
   return (
     <div className="dream-rise relative isolate overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950 shadow-[0_16px_44px_oklch(0.2_0.06_240/0.35)]">
@@ -246,11 +411,26 @@ function MapsRunHero({
               </h1>
             </div>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/75">
-              Rehabilitation, addiction, and psychiatric facilities discovered via Google Places
-              and verified by AI.
+              Non-government inpatient addiction rehab facilities from Google Places, classified by
+              AI, with CSV export and searchable keyword grid.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {run.status === "completed" && (
+              <button
+                type="button"
+                onClick={onDownloadExport}
+                disabled={exporting}
+                className="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-semibold text-white backdrop-blur-sm transition hover:bg-white/20 disabled:opacity-50"
+              >
+                {exporting ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Download className="size-3.5" />
+                )}
+                Download CSV
+              </button>
+            )}
             {showFindMissingWebsites && (
               <button
                 type="button"

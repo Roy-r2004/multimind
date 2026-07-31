@@ -11,6 +11,8 @@ country without coupling the two pipelines together.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import re
@@ -37,7 +39,12 @@ from app.db.models import (
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
-from app.schemas.api import MapsCensusRunDetail, MapsCensusRunSummary, MapsPlaceItem
+from app.schemas.api import (
+    MapsCensusCellItem,
+    MapsCensusRunDetail,
+    MapsCensusRunSummary,
+    MapsPlaceItem,
+)
 from app.services.scraping.countries import resolve_country
 from app.services.scraping.facility_website_enrichment_service import (
     OfficialWebsiteCandidate,
@@ -64,6 +71,22 @@ logger = logging.getLogger(__name__)
 
 CLASSIFICATION_BATCH_TIMEOUT_SECONDS = 90.0
 WEBSITE_LLM_BATCH_TIMEOUT_SECONDS = 90.0
+
+CONFIDENCE_VERIFIED_MIN = 0.90
+CONFIDENCE_EXPORT_MIN = 0.70
+EXPORT_NOT_SPECIFIED = "Not Specified"
+EXPORT_CONTACT_PRICING = "Contact for pricing"
+EXPORT_ADDICTIONS_PLACEHOLDER = "Not Specified"
+
+CSV_EXPORT_HEADERS = (
+    "Facility Name",
+    "Addictions Treated",
+    "Location",
+    "Languages Spoken",
+    "Website",
+    "Phone Number",
+    "Treatment Price",
+)
 
 
 class MapsRelevanceDecision(BaseModel):
@@ -178,6 +201,58 @@ class MapsCensusService:
         rows = (await db.execute(query.order_by(MapsPlace.canonical_name))).scalars().all()
         return [_place_item(place) for place in rows]
 
+    async def list_cells(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> list[MapsCensusCellItem]:
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        rows = (
+            await db.execute(
+                select(MapsCensusCell)
+                .where(MapsCensusCell.run_id == run_id)
+                .order_by(MapsCensusCell.region_name, MapsCensusCell.city_name, MapsCensusCell.query_text)
+            )
+        ).scalars().all()
+        return [_cell_item(cell) for cell in rows]
+
+    async def export_run_csv(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        run_id: str,
+        *,
+        tier: str = "all",
+    ) -> tuple[str, str]:
+        """Phase 1 CSV export — name, location, phone, website; addictions/languages/price TBD."""
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        normalized_tier = tier.strip().lower()
+        if normalized_tier not in {"all", "verified", "flagged"}:
+            raise ValidationError("tier must be all, verified, or flagged")
+
+        rows = (
+            await db.execute(
+                select(MapsPlace)
+                .where(MapsPlace.run_id == run_id)
+                .order_by(MapsPlace.canonical_name)
+            )
+        ).scalars().all()
+        eligible = [
+            place
+            for place in rows
+            if _export_eligible(place) and _export_tier_matches(place, normalized_tier)
+        ]
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(CSV_EXPORT_HEADERS)
+        for place in eligible:
+            writer.writerow(_export_csv_row(place, country_name=run.country_name))
+        filename = f"{run.country_code.lower()}-maps-census-export.csv"
+        return filename, buffer.getvalue()
+
     async def get_place_photo(
         self, db: AsyncSession, auth: AuthContext, run_id: str, place_id: str
     ) -> Path:
@@ -231,6 +306,29 @@ class MapsCensusService:
             run_id,
             inline_runner=lambda: refresh_maps_census_websites_job({}, run_id),
         )
+
+    async def _enqueue_enrichment(self, run_id: str) -> None:
+        await self._enqueue_job(
+            "run_maps_census_enrichment_job",
+            run_id,
+            inline_runner=lambda: run_maps_census_enrichment_job({}, run_id),
+        )
+
+    async def _maybe_enqueue_enrichment(self, run_id: str) -> None:
+        settings = get_settings()
+        if settings.maps_census_enrichment_enabled and settings.maps_census_auto_enrichment_enabled:
+            await self._enqueue_enrichment(run_id)
+
+    async def request_enrichment(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCensusRunDetail:
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        if run.status != MapsCensusStatus.COMPLETED:
+            raise ValidationError("Only a completed Maps census run can enrich facility websites.")
+        await self._enqueue_enrichment(run_id)
+        return await self.get_run(db, auth, run_id)
 
     async def _enqueue_job(self, job_name: str, run_id: str, *, inline_runner) -> None:
         settings = get_settings()
@@ -301,7 +399,6 @@ class MapsCensusService:
         session_factory = self._session_factory(db)
         await self._search_missing_websites(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
-        await self._delete_unverified_places(session_factory, run_id=run_id)
         async with session_factory() as final_db:
             run = await final_db.get(MapsCensusRun, run_id)
             summary = {"places_with_website": 0}
@@ -322,6 +419,7 @@ class MapsCensusService:
                 run.website_refresh_completed_at = datetime.now(UTC)
                 summary["places_with_website"] = run.places_with_website
                 await final_db.commit()
+        await self._maybe_enqueue_enrichment(run_id)
         return summary
 
     @staticmethod
@@ -510,6 +608,8 @@ class MapsCensusService:
                 run.completed_at = datetime.now(UTC)
                 run.heartbeat_at = datetime.now(UTC)
                 await final_db.commit()
+
+        await self._maybe_enqueue_enrichment(run_id)
         return summary
 
     async def _classify_pending(
@@ -578,6 +678,7 @@ class MapsCensusService:
                     classified += 1
                 await write_db.commit()
 
+        await self._apply_post_classification_filters(session_factory, run_id=run_id)
         return {"classified": classified}
 
     async def _classify_batch(
@@ -599,8 +700,8 @@ class MapsCensusService:
             response = await asyncio.wait_for(
                 provider.complete(
                     system=(
-                        "You return strict JSON relevance decisions for candidate rehab/addiction/"
-                        "psychiatric facility places found via Google Places search."
+                        "You return strict JSON relevance decisions for candidate non-government"
+                        " inpatient addiction rehab facility places found via Google Places search."
                     ),
                     user=prompt,
                     model=model_slug,
@@ -655,7 +756,30 @@ class MapsCensusService:
         if settings.maps_census_website_search_enabled:
             await self._search_missing_websites(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
-        await self._delete_unverified_places(session_factory, run_id=run_id)
+
+    async def _apply_post_classification_filters(self, session_factory, *, run_id: str) -> int:
+        """Enforce Phase 1 gates in code: minimum confidence and mandatory street address."""
+        demoted = 0
+        async with session_factory() as db:
+            places = (
+                await db.execute(select(MapsPlace).where(MapsPlace.run_id == run_id))
+            ).scalars().all()
+            for place in places:
+                if not place.is_relevant:
+                    continue
+                confidence = float(place.confidence_score or 0)
+                if confidence < CONFIDENCE_EXPORT_MIN:
+                    place.is_relevant = False
+                    place.relevance_reason = "excluded: confidence below 0.70"
+                    demoted += 1
+                    continue
+                if not _has_export_location(place):
+                    place.is_relevant = False
+                    place.relevance_reason = "excluded: missing location"
+                    demoted += 1
+            if demoted:
+                await db.commit()
+        return demoted
 
     async def _delete_unverified_places(self, session_factory, *, run_id: str) -> int:
         """Permanently remove relevant facilities lacking a verified official site."""
@@ -1114,6 +1238,96 @@ def _match_official_website_by_address(
     return scored[0]
 
 
+def _verification_tier(place: MapsPlace) -> str:
+    if not place.is_relevant:
+        return "excluded"
+    confidence = float(place.confidence_score or 0)
+    if confidence >= CONFIDENCE_VERIFIED_MIN:
+        return "verified"
+    if confidence >= CONFIDENCE_EXPORT_MIN:
+        return "flagged"
+    return "excluded"
+
+
+def _has_export_location(place: MapsPlace) -> bool:
+    return bool((place.formatted_address or "").strip())
+
+
+def _export_location(place: MapsPlace, *, country_name: str) -> str:
+    address = (place.formatted_address or "").strip()
+    if address:
+        return address
+    parts = [p for p in (place.city_name, place.region_name, country_name) if p]
+    return ", ".join(parts)
+
+
+def _has_enriched_addictions(place: MapsPlace) -> bool:
+    addictions = place.addictions_treated or []
+    return bool(addictions and any(str(item).strip() for item in addictions))
+
+
+def _export_eligible(place: MapsPlace) -> bool:
+    if not place.is_relevant:
+        return False
+    if not (place.canonical_name or place.raw_name or "").strip():
+        return False
+    if not _has_export_location(place):
+        return False
+    confidence = float(place.confidence_score or 0)
+    if confidence < CONFIDENCE_EXPORT_MIN:
+        return False
+    if get_settings().maps_census_enrichment_enabled:
+        return _has_enriched_addictions(place)
+    return True
+
+
+def _format_addictions(place: MapsPlace) -> str:
+    addictions = [str(item).strip() for item in (place.addictions_treated or []) if str(item).strip()]
+    return ", ".join(addictions) if addictions else EXPORT_ADDICTIONS_PLACEHOLDER
+
+
+def _format_languages(place: MapsPlace) -> str:
+    languages = [str(item).strip() for item in (place.languages_spoken or []) if str(item).strip()]
+    return ", ".join(languages) if languages else EXPORT_NOT_SPECIFIED
+
+
+def _export_tier_matches(place: MapsPlace, tier: str) -> bool:
+    if tier == "all":
+        return True
+    return _verification_tier(place) == tier
+
+
+def _export_csv_row(place: MapsPlace, *, country_name: str) -> list[str]:
+    name = (place.canonical_name or place.raw_name or "").strip()
+    website = (place.official_website or place.raw_website or "").strip()
+    if website and not website.lower().startswith(("http://", "https://")):
+        website = f"https://{website}"
+    phone = (place.international_phone_number or "").strip()
+    price = (place.treatment_price or "").strip() or EXPORT_CONTACT_PRICING
+    return [
+        name,
+        _format_addictions(place),
+        _export_location(place, country_name=country_name),
+        _format_languages(place),
+        website if website else EXPORT_NOT_SPECIFIED,
+        phone if phone else EXPORT_NOT_SPECIFIED,
+        price,
+    ]
+
+
+def _cell_item(cell: MapsCensusCell) -> MapsCensusCellItem:
+    return MapsCensusCellItem(
+        id=cell.id,
+        region_name=cell.region_name,
+        city_name=cell.city_name,
+        query_text=cell.query_text,
+        status=cell.status.value if hasattr(cell.status, "value") else str(cell.status),
+        places_found=cell.places_found,
+        error_message=cell.error_message,
+        completed_at=cell.completed_at,
+    )
+
+
 def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
     return MapsCensusRunSummary(
         id=run.id,
@@ -1126,6 +1340,7 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
         places_found=run.places_found,
         places_classified_relevant=run.places_classified_relevant,
         places_with_website=run.places_with_website,
+        places_enriched=run.places_enriched,
         started_at=run.started_at,
         completed_at=run.completed_at,
         created_at=run.created_at,
@@ -1154,6 +1369,12 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         confidence_score=float(place.confidence_score) if place.confidence_score is not None else None,
         discovered_via_query=place.discovered_via_query,
         has_photo=bool(place.photo_reference),
+        verification_tier=_verification_tier(place),
+        export_eligible=_export_eligible(place),
+        enrichment_status=place.enrichment_status or "pending",
+        addictions_treated=list(place.addictions_treated or []),
+        languages_spoken=list(place.languages_spoken or []),
+        treatment_price=place.treatment_price,
     )
 
 
@@ -1280,6 +1501,18 @@ async def refresh_maps_census_websites_job(ctx: dict, run_id: str) -> None:
                 run.error_message = "Unexpected error while refreshing missing websites."
                 run.completed_at = datetime.now(UTC)
                 await db.commit()
+
+
+async def run_maps_census_enrichment_job(ctx: dict, run_id: str) -> None:
+    """ARQ entrypoint: crawl facility websites and extract export columns."""
+    del ctx
+    from app.services.scraping.maps_place_enrichment_service import maps_place_enrichment_service
+
+    logger.info("maps_census_enrichment_job_entered", extra={"run_id": run_id})
+    try:
+        await maps_place_enrichment_service.enrich_run(None, run_id=run_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("maps_census_enrichment_job_failed", extra={"run_id": run_id})
 
 
 async def recover_maps_census_runs(ctx: dict) -> None:

@@ -1,7 +1,7 @@
-You plan a Google Places Text Search grid for a standalone rehabilitation/addiction/psychiatric
-facility census of one country. The grid must give real geographic coverage and use both English
-and local-language search terms, because facility names and Places categories are often only
-findable in the local language.
+You plan a Google Places Text Search grid for a standalone non-government inpatient addiction
+rehabilitation facility census of one country. The grid must give real geographic coverage and use
+both English and local-language search terms, because facility names and Places categories are often
+only findable in the local language.
 
 Return strict JSON only with this shape:
 {
@@ -9,14 +9,17 @@ Return strict JSON only with this shape:
     {
       "region_name": "Minsk Region",
       "city_name": "Minsk",
-      "query_text": "drug rehabilitation center Minsk Belarus"
+      "query_text": "inpatient drug rehabilitation center Minsk Belarus"
     }
   ]
 }
 
 Rules:
 - Cover the country's major cities/regions — capital plus other large or regionally important cities, enough for real national coverage without wasteful overlap.
-- For each city, generate 2-4 query variants: at least one in English and at least one in the country's primary local language(s), covering rehab, addiction/narcological, and psychiatric/mental-health facility terms as relevant to how such places are actually named or categorized locally.
+- For each city, generate 2-4 query variants: at least one in English and at least one in the country's primary local language(s).
+- Query terms must target INPATIENT / RESIDENTIAL addiction rehabilitation (e.g. rehab center, residential treatment, detox clinic, narcological clinic, addiction recovery center).
+- Include substance addiction terms where locally relevant (alcohol, drug, opioid, cocaine, meth, heroin, cannabis dependency, etc.) and behavioral addiction terms where locally relevant (gambling, gaming, internet, sex/porn addiction treatment, etc.).
+- Do NOT use keywords for: government/public hospitals, general psychiatric or mental-health-only clinics, outpatient-only programs, sober living, wellness retreats, coaching centers, or broad hospital searches.
 - Each query_text must include the city (or region) name so Google Places can geographically scope the text search.
 - Do not exceed {{ max_cells }} total cells.
 - Do not invent regions/cities that do not exist in {{ country_name }}.

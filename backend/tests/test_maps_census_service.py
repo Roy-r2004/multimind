@@ -949,7 +949,7 @@ async def test_refresh_recounts_only_retained_verified_facilities(db, auth, monk
     await maps_census_service.run_website_refresh(db, run_id=run.id)
     await db.refresh(run)
     assert run.places_found == 2
-    assert run.places_classified_relevant == 1
+    assert run.places_classified_relevant == 2
     assert run.places_with_website == 1
 
 
@@ -1249,3 +1249,139 @@ async def test_auto_refresh_noop_when_disabled(db, auth, monkeypatch):
 
     await db.refresh(run)
     assert run.status == MapsCensusStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_export_run_csv_without_addictions_when_enrichment_disabled(db, auth):
+    run = await _create_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-enrich",
+        raw_name="Basic Rehab",
+        canonical_name="Basic Rehab",
+        is_relevant=True,
+        confidence_score=0.92,
+        formatted_address="1 Street, Minsk",
+    )
+    db.add(place)
+    await db.commit()
+
+    _, csv_body = await maps_census_service.export_run_csv(db, auth, run.id, tier="all")
+    assert "Basic Rehab" in csv_body
+    assert "Not Specified" in csv_body
+
+
+@pytest.mark.asyncio
+async def test_apply_post_classification_filters_demotes_low_confidence_and_missing_address(
+    db, auth
+):
+    run = await _create_run(db, auth)
+    low_confidence = MapsPlace(
+        run_id=run.id,
+        google_place_id="low",
+        raw_name="Low Confidence Rehab",
+        canonical_name="Low Confidence Rehab",
+        is_relevant=True,
+        confidence_score=0.65,
+        formatted_address="123 Main St, Minsk",
+    )
+    missing_address = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-address",
+        raw_name="No Address Rehab",
+        canonical_name="No Address Rehab",
+        is_relevant=True,
+        confidence_score=0.85,
+    )
+    export_ready = MapsPlace(
+        run_id=run.id,
+        google_place_id="ready",
+        raw_name="Ready Rehab",
+        canonical_name="Ready Rehab",
+        is_relevant=True,
+        confidence_score=0.92,
+        formatted_address="456 Oak Ave, Minsk",
+    )
+    db.add_all([low_confidence, missing_address, export_ready])
+    await db.commit()
+
+    session_factory = maps_census_service._session_factory(db)
+    demoted = await maps_census_service._apply_post_classification_filters(
+        session_factory, run_id=run.id
+    )
+    assert demoted == 2
+
+    await db.refresh(low_confidence)
+    await db.refresh(missing_address)
+    await db.refresh(export_ready)
+    assert low_confidence.is_relevant is False
+    assert missing_address.is_relevant is False
+    assert export_ready.is_relevant is True
+
+
+@pytest.mark.asyncio
+async def test_export_run_csv_includes_eligible_rows_with_placeholders(db, auth):
+    run = await _create_run(db, auth)
+    verified = MapsPlace(
+        run_id=run.id,
+        google_place_id="verified",
+        raw_name="Verified Rehab",
+        canonical_name="Verified Rehab",
+        is_relevant=True,
+        confidence_score=0.95,
+        formatted_address="1 Rehab Lane, Minsk",
+        official_website="https://verified.example/",
+        international_phone_number="+375 17 123 4567",
+        addictions_treated=["Alcohol", "Gambling"],
+        languages_spoken=["English"],
+        treatment_price="Contact for pricing",
+        enrichment_status="completed",
+    )
+    flagged = MapsPlace(
+        run_id=run.id,
+        google_place_id="flagged",
+        raw_name="Flagged Rehab",
+        canonical_name="Flagged Rehab",
+        is_relevant=True,
+        confidence_score=0.75,
+        formatted_address="2 Review St, Minsk",
+        addictions_treated=["Heroin"],
+        enrichment_status="completed",
+    )
+    excluded = MapsPlace(
+        run_id=run.id,
+        google_place_id="excluded",
+        raw_name="Excluded Rehab",
+        canonical_name="Excluded Rehab",
+        is_relevant=False,
+        confidence_score=0.95,
+        formatted_address="3 Skip Rd, Minsk",
+    )
+    db.add_all([verified, flagged, excluded])
+    await db.commit()
+
+    filename, csv_body = await maps_census_service.export_run_csv(
+        db, auth, run.id, tier="all"
+    )
+    assert filename == "by-maps-census-export.csv"
+    lines = csv_body.strip().splitlines()
+    assert lines[0] == (
+        "Facility Name,Addictions Treated,Location,Languages Spoken,Website,Phone Number,Treatment Price"
+    )
+    assert len(lines) == 3
+    assert any("Verified Rehab" in line for line in lines[1:])
+    assert any("Flagged Rehab" in line for line in lines[1:])
+    assert any("Alcohol, Gambling" in line for line in lines[1:])
+    assert any("https://verified.example/" in line for line in lines[1:])
+
+    _, verified_only = await maps_census_service.export_run_csv(
+        db, auth, run.id, tier="verified"
+    )
+    assert "Verified Rehab" in verified_only
+    assert "Flagged Rehab" not in verified_only
+
+    _, flagged_only = await maps_census_service.export_run_csv(
+        db, auth, run.id, tier="flagged"
+    )
+    assert "Flagged Rehab" in flagged_only
+    assert "Verified Rehab" not in flagged_only
