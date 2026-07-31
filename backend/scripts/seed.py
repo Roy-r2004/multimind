@@ -2,14 +2,15 @@
 
 import asyncio
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.core.security import hash_password
+from app.db.base import Base
 from app.db.models import (
     ModelSet,
+    Organization,
     OrgMembership,
     OrgRole,
-    Organization,
     Strategy,
     Template,
     User,
@@ -17,8 +18,6 @@ from app.db.models import (
     UserPreferences,
 )
 from app.db.session import AsyncSessionLocal, engine
-from app.db.base import Base
-
 
 REFEREE_CUSTOM_INSTRUCTIONS = """\
 You are an expert Referee/Synthesizer AI within a multi-model system. Your primary role is to merge multiple AI-generated responses into a single, authoritative answer that is more accurate, complete, and useful than any individual input. Follow these core principles and workflow:
@@ -62,6 +61,23 @@ SYSTEM_MODEL_SETS = [
         "verdict_model": "gpt-4.1",
         "strategy": Strategy.REFEREE,
         "best_for": "General questions, everyday use, authoritative synthesis",
+        "custom_instructions": REFEREE_CUSTOM_INSTRUCTIONS,
+    },
+    {
+        # Stable slug preserved from the locally created UI set (not a row UUID).
+        "slug": "set-7edaefc8",
+        "name": "Chafic ultimate model set",
+        "description": "Custom model set.",
+        "models": [
+            "gemini",
+            "or:openai--gpt-5.5-pro",
+            "or:anthropic--claude-opus-4",
+            "or:~moonshotai--kimi-latest",
+        ],
+        "verdict_model": "or:openai--gpt-5.5",
+        "strategy": Strategy.REFEREE,
+        "best_for": "Custom model set.",
+        "template_name": "Chafiq Referee",
         "custom_instructions": REFEREE_CUSTOM_INSTRUCTIONS,
     },
     {
@@ -276,26 +292,39 @@ async def find_legacy_user(db, emails: tuple[str, ...]) -> User | None:
     return None
 
 
+async def ensure_system_model_sets(db) -> None:
+    """Idempotently upsert system model sets by stable slug (not row UUID)."""
+    for data in SYSTEM_MODEL_SETS:
+        exists = await db.execute(select(ModelSet).where(ModelSet.slug == data["slug"]))
+        model_set = exists.scalar_one_or_none()
+        if model_set:
+            model_set.name = data["name"]
+            model_set.description = data["description"]
+            model_set.models = list(data["models"])
+            model_set.verdict_model = data["verdict_model"]
+            model_set.strategy = data["strategy"]
+            model_set.best_for = data["best_for"]
+            model_set.is_system = True
+            model_set.org_id = None
+            model_set.template_name = data.get("template_name")
+            if "custom_instructions" in data:
+                model_set.custom_instructions = data["custom_instructions"]
+            continue
+        db.add(
+            ModelSet(
+                **data,
+                is_system=True,
+                org_id=None,
+            )
+        )
+
+
 async def seed() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as db:
-        for data in SYSTEM_MODEL_SETS:
-            exists = await db.execute(select(ModelSet).where(ModelSet.slug == data["slug"]))
-            model_set = exists.scalar_one_or_none()
-            if model_set:
-                model_set.name = data["name"]
-                model_set.description = data["description"]
-                model_set.models = data["models"]
-                model_set.verdict_model = data["verdict_model"]
-                model_set.strategy = data["strategy"]
-                model_set.best_for = data["best_for"]
-                model_set.is_system = True
-                if "custom_instructions" in data:
-                    model_set.custom_instructions = data["custom_instructions"]
-                continue
-            db.add(ModelSet(**data, is_system=True))
+        await ensure_system_model_sets(db)
 
         for data in SYSTEM_TEMPLATES:
             exists = await db.execute(

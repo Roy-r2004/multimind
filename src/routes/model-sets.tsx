@@ -27,7 +27,14 @@ export const Route = createFileRoute("/model-sets")({
   component: ModelSetsPage,
 });
 
-const SYSTEM_MODEL_SETS = new Set(["referee", "balanced", "coding", "business", "research"]);
+const SYSTEM_MODEL_SETS = new Set([
+  "referee",
+  "set-7edaefc8",
+  "balanced",
+  "coding",
+  "business",
+  "research",
+]);
 
 const SET_ICONS: Record<string, typeof Scale> = {
   referee: Gavel,

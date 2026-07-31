@@ -77,6 +77,7 @@ import {
 } from "@/lib/turnState";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
+import { resolveModelSetIdFromTurns } from "@/lib/modelSetSelection";
 import {
   findPinnedSynthesisElement,
   isChatNearBottom,
@@ -189,7 +190,14 @@ async function buildComposerInstructions(
   return text || undefined;
 }
 
-const SYSTEM_MODEL_SETS = new Set(["referee", "balanced", "coding", "business", "research"]);
+const SYSTEM_MODEL_SETS = new Set([
+  "referee",
+  "set-7edaefc8",
+  "balanced",
+  "coding",
+  "business",
+  "research",
+]);
 
 export function ChatPage() {
   const {
@@ -244,6 +252,9 @@ export function ChatPage() {
   const shouldPinToBottomRef = useRef(true);
   const showScrollToLatestRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const modelSetRestoredForChatRef = useRef<string | null>(null);
+  const modelSetsRef = useRef(modelSets);
+  modelSetsRef.current = modelSets;
   const activeChat = chats.find((c) => c.id === activeChatId);
   const pinnedTurnId = activeChat?.pinnedTurnId ?? null;
   const pinnedVerdictId = activeChat?.pinnedVerdictId ?? null;
@@ -395,28 +406,57 @@ export function ChatPage() {
     if (!isApiMode || !activeChatId) {
       setApiTurns([]);
       setLoading(false);
+      modelSetRestoredForChatRef.current = null;
       return;
     }
     const auth = authHeaders();
     if (!auth) return;
 
-    const unsubTurns = subscribeChatTurns(activeChatId, setApiTurns);
-    const unsubRunning = subscribeChatRunning(activeChatId, setLoading);
-    const unsubActiveTurn = subscribeActiveTurn(activeChatId, setActiveTurnId);
+    let cancelled = false;
+    const chatId = activeChatId;
 
-    void api.chats.listTurns(auth, activeChatId).then((turns) => {
-      const merged = mergeWithCachedTurns(activeChatId, turns);
-      seedChatTurns(activeChatId, merged);
+    const unsubTurns = subscribeChatTurns(chatId, setApiTurns);
+    const unsubRunning = subscribeChatRunning(chatId, setLoading);
+    const unsubActiveTurn = subscribeActiveTurn(chatId, setActiveTurnId);
+
+    void api.chats.listTurns(auth, chatId).then((turns) => {
+      if (cancelled) return;
+      const merged = mergeWithCachedTurns(chatId, turns);
+      seedChatTurns(chatId, merged);
       setApiTurns(merged);
-      void resumeRunningTurns(auth, activeChatId, turns);
+
+      if (modelSetRestoredForChatRef.current !== chatId) {
+        const fromChat = resolveModelSetIdFromTurns(merged);
+        const sets = modelSetsRef.current;
+        if (fromChat && sets.some((item) => item.id === fromChat)) {
+          modelSetRestoredForChatRef.current = chatId;
+          setActiveModelSetId(fromChat);
+        } else if (!fromChat) {
+          // Empty chat: keep current selection (default or manual).
+          modelSetRestoredForChatRef.current = chatId;
+        }
+      }
+
+      void resumeRunningTurns(auth, chatId, turns);
     });
 
     return () => {
+      cancelled = true;
       unsubTurns();
       unsubRunning();
       unsubActiveTurn();
     };
-  }, [isApiMode, activeChatId, authHeaders]);
+  }, [isApiMode, activeChatId, authHeaders, setActiveModelSetId]);
+
+  useEffect(() => {
+    if (!activeChatId || !apiTurns.length || !modelSets.length) return;
+    if (modelSetRestoredForChatRef.current === activeChatId) return;
+    const fromChat = resolveModelSetIdFromTurns(apiTurns);
+    if (fromChat && modelSets.some((item) => item.id === fromChat)) {
+      modelSetRestoredForChatRef.current = activeChatId;
+      setActiveModelSetId(fromChat);
+    }
+  }, [activeChatId, apiTurns, modelSets, setActiveModelSetId]);
 
   function handleVoiceTranscript(result: ApiTranscriptionResponse) {
     const transcript = result.text.trim();

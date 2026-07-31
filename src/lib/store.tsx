@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -13,6 +14,7 @@ import { api } from "@/lib/api";
 import type { ApiChat, ApiModelSet, ApiProject } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 import type { Chat, ModelSet, Project } from "@/lib/mock";
+import { selectExistingModelSetId } from "@/lib/modelSetSelection";
 
 type CreateProjectInput = { name: string; description?: string };
 
@@ -90,16 +92,6 @@ function mapProject(p: ApiProject): Project {
   };
 }
 
-const DEFAULT_MODEL_SET_SLUG = "referee";
-
-function selectExistingModelSetId(sets: ModelSet[], currentId: string): string {
-  if (sets.some((set) => set.id === currentId)) return currentId;
-  const preferred =
-    sets.find((set) => set.id === DEFAULT_MODEL_SET_SLUG) ??
-    sets.find((set) => set.name.toLowerCase().includes("referee"));
-  return preferred?.id ?? sets[0]?.id ?? "";
-}
-
 export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, authHeaders, isLoading: authLoading } = useAuth();
   const isApiMode = isAuthenticated;
@@ -108,8 +100,10 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [modelSets, setModelSets] = useState<ModelSet[]>([]);
   const [activeModelSetId, setActiveModelSetIdState] = useState("");
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [activeChatId, setActiveChatIdState] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const activeChatIdRef = useRef<string | null>(null);
+  activeChatIdRef.current = activeChatId;
 
   const refreshAll = useCallback(async () => {
     const auth = authHeaders();
@@ -140,6 +134,18 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const setActiveModelSetId = useCallback((id: string) => {
     setActiveModelSetIdState(id);
   }, []);
+
+  const setActiveChatId = useCallback(
+    (id: string | null) => {
+      const previousId = activeChatIdRef.current;
+      setActiveChatIdState(id);
+      if (id === null && previousId !== null) {
+        // New chat / cleared selection: re-apply org default (ignore prior manual pick).
+        setActiveModelSetIdState(() => selectExistingModelSetId(modelSets, ""));
+      }
+    },
+    [modelSets],
+  );
 
   const createModelSet = useCallback(
     async (set: ModelSet): Promise<ModelSet> => {
@@ -235,7 +241,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       setChats((prev) => prev.filter((c) => c.id !== id));
       if (activeChatId === id) setActiveChatId(null);
     },
-    [authHeaders, activeChatId],
+    [authHeaders, activeChatId, setActiveChatId],
   );
 
   const assignChatToProject = useCallback(
@@ -304,7 +310,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     setChats((prev) => [mapped, ...prev]);
     setActiveChatId(chat.id);
     return chat.id;
-  }, [authHeaders]);
+  }, [authHeaders, setActiveChatId]);
 
   const applyChatUpdate = useCallback((chat: ApiChat) => {
     const mapped = mapChat(chat);
@@ -364,6 +370,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       isApiMode,
       isLoading,
       setActiveModelSetId,
+      setActiveChatId,
       createModelSet,
       updateModelSet,
       deleteModelSet,
