@@ -201,6 +201,78 @@ async def test_export_xlsx_has_frozen_header_and_autofilter(db, auth):
 
 
 @pytest.mark.asyncio
+async def test_export_xlsx_alignment_is_readable(db, auth):
+    run = await _create_run(db, auth)
+    db.add(
+        MapsPlace(
+            run_id=run.id,
+            google_place_id="align-1",
+            raw_name="Alignment Rehab",
+            canonical_name="Alignment Rehab",
+            is_relevant=True,
+            confidence_score=0.9,
+            formatted_address="1 Long Street Name, Algiers",
+            official_website="https://align.example/",
+            international_phone_number="+213 555 00 00",
+        )
+    )
+    await db.commit()
+
+    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
+    _, sheet = _facilities_sheet(content)
+    header = [cell.value for cell in sheet[1]]
+
+    # Header row: centered both ways, wrapped, and taller than default.
+    header_cell = sheet.cell(row=1, column=1)
+    assert header_cell.alignment.horizontal == "center"
+    assert header_cell.alignment.vertical == "center"
+    assert header_cell.alignment.wrap_text is True
+    assert (sheet.row_dimensions[1].height or 0) >= 24
+
+    # Long free-text columns: left-aligned, vertically centered, wrapped.
+    name_col = header.index("Facility Name") + 1
+    name_cell = sheet.cell(row=2, column=name_col)
+    assert name_cell.alignment.horizontal == "left"
+    assert name_cell.alignment.vertical == "center"
+    assert name_cell.alignment.wrap_text is True
+
+    # Short scannable columns: centered both ways.
+    phone_col = header.index("Phone Number") + 1
+    phone_cell = sheet.cell(row=2, column=phone_col)
+    assert phone_cell.alignment.horizontal == "center"
+    assert phone_cell.alignment.vertical == "center"
+
+
+@pytest.mark.asyncio
+async def test_export_xlsx_technical_short_columns_are_centered(db, auth):
+    run = await _create_run(db, auth)
+    db.add(
+        MapsPlace(
+            run_id=run.id,
+            google_place_id="align-tech",
+            raw_name="Tech Align",
+            canonical_name="Tech Align",
+            is_relevant=True,
+            confidence_score=0.88,
+            formatted_address="2 Street, Algiers",
+            latitude=36.75,
+            longitude=3.06,
+        )
+    )
+    await db.commit()
+
+    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
+    workbook = load_workbook(BytesIO(content))
+    sheet = workbook["Technical Data"]
+    header = [cell.value for cell in sheet[1]]
+    for short_header in ("Relevance Confidence", "Latitude", "Longitude", "Export Ready"):
+        column = header.index(short_header) + 1
+        cell = sheet.cell(row=2, column=column)
+        assert cell.alignment.horizontal == "center", short_header
+        assert cell.alignment.vertical == "center", short_header
+
+
+@pytest.mark.asyncio
 async def test_export_xlsx_technical_sheet_carries_diagnostics(db, auth):
     run = await _create_run(db, auth)
     db.add(

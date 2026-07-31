@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.properties import PageSetupProperties
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +47,20 @@ TECHNICAL_SHEET = "Technical Data"
 _URL_HEADERS = {"Website", "Raw Website", "Official Website"}
 # Headers whose values must stay textual so "+" and leading zeroes survive.
 _TEXT_HEADERS = {"Phone Number", "Google Place ID", "Internal ID"}
+# Short, scannable columns that read best centered in both axes.
+_CENTERED_HEADERS = {
+    "Phone Number",
+    "Treatment Price",
+    "Languages Spoken",
+    "Website Source",
+    "Latitude",
+    "Longitude",
+    "Relevance Confidence",
+    "Verification Tier",
+    "Export Ready",
+    "Enrichment Status",
+    "Has Photo",
+}
 
 _TECHNICAL_HEADERS = (
     "Facility Name",
@@ -183,13 +198,18 @@ class MapsExportService:
     def _style_sheet(
         self, ws: Any, headers: list[str], *, row_count: int, table_name: str
     ) -> None:
-        header_fill = PatternFill("solid", fgColor="244A6B")
-        border = Border(bottom=Side(style="thin", color="D7DEE8"))
+        header_fill = PatternFill("solid", fgColor="1F3B5B")
+        thin = Side(style="thin", color="C9D4E3")
+        cell_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        link_font = Font(color="0563C1", underline="single")
+
+        # Header row: bold, centered both ways, wrapped, taller for breathing room.
         for cell in ws[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
+            cell.font = Font(bold=True, color="FFFFFF", size=11)
             cell.fill = header_fill
-            cell.alignment = Alignment(vertical="center", wrap_text=True)
-            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = cell_border
+        ws.row_dimensions[1].height = 28
 
         text_columns = {
             index for index, header in enumerate(headers, start=1) if header in _TEXT_HEADERS
@@ -197,9 +217,24 @@ class MapsExportService:
         url_columns = {
             index for index, header in enumerate(headers, start=1) if header in _URL_HEADERS
         }
+        centered_columns = {
+            index for index, header in enumerate(headers, start=1) if header in _CENTERED_HEADERS
+        }
+        widths = {
+            index: self._column_width(header) for index, header in enumerate(headers, start=1)
+        }
+
         for row in ws.iter_rows(min_row=2):
             for cell in row:
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
+                if cell.column in centered_columns:
+                    cell.alignment = Alignment(
+                        horizontal="center", vertical="center", wrap_text=True
+                    )
+                else:
+                    cell.alignment = Alignment(
+                        horizontal="left", vertical="center", wrap_text=True
+                    )
+                cell.border = cell_border
                 if cell.column in text_columns and cell.value is not None:
                     cell.number_format = "@"
                 if (
@@ -208,13 +243,11 @@ class MapsExportService:
                     and _is_http_url(cell.value)
                 ):
                     cell.hyperlink = cell.value
-                    cell.style = "Hyperlink"
+                    cell.font = link_font
+            ws.row_dimensions[row[0].row].height = _estimate_row_height(row, widths)
 
         for index, header in enumerate(headers, start=1):
-            letter = get_column_letter(index)
-            ws.column_dimensions[letter].width = _WIDE_COLUMNS.get(
-                header, min(max(len(header) + 2, 14), 30)
-            )
+            ws.column_dimensions[get_column_letter(index)].width = widths[index]
 
         last_col = get_column_letter(len(headers))
         table_ref = f"A1:{last_col}{row_count + 1}"
@@ -229,6 +262,36 @@ class MapsExportService:
             ws.add_table(table)
         ws.freeze_panes = "A2"
         ws.sheet_view.showGridLines = False
+        ws.sheet_view.zoomScale = 110
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+        ws.print_title_rows = "1:1"
+
+    def _column_width(self, header: str) -> int:
+        return _WIDE_COLUMNS.get(header, min(max(len(header) + 2, 14), 30))
+
+
+def _estimate_row_height(row: Any, widths: dict[int, int]) -> float:
+    """Enough height to show wrapped content without dead space (≈ 2-4 lines)."""
+    max_lines = 1
+    for cell in row:
+        value = cell.value
+        if value is None:
+            continue
+        text = str(value)
+        width = max(widths.get(cell.column, 14), 6)
+        longest_word = max((len(word) for word in text.split()), default=0)
+        # Wrapped lines ≈ characters / column width, but never fewer than the
+        # number of hard newlines, and account for a single very long token.
+        wrapped = max(
+            text.count("\n") + 1,
+            -(-len(text) // width),  # ceil division
+            -(-longest_word // width),
+        )
+        max_lines = max(max_lines, wrapped)
+    return min(15 * min(max_lines, 6) + 4, 96)
 
 
 def _safe_cell(value: Any) -> Any:
