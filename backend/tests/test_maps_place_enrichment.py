@@ -27,7 +27,7 @@ class _FakeProvider:
 
 
 @pytest.mark.asyncio
-async def test_enrich_place_extracts_addictions_languages_and_price(db, auth, monkeypatch):
+async def test_enrich_place_extracts_addictions_and_languages_not_price(db, auth, monkeypatch):
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
@@ -110,8 +110,42 @@ async def test_enrich_place_extracts_addictions_languages_and_price(db, auth, mo
     assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
     assert place.addictions_treated == ["Alcohol", "Gambling"]
     assert place.languages_spoken == ["English", "Finnish"]
-    assert place.treatment_price == "€4,500 per month"
+    assert place.treatment_price is None  # price extraction is intentionally disabled
     assert run.places_enriched == 1
+
+
+@pytest.mark.asyncio
+async def test_enrich_skips_facebook_contact_pages(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="DZ",
+        country_name="Algeria",
+        status="completed",
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="fb-only",
+        raw_name="ALT Association",
+        canonical_name="ALT Association",
+        is_relevant=True,
+        official_website="https://web.facebook.com/ALT.Association/",
+        website_source="places_social",
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    assert summary["enriched"] == 0
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.SKIPPED.value
+    assert place.addictions_treated is None
 
 
 @pytest.mark.asyncio

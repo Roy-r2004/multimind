@@ -142,9 +142,18 @@ class MapsPlaceEnrichmentService:
                     )
                 )
             ).scalars().all()
-            pending = pending[: max(1, settings.maps_census_enrichment_max_places_per_run)]
+            crawlable: list[MapsPlace] = []
+            social_ids: list[str] = []
+            for place in pending:
+                if _is_social_website(place.official_website):
+                    social_ids.append(place.id)
+                else:
+                    crawlable.append(place)
+            pending = crawlable[: max(1, settings.maps_census_enrichment_max_places_per_run)]
             place_ids = [place.id for place in pending]
+            await scan_db.commit()
             await self._mark_skipped_without_website(session_factory, run_id=run_id)
+            await self._mark_skipped_social_websites(session_factory, place_ids=social_ids)
 
         enriched = 0
         for place_id in place_ids:
@@ -165,12 +174,14 @@ class MapsPlaceEnrichmentService:
                         select(MapsPlace).where(
                             MapsPlace.run_id == run_id,
                             MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value,
-                            MapsPlace.addictions_treated.is_not(None),
                         )
                     )
                 ).scalars().all()
                 run.places_enriched = sum(
-                    1 for place in places if _non_empty_list(place.addictions_treated)
+                    1
+                    for place in places
+                    if _non_empty_list(place.addictions_treated)
+                    or _non_empty_list(place.languages_spoken)
                 )
                 run.enrichment_refresh_attempts += 1
                 run.enrichment_refresh_completed_at = datetime.now(UTC)
@@ -215,7 +226,6 @@ class MapsPlaceEnrichmentService:
             )
             addictions = _normalize_addictions(output.addictions_treated, combined_text)
             languages = _normalize_evidence_list(output.languages_spoken, combined_text)
-            price = _normalize_price(output.treatment_price, combined_text)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "maps_place_enrichment_failed place_id=%s error=%s",
@@ -237,13 +247,13 @@ class MapsPlaceEnrichmentService:
                 return False
             place.addictions_treated = addictions
             place.languages_spoken = languages
-            place.treatment_price = price
+            # Treatment price is intentionally left alone for now.
             place.enrichment_pages_crawled = [page.final_url for page in pages]
             place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
             place.enrichment_completed_at = datetime.now(UTC)
             place.enrichment_error_message = None
             await db.commit()
-        return bool(addictions)
+        return bool(addictions or languages)
 
     async def _crawl_website(self, website: str, *, max_pages: int) -> list[FetchedPage]:
         start_url = _normalize_http_url(website)
@@ -348,6 +358,20 @@ class MapsPlaceEnrichmentService:
             if places:
                 await db.commit()
 
+    async def _mark_skipped_social_websites(self, session_factory, *, place_ids: list[str]) -> None:
+        if not place_ids:
+            return
+        async with session_factory() as db:
+            places = (
+                await db.execute(select(MapsPlace).where(MapsPlace.id.in_(place_ids)))
+            ).scalars().all()
+            for place in places:
+                place.enrichment_status = MapsPlaceEnrichmentStatus.SKIPPED.value
+                place.enrichment_error_message = "skipped: social page is not crawlable for enrichment"
+                place.enrichment_completed_at = datetime.now(UTC)
+            if places:
+                await db.commit()
+
     @staticmethod
     def _session_factory(db: AsyncSession | None):
         if db is not None:
@@ -380,6 +404,15 @@ def _normalize_http_url(website: str) -> str | None:
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         return None
     return raw
+
+
+def _is_social_website(website: str | None) -> bool:
+    """Facebook/social pages are contact links, not crawlable facility sites."""
+    normalized = _normalize_http_url(website or "")
+    if not normalized:
+        return False
+    host = (urlsplit(normalized).hostname or "").casefold().rstrip(".")
+    return host == "facebook.com" or host.endswith(".facebook.com")
 
 
 async def _fetch_html(url: str) -> FetchedPage | None:

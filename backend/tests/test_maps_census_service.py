@@ -1587,7 +1587,10 @@ async def test_auto_refresh_noop_when_disabled(db, auth, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_export_run_csv_without_addictions_when_enrichment_disabled(db, auth):
+async def test_export_run_csv_without_addictions_when_enrichment_disabled(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", False)
     run = await _create_run(db, auth)
     place = MapsPlace(
         run_id=run.id,
