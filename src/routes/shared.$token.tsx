@@ -99,8 +99,8 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
   const canCollapseAnswers = Boolean(turn.verdict);
   const hasVerdict = Boolean(turn.verdict);
 
-  const councilRail = !answersCollapsed ? (
-    <aside className="space-y-3">
+  const responseCards = !answersCollapsed ? (
+    <div className="space-y-4">
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
@@ -120,21 +120,26 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
           </button>
         ) : null}
       </div>
-      <div className="space-y-2.5">
-        {turn.model_answers.map((a) => {
-          const expanded = expandedAnswerId === a.model_id || !hasVerdict;
-          return (
-            <div key={a.model_id} className="rounded-2xl border border-border bg-card p-3.5">
-              <div className="flex items-center gap-2 text-sm">
-                <span
-                  className="size-2 shrink-0 rounded-full"
-                  style={{ background: modelColor(a.model_id) }}
-                />
-                <span className="min-w-0 flex-1 truncate font-medium">{a.model_name}</span>
-                {a.confidence != null && (
-                  <span className="shrink-0 text-xs text-primary">{a.confidence}%</span>
-                )}
-              </div>
+      {turn.model_answers.map((a) => {
+        const expanded = expandedAnswerId === a.model_id || !hasVerdict;
+        const color = modelColor(a.model_id);
+        return (
+          <div
+            key={a.model_id}
+            className="w-full rounded-2xl border border-border border-l-[3px] bg-card p-4 shadow-[0_1px_0_oklch(1_0_0/0.8)_inset,0_8px_28px_oklch(0.45_0.04_240/0.06)] sm:p-5"
+            style={{ borderLeftColor: color }}
+          >
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span
+                className="size-2.5 shrink-0 rounded-full"
+                style={{ background: color }}
+              />
+              <span className="min-w-0 flex-1 font-semibold leading-tight">{a.model_name}</span>
+              {a.confidence != null && (
+                <span className="shrink-0 text-xs text-primary">{a.confidence}%</span>
+              )}
+            </div>
+            <div className="mt-3 border-t border-border/60 pt-3 sm:mt-4 sm:pt-4">
               <ExpandableAnswer
                 collapsible={hasVerdict}
                 expanded={expanded}
@@ -143,15 +148,14 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
                     current === a.model_id ? null : a.model_id,
                   )
                 }
-                className="mt-3"
               >
-                <MessageContent compact>{a.text ?? "-"}</MessageContent>
+                <MessageContent>{a.text ?? "-"}</MessageContent>
               </ExpandableAnswer>
             </div>
-          );
-        })}
-      </div>
-    </aside>
+          </div>
+        );
+      })}
+    </div>
   ) : (
     <button
       type="button"
@@ -164,18 +168,20 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
   );
 
   const verdictBlock = turn.verdict ? (
-    <div className="rounded-2xl border border-primary/30 bg-primary/5 p-5">
-      <div className="flex items-center gap-2">
-        <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
-          <Gavel className="size-3.5" />
-        </span>
-        <div className="font-medium">Verdict AI</div>
-        <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
-          {turn.verdict.strategy}
-        </span>
-      </div>
-      <div className="mt-3">
-        <MessageContent>{turn.verdict.text}</MessageContent>
+    <div className="pt-2">
+      <div className="rounded-2xl border-2 border-primary/30 bg-primary/[0.04] p-5 shadow-[0_1px_0_oklch(1_0_0/0.9)_inset,0_16px_44px_oklch(0.55_0.1_240/0.14)] sm:p-6">
+        <div className="flex flex-wrap items-center gap-2 border-b border-primary/15 pb-4">
+          <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Gavel className="size-5" />
+          </span>
+          <h3 className="text-lg font-semibold tracking-tight sm:text-xl">Verdict</h3>
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+            {turn.verdict.strategy}
+          </span>
+        </div>
+        <div className="mt-5">
+          <MessageContent>{turn.verdict.text}</MessageContent>
+        </div>
       </div>
     </div>
   ) : null;
@@ -188,14 +194,10 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
         </div>
       </div>
 
-      {hasVerdict ? (
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,22rem)]">
-          {verdictBlock}
-          {councilRail}
-        </div>
-      ) : (
-        councilRail
-      )}
+      <div className="space-y-4">
+        {responseCards}
+        {verdictBlock}
+      </div>
     </div>
   );
 }

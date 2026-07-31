@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   Send,
   Gavel,
@@ -1280,30 +1280,43 @@ function LoadingTurn({
 }) {
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        {set.models.map((id) => {
-          const m = modelById(id);
-          return (
-            <GlassCard key={id} className="relative min-h-[140px] overflow-hidden p-4">
-              <VendorLogo
-                vendor={m.vendor}
-                watermark
-                className="pointer-events-none absolute -right-2 -bottom-2 size-20"
-              />
-              <div className="relative flex items-center gap-2 text-sm font-medium">
-                <VendorLogo vendor={m.vendor} className="size-7" title={m.name} />
-                <span className="truncate">{m.name}</span>
-                <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
+      {set.models.map((id, index) => {
+        const m = modelById(id);
+        return (
+          <GlassCard
+            key={id}
+            className={cn(
+              "elevate-card relative min-h-[140px] overflow-hidden border-l-[3px] p-4 sm:p-5",
+              index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
+            )}
+            style={{ borderLeftColor: m.color } satisfies CSSProperties}
+          >
+            <VendorLogo
+              vendor={m.vendor}
+              watermark
+              className="pointer-events-none absolute -right-2 -bottom-2 size-20"
+            />
+            <div className="relative flex flex-wrap items-center gap-2 text-sm font-medium">
+              <VendorLogo vendor={m.vendor} className="size-7 shrink-0" title={m.name} />
+              <div className="min-w-0">
+                <div className="truncate leading-tight">{m.name}</div>
+                <div className="truncate text-[11px] font-normal text-muted-foreground">
+                  {m.vendor}
+                </div>
               </div>
-              <div className="relative mt-3 space-y-2">
-                <div className="h-2 animate-pulse rounded bg-muted" />
-                <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
-              </div>
-            </GlassCard>
-          );
-        })}
-      </div>
-      <GlassCard glow className="p-4 text-sm text-muted-foreground">
+              <Loader2 className="ml-auto size-3.5 shrink-0 animate-spin text-primary" />
+            </div>
+            <div className="relative mt-4 space-y-2 border-t border-border/60 pt-4">
+              <div className="h-2 animate-pulse rounded bg-muted" />
+              <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+            </div>
+          </GlassCard>
+        );
+      })}
+      <GlassCard
+        glow
+        className="mt-2 border-2 border-primary/25 bg-primary/[0.04] p-5 text-sm text-muted-foreground sm:p-6"
+      >
         <Loader2 className="mr-2 inline size-3.5 animate-spin text-primary" /> Synthesizing
         verdict…
       </GlassCard>
@@ -1374,13 +1387,8 @@ function AiTurn({
     setShowDisagree(true);
   }
 
-  const councilRail = !answersCollapsed ? (
-    <aside
-      className={cn(
-        "space-y-3",
-        hasVerdict && "lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:overscroll-contain lg:pr-1",
-      )}
-    >
+  const responseCards = !answersCollapsed ? (
+    <div className="space-y-4">
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
@@ -1400,32 +1408,37 @@ function AiTurn({
           </button>
         ) : null}
       </div>
-      <div className="space-y-2.5">
-        {answerCards.map(({ modelId: id, answer: a, status }, index) => {
-          const baseModel = modelById(id);
-          const m = a?.model_name ? { ...baseModel, name: a.model_name } : baseModel;
-          const failed = status === "failed";
-          const inProgress = status === "pending" || status === "running";
-          const isTopPick = topModelId === id;
-          const expanded = expandedAnswerId === id || !hasVerdict;
-          return (
-            <GlassCard
-              key={id}
-              featured={isTopPick}
-              className={cn(
-                "elevate-card relative overflow-hidden p-3.5",
-                index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
-                isTopPick && "ring-1 ring-primary/35",
-              )}
-            >
-              <div className="relative flex items-start gap-2.5">
-                <VendorLogo vendor={m.vendor} className="size-8 shrink-0" title={m.name} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium leading-tight">{m.name}</div>
-                      <div className="truncate text-[11px] text-muted-foreground">{m.vendor}</div>
+      {answerCards.map(({ modelId: id, answer: a, status }, index) => {
+        const baseModel = modelById(id);
+        const m = a?.model_name ? { ...baseModel, name: a.model_name } : baseModel;
+        const failed = status === "failed";
+        const inProgress = status === "pending" || status === "running";
+        const isTopPick = topModelId === id;
+        const expanded = expandedAnswerId === id || !hasVerdict;
+        return (
+          <GlassCard
+            key={id}
+            featured={isTopPick}
+            style={{ borderLeftColor: m.color } satisfies CSSProperties}
+            className={cn(
+              "elevate-card relative w-full overflow-hidden border-l-[3px] p-4 sm:p-5",
+              index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
+              isTopPick && "ring-1 ring-primary/35",
+            )}
+          >
+            <div className="relative flex items-start gap-2.5 sm:gap-3">
+              <VendorLogo vendor={m.vendor} className="size-8 shrink-0 sm:size-9" title={m.name} />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold leading-tight sm:text-[0.9375rem]">
+                      {m.name}
                     </div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground sm:text-xs">
+                      {m.vendor}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {!inProgress && a?.confidence != null ? (
                       <ModelConfidenceBadge
                         confidence={a.confidence}
@@ -1434,25 +1447,30 @@ function AiTurn({
                         modelName={m.name}
                       />
                     ) : null}
+                    {isTopPick ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                        <Trophy className="size-3" />
+                        Top pick
+                      </span>
+                    ) : null}
+                    {inProgress ? (
+                      <Loader2 className="size-3.5 animate-spin text-primary" aria-label="Generating" />
+                    ) : null}
                   </div>
-                  {isTopPick ? (
-                    <span className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-                      <Trophy className="size-3" />
-                      Top pick
-                    </span>
-                  ) : null}
                 </div>
               </div>
+            </div>
+            <div className="relative mt-3 border-t border-border/60 pt-3 sm:mt-4 sm:pt-4">
               {failed ? (
-                <p className="relative mt-3 text-xs text-destructive">
+                <p className="text-sm text-destructive">
                   <AlertCircle className="mr-1 inline size-3.5" />
                   {a?.error_message ?? "Failed"}
                 </p>
               ) : inProgress ? (
-                <div className="relative mt-3 space-y-2">
+                <div className="space-y-2">
                   <div className="h-2 animate-pulse rounded bg-muted" />
                   <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
-                  <Loader2 className="size-3.5 animate-spin text-primary" />
+                  <div className="h-2 w-8/12 animate-pulse rounded bg-muted" />
                 </div>
               ) : (
                 <ExpandableAnswer
@@ -1461,21 +1479,20 @@ function AiTurn({
                   onToggle={() =>
                     setExpandedAnswerId((current) => (current === id ? null : id))
                   }
-                  className="relative mt-3"
                 >
-                  <MessageContent compact>{a?.text ?? ""}</MessageContent>
+                  <MessageContent>{a?.text ?? ""}</MessageContent>
                 </ExpandableAnswer>
               )}
-            </GlassCard>
-          );
-        })}
-      </div>
-    </aside>
+            </div>
+          </GlassCard>
+        );
+      })}
+    </div>
   ) : (
     <button
       type="button"
       onClick={() => setAnswersCollapsed(false)}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground lg:sticky lg:top-24"
+      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
     >
       <ChevronDown className="size-3.5 -rotate-90" />
       Show AI council ({answerCards.length})
@@ -1488,37 +1505,46 @@ function AiTurn({
       id={`verdict-${turn.verdict.id}`}
       data-verdict-synthesis="true"
       className={cn(
-        "elevate-verdict scroll-mt-28",
+        "elevate-verdict scroll-mt-28 pt-2",
         isPinned && "rounded-2xl ring-2 ring-amber-400/60 ring-offset-2 ring-offset-background",
       )}
     >
-      <GlassCard glow className="p-5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-            <Sparkles className="size-4" />
+      <GlassCard
+        glow
+        className="border-2 border-primary/30 bg-primary/[0.04] p-5 shadow-[0_1px_0_oklch(1_0_0/0.9)_inset,0_16px_44px_oklch(0.55_0.1_240/0.14)] sm:p-6"
+      >
+        <div className="flex flex-wrap items-start gap-3 border-b border-primary/15 pb-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Sparkles className="size-5" />
           </span>
-          <span className="font-medium">Verdict</span>
-          {isPinned && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-              <Pin className="size-3 fill-current" /> Pinned
-            </span>
-          )}
-          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
-            {turn.verdict.strategy}
-          </span>
-          {judgeModel && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
-              <VendorLogo vendor={judgeModel.vendor} className="size-4" />
-              Judge: {judgeModel.name}
-            </span>
-          )}
-          {topModelId && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800">
-              <Trophy className="size-3" />
-              Best: {modelById(topModelId).name}
-            </span>
-          )}
-          <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-lg font-semibold tracking-tight sm:text-xl">Verdict</h3>
+              {isPinned && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                  <Pin className="size-3 fill-current" /> Pinned
+                </span>
+              )}
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+                {turn.verdict.strategy}
+              </span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground sm:text-sm">
+              {judgeModel && (
+                <span className="inline-flex items-center gap-1.5">
+                  <VendorLogo vendor={judgeModel.vendor} className="size-4" />
+                  Judge: {judgeModel.name}
+                </span>
+              )}
+              {topModelId && (
+                <span className="inline-flex items-center gap-1 font-medium text-amber-800">
+                  <Trophy className="size-3.5" />
+                  Best: {modelById(topModelId).name}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
@@ -1579,7 +1605,7 @@ function AiTurn({
             )}
           </div>
         </div>
-        <div className="mt-4 space-y-3">
+        <div className="mt-5 space-y-3">
           <MessageContent>{turn.verdict.text}</MessageContent>
           {turn.verdict.reason && (
             <MessageContent
@@ -1596,14 +1622,8 @@ function AiTurn({
 
   return (
     <div className="space-y-4">
-      {hasVerdict ? (
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,22rem)]">
-          {verdictBlock}
-          {councilRail}
-        </div>
-      ) : (
-        councilRail
-      )}
+      {responseCards}
+      {verdictBlock}
 
       <VerdictDisagreeChat
         open={showDisagree}
