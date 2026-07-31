@@ -1,12 +1,10 @@
 """Excel workbook export for a Maps Census run.
 
-Produces a two-sheet ``.xlsx``:
+Produces a single-sheet ``.xlsx``:
 
 - ``Facilities`` — the seven business columns shown in the results table, one
   row per relevant facility (no export-eligibility gate; incomplete rows are
   kept so the user gets everything).
-- ``Technical Data`` — the same facilities with diagnostic fields (IDs,
-  coordinates, confidence, website source, verification tier, etc.).
 
 Only Excel's own worksheet row limit bounds the output; the application applies
 no cap of its own.
@@ -29,83 +27,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError
 from app.db.models import MapsCensusRun, MapsPlace
-from app.services.scraping.maps_census_service import (
-    CSV_EXPORT_HEADERS,
-    _export_csv_row,
-    _export_eligible,
-    _export_location,
-    _verification_tier,
-    normalized_export_website,
-)
+from app.services.scraping.maps_census_service import CSV_EXPORT_HEADERS, _export_csv_row
 
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 FACILITIES_SHEET = "Facilities"
-TECHNICAL_SHEET = "Technical Data"
 
 # Headers whose string cells should render as clickable links.
-_URL_HEADERS = {"Website", "Raw Website", "Official Website"}
+_URL_HEADERS = {"Website"}
 # Headers whose values must stay textual so "+" and leading zeroes survive.
-_TEXT_HEADERS = {"Phone Number", "Google Place ID", "Internal ID"}
+_TEXT_HEADERS = {"Phone Number"}
 # Short, scannable columns that read best centered in both axes.
 _CENTERED_HEADERS = {
     "Phone Number",
     "Treatment Price",
     "Languages Spoken",
-    "Website Source",
-    "Latitude",
-    "Longitude",
-    "Relevance Confidence",
-    "Verification Tier",
-    "Export Ready",
-    "Enrichment Status",
-    "Has Photo",
 }
-
-_TECHNICAL_HEADERS = (
-    "Facility Name",
-    "Raw Name",
-    "Addictions Treated",
-    "Location",
-    "Region",
-    "City",
-    "Formatted Address",
-    "Latitude",
-    "Longitude",
-    "Languages Spoken",
-    "Website",
-    "Raw Website",
-    "Official Website",
-    "Website Source",
-    "Phone Number",
-    "Treatment Price",
-    "Place Types",
-    "Relevance Confidence",
-    "Relevance Reason",
-    "Verification Tier",
-    "Export Ready",
-    "Enrichment Status",
-    "Has Photo",
-    "Discovery Query",
-    "Google Place ID",
-    "Internal ID",
-)
 
 _WIDE_COLUMNS = {
     "Facility Name": 34,
-    "Raw Name": 30,
     "Location": 42,
-    "Formatted Address": 42,
     "Website": 40,
-    "Raw Website": 38,
-    "Official Website": 38,
-    "Relevance Reason": 48,
-    "Discovery Query": 34,
-    "Place Types": 34,
     "Addictions Treated": 26,
     "Languages Spoken": 22,
-    "Google Place ID": 30,
-    "Internal ID": 30,
 }
 
 
@@ -131,61 +75,17 @@ class MapsExportService:
         workbook.remove(workbook.active)
 
         facilities_ws = workbook.create_sheet(FACILITIES_SHEET)
-        technical_ws = workbook.create_sheet(TECHNICAL_SHEET)
-
         self._write_sheet(
             facilities_ws,
             list(CSV_EXPORT_HEADERS),
             [_export_csv_row(place, country_name=run.country_name) for place in places],
             table_name="Facilities",
         )
-        self._write_sheet(
-            technical_ws,
-            list(_TECHNICAL_HEADERS),
-            [self._technical_row(place, country_name=run.country_name) for place in places],
-            table_name="TechnicalData",
-        )
 
         buffer = BytesIO()
         workbook.save(buffer)
         filename = f"{run.country_code.lower()}-maps-census-export.xlsx"
         return buffer.getvalue(), filename
-
-    def _technical_row(self, place: MapsPlace, *, country_name: str) -> list[Any]:
-        business = _export_csv_row(place, country_name=country_name)
-        # business = [name, addictions, location, languages, website, phone, price]
-        types = ", ".join(str(item) for item in (place.place_types or []))
-        confidence = (
-            float(place.confidence_score) if place.confidence_score is not None else None
-        )
-        return [
-            business[0],  # Facility Name
-            (place.raw_name or "").strip(),
-            business[1],  # Addictions Treated
-            business[2],  # Location
-            (place.region_name or "").strip(),
-            (place.city_name or "").strip(),
-            (place.formatted_address or "").strip(),
-            place.latitude,
-            place.longitude,
-            business[3],  # Languages Spoken
-            business[4],  # Website (normalized)
-            (place.raw_website or "").strip(),
-            (place.official_website or "").strip(),
-            (place.website_source or "").strip(),
-            business[5],  # Phone Number
-            business[6],  # Treatment Price
-            types,
-            confidence,
-            (place.relevance_reason or "").strip(),
-            _verification_tier(place),
-            "Yes" if _export_eligible(place) else "No",
-            place.enrichment_status or "pending",
-            "Yes" if place.photo_reference else "No",
-            (place.discovered_via_query or "").strip(),
-            place.google_place_id,
-            place.id,
-        ]
 
     def _write_sheet(
         self, ws: Any, headers: list[str], rows: list[list[Any]], *, table_name: str

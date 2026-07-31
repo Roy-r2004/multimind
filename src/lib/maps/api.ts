@@ -102,7 +102,7 @@ export function parseExportFilename(disposition: string | null, fallback: string
   return match?.[1] ?? fallback;
 }
 
-/** Downloads the full two-sheet Excel workbook for a run (all relevant rows). */
+/** Downloads the Excel workbook for a run (all relevant facility rows). */
 export async function downloadMapsCensusExport(auth: Auth, runId: string): Promise<void> {
   const response = await fetch(`${getApiBase()}${mapsCensusExportXlsxPath(runId)}`, {
     headers: {

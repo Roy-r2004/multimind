@@ -71,7 +71,7 @@ async def test_export_xlsx_includes_every_relevant_row_even_incomplete(db, auth)
 
     assert filename == "dz-maps-census-export.xlsx"
     workbook, sheet = _facilities_sheet(content)
-    assert workbook.sheetnames == ["Facilities", "Technical Data"]
+    assert workbook.sheetnames == ["Facilities"]
     names = [row[0].value for row in sheet.iter_rows(min_row=2)]
     assert "Complete Rehab" in names
     assert "Incomplete Center" in names  # kept despite failing export-eligibility
@@ -241,72 +241,6 @@ async def test_export_xlsx_alignment_is_readable(db, auth):
     phone_cell = sheet.cell(row=2, column=phone_col)
     assert phone_cell.alignment.horizontal == "center"
     assert phone_cell.alignment.vertical == "center"
-
-
-@pytest.mark.asyncio
-async def test_export_xlsx_technical_short_columns_are_centered(db, auth):
-    run = await _create_run(db, auth)
-    db.add(
-        MapsPlace(
-            run_id=run.id,
-            google_place_id="align-tech",
-            raw_name="Tech Align",
-            canonical_name="Tech Align",
-            is_relevant=True,
-            confidence_score=0.88,
-            formatted_address="2 Street, Algiers",
-            latitude=36.75,
-            longitude=3.06,
-        )
-    )
-    await db.commit()
-
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    workbook = load_workbook(BytesIO(content))
-    sheet = workbook["Technical Data"]
-    header = [cell.value for cell in sheet[1]]
-    for short_header in ("Relevance Confidence", "Latitude", "Longitude", "Export Ready"):
-        column = header.index(short_header) + 1
-        cell = sheet.cell(row=2, column=column)
-        assert cell.alignment.horizontal == "center", short_header
-        assert cell.alignment.vertical == "center", short_header
-
-
-@pytest.mark.asyncio
-async def test_export_xlsx_technical_sheet_carries_diagnostics(db, auth):
-    run = await _create_run(db, auth)
-    db.add(
-        MapsPlace(
-            run_id=run.id,
-            google_place_id="tech-1",
-            raw_name="Tech Rehab",
-            canonical_name="Tech Rehab",
-            is_relevant=True,
-            confidence_score=0.83,
-            formatted_address="5 Data St, Algiers",
-            official_website="https://tech.example/",
-            website_source="llm_social",
-            relevance_reason="explicit addiction center",
-            discovered_via_query="rehab Algiers",
-        )
-    )
-    await db.commit()
-
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    workbook = load_workbook(BytesIO(content))
-    sheet = workbook["Technical Data"]
-    header = [cell.value for cell in sheet[1]]
-    for expected in (
-        "Google Place ID",
-        "Website Source",
-        "Relevance Confidence",
-        "Relevance Reason",
-        "Verification Tier",
-        "Discovery Query",
-    ):
-        assert expected in header
-    reason_col = header.index("Relevance Reason") + 1
-    assert sheet.cell(row=2, column=reason_col).value == "explicit addiction center"
 
 
 @pytest.mark.asyncio
