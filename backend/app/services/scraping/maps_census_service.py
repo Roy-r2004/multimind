@@ -1716,6 +1716,9 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         addictions_treated=list(place.addictions_treated or []),
         languages_spoken=list(place.languages_spoken or []),
         treatment_price=place.treatment_price,
+        verification_verdict=place.verification_verdict,
+        verification_reason=place.verification_reason,
+        verification_source_url=place.verification_source_url,
     )
 
 

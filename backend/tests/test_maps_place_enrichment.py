@@ -1,4 +1,4 @@
-"""Tests for Maps Census Phase 2 website enrichment."""
+"""Tests for Maps Census Phase 2 AI web-search enrichment (no crawling)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
 
-from app.core.dependencies import AuthContext
 from app.db.models import MapsCensusRun, MapsPlace, MapsPlaceEnrichmentStatus
 from app.services.scraping.maps_place_enrichment_service import (
     ADDICTION_TAXONOMY,
@@ -20,87 +18,81 @@ class _FakeProvider:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
         self.calls = 0
+        self.last_user = ""
 
-    async def complete(self, **_kwargs):
+    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096):
         self.calls += 1
+        self.last_user = user
         return SimpleNamespace(text=json.dumps(self._payload))
 
 
-@pytest.mark.asyncio
-async def test_enrich_place_extracts_addictions_and_languages_not_price(db, auth, monkeypatch):
-    from app.core.config import get_settings
+class _FailingProvider:
+    async def complete(self, **_kwargs):
+        raise RuntimeError("search unavailable")
 
-    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
-    run = MapsCensusRun(
-        organization_id=auth.org_id,
-        created_by=auth.user.id,
-        country_code="FI",
-        country_name="Finland",
-        status="completed",
-    )
-    db.add(run)
-    await db.flush()
-    place = MapsPlace(
-        run_id=run.id,
-        google_place_id="enrich-1",
-        raw_name="Example Rehab",
-        canonical_name="Example Rehab",
-        is_relevant=True,
-        confidence_score=0.95,
-        formatted_address="1 Rehab Street, Helsinki",
-        official_website="https://example-rehab.test/",
-        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
-    )
-    db.add(place)
-    await db.commit()
 
-    html = """
-    <html><body>
-    <h1>Example Rehab</h1>
-    <p>We treat alcohol addiction and gambling disorder in our inpatient program.</p>
-    <p>Treatment available in English and Finnish.</p>
-    <p>Inpatient program from €4,500 per month.</p>
-    </body></html>
-    """
-
-    async def fake_fetch(url: str):
-        return SimpleNamespace(url=url, html=html, final_url=url)
-
-    monkeypatch.setattr(
-        "app.services.scraping.maps_place_enrichment_service._fetch_html",
-        fake_fetch,
-    )
+def _patch_provider(monkeypatch, provider) -> None:
     monkeypatch.setattr(
         "app.services.scraping.maps_place_enrichment_service.get_model",
         lambda _slug: SimpleNamespace(provider="mock", provider_model="mock-model"),
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_place_enrichment_service.get_provider_registry",
-        lambda: SimpleNamespace(
-            get_provider=lambda _name: _FakeProvider(
+        lambda: SimpleNamespace(get_provider=lambda _name: provider),
+    )
+
+
+async def _completed_run(db, auth, *, country_code="DZ", country_name="Algeria") -> MapsCensusRun:
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code=country_code,
+        country_name=country_name,
+        status="completed",
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+@pytest.mark.asyncio
+async def test_enrich_fills_addictions_and_languages_without_website(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-site",
+        raw_name="Centre El Wassit",
+        canonical_name="Centre El Wassit",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="Boumerdès, Algeria",
+        international_phone_number="+213 555 11 22 33",
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    provider = _FakeProvider(
+        {
+            "results": [
                 {
+                    "place_id": place.id,
                     "addictions_treated": [
-                        {
-                            "value": "Alcohol",
-                            "evidence_quote": "We treat alcohol addiction and gambling disorder",
-                        },
-                        {
-                            "value": "Gambling",
-                            "evidence_quote": "We treat alcohol addiction and gambling disorder",
-                        },
+                        {"value": "Heroin", "evidence_quote": "...", "source_url": "https://x"},
+                        {"value": "hashish", "evidence_quote": "...", "source_url": "https://x"},
                     ],
                     "languages_spoken": [
-                        {"value": "English", "evidence_quote": "Treatment available in English and Finnish"},
-                        {"value": "Finnish", "evidence_quote": "Treatment available in English and Finnish"},
+                        {"value": "Arabic", "evidence_quote": "...", "source_url": "https://x"},
+                        {"value": "French", "evidence_quote": "...", "source_url": "https://x"},
                     ],
-                    "treatment_price": {
-                        "value": "€4,500 per month",
-                        "evidence_quote": "Inpatient program from €4,500 per month",
-                    },
                 }
-            )
-        ),
+            ]
+        }
     )
+    _patch_provider(monkeypatch, provider)
 
     summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
     assert summary["enriched"] == 1
@@ -108,79 +100,242 @@ async def test_enrich_place_extracts_addictions_and_languages_not_price(db, auth
     await db.refresh(place)
     await db.refresh(run)
     assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
-    assert place.addictions_treated == ["Alcohol", "Gambling"]
-    assert place.languages_spoken == ["English", "Finnish"]
-    assert place.treatment_price is None  # price extraction is intentionally disabled
+    # "hashish" maps into the taxonomy; unknown/behavioral stays canonical.
+    assert place.addictions_treated == ["Heroin", "Cannabis (dependency)"]
+    assert place.languages_spoken == ["Arabic", "French"]
+    assert place.treatment_price is None
     assert run.places_enriched == 1
 
 
 @pytest.mark.asyncio
-async def test_enrich_skips_facebook_contact_pages(db, auth, monkeypatch):
+async def test_enrich_reprocesses_previously_skipped_places(db, auth, monkeypatch):
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
-    run = MapsCensusRun(
-        organization_id=auth.org_id,
-        created_by=auth.user.id,
-        country_code="DZ",
-        country_name="Algeria",
-        status="completed",
-    )
-    db.add(run)
-    await db.flush()
+    run = await _completed_run(db, auth)
     place = MapsPlace(
         run_id=run.id,
         google_place_id="fb-only",
         raw_name="ALT Association",
         canonical_name="ALT Association",
         is_relevant=True,
-        official_website="https://web.facebook.com/ALT.Association/",
+        confidence_score=0.9,
+        formatted_address="Oran, Algeria",
+        official_website="https://www.facebook.com/associationaltoran/",
         website_source="places_social",
+        enrichment_status=MapsPlaceEnrichmentStatus.SKIPPED.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    provider = _FakeProvider(
+        {
+            "results": [
+                {
+                    "place_id": place.id,
+                    "addictions_treated": [{"value": "Alcohol", "evidence_quote": "..."}],
+                    "languages_spoken": [],
+                }
+            ]
+        }
+    )
+    _patch_provider(monkeypatch, provider)
+
+    summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    assert summary["enriched"] == 1
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
+    assert place.addictions_treated == ["Alcohol"]
+
+
+@pytest.mark.asyncio
+async def test_enrich_marks_failed_on_provider_error(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="boom",
+        raw_name="Broken Clinic",
+        canonical_name="Broken Clinic",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="Algiers, Algeria",
         enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
     )
     db.add(place)
     await db.commit()
 
+    _patch_provider(monkeypatch, _FailingProvider())
+
     summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
     assert summary["enriched"] == 0
     await db.refresh(place)
-    assert place.enrichment_status == MapsPlaceEnrichmentStatus.SKIPPED.value
-    assert place.addictions_treated is None
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.FAILED.value
+    assert place.enrichment_error_message
 
 
 @pytest.mark.asyncio
-async def test_enrich_skips_places_without_website(db, auth, monkeypatch):
+async def test_enrich_completes_empty_when_model_omits_place(db, auth, monkeypatch):
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
-    run = MapsCensusRun(
-        organization_id=auth.org_id,
-        created_by=auth.user.id,
-        country_code="FI",
-        country_name="Finland",
-        status="completed",
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="omitted",
+        raw_name="Unknown Center",
+        canonical_name="Unknown Center",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="Batna, Algeria",
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
     )
-    db.add(run)
-    await db.flush()
-    db.add(
-        MapsPlace(
-            run_id=run.id,
-            google_place_id="no-site",
-            raw_name="No Website Rehab",
-            canonical_name="No Website Rehab",
-            is_relevant=True,
-            confidence_score=0.92,
-            formatted_address="2 Street, Helsinki",
-            enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
-        )
-    )
+    db.add(place)
     await db.commit()
 
+    _patch_provider(monkeypatch, _FakeProvider({"results": []}))
+
+    summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    assert summary["enriched"] == 0
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
+    assert place.addictions_treated == []
+
+
+@pytest.mark.asyncio
+async def test_contradicted_verdict_drops_place_from_census(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="not-rehab",
+        raw_name="عيادة طبية عامة",
+        canonical_name="عيادة طبية عامة",
+        is_relevant=True,
+        confidence_score=0.95,
+        formatted_address="Batna, Algeria",
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    provider = _FakeProvider(
+        {
+            "results": [
+                {
+                    "place_id": place.id,
+                    "verification": {
+                        "verdict": "contradicted",
+                        "reason": "Sources show a general medical clinic with no addiction program.",
+                        "source_url": "https://example.dz/clinic",
+                    },
+                    "addictions_treated": [{"value": "Alcohol", "evidence_quote": "..."}],
+                    "languages_spoken": [{"value": "Arabic", "evidence_quote": "..."}],
+                }
+            ]
+        }
+    )
+    _patch_provider(monkeypatch, provider)
+
+    summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    assert summary["enriched"] == 0
+
+    await db.refresh(place)
+    await db.refresh(run)
+    assert place.is_relevant is False
+    assert place.verification_verdict == "contradicted"
+    assert place.verification_source_url == "https://example.dz/clinic"
+    # Values the model offered are discarded along with the place.
+    assert place.addictions_treated == []
+    assert place.languages_spoken == []
+    assert run.places_classified_relevant == 0
+
+
+@pytest.mark.asyncio
+async def test_unknown_verdict_keeps_place(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="unfindable",
+        raw_name="مركز الوسيط لعلاج المدمنين",
+        canonical_name="مركز الوسيط لعلاج المدمنين",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="Boumerdès, Algeria",
+        international_phone_number="+213 555 00 00 00",
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    provider = _FakeProvider(
+        {
+            "results": [
+                {
+                    "place_id": place.id,
+                    "verification": {"verdict": "unknown", "reason": "No sources found."},
+                    "addictions_treated": [],
+                    "languages_spoken": [],
+                }
+            ]
+        }
+    )
+    _patch_provider(monkeypatch, provider)
+
     await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
-    place = (
-        await db.execute(select(MapsPlace).where(MapsPlace.google_place_id == "no-site"))
-    ).scalar_one()
-    assert place.enrichment_status == MapsPlaceEnrichmentStatus.SKIPPED.value
+    await db.refresh(place)
+    await db.refresh(run)
+    assert place.is_relevant is True
+    assert place.verification_verdict == "unknown"
+    assert run.places_classified_relevant == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_or_invalid_verdict_defaults_to_unknown(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-verdict",
+        raw_name="Clinique Lilas",
+        canonical_name="Clinique Lilas",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="Algiers, Algeria",
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    provider = _FakeProvider(
+        {
+            "results": [
+                {
+                    "place_id": place.id,
+                    "verification": {"verdict": "probably not sure"},
+                    "addictions_treated": [{"value": "Alcohol", "evidence_quote": "..."}],
+                    "languages_spoken": [],
+                }
+            ]
+        }
+    )
+    _patch_provider(monkeypatch, provider)
+
+    await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    await db.refresh(place)
+    # An unrecognized verdict must never silently delete a facility.
+    assert place.verification_verdict == "unknown"
+    assert place.is_relevant is True
+    assert place.addictions_treated == ["Alcohol"]
 
 
 def test_addiction_taxonomy_includes_substance_and_behavioral():

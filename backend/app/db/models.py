@@ -2423,5 +2423,9 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     languages_spoken: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     treatment_price: Mapped[str | None] = mapped_column(String(512), nullable=True)
     enrichment_pages_crawled: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # Web-search verification of whether the listing really is an addiction facility.
+    verification_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    verification_reason: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    verification_source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="places")

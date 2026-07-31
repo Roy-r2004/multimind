@@ -1,18 +1,19 @@
-"""Phase 2: crawl facility websites and extract export columns for Maps Census."""
+"""Phase 2: enrich Maps Census facilities via a web-search LLM (no crawling).
+
+For every relevant facility — with or without a website — we ask a web-search
+capable model (Perplexity Sonar Pro by default) to find the addictions it treats
+and the languages treatment is delivered in. Facilities are processed in small
+batches keyed by ``place_id`` so identities never mix. Treatment price is out of
+scope.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import re
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from types import SimpleNamespace
-from typing import Any
-from urllib.parse import urlsplit
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,16 +23,10 @@ from app.db.models import MapsCensusRun, MapsPlace, MapsPlaceEnrichmentStatus
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
-from app.services.scraping.contact_page_discovery_service import discover_contact_pages
-from app.services.scraping.document_text_preparation_service import (
-    document_text_preparation_service,
-)
 
 logger = logging.getLogger(__name__)
 
-ENRICHMENT_TIMEOUT_SECONDS = 90.0
-FETCH_TIMEOUT_SECONDS = 25.0
-USER_AGENT = "MultiMind-MapsCensus/1.0 (+https://multimind.ai/maps-census)"
+ENRICHMENT_TIMEOUT_SECONDS = 120.0
 MAX_QUOTE_CHARACTERS = 240
 
 SUBSTANCE_ADDICTIONS = (
@@ -80,6 +75,7 @@ ADDICTION_ALIASES: dict[str, str] = {
     "benzos": "Benzodiazepines",
     "marijuana": "Cannabis (dependency)",
     "cannabis": "Cannabis (dependency)",
+    "hashish": "Cannabis (dependency)",
     "meth": "Methamphetamine",
     "ecstasy": "MDMA/Ecstasy",
     "mdma": "MDMA/Ecstasy",
@@ -97,21 +93,44 @@ class EvidenceField(BaseModel):
 
     value: str = Field(default="", max_length=300)
     evidence_quote: str = Field(default="", max_length=MAX_QUOTE_CHARACTERS)
+    source_url: str = Field(default="", max_length=1000)
 
 
-class MapsPlaceEnrichmentOutput(BaseModel):
+VERDICT_CONFIRMED = "confirmed"
+VERDICT_CONTRADICTED = "contradicted"
+VERDICT_UNKNOWN = "unknown"
+_VALID_VERDICTS = {VERDICT_CONFIRMED, VERDICT_CONTRADICTED, VERDICT_UNKNOWN}
+
+
+class VerificationField(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    verdict: str = Field(default="", max_length=40)
+    reason: str = Field(default="", max_length=400)
+    source_url: str = Field(default="", max_length=1000)
+
+    def normalized_verdict(self) -> str:
+        candidate = (self.verdict or "").strip().casefold()
+        return candidate if candidate in _VALID_VERDICTS else VERDICT_UNKNOWN
+
+
+class MapsPlaceEnrichmentResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    place_id: str = Field(default="", max_length=64)
+    verification: VerificationField = Field(default_factory=VerificationField)
     addictions_treated: list[EvidenceField] = Field(default_factory=list)
     languages_spoken: list[EvidenceField] = Field(default_factory=list)
-    treatment_price: EvidenceField | None = None
 
 
-@dataclass(frozen=True)
-class FetchedPage:
-    url: str
-    html: str
-    final_url: str
+class MapsPlaceEnrichmentBatch(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    results: list[MapsPlaceEnrichmentResult] = Field(default_factory=list)
+
+
+class EnrichmentError(Exception):
+    pass
 
 
 class MapsPlaceEnrichmentService:
@@ -132,186 +151,179 @@ class MapsPlaceEnrichmentService:
                     select(MapsPlace).where(
                         MapsPlace.run_id == run_id,
                         MapsPlace.is_relevant.is_(True),
-                        MapsPlace.official_website.is_not(None),
                         MapsPlace.enrichment_status.in_(
                             [
                                 MapsPlaceEnrichmentStatus.PENDING.value,
                                 MapsPlaceEnrichmentStatus.FAILED.value,
+                                MapsPlaceEnrichmentStatus.SKIPPED.value,
                             ]
                         ),
                     )
                 )
             ).scalars().all()
-            crawlable: list[MapsPlace] = []
-            social_ids: list[str] = []
-            for place in pending:
-                if _is_social_website(place.official_website):
-                    social_ids.append(place.id)
-                else:
-                    crawlable.append(place)
-            pending = crawlable[: max(1, settings.maps_census_enrichment_max_places_per_run)]
+            pending = pending[: max(1, settings.maps_census_enrichment_max_places_per_run)]
             place_ids = [place.id for place in pending]
-            await scan_db.commit()
-            await self._mark_skipped_without_website(session_factory, run_id=run_id)
-            await self._mark_skipped_social_websites(session_factory, place_ids=social_ids)
 
         enriched = 0
-        for place_id in place_ids:
-            success = await self._enrich_one(
+        batch_size = max(1, settings.maps_census_enrichment_batch_size)
+        for offset in range(0, len(place_ids), batch_size):
+            chunk = place_ids[offset : offset + batch_size]
+            enriched += await self._enrich_batch(
                 session_factory,
-                place_id=place_id,
+                place_ids=chunk,
                 country_code=country_code,
                 country_name=country_name,
             )
-            if success:
-                enriched += 1
 
         async with session_factory() as final_db:
             run = await final_db.get(MapsCensusRun, run_id)
             if run is not None:
-                places = (
+                relevant = (
                     await final_db.execute(
                         select(MapsPlace).where(
                             MapsPlace.run_id == run_id,
-                            MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value,
+                            MapsPlace.is_relevant.is_(True),
                         )
                     )
                 ).scalars().all()
+                # Verification can demote places, so the relevant/website counters are
+                # recomputed here rather than trusted from the classification phase.
+                run.places_classified_relevant = len(relevant)
+                run.places_with_website = sum(
+                    1
+                    for place in relevant
+                    if (place.official_website or place.raw_website or "").strip()
+                )
                 run.places_enriched = sum(
                     1
-                    for place in places
-                    if _non_empty_list(place.addictions_treated)
-                    or _non_empty_list(place.languages_spoken)
+                    for place in relevant
+                    if place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
+                    and (
+                        _non_empty_list(place.addictions_treated)
+                        or _non_empty_list(place.languages_spoken)
+                    )
                 )
-                run.enrichment_refresh_attempts += 1
+                run.enrichment_refresh_attempts = (run.enrichment_refresh_attempts or 0) + 1
                 run.enrichment_refresh_completed_at = datetime.now(UTC)
                 await final_db.commit()
         return {"enriched": enriched}
 
-    async def _enrich_one(
+    async def _enrich_batch(
         self,
         session_factory,
         *,
-        place_id: str,
+        place_ids: list[str],
         country_code: str,
         country_name: str,
-    ) -> bool:
-        settings = get_settings()
+    ) -> int:
+        if not place_ids:
+            return 0
+
         async with session_factory() as db:
-            place = await db.get(MapsPlace, place_id)
-            if place is None or not place.official_website:
-                return False
-            place.enrichment_status = MapsPlaceEnrichmentStatus.RUNNING.value
-            place.enrichment_attempts += 1
-            place.enrichment_error_message = None
+            places = (
+                await db.execute(select(MapsPlace).where(MapsPlace.id.in_(place_ids)))
+            ).scalars().all()
+            by_id = {place.id: place for place in places}
+            ordered = [by_id[pid] for pid in place_ids if pid in by_id]
+            payloads = [self._facility_payload(place) for place in ordered]
+            for place in ordered:
+                place.enrichment_status = MapsPlaceEnrichmentStatus.RUNNING.value
+                place.enrichment_attempts = (place.enrichment_attempts or 0) + 1
+                place.enrichment_error_message = None
+            run_id = ordered[0].run_id if ordered else None
             await db.commit()
-            website = place.official_website
-            facility_name = place.canonical_name or place.raw_name
-            facility_address = place.formatted_address or ""
+
+        if run_id is not None:
+            async with session_factory() as heartbeat_db:
+                run = await heartbeat_db.get(MapsCensusRun, run_id)
+                if run is not None:
+                    run.heartbeat_at = datetime.now(UTC)
+                    await heartbeat_db.commit()
 
         try:
-            pages = await self._crawl_website(
-                website,
-                max_pages=max(1, settings.maps_census_enrichment_max_pages_per_place),
-            )
-            if not pages:
-                raise EnrichmentError("no_pages_fetched")
-            combined_text = self._combine_page_text(pages)
-            output = await self._extract_fields(
-                combined_text,
+            results = await self._search_fields(
+                payloads,
                 country_code=country_code,
                 country_name=country_name,
-                facility_name=facility_name,
-                facility_address=facility_address,
             )
-            addictions = _normalize_addictions(output.addictions_treated, combined_text)
-            languages = _normalize_evidence_list(output.languages_spoken, combined_text)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "maps_place_enrichment_failed place_id=%s error=%s",
-                place_id,
+                "maps_place_enrichment_batch_failed count=%s error=%s",
+                len(payloads),
                 exc,
             )
             async with session_factory() as db:
-                place = await db.get(MapsPlace, place_id)
-                if place is not None:
+                places = (
+                    await db.execute(select(MapsPlace).where(MapsPlace.id.in_(place_ids)))
+                ).scalars().all()
+                for place in places:
                     place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
                     place.enrichment_error_message = str(exc)[:2000]
                     place.enrichment_completed_at = datetime.now(UTC)
-                    await db.commit()
-            return False
+                await db.commit()
+            return 0
 
+        by_place = {result.place_id: result for result in results}
+        enriched = 0
         async with session_factory() as db:
-            place = await db.get(MapsPlace, place_id)
-            if place is None:
-                return False
-            place.addictions_treated = addictions
-            place.languages_spoken = languages
-            # Treatment price is intentionally left alone for now.
-            place.enrichment_pages_crawled = [page.final_url for page in pages]
-            place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
-            place.enrichment_completed_at = datetime.now(UTC)
-            place.enrichment_error_message = None
+            places = (
+                await db.execute(select(MapsPlace).where(MapsPlace.id.in_(place_ids)))
+            ).scalars().all()
+            for place in places:
+                result = by_place.get(place.id)
+                verdict = (
+                    result.verification.normalized_verdict() if result else VERDICT_UNKNOWN
+                )
+                place.verification_verdict = verdict
+                if result is not None:
+                    place.verification_reason = (result.verification.reason or "").strip()[:400]
+                    place.verification_source_url = (
+                        result.verification.source_url or ""
+                    ).strip()[:1024] or None
+
+                if verdict == VERDICT_CONTRADICTED:
+                    # Web sources say this listing is not an addiction provider — drop it
+                    # from the census instead of enriching it.
+                    place.is_relevant = False
+                    place.addictions_treated = []
+                    place.languages_spoken = []
+                else:
+                    addictions = (
+                        _normalize_addictions(result.addictions_treated) if result else []
+                    )
+                    languages = (
+                        _normalize_languages(result.languages_spoken) if result else []
+                    )
+                    place.addictions_treated = addictions
+                    place.languages_spoken = languages
+                    if addictions or languages:
+                        enriched += 1
+
+                place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                place.enrichment_completed_at = datetime.now(UTC)
+                place.enrichment_error_message = None
             await db.commit()
-        return bool(addictions or languages)
+        return enriched
 
-    async def _crawl_website(self, website: str, *, max_pages: int) -> list[FetchedPage]:
-        start_url = _normalize_http_url(website)
-        if not start_url:
-            return []
-        pages: list[FetchedPage] = []
-        homepage = await _fetch_html(start_url)
-        if homepage is None:
-            return []
-        pages.append(homepage)
-        if max_pages <= 1:
-            return pages
-        ranked = discover_contact_pages(
-            base_url=homepage.final_url,
-            html=homepage.html,
-            max_links=max_pages - 1,
-        )
-        for link in ranked:
-            if len(pages) >= max_pages:
-                break
-            fetched = await _fetch_html(link.url)
-            if fetched is not None:
-                pages.append(fetched)
-        return pages
+    def _facility_payload(self, place: MapsPlace) -> dict[str, str | list[str] | None]:
+        return {
+            "place_id": place.id,
+            "name": (place.canonical_name or place.raw_name or "").strip(),
+            "city": (place.city_name or "").strip() or None,
+            "region": (place.region_name or "").strip() or None,
+            "address": (place.formatted_address or "").strip() or None,
+            "phone": (place.international_phone_number or "").strip() or None,
+            "website": (place.official_website or place.raw_website or "").strip() or None,
+            "place_types": list(place.place_types or []),
+        }
 
-    def _combine_page_text(self, pages: list[FetchedPage]) -> str:
-        settings = get_settings()
-        max_chars = settings.facility_extraction_max_document_characters
-        chunks: list[str] = []
-        for page in pages:
-            doc = SimpleNamespace(
-                content_text=page.html,
-                content_type="text/html",
-                final_url=page.final_url,
-                metadata_json={},
-            )
-            try:
-                prepared = document_text_preparation_service.prepare_text_from_document(doc)
-            except Exception:
-                continue
-            header = f"\n\n--- PAGE: {page.final_url} ---\n\n"
-            chunks.append(header + prepared.text)
-        combined = "".join(chunks).strip()
-        if len(combined) > max_chars:
-            combined = combined[:max_chars].rstrip()
-        if not combined.strip():
-            raise EnrichmentError("empty_prepared_text")
-        return combined
-
-    async def _extract_fields(
+    async def _search_fields(
         self,
-        website_text: str,
+        payloads: list[dict],
         *,
         country_code: str,
         country_name: str,
-        facility_name: str,
-        facility_address: str,
-    ) -> MapsPlaceEnrichmentOutput:
+    ) -> list[MapsPlaceEnrichmentResult]:
         settings = get_settings()
         model = get_model(settings.maps_census_enrichment_model)
         provider = get_provider_registry().get_provider(model.provider)
@@ -319,58 +331,24 @@ class MapsPlaceEnrichmentService:
             "scraping/maps_place_enricher.j2",
             country_code=(country_code or "XX")[:2].upper(),
             country_name=(country_name or "Unknown")[:120],
-            facility_name=facility_name[:512],
-            facility_address=facility_address[:512],
             addiction_taxonomy_json=json.dumps(list(ADDICTION_TAXONOMY), ensure_ascii=True),
-            max_quote_characters=MAX_QUOTE_CHARACTERS,
-            website_text=website_text,
+            facilities_json=json.dumps(payloads, ensure_ascii=False),
         )
         response = await asyncio.wait_for(
             provider.complete(
                 system=(
-                    "You return strict JSON field extractions for one known addiction rehab"
-                    " facility website. Never invent values without evidence quotes."
+                    "You have live web search. Research each addiction-rehab facility"
+                    " independently and return strict JSON. Never invent values without a"
+                    " supporting web source."
                 ),
                 user=prompt,
                 model=model.provider_model,
-                max_tokens=2500,
+                max_tokens=3000,
             ),
             timeout=ENRICHMENT_TIMEOUT_SECONDS,
         )
         raw = LLMProvider.parse_json_response(response.text)
-        return MapsPlaceEnrichmentOutput.model_validate(raw)
-
-    async def _mark_skipped_without_website(self, session_factory, *, run_id: str) -> None:
-        async with session_factory() as db:
-            places = (
-                await db.execute(
-                    select(MapsPlace).where(
-                        MapsPlace.run_id == run_id,
-                        MapsPlace.is_relevant.is_(True),
-                        MapsPlace.official_website.is_(None),
-                        MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value,
-                    )
-                )
-            ).scalars().all()
-            for place in places:
-                place.enrichment_status = MapsPlaceEnrichmentStatus.SKIPPED.value
-                place.enrichment_completed_at = datetime.now(UTC)
-            if places:
-                await db.commit()
-
-    async def _mark_skipped_social_websites(self, session_factory, *, place_ids: list[str]) -> None:
-        if not place_ids:
-            return
-        async with session_factory() as db:
-            places = (
-                await db.execute(select(MapsPlace).where(MapsPlace.id.in_(place_ids)))
-            ).scalars().all()
-            for place in places:
-                place.enrichment_status = MapsPlaceEnrichmentStatus.SKIPPED.value
-                place.enrichment_error_message = "skipped: social page is not crawlable for enrichment"
-                place.enrichment_completed_at = datetime.now(UTC)
-            if places:
-                await db.commit()
+        return MapsPlaceEnrichmentBatch.model_validate(_normalize_batch_payload(raw)).results
 
     @staticmethod
     def _session_factory(db: AsyncSession | None):
@@ -386,75 +364,25 @@ class MapsPlaceEnrichmentService:
         return AsyncSessionLocal
 
 
-class EnrichmentError(Exception):
-    pass
+def _normalize_batch_payload(raw: object) -> dict:
+    if isinstance(raw, list):
+        return {"results": raw}
+    if isinstance(raw, dict):
+        items = raw.get("results") or raw.get("facilities") or raw.get("decisions") or []
+        return {"results": items if isinstance(items, list) else []}
+    return {"results": []}
 
 
 def _non_empty_list(value: list[str] | None) -> bool:
-    return bool(value and any(item.strip() for item in value))
+    return bool(value and any(str(item).strip() for item in value))
 
 
-def _normalize_http_url(website: str) -> str | None:
-    raw = (website or "").strip()
-    if not raw:
-        return None
-    if not raw.lower().startswith(("http://", "https://")):
-        raw = f"https://{raw}"
-    parts = urlsplit(raw)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
-        return None
-    return raw
-
-
-def _is_social_website(website: str | None) -> bool:
-    """Facebook/social pages are contact links, not crawlable facility sites."""
-    normalized = _normalize_http_url(website or "")
-    if not normalized:
-        return False
-    host = (urlsplit(normalized).hostname or "").casefold().rstrip(".")
-    return host == "facebook.com" or host.endswith(".facebook.com")
-
-
-async def _fetch_html(url: str) -> FetchedPage | None:
-    settings = get_settings()
-    max_bytes = max(32_768, settings.maps_census_enrichment_max_bytes_per_page)
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"}
-    try:
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=FETCH_TIMEOUT_SECONDS,
-        ) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            content_type = (response.headers.get("content-type") or "").lower()
-            if "html" not in content_type and "text/" not in content_type:
-                return None
-            body = response.content[:max_bytes]
-            html = body.decode(response.encoding or "utf-8", errors="replace")
-            final_url = str(response.url)
-            return FetchedPage(url=url, html=html, final_url=final_url)
-    except Exception:
-        return None
-
-
-def _quote_in_text(quote: str, text: str) -> bool:
-    cleaned = " ".join((quote or "").split())
-    if not cleaned:
-        return False
-    haystack = " ".join(text.split())
-    if cleaned in haystack:
-        return True
-    return cleaned.casefold() in haystack.casefold()
-
-
-def _normalize_evidence_list(fields: list[EvidenceField], text: str) -> list[str]:
+def _normalize_languages(fields: list[EvidenceField]) -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
     for field in fields:
         value = (field.value or "").strip()
         if not value:
-            continue
-        if field.evidence_quote and not _quote_in_text(field.evidence_quote, text):
             continue
         key = value.casefold()
         if key in seen:
@@ -464,19 +392,15 @@ def _normalize_evidence_list(fields: list[EvidenceField], text: str) -> list[str
     return values
 
 
-def _normalize_addictions(fields: list[EvidenceField], text: str) -> list[str]:
+def _normalize_addictions(fields: list[EvidenceField]) -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
     for field in fields:
         raw = (field.value or "").strip()
         if not raw:
             continue
-        if field.evidence_quote and not _quote_in_text(field.evidence_quote, text):
-            continue
         canonical = _canonical_addiction(raw)
-        if canonical is None:
-            continue
-        if canonical in seen:
+        if canonical is None or canonical in seen:
             continue
         seen.add(canonical)
         values.append(canonical)
@@ -495,19 +419,6 @@ def _canonical_addiction(raw: str) -> str | None:
         if alias in folded:
             return label
     return None
-
-
-def _normalize_price(field: EvidenceField | None, text: str) -> str | None:
-    if field is None:
-        return None
-    value = (field.value or "").strip()
-    if not value:
-        return None
-    if field.evidence_quote and not _quote_in_text(field.evidence_quote, text):
-        return None
-    if re.search(r"contact|request|call|inquir", value, flags=re.I):
-        return None
-    return value[:512]
 
 
 maps_place_enrichment_service = MapsPlaceEnrichmentService()

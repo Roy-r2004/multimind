@@ -136,7 +136,7 @@ function MapsRunDetailPage() {
       setRun(updated);
       setPollTick((tick) => tick + 1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start website enrichment");
+      setError(err instanceof Error ? err.message : "Failed to start AI enrichment");
     } finally {
       setEnriching(false);
     }
@@ -325,7 +325,7 @@ function FacilitiesExportTable({
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
             All 7 export columns are always shown. Addictions, languages, and price use placeholders
-            until website enrichment fills them in. Download Excel exports every relevant row.
+            until AI enrichment fills them in. Download Excel exports every relevant row.
           </p>
         </div>
         <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
@@ -360,7 +360,7 @@ function FacilitiesExportTable({
                   {isRunning
                     ? "Census still running — facility rows will appear here as they are classified."
                     : showExportOnly
-                      ? "No export-ready rows yet. Turn off the filter or run website enrichment."
+                      ? "No export-ready rows yet. Turn off the filter or run AI enrichment."
                       : "No relevant rehabilitation facilities were confirmed for this country."}
                 </td>
               </tr>
@@ -443,8 +443,8 @@ function MapsRunHero({
     run.status === "completed" && run.places_classified_relevant > run.places_with_website;
   const showEnrichWebsites =
     run.status === "completed" &&
-    run.places_with_website > 0 &&
-    run.places_enriched < run.places_with_website;
+    run.places_classified_relevant > 0 &&
+    run.places_enriched < run.places_classified_relevant;
 
   return (
     <div className="dream-rise relative isolate overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950 shadow-[0_16px_44px_oklch(0.2_0.06_240/0.35)]">
@@ -530,7 +530,7 @@ function MapsRunHero({
                 ) : (
                   <Sparkles className="size-3.5" />
                 )}
-                Enrich from websites
+                Enrich with AI
               </button>
             )}
             {showFindMissingWebsites && (

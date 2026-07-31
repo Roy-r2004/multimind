@@ -747,6 +747,9 @@ class MapsPlaceItem(BaseModel):
     addictions_treated: list[str] = Field(default_factory=list)
     languages_spoken: list[str] = Field(default_factory=list)
     treatment_price: str | None = None
+    verification_verdict: str | None = None
+    verification_reason: str | None = None
+    verification_source_url: str | None = None
 
 
 class SourceDiscoveryContext(BaseModel):
