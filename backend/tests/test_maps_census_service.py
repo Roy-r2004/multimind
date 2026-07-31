@@ -22,6 +22,8 @@ from app.services.scraping.maps_census_service import (
     _match_official_website_by_address,
     _normalize_website_payload,
     auto_refresh_maps_census_websites,
+    has_street_address,
+    is_generic_facility_name,
     maps_census_service,
 )
 from app.services.scraping.maps_grid_planner import MapsGridCell
@@ -1165,6 +1167,67 @@ def test_address_fallback_returns_none_for_short_address():
         address="Minsk", city="Minsk", country_name="Belarus", results=[]
     )
     assert selected is None
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "QW2G+35C, Chéraga",
+        "8J6J+7RF, Constantine",
+        "G4XH+7F9, Batna",
+        "C44M+R28, Khenchela",
+        "M746+5JJ, Djelfa",
+    ],
+)
+def test_plus_code_only_address_is_not_a_street_address(address):
+    assert has_street_address(address) is False
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "7VQ8+8J9, Rue DES FRÈRES BEN FISSA, Aïn Témouchent",
+        "QW2G+35C, N41, Chéraga",
+        "12 Rue Ahmed Ouaked, Hydra, Alger",
+        "Route de Dar El Beida, Alger",
+    ],
+)
+def test_real_street_survives_alongside_plus_code(address):
+    assert has_street_address(address) is True
+
+
+def test_missing_address_is_not_a_street_address():
+    assert has_street_address(None) is False
+    assert has_street_address("   ") is False
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "désintoxication",
+        "Centre De Désintoxication",
+        "Clinique",
+        "Addiction Treatment Center",
+        "مركز معالجة الادمان",
+        "",
+    ],
+)
+def test_generic_category_names_are_rejected(name):
+    assert is_generic_facility_name(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Abidat centre anti drogues",
+        "Traitement des Addictions (CERTA-TO)",
+        "Clinique Psychiatrique Lilas - Hygiène mentale",
+        "Clinique CGSA",
+        "مركز بوشاوي للادمان",
+    ],
+)
+def test_named_facilities_survive_generic_name_guard(name):
+    assert is_generic_facility_name(name) is False
 
 
 @pytest.mark.asyncio

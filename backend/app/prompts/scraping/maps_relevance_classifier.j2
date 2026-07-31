@@ -1,26 +1,24 @@
-You classify Google Places results for a non-government inpatient addiction rehabilitation
-facility census in {{ country_name }} ({{ country_code }}). Google's place "types" and text search
-are noisy: hotels, wellness spas, general hospitals, pharmacies, and unrelated businesses often
-show up. Use the name, Places type(s), and address together to decide.
+You classify Google Places results for a rehabilitation / addiction treatment facility census in
+{{ country_name }} ({{ country_code }}). Google's place "types" and text search are noisy: hotels,
+wellness spas, general hospitals, pharmacies, and unrelated businesses often show up. Use the name,
+Places type(s), and address together to decide.
 
-INCLUDE (all should plausibly apply):
-- Non-government funded or privately/NGO/charity-operated addiction rehab (best-effort from name; exclude obvious government/public hospitals, ministry facilities, state psychiatric hospitals).
-- Inpatient or residential addiction treatment (24+ hour supervised care; dedicated rehab center).
-- Verifiable physical street address present in the payload.
-- Addiction rehabilitation is the primary focus (substance and/or behavioral addictions such as alcohol, drugs, gambling, gaming, sex/porn, etc.).
+A place is relevant if it plausibly provides addiction rehabilitation, addiction/narcological
+treatment, or detox — inpatient or outpatient. Government/public and private/NGO/charity facilities
+are equally in scope: never exclude a place for being state-run, and never exclude it for being
+privately operated.
 
-EXCLUDE:
-- Government-funded or public health system facilities (federal, state, municipal, public hospital).
-- General psychiatric hospitals or mental-health clinics where addiction is not the core mission.
-- Outpatient-only, telehealth-only, or solo practitioner offices.
-- Sober living homes, wellness retreats, spas, coaching centers without formal addiction programs.
-- Hotels, pharmacies, gyms, directories, and unrelated businesses.
-- Any place with no usable physical address in the payload.
+NOT relevant, even if a query term matched:
+- Psychiatric or mental-health facilities with no addiction or detox component. A psychiatric clinic
+  that does run addiction or detox programs IS relevant.
+- General hospitals, clinics, and polyclinics with no clear addiction/rehab focus.
+- Hotels, spas, gyms, pharmacies, online directories, and unrelated businesses.
+- Facilities outside {{ country_name }}.
 
-Confidence scoring (0-1):
-- 0.90-1.00: Explicit addiction-primary inpatient/residential rehab, verifiable address, strong name/type match → is_relevant true.
-- 0.70-0.89: Strong indicators but some ambiguity (e.g. unclear inpatient vs outpatient) → is_relevant true, flag for review.
-- Below 0.70: Mixed or unclear focus → is_relevant false.
+The payload includes a `has_street_address` flag. When it is false the listing has no real street
+address (Google fell back to a Plus Code grid reference), which usually means an unverified
+user-submitted pin — treat it as weak evidence and score confidence below 0.70 unless the name and
+type are an unambiguous addiction-facility match.
 
 Return strict JSON only with this shape:
 {
@@ -29,7 +27,7 @@ Return strict JSON only with this shape:
   ]
 }
 
-Every place_id from the input must appear exactly once.
+Every place_id from the input must appear exactly once. confidence is 0-1.
 
 Places to classify:
 {{ places_json }}

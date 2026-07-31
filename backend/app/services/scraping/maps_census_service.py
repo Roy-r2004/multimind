@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import re
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,43 @@ CSV_EXPORT_HEADERS = (
     "Website",
     "Phone Number",
     "Treatment Price",
+)
+
+# Google returns an Open Location Code ("QW2G+35C") in formatted_address when a
+# place has no street address at all — the signature of an unverified
+# user-submitted pin rather than a real listing.
+PLUS_CODE_RE = re.compile(r"^[23456789CFGHJMPQRVWX]{4,6}\+[23456789CFGHJMPQRVWX]{2,3}$", re.I)
+
+# Bare category words that carry no facility identity. A name made up only of
+# these (plus articles/prepositions) identifies nothing and cannot be exported.
+GENERIC_NAME_WORDS = frozenset(
+    {
+        "addiction",
+        "addictions",
+        "center",
+        "centre",
+        "clinic",
+        "clinique",
+        "desintoxication",
+        "detox",
+        "detoxification",
+        "hospital",
+        "medical",
+        "rehab",
+        "rehabilitation",
+        "traitement",
+        "treatment",
+        "الادمان",
+        "المدمنين",
+        "علاج",
+        "مركز",
+        "معالجة",
+        "مصحة",
+        "مكافحة",
+    }
+)
+GENERIC_NAME_STOPWORDS = frozenset(
+    {"a", "al", "and", "anti", "de", "des", "du", "et", "for", "la", "le", "les", "of", "the", "ال"}
 )
 
 
@@ -650,6 +688,7 @@ class MapsCensusService:
                         "name": place.raw_name,
                         "place_types": place.place_types,
                         "address": place.formatted_address,
+                        "has_street_address": has_street_address(place.formatted_address),
                     }
                     for place in batch
                 ]
@@ -776,6 +815,16 @@ class MapsCensusService:
                 if not _has_export_location(place):
                     place.is_relevant = False
                     place.relevance_reason = "excluded: missing location"
+                    demoted += 1
+                    continue
+                if not has_street_address(place.formatted_address):
+                    place.is_relevant = False
+                    place.relevance_reason = "excluded: no street address (Plus Code only)"
+                    demoted += 1
+                    continue
+                if is_generic_facility_name(place.canonical_name or place.raw_name):
+                    place.is_relevant = False
+                    place.relevance_reason = "excluded: generic name with no facility identity"
                     demoted += 1
             if demoted:
                 await db.commit()
@@ -1390,6 +1439,50 @@ def _verification_tier(place: MapsPlace) -> str:
 
 def _has_export_location(place: MapsPlace) -> bool:
     return bool((place.formatted_address or "").strip())
+
+
+def has_street_address(address: str | None) -> bool:
+    """True when the address carries a real street reference.
+
+    Google substitutes a Plus Code grid reference for the street portion when a
+    place has none, so ``"QW2G+35C, Chéraga"`` is a city name and a coordinate —
+    not an address we can verify or export. A Plus Code alongside a real street
+    (``"7VQ8+8J9, Rue DES FRÈRES BEN FISSA"``) still counts.
+    """
+    remaining = [
+        part.strip()
+        for part in (address or "").split(",")
+        if part.strip() and not PLUS_CODE_RE.match(part.strip().split(" ", 1)[0])
+    ]
+    if not remaining:
+        return False
+    # A lone trailing city/commune name is what's left of a Plus-Code-only
+    # address; a usable address needs more than a single bare token.
+    return len(remaining) > 1 or len(remaining[0].split()) > 1
+
+
+def is_generic_facility_name(name: str | None) -> bool:
+    """True when the name is only category words and carries no identity.
+
+    Rejects user-submitted pins labelled ``"désintoxication"`` or
+    ``"Centre De Désintoxication"`` while keeping any name with a distinguishing
+    token such as ``"Abidat centre anti drogues"`` or ``"CERTA-TO"``.
+    """
+    # Fold Latin accents so "désintoxication" matches the ASCII category word.
+    folded = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", (name or "").lower())
+        if not unicodedata.combining(char)
+    )
+    cleaned = re.sub(r"[^\w\s\u0600-\u06ff]+", " ", folded)
+    tokens = [
+        token
+        for token in cleaned.split()
+        if token not in GENERIC_NAME_STOPWORDS and not token.isdigit()
+    ]
+    if not tokens:
+        return True
+    return all(token in GENERIC_NAME_WORDS for token in tokens)
 
 
 def _export_location(place: MapsPlace, *, country_name: str) -> str:
