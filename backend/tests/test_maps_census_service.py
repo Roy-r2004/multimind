@@ -25,6 +25,7 @@ from app.services.scraping.maps_census_service import (
     auto_refresh_maps_census_websites,
     has_street_address,
     is_generic_facility_name,
+    has_contact_channel,
     maps_census_service,
 )
 from app.services.scraping.maps_grid_planner import MapsGridCell
@@ -1089,34 +1090,40 @@ async def test_delete_unverified_places_removes_only_relevant_rows_without_websi
 
 
 @pytest.mark.asyncio
-async def test_refresh_recounts_only_retained_verified_facilities(db, auth, monkeypatch):
+async def test_refresh_recounts_after_dropping_places_without_contact(db, auth, monkeypatch):
+    """Website refresh demotes places with neither phone nor website, then recounts."""
     _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
-    run.places_found = 2
-    run.places_classified_relevant = 2
+    run.places_found = 3
+    run.places_classified_relevant = 3
     await db.commit()
 
-    db.add_all(
-        [
-            MapsPlace(
-                run_id=run.id,
-                google_place_id="verified-count",
-                raw_name="Verified Rehab",
-                canonical_name="Verified Rehab",
-                is_relevant=True,
-                official_website="https://verified.example/",
-                website_source="search",
-            ),
-            MapsPlace(
-                run_id=run.id,
-                google_place_id="unverified-count",
-                raw_name="Unverified Rehab",
-                canonical_name="Unverified Rehab",
-                is_relevant=True,
-            ),
-        ]
+    verified = MapsPlace(
+        run_id=run.id,
+        google_place_id="verified-count",
+        raw_name="Verified Rehab",
+        canonical_name="Verified Rehab",
+        is_relevant=True,
+        official_website="https://verified.example/",
+        website_source="search",
     )
+    phone_only = MapsPlace(
+        run_id=run.id,
+        google_place_id="phone-count",
+        raw_name="Phone Only Rehab",
+        canonical_name="Phone Only Rehab",
+        is_relevant=True,
+        international_phone_number="+213 555 00 00",
+    )
+    no_contact = MapsPlace(
+        run_id=run.id,
+        google_place_id="unverified-count",
+        raw_name="Unverified Rehab",
+        canonical_name="Unverified Rehab",
+        is_relevant=True,
+    )
+    db.add_all([verified, phone_only, no_contact])
     await db.commit()
 
     class _EmptySearchProvider:
@@ -1130,10 +1137,12 @@ async def test_refresh_recounts_only_retained_verified_facilities(db, auth, monk
 
     await maps_census_service.run_website_refresh(db, run_id=run.id)
     await db.refresh(run)
-    assert run.places_found == 2
+    await db.refresh(no_contact)
+    assert run.places_found == 3
     assert run.places_classified_relevant == 2
     assert run.places_with_website == 1
-
+    assert no_contact.is_relevant is False
+    assert no_contact.relevance_reason == "excluded: missing phone and website"
 
 def test_maps_website_search_queries_fall_back_from_quoted_to_address():
     queries = _maps_website_search_queries(
@@ -1345,6 +1354,87 @@ def test_generic_category_names_are_rejected(name):
 )
 def test_named_facilities_survive_generic_name_guard(name):
     assert is_generic_facility_name(name) is False
+
+
+def test_contact_channel_requires_phone_or_website():
+    phone_only = SimpleNamespace(
+        international_phone_number="+213 555 00 00",
+        official_website=None,
+        raw_website=None,
+    )
+    website_only = SimpleNamespace(
+        international_phone_number=None,
+        official_website="https://clinic.dz/",
+        raw_website=None,
+    )
+    facebook_raw = SimpleNamespace(
+        international_phone_number=None,
+        official_website=None,
+        raw_website="https://web.facebook.com/ALT.Association/",
+    )
+    neither = SimpleNamespace(
+        international_phone_number=None,
+        official_website=None,
+        raw_website=None,
+    )
+    blank = SimpleNamespace(
+        international_phone_number="  ",
+        official_website="",
+        raw_website=None,
+    )
+    assert has_contact_channel(phone_only) is True
+    assert has_contact_channel(website_only) is True
+    assert has_contact_channel(facebook_raw) is True
+    assert has_contact_channel(neither) is False
+    assert has_contact_channel(blank) is False
+
+
+@pytest.mark.asyncio
+async def test_missing_contact_filter_demotes_places_without_phone_or_website(db, auth):
+    run = await _create_run(db, auth)
+    keep_phone = MapsPlace(
+        run_id=run.id,
+        google_place_id="phone-only",
+        raw_name="Phone Only Rehab",
+        canonical_name="Phone Only Rehab",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="1 Street, Algiers",
+        international_phone_number="+213 21 00 00 00",
+    )
+    keep_site = MapsPlace(
+        run_id=run.id,
+        google_place_id="site-only",
+        raw_name="Site Only Rehab",
+        canonical_name="Site Only Rehab",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="2 Street, Algiers",
+        official_website="https://site.example/",
+    )
+    drop = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-contact",
+        raw_name="No Contact Rehab",
+        canonical_name="No Contact Rehab",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="3 Street, Algiers",
+    )
+    db.add_all([keep_phone, keep_site, drop])
+    await db.commit()
+
+    demoted = await maps_census_service._apply_missing_contact_filter(
+        maps_census_service._session_factory(db), run_id=run.id
+    )
+    assert demoted == 1
+    await db.refresh(keep_phone)
+    await db.refresh(keep_site)
+    await db.refresh(drop)
+    assert keep_phone.is_relevant is True
+    assert keep_site.is_relevant is True
+    assert drop.is_relevant is False
+    assert drop.relevance_reason == "excluded: missing phone and website"
 
 
 @pytest.mark.asyncio

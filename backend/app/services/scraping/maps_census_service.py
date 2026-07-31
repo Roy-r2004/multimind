@@ -461,6 +461,7 @@ class MapsCensusService:
         session_factory = self._session_factory(db)
         await self._search_missing_websites(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
+        await self._apply_missing_contact_filter(session_factory, run_id=run_id)
         async with session_factory() as final_db:
             run = await final_db.get(MapsCensusRun, run_id)
             summary = {"places_with_website": 0}
@@ -820,6 +821,7 @@ class MapsCensusService:
             await self._search_missing_websites(session_factory, run_id=run_id)
         await self._apply_places_social_fallbacks(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
+        await self._apply_missing_contact_filter(session_factory, run_id=run_id)
 
     async def _apply_places_social_fallbacks(self, session_factory, *, run_id: str) -> int:
         """Keep Google-provided Facebook pages when no official domain was found.
@@ -879,6 +881,33 @@ class MapsCensusService:
                     place.is_relevant = False
                     place.relevance_reason = "excluded: generic name with no facility identity"
                     demoted += 1
+            if demoted:
+                await db.commit()
+        return demoted
+
+    async def _apply_missing_contact_filter(self, session_factory, *, run_id: str) -> int:
+        """Drop relevant facilities that have neither a phone number nor a website.
+
+        A place must keep at least one contact channel. Phone-only and website-only
+        both survive; rows with neither are demoted out of the result set.
+        Runs after website discovery so Places / Sonar / Facebook fills are counted.
+        """
+        demoted = 0
+        async with session_factory() as db:
+            places = (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.is_relevant.is_(True),
+                    )
+                )
+            ).scalars().all()
+            for place in places:
+                if has_contact_channel(place):
+                    continue
+                place.is_relevant = False
+                place.relevance_reason = "excluded: missing phone and website"
+                demoted += 1
             if demoted:
                 await db.commit()
         return demoted
@@ -1540,6 +1569,21 @@ def is_generic_facility_name(name: str | None) -> bool:
     if not tokens:
         return True
     return all(token in GENERIC_NAME_WORDS for token in tokens)
+
+
+def has_contact_channel(place: MapsPlace | Any) -> bool:
+    """True when the place has a phone number and/or a website URL.
+
+    Either channel alone is enough. Facebook and other raw Places websites count
+    even when they were not promoted to ``official_website``.
+    """
+    phone = (getattr(place, "international_phone_number", None) or "").strip()
+    website = (
+        getattr(place, "official_website", None)
+        or getattr(place, "raw_website", None)
+        or ""
+    ).strip()
+    return bool(phone or website)
 
 
 def _export_location(place: MapsPlace, *, country_name: str) -> str:
