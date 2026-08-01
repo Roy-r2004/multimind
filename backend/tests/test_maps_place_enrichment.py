@@ -9,6 +9,15 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from app.core.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def disable_cascade_enrichment(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "maps_census_cascade_enrichment_enabled", False)
+
+
 from app.db.models import (
     MapsCensusRun,
     MapsClientEligibility,
@@ -32,7 +41,7 @@ class _FakeProvider:
         self.calls = 0
         self.last_user = ""
 
-    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096):
+    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096, **kwargs):
         self.calls += 1
         self.last_user = user
         return SimpleNamespace(text=json.dumps(self._payload))
@@ -472,7 +481,7 @@ class _DynamicFakeProvider:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096):
+    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096, **kwargs):
         del system, model, max_tokens
         self.calls += 1
         place_ids = re.findall(r'"place_id":\s*"([^"]+)"', user)
@@ -641,3 +650,81 @@ async def test_enrichment_drops_structured_field_without_evidence(db, auth, monk
 
     assert place.facility_type is None
     assert place.operator_type is None
+
+
+class _MalformedThenValidProvider:
+    def __init__(self, valid_payload: dict) -> None:
+        self.valid_payload = valid_payload
+        self.calls = 0
+
+    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096, temperature=None):
+        self.calls += 1
+        if self.calls == 1:
+            return SimpleNamespace(text='{"results": [{"place_id": "broken"')
+        return SimpleNamespace(text=json.dumps(self.valid_payload))
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_is_repaired_without_changing_prior_lifecycle(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="repair-me",
+        raw_name="Repair Clinic",
+        canonical_name="Repair Clinic",
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
+        client_eligibility=MapsClientEligibility.REVIEW.value,
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    provider = _MalformedThenValidProvider({"results": [_structured_result(place.id)]})
+    _patch_provider(monkeypatch, provider)
+
+    summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    await db.refresh(place)
+
+    assert provider.calls >= 2
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
+    assert place.lifecycle_status == MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
+    assert summary["enrichment_parse_stats"]["repair_successes"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_parse_failure_keeps_place_retryable_and_preserves_status(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="parse-fail",
+        raw_name="Parse Fail Clinic",
+        canonical_name="Parse Fail Clinic",
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.PROBABLE_ELIGIBLE.value,
+        client_eligibility=MapsClientEligibility.REVIEW.value,
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    class _AlwaysBadProvider:
+        async def complete(self, **_kwargs):
+            return SimpleNamespace(text="not-json")
+
+    _patch_provider(monkeypatch, _AlwaysBadProvider())
+
+    summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    await db.refresh(place)
+
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.FAILED.value
+    assert place.lifecycle_status == MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
+    assert place.client_eligibility == MapsClientEligibility.REVIEW.value
+    assert place.is_relevant is True
+    assert summary["enrichment_parse_stats"]["final_failed"] >= 1

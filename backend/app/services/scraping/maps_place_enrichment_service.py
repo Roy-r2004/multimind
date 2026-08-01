@@ -32,13 +32,13 @@ from app.db.models import (
     MapsPlaceEnrichmentStatus,
 )
 from app.llm.catalog import get_model
-from app.llm.prompt_engine import get_prompt_engine
-from app.llm.providers import LLMProvider, get_provider_registry
+from app.llm.providers import get_provider_registry
 from app.services.scraping.maps_eligibility import (
     compute_client_eligibility,
     derive_is_relevant,
     derive_legacy_verification_verdict,
 )
+from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
 from app.services.scraping.maps_website_crawl_service import (
     MapsWebsiteCrawlError,
@@ -190,6 +190,14 @@ EVIDENCE_REQUIRED_WHEN_SET: dict[str, set[str]] = {
 
 class MapsPlaceEnrichmentService:
     async def enrich_run(self, db: AsyncSession | None, *, run_id: str) -> dict[str, int]:
+        settings = get_settings()
+        if settings.maps_census_cascade_enrichment_enabled:
+            from app.services.scraping.maps_enrichment_cascade_service import (
+                maps_enrichment_cascade_service,
+            )
+
+            return await maps_enrichment_cascade_service.enrich_run(db, run_id=run_id)
+
         session_factory = self._session_factory(db)
         settings = get_settings()
         if not settings.maps_census_enrichment_enabled:
@@ -220,6 +228,7 @@ class MapsPlaceEnrichmentService:
         processing_batch_size = max(1, settings.maps_census_enrichment_processing_batch_size)
         max_calls = max(1, settings.maps_census_enrichment_max_calls_per_run)
         tracker = MapsQuotaTracker()
+        parse_stats = EnrichmentParseStats()
         enriched = 0
         calls_made = 0
         paused = False
@@ -257,6 +266,7 @@ class MapsPlaceEnrichmentService:
                     place_ids=chunk,
                     country_code=country_code,
                     country_name=country_name,
+                    parse_stats=parse_stats,
                 )
                 tracker.add_enrichment_call()
 
@@ -272,6 +282,7 @@ class MapsPlaceEnrichmentService:
                 limits_reached = dict(state.get("limits_reached") or {})
                 limits_reached["enrichment"] = paused
                 state["limits_reached"] = limits_reached
+                _merge_enrichment_parse_stats(state, parse_stats)
                 run.processing_state = state
                 await state_db.commit()
 
@@ -308,7 +319,7 @@ class MapsPlaceEnrichmentService:
                 run.enrichment_refresh_attempts = (run.enrichment_refresh_attempts or 0) + 1
                 run.enrichment_refresh_completed_at = datetime.now(UTC)
                 await final_db.commit()
-        return {"enriched": enriched}
+        return {"enriched": enriched, "enrichment_parse_stats": parse_stats.as_dict()}
 
     async def _enrich_batch(
         self,
@@ -317,6 +328,7 @@ class MapsPlaceEnrichmentService:
         place_ids: list[str],
         country_code: str,
         country_name: str,
+        parse_stats: EnrichmentParseStats,
     ) -> int:
         if not place_ids:
             return 0
@@ -354,9 +366,11 @@ class MapsPlaceEnrichmentService:
                 except MapsWebsiteCrawlError:
                     crawl_excerpts[place.id] = None
             payloads = [
-                self._facility_payload(
-                    place,
-                    website_crawl_excerpt=crawl_excerpts.get(place.id),
+                self._cap_enrichment_payload(
+                    self._facility_payload(
+                        place,
+                        website_crawl_excerpt=crawl_excerpts.get(place.id),
+                    )
                 )
                 for place in ordered
             ]
@@ -375,26 +389,38 @@ class MapsPlaceEnrichmentService:
                     await heartbeat_db.commit()
 
         try:
+            from app.services.scraping.maps_enrichment_fetch import EnrichmentFetchError
+
             results = await self._search_fields(
                 payloads,
                 country_code=country_code,
                 country_name=country_name,
+                parse_stats=parse_stats,
             )
+        except EnrichmentFetchError as exc:
+            logger.warning(
+                "maps_place_enrichment_batch_parse_exhausted count=%s error=%s raw=%s",
+                len(payloads),
+                exc,
+                exc.raw_excerpt,
+            )
+            await self._mark_batch_enrichment_failed(
+                session_factory,
+                place_ids=place_ids,
+                error_message=str(exc)[:2000],
+            )
+            return 0
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "maps_place_enrichment_batch_failed count=%s error=%s",
                 len(payloads),
                 exc,
             )
-            async with session_factory() as db:
-                places = (
-                    await db.execute(select(MapsPlace).where(MapsPlace.id.in_(place_ids)))
-                ).scalars().all()
-                for place in places:
-                    place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
-                    place.enrichment_error_message = str(exc)[:2000]
-                    place.enrichment_completed_at = datetime.now(UTC)
-                await db.commit()
+            await self._mark_batch_enrichment_failed(
+                session_factory,
+                place_ids=place_ids,
+                error_message=str(exc)[:2000],
+            )
             return 0
 
         by_place = {result.place_id: result for result in results}
@@ -413,6 +439,7 @@ class MapsPlaceEnrichmentService:
                     place.enrichment_error_message = "verification returned no results"
                     place.enrichment_completed_at = datetime.now(UTC)
                 await db.commit()
+            parse_stats.final_failed += len(place_ids)
             return 0
 
         enriched = 0
@@ -475,38 +502,54 @@ class MapsPlaceEnrichmentService:
             payload["website_crawl_excerpt"] = website_crawl_excerpt
         return payload
 
+    @staticmethod
+    def _cap_enrichment_payload(payload: dict) -> dict:
+        from app.services.scraping.maps_enrichment_fetch import cap_payload_excerpt
+
+        settings = get_settings()
+        return cap_payload_excerpt(
+            payload,
+            max_chars=max(1, int(settings.maps_census_enrichment_max_crawl_excerpt_chars)),
+        )
+
     async def _search_fields(
         self,
         payloads: list[dict],
         *,
         country_code: str,
         country_name: str,
+        parse_stats: EnrichmentParseStats,
     ) -> list[MapsPlaceEnrichmentResult]:
+        from app.services.scraping.maps_enrichment_fetch import fetch_enrichment_batch
+
         settings = get_settings()
         model = get_model(settings.maps_census_enrichment_model)
         provider = get_provider_registry().get_provider(model.provider)
-        prompt = get_prompt_engine().render(
-            "scraping/maps_place_enricher.j2",
-            country_code=(country_code or "XX")[:2].upper(),
-            country_name=(country_name or "Unknown")[:120],
-            addiction_taxonomy_json=json.dumps(list(ADDICTION_TAXONOMY), ensure_ascii=True),
-            facilities_json=json.dumps(payloads, ensure_ascii=False),
+        return await fetch_enrichment_batch(
+            provider,
+            model_slug=model.provider_model,
+            country_code=country_code,
+            country_name=country_name,
+            payloads=payloads,
+            stats=parse_stats,
         )
-        response = await asyncio.wait_for(
-            provider.complete(
-                system=(
-                    "You have live web search. Research each addiction-rehab facility"
-                    " independently and return strict JSON. Never invent values without a"
-                    " supporting web source."
-                ),
-                user=prompt,
-                model=model.provider_model,
-                max_tokens=3000,
-            ),
-            timeout=ENRICHMENT_TIMEOUT_SECONDS,
-        )
-        raw = LLMProvider.parse_json_response(response.text)
-        return MapsPlaceEnrichmentBatch.model_validate(_normalize_batch_payload(raw)).results
+
+    async def _mark_batch_enrichment_failed(
+        self,
+        session_factory,
+        *,
+        place_ids: list[str],
+        error_message: str,
+    ) -> None:
+        async with session_factory() as db:
+            places = (
+                await db.execute(select(MapsPlace).where(MapsPlace.id.in_(place_ids)))
+            ).scalars().all()
+            for place in places:
+                place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                place.enrichment_error_message = error_message
+                place.enrichment_completed_at = datetime.now(UTC)
+            await db.commit()
 
     @staticmethod
     def _session_factory(db: AsyncSession | None):
@@ -520,6 +563,17 @@ class MapsPlaceEnrichmentService:
         from app.db.session import AsyncSessionLocal
 
         return AsyncSessionLocal
+
+
+def _merge_enrichment_parse_stats(state: dict, stats: EnrichmentParseStats) -> None:
+    existing_raw = dict(state.get("enrichment_parse_stats") or {})
+    existing = EnrichmentParseStats(
+        parse_failures=int(existing_raw.get("parse_failures") or 0),
+        repair_attempts=int(existing_raw.get("repair_attempts") or 0),
+        repair_successes=int(existing_raw.get("repair_successes") or 0),
+        final_failed=int(existing_raw.get("final_failed") or 0),
+    )
+    state["enrichment_parse_stats"] = existing.merge(stats).as_dict()
 
 
 def _normalize_batch_payload(raw: object) -> dict:

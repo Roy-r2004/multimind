@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 
 CONFIDENCE_PATTERN = re.compile(r"CONFIDENCE:\s*(\d{1,3})", re.IGNORECASE)
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_LLM_TEMPERATURE = 0.7
 
 
 @dataclass
@@ -39,6 +40,7 @@ class LLMProvider(ABC):
         model: str,
         max_tokens: int = 4096,
         response_format: dict[str, Any] | None = None,
+        temperature: float | None = None,
     ) -> LLMResponse:
         pass
 
@@ -89,6 +91,7 @@ class OpenRouterProvider(LLMProvider):
         model: str,
         max_tokens: int = 4096,
         response_format: dict[str, Any] | None = None,
+        temperature: float | None = None,
     ) -> LLMResponse:
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
@@ -102,6 +105,7 @@ class OpenRouterProvider(LLMProvider):
                     model=model,
                     max_tokens=max_tokens,
                     response_format=response_format,
+                    temperature=temperature,
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -120,6 +124,7 @@ class OpenRouterProvider(LLMProvider):
         model: str,
         max_tokens: int,
         response_format: dict[str, Any] | None,
+        temperature: float | None = None,
     ) -> LLMResponse:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             payload: dict[str, Any] = {
@@ -128,7 +133,7 @@ class OpenRouterProvider(LLMProvider):
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                "temperature": 0.7,
+                "temperature": DEFAULT_LLM_TEMPERATURE if temperature is None else temperature,
                 "max_tokens": max_tokens,
                 "usage": {"include": True},
             }
