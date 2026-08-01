@@ -198,7 +198,28 @@ class Settings(BaseSettings):
     maps_census_enrichment_processing_batch_size: int = 25
     maps_census_enrichment_max_calls_per_run: int = 5000
     maps_census_enrichment_model: str = "sonar-pro"
+    maps_census_enrichment_max_crawl_excerpt_chars: int = 1200
     maps_census_auto_enrichment_enabled: bool = True
+    maps_census_cascade_enrichment_enabled: bool = True
+
+    # Cascaded enrichment: bounded crawl context for primary extraction
+    maps_crawl_max_relevant_pages: int = 5
+    maps_crawl_max_chars_per_page: int = 6000
+    maps_crawl_max_total_context_chars: int = 20000
+
+    # Primary structured extraction (cheaper than Sonar)
+    maps_primary_extraction_provider: str = "openrouter"
+    maps_primary_extraction_model: str = "gpt-4.1-mini"
+    maps_primary_extraction_concurrency: int = 5
+    maps_primary_extraction_max_retries: int = 2
+    maps_primary_extraction_max_calls_per_run: int = 5000
+    maps_primary_extraction_confidence_threshold: float = 0.55
+
+    # Sonar fallback budget (only unresolved records)
+    maps_sonar_fallback_enabled: bool = True
+    maps_sonar_fallback_max_percent: float = 20.0
+    maps_sonar_fallback_max_per_campaign: int = 200
+    maps_sonar_fallback_concurrency: int = 5
 
     # Phase 3: limited official-site crawl before structured enrichment
     maps_census_website_crawl_enabled: bool = True

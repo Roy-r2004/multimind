@@ -19,6 +19,10 @@ COUNTER_FIELDS: tuple[str, ...] = (
     "classifier_calls",
     "website_lookup_calls",
     "enrichment_calls",
+    "primary_extraction_calls",
+    "sonar_fallback_calls",
+    "sonar_repair_calls",
+    "crawl_requests",
     "estimated_tokens",
 )
 
@@ -32,6 +36,10 @@ class MapsQuotaMetrics:
     classifier_calls: int = 0
     website_lookup_calls: int = 0
     enrichment_calls: int = 0
+    primary_extraction_calls: int = 0
+    sonar_fallback_calls: int = 0
+    sonar_repair_calls: int = 0
+    crawl_requests: int = 0
     estimated_tokens: int = 0
     runtime_seconds: float = 0.0
 
@@ -65,6 +73,18 @@ class MapsQuotaTracker:
 
     def add_enrichment_call(self, count: int = 1) -> None:
         self.metrics.enrichment_calls += count
+
+    def add_primary_extraction_call(self, count: int = 1) -> None:
+        self.metrics.primary_extraction_calls += count
+
+    def add_sonar_fallback_call(self, count: int = 1) -> None:
+        self.metrics.sonar_fallback_calls += count
+
+    def add_sonar_repair_call(self, count: int = 1) -> None:
+        self.metrics.sonar_repair_calls += count
+
+    def add_crawl_request(self, count: int = 1) -> None:
+        self.metrics.crawl_requests += count
 
     def add_tokens(self, tokens: int) -> None:
         self.metrics.estimated_tokens += max(0, int(tokens))

@@ -538,6 +538,69 @@ class MapsAdminService:
             message="Enrichment queued",
         )
 
+    async def pause_enrichment(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        state = dict(run.processing_state or {})
+        state["enrichment_pipeline_paused"] = True
+        state["enrichment_pipeline_paused_at"] = datetime.now(UTC).isoformat()
+        run.processing_state = state
+        await db.commit()
+        status = run.status.value if hasattr(run.status, "value") else str(run.status)
+        return MapsCampaignActionResponse(
+            run_id=run.id,
+            status=status,
+            campaign_paused=_campaign_paused(run),
+            message="Enrichment pipeline paused",
+        )
+
+    async def recover_enrichment(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        _require_admin_enabled()
+        await _get_run_for_org(db, auth, run_id)
+        from app.db.session import AsyncSessionLocal
+        from app.services.scraping.maps_enrichment_cascade_service import (
+            maps_enrichment_cascade_service,
+        )
+
+        reset = await maps_enrichment_cascade_service.reset_for_recovery(
+            AsyncSessionLocal, run_id=run_id
+        )
+        return MapsCampaignActionResponse(
+            run_id=run_id,
+            status=MapsCensusStatus.COMPLETED.value,
+            campaign_paused=_campaign_paused(await _get_run_for_org(db, auth, run_id)),
+            message=f"Reset {reset.get('reset_places', 0)} places for cascaded enrichment recovery",
+        )
+
+    async def enrichment_cost_projection(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> dict[str, object]:
+        _require_admin_enabled()
+        from app.core.config import get_settings
+        from app.services.scraping.maps_enrichment_selection import build_selection_report
+
+        run = await _get_run_for_org(db, auth, run_id)
+        settings = get_settings()
+        report = await build_selection_report(db, run_id=run_id)
+        sonar_max = min(
+            settings.maps_sonar_fallback_max_per_campaign,
+            int(report.selected_count * settings.maps_sonar_fallback_max_percent / 100.0),
+        )
+        return {
+            "selected_primary_extraction_candidates": report.selected_count,
+            "skipped_candidates": report.skipped_count,
+            "skip_reasons": report.skip_reasons,
+            "selection_sql": report.selection_sql,
+            "projected_primary_extraction_calls": report.selected_count,
+            "max_sonar_fallback_calls": sonar_max,
+            "sonar_fallback_enabled": settings.maps_sonar_fallback_enabled,
+            "projected_total_calls_upper_bound": report.selected_count + sonar_max,
+        }
+
     async def apply_review_action(
         self,
         db: AsyncSession,

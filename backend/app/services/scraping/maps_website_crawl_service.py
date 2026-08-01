@@ -225,9 +225,21 @@ class MapsWebsiteCrawlService:
         path_keywords: list[str],
     ) -> list[CrawledPage]:
         settings = get_settings()
-        max_pages = max(1, settings.maps_census_website_crawl_max_pages_per_domain)
+        max_pages = max(
+            1,
+            min(
+                settings.maps_census_website_crawl_max_pages_per_domain,
+                settings.maps_crawl_max_relevant_pages,
+            ),
+        )
         max_bytes = max(1024, settings.maps_census_website_crawl_max_bytes_per_page)
-        max_excerpt = max(500, settings.maps_census_website_crawl_max_excerpt_chars)
+        max_excerpt = max(
+            500,
+            min(
+                settings.maps_census_website_crawl_max_excerpt_chars,
+                settings.maps_crawl_max_chars_per_page,
+            ),
+        )
         timeout = httpx.Timeout(
             settings.maps_census_website_crawl_timeout_seconds,
             connect=settings.maps_census_website_crawl_connect_timeout_seconds,

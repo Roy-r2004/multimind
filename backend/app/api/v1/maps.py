@@ -294,6 +294,33 @@ async def retry_maps_census_enrichment(
     return await maps_admin_service.retry_enrichment(db, auth, run_id)
 
 
+@router.post("/runs/{run_id}/pause-enrichment", response_model=MapsCampaignActionResponse)
+async def pause_maps_census_enrichment(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await maps_admin_service.pause_enrichment(db, auth, run_id)
+
+
+@router.post("/runs/{run_id}/recover-enrichment", response_model=MapsCampaignActionResponse)
+async def recover_maps_census_enrichment(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await maps_admin_service.recover_enrichment(db, auth, run_id)
+
+
+@router.get("/runs/{run_id}/enrichment-projection")
+async def get_maps_enrichment_projection(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await maps_admin_service.enrichment_cost_projection(db, auth, run_id)
+
+
 @router.post("/runs/{run_id}/places/{place_id}/review", response_model=MapsPlaceDetail)
 async def apply_maps_census_place_review(
     run_id: str,
