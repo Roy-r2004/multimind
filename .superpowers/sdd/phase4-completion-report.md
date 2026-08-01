@@ -5,7 +5,7 @@
 **Phase 2 checkpoint:** `12449c5`  
 **Phase 3 commits:** `6023962`, `a344d42`, `de4d3a4`  
 **Phase 4 backend:** `0327afb`  
-**Phase 4 frontend:** (see HEAD after frontend commit)
+**Phase 4 frontend:** `1e19db2`
 
 ## Phase 3 commit summary
 
