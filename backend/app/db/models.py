@@ -2664,3 +2664,18 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     classification_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="places")
+
+
+class MapsWebsiteCrawlCache(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Cached official-site crawl pages for Maps enrichment (Phase 3)."""
+
+    __tablename__ = "maps_website_crawl_cache"
+    __table_args__ = (
+        UniqueConstraint("normalized_domain", name="uq_maps_website_crawl_cache_domain"),
+        Index("ix_maps_website_crawl_cache_expires_at", "expires_at"),
+    )
+
+    normalized_domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    pages: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

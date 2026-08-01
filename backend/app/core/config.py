@@ -200,6 +200,24 @@ class Settings(BaseSettings):
     maps_census_enrichment_model: str = "sonar-pro"
     maps_census_auto_enrichment_enabled: bool = True
 
+    # Phase 3: limited official-site crawl before structured enrichment
+    maps_census_website_crawl_enabled: bool = True
+    maps_census_website_crawl_max_pages_per_domain: int = 5
+    maps_census_website_crawl_max_bytes_per_page: int = 524_288
+    maps_census_website_crawl_timeout_seconds: float = 15.0
+    maps_census_website_crawl_connect_timeout_seconds: float = 5.0
+    maps_census_website_crawl_cache_ttl_hours: int = 168
+    maps_census_website_crawl_max_excerpt_chars: int = 4000
+    maps_census_website_crawl_user_agent: str = (
+        "MultiMindMapsCrawl/1.0 (+https://multimind.local/maps-census-crawl)"
+    )
+    maps_census_website_crawl_max_redirects: int = 5
+
+    # Phase 3: optional external directory discovery (stub sources only)
+    maps_census_external_discovery_enabled: bool = False
+    maps_census_external_discovery_max_sources: int = 5
+    maps_census_external_discovery_max_candidates_per_source: int = 50
+
     # Public URL for share links
     public_app_url: str = Field(default="http://localhost:5173")
 
