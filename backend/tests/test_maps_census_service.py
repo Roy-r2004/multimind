@@ -38,9 +38,26 @@ from app.services.scraping.maps_census_service import (
     has_contact_channel,
     maps_census_service,
 )
+from app.services.scraping.maps_country_profile_service import maps_country_profile_service
 from app.services.scraping.maps_grid_planner import MapsGridCell
 from app.services.scraping.maps_places_client import PlaceResult
 from app.services.scraping.search_providers.base import SearchProviderResult
+
+
+@pytest.fixture(autouse=True)
+def _stub_country_profile_stage(monkeypatch):
+    """Autouse: every ``run_census`` test in this module must never reach the
+    real country-profile LLM stage (live Sonar) — ``run_census`` calls
+    ``maps_country_profile_service.build_profile_for_run`` unconditionally
+    before grid planning. Dedicated tests that exercise the real profile
+    service with mocked providers live in ``test_maps_country_profile.py``.
+    """
+
+    async def _noop_build_profile(_db, *, run_id: str):
+        del run_id
+        return None
+
+    monkeypatch.setattr(maps_country_profile_service, "build_profile_for_run", _noop_build_profile)
 
 
 class _FakeGridPlanner:

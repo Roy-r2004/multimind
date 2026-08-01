@@ -61,10 +61,6 @@ class MapsCountryDiscoveryProfile(BaseModel):
     notes: str = Field(default="", max_length=2000)
 
 
-class MapsCountryProfileError(Exception):
-    pass
-
-
 class MapsCountryProfileService:
     async def build_profile_for_run(
         self, db: AsyncSession | None, *, run_id: str
@@ -169,9 +165,18 @@ def _normalize_profile_payload(raw: Any) -> dict[str, Any]:
     provider_terms = _normalize_provider_terms(
         raw.get("provider_terms") or raw.get("search_terms") or raw.get("terms") or {}
     )
-    query_families = _normalize_string_list(
-        raw.get("query_families") or raw.get("families") or list(provider_terms.keys())
-    )
+    explicit_families = raw.get("query_families") or raw.get("families")
+    if explicit_families:
+        # Keep only families the LLM also gave non-empty provider_terms for —
+        # a family with no terms is unusable by the grid planner and would
+        # otherwise silently desync query_families from provider_terms.
+        query_families = [
+            family
+            for family in _normalize_string_list(explicit_families)
+            if _family_key(family) in provider_terms
+        ]
+    else:
+        query_families = _normalize_string_list(list(provider_terms.keys()))
 
     return {
         "administrative_regions": _normalize_regions(
@@ -209,12 +214,16 @@ def _normalize_regions(raw: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _family_key(name: Any) -> str:
+    return str(name).strip().casefold().replace(" ", "_").replace("-", "_")
+
+
 def _normalize_provider_terms(raw: Any) -> dict[str, list[str]]:
     if not isinstance(raw, dict):
         return {}
     normalized: dict[str, list[str]] = {}
     for key, value in raw.items():
-        family = str(key).strip().casefold().replace(" ", "_").replace("-", "_")
+        family = _family_key(key)
         if not family:
             continue
         terms = _normalize_string_list(value)

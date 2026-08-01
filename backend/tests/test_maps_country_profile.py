@@ -331,3 +331,14 @@ async def test_run_census_continues_when_profile_stage_raises_unexpectedly(db, a
 
     await db.refresh(run)
     assert run.status == MapsCensusStatus.COMPLETED
+    # The fake swaps out the whole profile service, so build_profile_for_run's
+    # own status-setting code (PENDING -> COMPLETED/FAILED) never runs here —
+    # country_profile_status is left at its untouched default and the profile
+    # itself stays unset. That's expected for this fake; real failure-status
+    # behavior is covered by test_build_profile_for_run_sets_failed_status_*
+    # above against the real service.
+    assert run.country_profile_status == MapsCountryProfileStatus.PENDING.value
+    assert run.country_profile is None
+    # Grid planning still ran and cells were created despite the profile
+    # stage exploding — the guard in run_census must never block planning.
+    assert run.cells_total == len(cells)
