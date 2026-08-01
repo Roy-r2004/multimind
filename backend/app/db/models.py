@@ -2283,6 +2283,11 @@ class MapsCensusCellStatus(str, enum.Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Hit its Google Places pagination/result cap and was subdivided into child
+    # cells instead of being finished outright — excluded from the saturation
+    # window (see maps_census_service._refresh_region_saturation) since its
+    # coverage of the geography is known-incomplete.
+    CAPPED = "capped"
 
 
 class MapsPlaceEnrichmentStatus(str, enum.Enum):
@@ -2448,6 +2453,12 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     country_profile_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     funnel_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     saturation_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Resumable website-search / enrichment batch cursors and pause state, so a
+    # 300+ place run never silently truncates (see maps_census_service /
+    # maps_place_enrichment_service resumable batch loops).
+    processing_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Cumulative provider/model call counters — see maps_quota_tracker.py.
+    quota_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     regions: Mapped[list["MapsCensusRegion"]] = relationship(
         back_populates="run",
@@ -2491,6 +2502,14 @@ class MapsCensusRegion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     saturation_status: Mapped[str] = mapped_column(
         String(20), default=MapsRegionSaturationStatus.PENDING.value, nullable=False
     )
+    # Classifier-outcome breakdown for this region's window, incremented as
+    # cells complete (see maps_census_service._execute_cells). Distinct from
+    # new_plausible_places, which is a per-cell recency window signal only.
+    eligible_candidates_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    review_candidates_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    confirmed_public_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    individuals_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    unrelated_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="regions")
     cells: Mapped[list["MapsCensusCell"]] = relationship(back_populates="region")
@@ -2504,6 +2523,8 @@ class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_maps_census_cells_run_id", "run_id"),
         Index("ix_maps_census_cells_region_id", "region_id"),
         Index("ix_maps_census_cells_status", "status"),
+        Index("ix_maps_census_cells_parent_cell_id", "parent_cell_id"),
+        Index("ix_maps_census_cells_run_status_retry", "run_id", "status", "next_retry_at"),
     )
 
     run_id: Mapped[str] = mapped_column(
@@ -2532,8 +2553,38 @@ class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # --- Capped-cell subdivision (recall upgrade Phase 2 gap #2) ---
+    parent_cell_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("maps_census_cells.id", ondelete="SET NULL"), nullable=True
+    )
+    expansion_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expansion_depth: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    viewport_bounds: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    # --- Google Places pagination state (gap #1) ---
+    pagination_resume_token: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    pages_fetched: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    raw_results_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    unique_results_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duplicates_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_page_available: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    result_cap_reached: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    pagination_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Resumable cell execution (gap #3) ---
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     run: Mapped["MapsCensusRun"] = relationship(back_populates="cells")
     region: Mapped["MapsCensusRegion | None"] = relationship(back_populates="cells")
+    parent_cell: Mapped["MapsCensusCell | None"] = relationship(
+        remote_side="MapsCensusCell.id", back_populates="child_cells"
+    )
+    child_cells: Mapped[list["MapsCensusCell"]] = relationship(back_populates="parent_cell")
 
 
 class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -136,12 +136,33 @@ class Settings(BaseSettings):
     maps_census_min_new_plausible_for_expansion: int = 1
     maps_census_max_places_per_cell: int = 20
     maps_census_classification_batch_size: int = 15
+    # Google Places (New) pagination — each cell can page beyond the first 20
+    # results up to a bounded number of pages before triggering subdivision.
+    maps_census_max_pages_per_cell: int = 3
+    maps_census_places_page_size: int = 20
+    # Independent per-page retry budget (backoff+jitter), separate from the
+    # single-page tenacity retry used by the legacy search_text() path.
+    maps_census_places_page_max_attempts: int = 3
+    # Resumable cell claiming (SELECT ... SKIP LOCKED on Postgres; guarded
+    # atomic UPDATE elsewhere) so multiple workers never double-process a cell.
+    maps_census_cell_stale_seconds: int = 300
+    maps_census_cell_max_attempts: int = 3
+    # Cap on how deep capped-cell subdivision can recurse before giving up on
+    # a single geography instead of subdividing forever.
+    maps_census_max_subdivision_depth: int = 2
     # Fallback website discovery for relevant places Google Places returned with no
     # (or an untrustworthy) website. "llm" asks Claude directly; "serper" uses Google
     # search candidates plus optional Claude selection (legacy).
     maps_census_website_search_enabled: bool = True
     maps_census_website_search_mode: str = "llm"
+    # Legacy single-pass cap retained for backward compatibility; the resumable
+    # loop below now processes every pending place in batches instead of
+    # silently truncating at this number.
     maps_census_website_search_max_places_per_run: int = 250
+    # Resumable website-search batch processing (Phase 2 gap #4): pulls pending
+    # places in fixed-size batches until none remain or the call budget is hit.
+    maps_census_website_search_batch_size: int = 25
+    maps_census_website_search_max_calls_per_run: int = 5000
     maps_census_website_llm_enabled: bool = True
     maps_census_website_llm_model: str = "sonar-pro"
     maps_census_website_llm_batch_size: int = 3
@@ -166,8 +187,16 @@ class Settings(BaseSettings):
 
     # Phase 2: AI web-search enrichment of addictions/languages (no crawling)
     maps_census_enrichment_enabled: bool = True
+    # Legacy single-pass cap retained for backward compatibility; the resumable
+    # loop below now processes every pending place in batches instead of
+    # silently truncating at this number.
     maps_census_enrichment_max_places_per_run: int = 250
+    # LLM request grouping — how many facilities go into one Sonar prompt.
     maps_census_enrichment_batch_size: int = 5
+    # Resumable enrichment batch processing (Phase 2 gap #4): how many pending
+    # places the outer loop pulls per iteration before checking call budget.
+    maps_census_enrichment_processing_batch_size: int = 25
+    maps_census_enrichment_max_calls_per_run: int = 5000
     maps_census_enrichment_model: str = "sonar-pro"
     maps_census_auto_enrichment_enabled: bool = True
 
