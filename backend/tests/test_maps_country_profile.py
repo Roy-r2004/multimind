@@ -294,7 +294,11 @@ async def test_run_census_builds_country_profile_before_planning_grid(db, auth, 
     summary = await maps_census_service.run_census(db, run_id=run.id)
     assert summary.get("error") is None
 
-    assert order == ["profile", "grid"]
+    # Profile stage runs before the seed grid-planning call; the fake keeps
+    # returning the same single cell, so the adaptive loop's one expansion
+    # attempt (before dedup discards the repeat) adds a second "grid" call.
+    assert order[0] == "profile"
+    assert order.count("grid") >= 1
 
     await db.refresh(run)
     assert run.status == MapsCensusStatus.COMPLETED

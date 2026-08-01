@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.db.models import (
+    MapsCensusCell,
+    MapsCensusRegion,
     MapsCensusRun,
     MapsCensusStatus,
     MapsContactStatus,
@@ -66,6 +68,25 @@ class _FakeGridPlanner:
 
     async def plan(self, **_kwargs) -> list[MapsGridCell]:
         return self._cells
+
+
+class _CountingGridPlanner:
+    """Returns one batch per call (from ``batches``, by call index); records every
+    call's kwargs so tests can assert how many times/with what focus the adaptive
+    loop asked the planner for more cells. Calls beyond ``len(batches)`` get an
+    empty batch, mirroring a planner that has nothing left to add.
+    """
+
+    def __init__(self, batches: list[list[MapsGridCell]]) -> None:
+        self._batches = batches
+        self.calls: list[dict] = []
+
+    async def plan(self, **kwargs) -> list[MapsGridCell]:
+        idx = len(self.calls)
+        self.calls.append(kwargs)
+        if idx < len(self._batches):
+            return self._batches[idx]
+        return []
 
 
 class _FakePlacesClient:
@@ -493,6 +514,196 @@ async def test_run_census_fails_gracefully_when_grid_planning_returns_nothing(db
     refreshed = run
     assert refreshed.status == MapsCensusStatus.FAILED
     assert refreshed.error_message
+
+
+async def _fake_classify_all_relevant(self, *, provider, model_slug, country_code, country_name, payloads):
+    return [
+        MapsRelevanceDecision(
+            place_id=item["place_id"], is_relevant=True, reason="rehab facility", confidence=0.9
+        )
+        for item in payloads
+    ]
+
+
+def _stub_classification(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._classify_batch",
+        _fake_classify_all_relevant,
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="openai/gpt-4.1"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Task 4: adaptive run_census loop + region metrics + funnel snapshot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_census_creates_regions_linked_to_cells(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+    seed = [
+        MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk"),
+        MapsGridCell(region_name="Brest Region", city_name="Brest", query_text="rehab Brest"),
+    ]
+    planner = _CountingGridPlanner([seed])
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner", planner
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({}),
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    regions = (
+        await db.execute(select(MapsCensusRegion).where(MapsCensusRegion.run_id == run.id))
+    ).scalars().all()
+    assert {r.region_name for r in regions} == {"Minsk Region", "Brest Region"}
+
+    cells = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalars().all()
+    assert len(cells) == 2
+    region_ids_by_name = {r.region_name: r.id for r in regions}
+    for cell in cells:
+        assert cell.region_id is not None
+        assert cell.region_id == region_ids_by_name[cell.region_name]
+
+
+@pytest.mark.asyncio
+async def test_run_census_stops_expanding_unproductive_region(db, auth, monkeypatch):
+    """A region whose seed cells fill a full saturation window with zero new
+    places must be marked saturated and must not trigger any expansion call."""
+    monkeypatch.setattr(get_settings(), "maps_census_saturation_window", 3)
+    run = await _create_run(db, auth)
+    seed = [
+        MapsGridCell(region_name="Dead Region", city_name="Nowhere", query_text=f"empty query {i}")
+        for i in range(3)
+    ]
+    planner = _CountingGridPlanner([seed])
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner", planner
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({}),  # every query returns zero places
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+    assert len(planner.calls) == 1  # never asked for more "Dead Region" cells
+
+    region = (
+        await db.execute(
+            select(MapsCensusRegion).where(MapsCensusRegion.run_id == run.id)
+        )
+    ).scalar_one()
+    assert region.saturation_status == "saturated"
+
+    await db.refresh(run)
+    # The only region in the run just went terminal (saturated), so the loop
+    # stops on the "all regions terminal" branch without ever calling the
+    # planner again for more cells.
+    assert run.saturation_summary["stopped_reason"] == "all_regions_terminal"
+    cells = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalars().all()
+    assert len(cells) == 3  # no extra cells beyond the seed batch
+
+
+@pytest.mark.asyncio
+async def test_run_census_respects_campaign_cell_ceiling(db, auth, monkeypatch):
+    """A low campaign ceiling must cap total persisted cells even when the
+    planner is willing to return more cells than it was asked for."""
+    monkeypatch.setattr(get_settings(), "maps_census_max_cells_per_campaign", 5)
+    run = await _create_run(db, auth)
+    generous_seed = [
+        MapsGridCell(region_name="Big Region", city_name="City", query_text=f"query {i}")
+        for i in range(8)  # more than the ceiling, ignoring the max_cells hint
+    ]
+    planner = _CountingGridPlanner([generous_seed])
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner", planner
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({}),
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    cells = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalars().all()
+    assert len(cells) <= 5
+
+    await db.refresh(run)
+    assert run.saturation_summary["stopped_reason"] == "campaign_capped"
+    assert run.saturation_summary["campaign_cells_used"] <= 5
+    assert run.saturation_summary["max_cells_per_campaign"] == 5
+
+
+@pytest.mark.asyncio
+async def test_run_census_persists_funnel_and_saturation_snapshots(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+    place = PlaceResult(
+        google_place_id="place-snapshot",
+        raw_name="Centre Snapshot Rehab",
+        formatted_address="1 Main St, Minsk, Belarus",
+        place_types=["health"],
+        website="https://centre-snapshot.by/",
+    )
+    seed = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
+    planner = _CountingGridPlanner([seed])
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner", planner
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({"rehab Minsk": [place]}),
+    )
+    _stub_classification(monkeypatch)
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.COMPLETED
+    assert run.funnel_metrics is not None
+    for key in (
+        "cells_planned",
+        "cells_completed",
+        "cell_failures",
+        "places_found",
+        "places_classified_relevant",
+        "country_profile_status",
+    ):
+        assert key in run.funnel_metrics
+
+    assert run.saturation_summary is not None
+    for key in ("campaign_cells_used", "max_cells_per_campaign", "stopped_reason", "regions"):
+        assert key in run.saturation_summary
+    assert len(run.saturation_summary["regions"]) == 1
+    region_snapshot = run.saturation_summary["regions"][0]
+    assert region_snapshot["region_name"] == "Minsk Region"
+    for key in (
+        "saturation_status",
+        "cells_completed",
+        "unique_places_found",
+        "new_unique_places_last_window",
+        "new_plausible_providers_last_window",
+    ):
+        assert key in region_snapshot
 
 
 @pytest.mark.asyncio

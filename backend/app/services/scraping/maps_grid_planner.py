@@ -53,7 +53,12 @@ class MapsGridPlanner:
         country_name: str,
         max_cells: int,
         country_profile: dict[str, Any] | None = None,
+        focus_region_names: list[str] | None = None,
     ) -> list[MapsGridCell]:
+        """Plan a search grid, or — when ``focus_region_names`` is given — an
+        expansion batch of *additional* cells for those already-productive
+        regions only (used by the adaptive census loop instead of re-planning
+        the whole country every time a region wants more coverage)."""
         capped = max(1, int(max_cells or 1))
         model = get_model(DEFAULT_MODEL)
         provider = get_provider_registry().get_provider(model.provider)
@@ -63,6 +68,7 @@ class MapsGridPlanner:
             country_code=(country_code or "XX")[:2].upper(),
             country_name=(country_name or "Unknown")[:120],
             country_profile_json=json.dumps(country_profile or {}, ensure_ascii=False),
+            focus_region_names=list(focus_region_names or []),
         )
         try:
             response = await provider.complete(

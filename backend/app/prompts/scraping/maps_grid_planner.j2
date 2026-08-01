@@ -28,6 +28,13 @@ When the profile is empty or missing:
 Country discovery profile (JSON):
 {{ country_profile_json }}
 
+{% if focus_region_names %}
+This is an EXPANSION pass, not a fresh full-country plan. These regions already
+found new facilities and should get MORE query variants — do not replan the
+whole country or repeat cities/regions outside this list:
+{{ focus_region_names | join(", ") }}
+{% endif %}
+
 Return strict JSON only with this shape:
 {
   "cells": [
