@@ -49,5 +49,13 @@
 - France validation: deterministic/mocked in tests; live France run with real credentials pending
 - Report: .superpowers/sdd/phase2-gaps-report.md
 
-## Phase 3
-- NOT STARTED — do not begin website crawling until explicitly requested
+## Phase 3 — COMPLETE (accepted)
+- Commits: 6023962, a344d42, de4d3a4
+- Tests: 229 passed at acceptance (235 with Phase 4 admin tests)
+- Live crawl/France/external-discovery insert: pending
+
+## Phase 4 — COMPLETE (pending review)
+- Backend: 0327afb feat(maps): add admin API for Phase 4 campaign dashboard
+- Frontend: admin UI at /admin/maps, /admin/maps/$runId
+- Tests: 235 backend maps tests; 7 adminApi path tests; npm run build OK
+- Report: .superpowers/sdd/phase4-completion-report.md
