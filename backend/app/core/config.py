@@ -129,7 +129,11 @@ class Settings(BaseSettings):
     google_places_base_url: str = "https://places.googleapis.com/v1"
     google_places_timeout_seconds: float = 20.0
     maps_census_model: str = "gpt-4.1"
-    maps_census_max_cells_per_run: int = 120
+    maps_census_max_cells_per_run: int = 1500
+    maps_census_max_cells_per_campaign: int = 1500
+    maps_census_saturation_window: int = 10
+    maps_census_min_new_unique_for_expansion: int = 3
+    maps_census_min_new_plausible_for_expansion: int = 1
     maps_census_max_places_per_cell: int = 20
     maps_census_classification_batch_size: int = 15
     # Fallback website discovery for relevant places Google Places returned with no
