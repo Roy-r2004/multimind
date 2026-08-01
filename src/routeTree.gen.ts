@@ -46,8 +46,10 @@ import { Route as AdminBrainsRouteImport } from './routes/admin/brains'
 import { Route as AdminAuditRouteImport } from './routes/admin/audit'
 import { Route as ScrapingMissionIdRouteRouteImport } from './routes/scraping.$missionId.route'
 import { Route as ScrapingMissionIdIndexRouteImport } from './routes/scraping.$missionId.index'
+import { Route as AdminMapsIndexRouteImport } from './routes/admin/maps.index'
 import { Route as ScrapingMissionIdBlueprintRouteImport } from './routes/scraping.$missionId.blueprint'
 import { Route as AdminUsersUserIdRouteImport } from './routes/admin/users.$userId'
+import { Route as AdminMapsRunIdRouteImport } from './routes/admin/maps.$runId'
 import { Route as AdminChatsChatIdRouteImport } from './routes/admin/chats.$chatId'
 import { Route as ScrapingMissionIdRunsRouteRouteImport } from './routes/scraping.$missionId.runs.route'
 import { Route as ScrapingMissionIdRunsIndexRouteImport } from './routes/scraping.$missionId.runs.index'
@@ -239,6 +241,11 @@ const ScrapingMissionIdIndexRoute = ScrapingMissionIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ScrapingMissionIdRouteRoute,
 } as any)
+const AdminMapsIndexRoute = AdminMapsIndexRouteImport.update({
+  id: '/maps/',
+  path: '/maps/',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
 const ScrapingMissionIdBlueprintRoute =
   ScrapingMissionIdBlueprintRouteImport.update({
     id: '/blueprint',
@@ -249,6 +256,11 @@ const AdminUsersUserIdRoute = AdminUsersUserIdRouteImport.update({
   id: '/$userId',
   path: '/$userId',
   getParentRoute: () => AdminUsersRoute,
+} as any)
+const AdminMapsRunIdRoute = AdminMapsRunIdRouteImport.update({
+  id: '/maps/$runId',
+  path: '/maps/$runId',
+  getParentRoute: () => AdminRouteRoute,
 } as any)
 const AdminChatsChatIdRoute = AdminChatsChatIdRouteImport.update({
   id: '/$chatId',
@@ -319,8 +331,10 @@ export interface FileRoutesByFullPath {
   '/scraping/': typeof ScrapingIndexRoute
   '/scraping/$missionId/runs': typeof ScrapingMissionIdRunsRouteRouteWithChildren
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
+  '/admin/maps/$runId': typeof AdminMapsRunIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
   '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
+  '/admin/maps/': typeof AdminMapsIndexRoute
   '/scraping/$missionId/': typeof ScrapingMissionIdIndexRoute
   '/scraping/$missionId/executions/$executionId': typeof ScrapingMissionIdExecutionsExecutionIdRoute
   '/scraping/$missionId/runs/$runId': typeof ScrapingMissionIdRunsRunIdRoute
@@ -358,8 +372,10 @@ export interface FileRoutesByTo {
   '/projects': typeof ProjectsIndexRoute
   '/scraping': typeof ScrapingIndexRoute
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
+  '/admin/maps/$runId': typeof AdminMapsRunIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
   '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
+  '/admin/maps': typeof AdminMapsIndexRoute
   '/scraping/$missionId': typeof ScrapingMissionIdIndexRoute
   '/scraping/$missionId/executions/$executionId': typeof ScrapingMissionIdExecutionsExecutionIdRoute
   '/scraping/$missionId/runs/$runId': typeof ScrapingMissionIdRunsRunIdRoute
@@ -405,8 +421,10 @@ export interface FileRoutesById {
   '/scraping/': typeof ScrapingIndexRoute
   '/scraping/$missionId/runs': typeof ScrapingMissionIdRunsRouteRouteWithChildren
   '/admin/chats/$chatId': typeof AdminChatsChatIdRoute
+  '/admin/maps/$runId': typeof AdminMapsRunIdRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
   '/scraping/$missionId/blueprint': typeof ScrapingMissionIdBlueprintRoute
+  '/admin/maps/': typeof AdminMapsIndexRoute
   '/scraping/$missionId/': typeof ScrapingMissionIdIndexRoute
   '/scraping/$missionId/executions/$executionId': typeof ScrapingMissionIdExecutionsExecutionIdRoute
   '/scraping/$missionId/runs/$runId': typeof ScrapingMissionIdRunsRunIdRoute
@@ -453,8 +471,10 @@ export interface FileRouteTypes {
     | '/scraping/'
     | '/scraping/$missionId/runs'
     | '/admin/chats/$chatId'
+    | '/admin/maps/$runId'
     | '/admin/users/$userId'
     | '/scraping/$missionId/blueprint'
+    | '/admin/maps/'
     | '/scraping/$missionId/'
     | '/scraping/$missionId/executions/$executionId'
     | '/scraping/$missionId/runs/$runId'
@@ -492,8 +512,10 @@ export interface FileRouteTypes {
     | '/projects'
     | '/scraping'
     | '/admin/chats/$chatId'
+    | '/admin/maps/$runId'
     | '/admin/users/$userId'
     | '/scraping/$missionId/blueprint'
+    | '/admin/maps'
     | '/scraping/$missionId'
     | '/scraping/$missionId/executions/$executionId'
     | '/scraping/$missionId/runs/$runId'
@@ -538,8 +560,10 @@ export interface FileRouteTypes {
     | '/scraping/'
     | '/scraping/$missionId/runs'
     | '/admin/chats/$chatId'
+    | '/admin/maps/$runId'
     | '/admin/users/$userId'
     | '/scraping/$missionId/blueprint'
+    | '/admin/maps/'
     | '/scraping/$missionId/'
     | '/scraping/$missionId/executions/$executionId'
     | '/scraping/$missionId/runs/$runId'
@@ -825,6 +849,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ScrapingMissionIdIndexRouteImport
       parentRoute: typeof ScrapingMissionIdRouteRoute
     }
+    '/admin/maps/': {
+      id: '/admin/maps/'
+      path: '/maps'
+      fullPath: '/admin/maps/'
+      preLoaderRoute: typeof AdminMapsIndexRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
     '/scraping/$missionId/blueprint': {
       id: '/scraping/$missionId/blueprint'
       path: '/blueprint'
@@ -838,6 +869,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/admin/users/$userId'
       preLoaderRoute: typeof AdminUsersUserIdRouteImport
       parentRoute: typeof AdminUsersRoute
+    }
+    '/admin/maps/$runId': {
+      id: '/admin/maps/$runId'
+      path: '/maps/$runId'
+      fullPath: '/admin/maps/$runId'
+      preLoaderRoute: typeof AdminMapsRunIdRouteImport
+      parentRoute: typeof AdminRouteRoute
     }
     '/admin/chats/$chatId': {
       id: '/admin/chats/$chatId'
@@ -913,6 +951,8 @@ interface AdminRouteRouteChildren {
   AdminUsageRoute: typeof AdminUsageRoute
   AdminUsersRoute: typeof AdminUsersRouteWithChildren
   AdminIndexRoute: typeof AdminIndexRoute
+  AdminMapsRunIdRoute: typeof AdminMapsRunIdRoute
+  AdminMapsIndexRoute: typeof AdminMapsIndexRoute
 }
 
 const AdminRouteRouteChildren: AdminRouteRouteChildren = {
@@ -927,6 +967,8 @@ const AdminRouteRouteChildren: AdminRouteRouteChildren = {
   AdminUsageRoute: AdminUsageRoute,
   AdminUsersRoute: AdminUsersRouteWithChildren,
   AdminIndexRoute: AdminIndexRoute,
+  AdminMapsRunIdRoute: AdminMapsRunIdRoute,
+  AdminMapsIndexRoute: AdminMapsIndexRoute,
 }
 
 const AdminRouteRouteWithChildren = AdminRouteRoute._addFileChildren(
