@@ -156,6 +156,10 @@ class Settings(BaseSettings):
     # Local disk cache for Google Places facility photos (fetched once, reused after)
     maps_census_photo_cache_dir: str = "data/maps_photos"
 
+    # Phase 2: live-web country discovery profile, built once per run before grid planning
+    maps_census_country_profile_model: str = "sonar-pro"
+    maps_census_country_profile_timeout_seconds: float = 90.0
+
     # Phase 2: AI web-search enrichment of addictions/languages (no crawling)
     maps_census_enrichment_enabled: bool = True
     maps_census_enrichment_max_places_per_run: int = 250

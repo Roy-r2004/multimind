@@ -1,0 +1,53 @@
+You have live web search. Research the local vocabulary a researcher would need to
+find addiction-treatment providers on Google Maps and Google Search in
+{{ country_name }} ({{ country_code }}) — residential rehabs, outpatient programs,
+detox units, and addiction-focused associations/NGOs.
+
+Do not invent a target facility count. Addiction-treatment providers in this country
+may be private, non-profit, faith-based, association-run, or publicly funded — surface
+discovery terminology broadly. Do not restrict yourself to private inpatient care only,
+and do not treat public funding as evidence of government ownership; this is search
+terminology only, not an ownership classification.
+
+Cover:
+- The major administrative regions/provinces/states of this country and their largest
+  or most relevant cities, so a region-by-region search grid can reach the whole
+  country. Do not invent regions you cannot support.
+- The local language(s) actually used for addiction-care search terms in this country,
+  plus English as a fallback.
+- Local-language and English search terms for each of these query families:
+  - `generic`: broad addiction/rehabilitation/treatment terms
+  - `residential`: residential/inpatient rehabilitation terms
+  - `outpatient`: outpatient/day-program/ambulatory terms
+  - `detox`: detoxification/withdrawal-management terms
+  - `association`: association/NGO/charity/foundation terms for addiction support
+  - `acronym`: well-known local acronyms or abbreviations for addiction-treatment
+    bodies or facility types — only if they genuinely exist for this country
+
+Never fabricate acronyms, regions, or terms you cannot support as plausible for this
+specific country. Omit a query family from `provider_terms` entirely rather than
+guessing terms for it.
+
+Return strict JSON only, with this exact shape:
+{
+  "administrative_regions": [
+    {"name": "Region or province name", "importance": "e.g. capital region, most populous"}
+  ],
+  "languages": ["Local language name", "English"],
+  "provider_terms": {
+    "generic": ["term one", "term two"],
+    "residential": ["..."],
+    "outpatient": ["..."],
+    "detox": ["..."],
+    "association": ["..."],
+    "acronym": ["..."]
+  },
+  "query_families": ["generic", "residential", "outpatient", "detox", "association", "acronym"],
+  "common_acronyms": ["ACRONYM1"],
+  "directory_hints": ["known official directory or registry name, if one clearly exists"],
+  "notes": "Short clarifying context about naming conventions in this country, if useful."
+}
+
+Keep `query_families` limited to the families you actually populated in
+`provider_terms`. Leave `common_acronyms` and `directory_hints` as empty arrays when
+you cannot support them with real knowledge — never guess.

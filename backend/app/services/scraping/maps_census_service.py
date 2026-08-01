@@ -61,6 +61,7 @@ from app.services.scraping.facility_website_enrichment_service import (
     select_official_website,
     website_needs_enrichment,
 )
+from app.services.scraping.maps_country_profile_service import maps_country_profile_service
 from app.services.scraping.maps_eligibility import derive_is_relevant, derive_legacy_verification_verdict
 from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
 from app.services.scraping.maps_places_client import PlacesProviderError, create_places_client
@@ -531,6 +532,16 @@ class MapsCensusService:
             await start_db.commit()
             country_code = run.country_code
             country_name = run.country_name
+
+        try:
+            await maps_country_profile_service.build_profile_for_run(db, run_id=run_id)
+        except Exception:  # noqa: BLE001
+            # Profiling is a best-effort enrichment stage — a bug here must never
+            # take down the whole census. build_profile_for_run already records
+            # its own failures on the run; this is just a last-resort guard.
+            logger.warning(
+                "maps_census_country_profile_stage_failed run_id=%s", run_id, exc_info=True
+            )
 
         try:
             cells = await maps_grid_planner.plan(
