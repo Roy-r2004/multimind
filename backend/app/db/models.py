@@ -2293,6 +2293,111 @@ class MapsPlaceEnrichmentStatus(str, enum.Enum):
     SKIPPED = "skipped"
 
 
+class MapsCountryProfileStatus(str, enum.Enum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class MapsRegionSaturationStatus(str, enum.Enum):
+    PENDING = "pending"
+    EXPANDING = "expanding"
+    SATURATED = "saturated"
+    CAPPED = "capped"
+
+
+class MapsLifecycleStatus(str, enum.Enum):
+    DISCOVERED = "discovered"
+    PLAUSIBLE = "plausible"
+    CONFIRMED_ELIGIBLE = "confirmed_eligible"
+    PROBABLE_ELIGIBLE = "probable_eligible"
+    NEEDS_REVIEW = "needs_review"
+    CONFIRMED_PUBLIC = "confirmed_public"
+    CONFIRMED_INDIVIDUAL_PRACTITIONER = "confirmed_individual_practitioner"
+    CONFIRMED_CESSATION_ONLY = "confirmed_cessation_only"
+    CONTRADICTED = "contradicted"
+    UNRELATED = "unrelated"
+    DUPLICATE = "duplicate"
+    PERMANENTLY_CLOSED = "permanently_closed"
+
+
+class MapsClientEligibility(str, enum.Enum):
+    ELIGIBLE = "eligible"
+    REVIEW = "review"
+    EXCLUDED = "excluded"
+
+
+class MapsContactStatus(str, enum.Enum):
+    COMPLETE = "complete"
+    PHONE_ONLY = "phone_only"
+    WEBSITE_ONLY = "website_only"
+    MISSING = "missing"
+
+
+class MapsOperatorType(str, enum.Enum):
+    PRIVATE_COMPANY = "private_company"
+    NONPROFIT = "nonprofit"
+    ASSOCIATION = "association"
+    FAITH_BASED_ORG = "faith_based_org"
+    PUBLIC_HOSPITAL = "public_hospital"
+    GOVERNMENT_AGENCY = "government_agency"
+    HOSPITAL_SYSTEM = "hospital_system"
+    UNIVERSITY = "university"
+    INDIVIDUAL_PRACTICE = "individual_practice"
+    UNKNOWN = "unknown"
+
+
+class MapsOwnershipStatus(str, enum.Enum):
+    CONFIRMED_NON_GOVERNMENT = "confirmed_non_government"
+    PROBABLE_NON_GOVERNMENT = "probable_non_government"
+    CONFIRMED_GOVERNMENT = "confirmed_government"
+    OWNERSHIP_UNKNOWN = "ownership_unknown"
+
+
+class MapsFundingType(str, enum.Enum):
+    PRIVATE = "private"
+    PUBLIC = "public"
+    MIXED = "mixed"
+    DONATION_BASED = "donation_based"
+    INSURANCE_BASED = "insurance_based"
+    UNKNOWN = "unknown"
+
+
+class MapsFacilityType(str, enum.Enum):
+    RESIDENTIAL_ADDICTION_REHAB = "residential_addiction_rehab"
+    INPATIENT_DETOX_CENTER = "inpatient_detox_center"
+    OUTPATIENT_ADDICTION_CENTER = "outpatient_addiction_center"
+    PSYCHIATRIC_CLINIC_WITH_ADDICTION_PROGRAM = "psychiatric_clinic_with_addiction_program"
+    THERAPEUTIC_COMMUNITY = "therapeutic_community"
+    CESSATION_SERVICE = "cessation_service"
+    HARM_REDUCTION_ONLY = "harm_reduction_only"
+    INDIVIDUAL_ADDICTOLOGIST = "individual_addictologist"
+    THERAPIST_OR_COUNSELOR = "therapist_or_counselor"
+    RECOVERY_COMMUNITY_CENTER = "recovery_community_center"
+    GENERAL_MENTAL_HEALTH_CLINIC = "general_mental_health_clinic"
+    UNRELATED = "unrelated"
+    UNKNOWN = "unknown"
+
+
+class MapsCareSetting(str, enum.Enum):
+    RESIDENTIAL = "residential"
+    INPATIENT = "inpatient"
+    OUTPATIENT = "outpatient"
+    COMMUNITY = "community"
+    VIRTUAL = "virtual"
+    MIXED = "mixed"
+    UNKNOWN = "unknown"
+
+
+class MapsOrganizationScope(str, enum.Enum):
+    FACILITY = "facility"
+    PROGRAM = "program"
+    NETWORK = "network"
+    INDIVIDUAL_PRACTICE = "individual_practice"
+    UNKNOWN = "unknown"
+
+
 class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """A standalone Google Places census run for one country — independent of the
     Scraping Council pipeline so it can later be compared against it."""
@@ -2336,7 +2441,19 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     enrichment_refresh_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    country_profile: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    country_profile_status: Mapped[str] = mapped_column(
+        String(20), default=MapsCountryProfileStatus.PENDING.value, nullable=False
+    )
+    country_profile_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    funnel_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    saturation_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
+    regions: Mapped[list["MapsCensusRegion"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="MapsCensusRegion.region_name",
+    )
     cells: Mapped[list["MapsCensusCell"]] = relationship(
         back_populates="run",
         cascade="all, delete-orphan",
@@ -2349,21 +2466,57 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
 
-class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """One city/region x query-term unit of work within a Maps census run."""
+class MapsCensusRegion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Per-region saturation and discovery progress within a Maps census run."""
 
-    __tablename__ = "maps_census_cells"
+    __tablename__ = "maps_census_regions"
     __table_args__ = (
-        Index("ix_maps_census_cells_run_id", "run_id"),
-        Index("ix_maps_census_cells_status", "status"),
+        Index("ix_maps_census_regions_run_id", "run_id"),
+        Index("ix_maps_census_regions_saturation_status", "saturation_status"),
     )
 
     run_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("maps_census_runs.id", ondelete="CASCADE"), nullable=False
     )
     region_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    cells_planned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cells_completed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    unique_places_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    new_unique_places_last_window: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    plausible_providers_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    new_plausible_providers_last_window: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duplicate_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    query_languages_used: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    provider_terms_used: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    saturation_status: Mapped[str] = mapped_column(
+        String(20), default=MapsRegionSaturationStatus.PENDING.value, nullable=False
+    )
+
+    run: Mapped["MapsCensusRun"] = relationship(back_populates="regions")
+    cells: Mapped[list["MapsCensusCell"]] = relationship(back_populates="region")
+
+
+class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One city/region x query-term unit of work within a Maps census run."""
+
+    __tablename__ = "maps_census_cells"
+    __table_args__ = (
+        Index("ix_maps_census_cells_run_id", "run_id"),
+        Index("ix_maps_census_cells_region_id", "region_id"),
+        Index("ix_maps_census_cells_status", "status"),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("maps_census_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    region_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("maps_census_regions.id", ondelete="SET NULL"), nullable=True
+    )
+    region_name: Mapped[str] = mapped_column(String(160), nullable=False)
     city_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     query_text: Mapped[str] = mapped_column(String(300), nullable=False)
+    query_family: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    query_language: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[MapsCensusCellStatus] = mapped_column(
         Enum(
             MapsCensusCellStatus,
@@ -2374,10 +2527,13 @@ class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
     places_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    new_unique_places: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    new_plausible_places: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="cells")
+    region: Mapped["MapsCensusRegion | None"] = relationship(back_populates="cells")
 
 
 class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -2388,6 +2544,10 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UniqueConstraint("run_id", "google_place_id", name="uq_maps_place_run_google_id"),
         Index("ix_maps_places_run_id", "run_id"),
         Index("ix_maps_places_is_relevant", "is_relevant"),
+        Index("ix_maps_places_lifecycle_status", "lifecycle_status"),
+        Index("ix_maps_places_client_eligibility", "client_eligibility"),
+        Index("ix_maps_places_run_lifecycle_status", "run_id", "lifecycle_status"),
+        Index("ix_maps_places_run_client_eligibility", "run_id", "client_eligibility"),
     )
 
     run_id: Mapped[str] = mapped_column(
@@ -2427,5 +2587,29 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     verification_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
     verification_reason: Mapped[str | None] = mapped_column(String(400), nullable=True)
     verification_source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(40), default=MapsLifecycleStatus.DISCOVERED.value, nullable=False
+    )
+    client_eligibility: Mapped[str] = mapped_column(
+        String(20), default=MapsClientEligibility.EXCLUDED.value, nullable=False
+    )
+    operator_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ownership_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    funding_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    facility_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    care_setting: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    organization_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    operator_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    contact_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    addiction_focus_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    medical_detox: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    residential_accommodation: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    operating_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    website_languages: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    classification_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    discovery_sources: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    source_record_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    registry_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    classification_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="places")
