@@ -48,7 +48,10 @@ export function applyStreamEvent(
               status: "completed",
               tokens_input: Number(data.tokens_input ?? 0),
               tokens_output: Number(data.tokens_output ?? 0),
-              cost_usd: Number(data.cost_usd ?? 0),
+              cost_usd:
+                data.cost_usd == null || data.cost_usd === ""
+                  ? null
+                  : Number(data.cost_usd),
             }
           : a,
       ),
@@ -76,7 +79,8 @@ export function applyStreamEvent(
         saved: Boolean(data.saved ?? false),
         tokens_input: Number(data.tokens_input ?? 0),
         tokens_output: Number(data.tokens_output ?? 0),
-        cost_usd: Number(data.cost_usd ?? 0),
+        cost_usd:
+          data.cost_usd == null || data.cost_usd === "" ? null : Number(data.cost_usd),
       },
     };
   }

@@ -20,7 +20,7 @@ from app.db.models import (
     UsageKind,
     Verdict,
 )
-from app.llm.catalog import get_model, resolve_llm_cost
+from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
 
@@ -313,12 +313,9 @@ class TurnOrchestrator:
                 await rollback_quietly()
                 return
 
-            cost_usd = resolve_llm_cost(
-                call_result.model_id,
-                response.tokens_input,
-                response.tokens_output,
-                response.cost_usd,
-            )
+            # Persist / emit only the OpenRouter-reported charge (never estimate).
+            reported_cost = response.cost_usd
+            stored_cost = float(reported_cost) if reported_cost is not None else 0.0
             await self._lock_active_turn_for_persistence(db, ctx.turn_id)
             updated = await db.execute(
                 update(ModelAnswer)
@@ -331,7 +328,7 @@ class TurnOrchestrator:
                     confidence=response.confidence or 85,
                     tokens_input=response.tokens_input,
                     tokens_output=response.tokens_output,
-                    cost_usd=cost_usd,
+                    cost_usd=stored_cost,
                     status=ModelAnswerStatus.COMPLETED,
                     error_message=None,
                 )
@@ -349,7 +346,7 @@ class TurnOrchestrator:
                 kind=UsageKind.ANSWER,
                 tokens_input=response.tokens_input,
                 tokens_output=response.tokens_output,
-                cost_usd=cost_usd,
+                cost_usd=stored_cost,
             )
             db.add(cost)
             try:
@@ -372,7 +369,7 @@ class TurnOrchestrator:
                     "confidence": response.confidence or 85,
                     "tokens_input": response.tokens_input,
                     "tokens_output": response.tokens_output,
-                    "cost_usd": cost_usd,
+                    "cost_usd": reported_cost,
                 },
             )
 
@@ -486,6 +483,10 @@ class TurnOrchestrator:
             failed_count = sum(1 for a in answer_context if a["failed"])
             final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
             await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+            reported_verdict_cost = verdict_response.cost_usd
+            stored_verdict_cost = (
+                float(reported_verdict_cost) if reported_verdict_cost is not None else 0.0
+            )
             verdict_row = Verdict(
                 turn_id=ctx.turn_id,
                 model_id=ctx.verdict_model_id,
@@ -494,12 +495,7 @@ class TurnOrchestrator:
                 reason=parsed.get("reason", "Synthesized from model responses."),
                 tokens_input=verdict_response.tokens_input,
                 tokens_output=verdict_response.tokens_output,
-                cost_usd=resolve_llm_cost(
-                    ctx.verdict_model_id,
-                    verdict_response.tokens_input,
-                    verdict_response.tokens_output,
-                    verdict_response.cost_usd,
-                ),
+                cost_usd=stored_verdict_cost,
             )
             db.add(verdict_row)
             result.verdict = verdict_row
@@ -515,7 +511,7 @@ class TurnOrchestrator:
                 kind=UsageKind.VERDICT,
                 tokens_input=verdict_response.tokens_input,
                 tokens_output=verdict_response.tokens_output,
-                cost_usd=verdict_row.cost_usd,
+                cost_usd=stored_verdict_cost,
             )
             db.add(cost)
             result.cost_records.append(cost)
@@ -542,7 +538,7 @@ class TurnOrchestrator:
                     "reason": verdict_row.reason,
                     "tokens_input": verdict_row.tokens_input,
                     "tokens_output": verdict_row.tokens_output,
-                    "cost_usd": verdict_row.cost_usd,
+                    "cost_usd": reported_verdict_cost,
                 },
             )
         except asyncio.CancelledError:

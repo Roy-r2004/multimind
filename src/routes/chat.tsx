@@ -44,6 +44,7 @@ import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
 import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
 import { UserPromptBubble } from "@/components/chat/UserPromptBubble";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
+import { CallCostLabel, TurnCostSummary } from "@/components/chat/CallCostLabel";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
@@ -1556,8 +1557,8 @@ function AiTurn({
 
   const responseCards = !answersCollapsed ? (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-2">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
             AI Council
           </p>
@@ -1565,15 +1566,20 @@ function AiTurn({
             {answerCards.length} models · {answerCards.length} perspectives
           </p>
         </div>
-        {canCollapseAnswers ? (
-          <button
-            type="button"
-            onClick={() => setAnswersCollapsed(true)}
-            className="rounded-lg border border-border bg-card/70 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            Hide
-          </button>
-        ) : null}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {!hasVerdict ? (
+            <TurnCostSummary answers={turn.model_answers ?? []} />
+          ) : null}
+          {canCollapseAnswers ? (
+            <button
+              type="button"
+              onClick={() => setAnswersCollapsed(true)}
+              className="rounded-lg border border-border bg-card/70 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              Hide
+            </button>
+          ) : null}
+        </div>
       </div>
       <div
         className={chatAnswerCardsClassName(layout)}
@@ -1600,18 +1606,25 @@ function AiTurn({
             >
               <div className="relative flex items-start gap-2.5 sm:gap-3">
                 <VendorLogo vendor={m.vendor} className="size-8 shrink-0 sm:size-9" title={m.name} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold leading-tight sm:text-[0.9375rem]">
-                        {m.name}
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-muted-foreground sm:text-xs">
-                        {m.vendor}
-                      </div>
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 text-sm font-semibold leading-tight sm:text-[0.9375rem]">
+                      {m.name}
                     </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {!inProgress && a?.confidence != null ? (
+                    {inProgress ? (
+                      <Loader2
+                        className="mt-0.5 size-3.5 shrink-0 animate-spin text-primary"
+                        aria-label="Generating"
+                      />
+                    ) : null}
+                  </div>
+                  <div className="text-[11px] leading-tight text-muted-foreground sm:text-xs">
+                    {m.vendor}
+                  </div>
+                  {!inProgress ? (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-0.5">
+                      <CallCostLabel cost={a?.cost_usd} />
+                      {a?.confidence != null ? (
                         <ModelConfidenceBadge
                           confidence={a.confidence}
                           isTopPick={isTopPick}
@@ -1620,19 +1633,13 @@ function AiTurn({
                         />
                       ) : null}
                       {isTopPick ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                        <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
                           <Trophy className="size-3" />
                           Top pick
                         </span>
                       ) : null}
-                      {inProgress ? (
-                        <Loader2
-                          className="size-3.5 animate-spin text-primary"
-                          aria-label="Generating"
-                        />
-                      ) : null}
                     </div>
-                  </div>
+                  ) : null}
                 </div>
               </div>
               <div className="relative mt-3 border-t border-border/60 pt-3 sm:mt-4 sm:pt-4">
@@ -1663,14 +1670,17 @@ function AiTurn({
       </div>
     </div>
   ) : (
-    <button
-      type="button"
-      onClick={() => setAnswersCollapsed(false)}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
-    >
-      <ChevronDown className="size-3.5 -rotate-90" />
-      Show AI council ({answerCards.length})
-    </button>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <button
+        type="button"
+        onClick={() => setAnswersCollapsed(false)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+      >
+        <ChevronDown className="size-3.5 -rotate-90" />
+        Show AI council ({answerCards.length})
+      </button>
+      {!hasVerdict ? <TurnCostSummary answers={turn.model_answers ?? []} /> : null}
+    </div>
   );
 
   const verdictBlock = turn.verdict ? (
@@ -1691,7 +1701,7 @@ function AiTurn({
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
             <Sparkles className="size-5" />
           </span>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-lg font-semibold tracking-tight sm:text-xl">Verdict</h3>
               {isPinned && (
@@ -1702,8 +1712,9 @@ function AiTurn({
               <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
                 {turn.verdict.strategy}
               </span>
+              <CallCostLabel cost={turn.verdict.cost_usd} kind="verdict" />
             </div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground sm:text-sm">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground sm:text-sm">
               {judgeModel && (
                 <span className="inline-flex items-center gap-1.5">
                   <VendorLogo vendor={judgeModel.vendor} className="size-4" />
@@ -1718,23 +1729,28 @@ function AiTurn({
               )}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <VerdictCopyButton text={turn.verdict.text} />
-            <button
-              type="button"
-              aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
-              title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
-              onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
-                isPinned
-                  ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
-                  : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
-              )}
-            >
-              <Pin className={cn("size-3.5", isPinned && "fill-current")} />
-              {isPinned ? "Unpin" : "Pin"}
-            </button>
+          <div className="ml-auto flex min-w-0 max-w-full shrink-0 flex-col items-stretch gap-2 sm:items-end">
+            <TurnCostSummary
+              answers={turn.model_answers ?? []}
+              verdictCost={turn.verdict.cost_usd}
+            />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <VerdictCopyButton text={turn.verdict.text} />
+              <button
+                type="button"
+                aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
+                title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
+                onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
+                  isPinned
+                    ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
+                    : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                <Pin className={cn("size-3.5", isPinned && "fill-current")} />
+                {isPinned ? "Unpin" : "Pin"}
+              </button>
             {bookmarkState.visible && bookmarkState.verdictId && (
               <button
                 type="button"
@@ -1778,6 +1794,7 @@ function AiTurn({
                 <Swords className="size-3.5" /> Challenge
               </button>
             )}
+            </div>
           </div>
         </div>
         <div className="mt-5 space-y-3">

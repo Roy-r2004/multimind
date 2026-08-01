@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -149,9 +150,8 @@ class OpenRouterProvider(LLMProvider):
             data = resp.json()
 
         content = _content_to_text(data["choices"][0]["message"].get("content", ""))
-        usage = data.get("usage", {})
-        reported_cost = usage.get("cost")
-        cost_usd = float(reported_cost) if reported_cost is not None else None
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        cost_usd = _parse_reported_cost(usage.get("cost"))
         text, confidence = self.parse_confidence(content)
         return LLMResponse(
             text=text,
@@ -161,6 +161,21 @@ class OpenRouterProvider(LLMProvider):
             confidence=confidence,
             raw=data,
         )
+
+
+def _parse_reported_cost(value: Any) -> float | None:
+    """Return OpenRouter usage.cost as float, or None when missing/invalid."""
+    if value is None:
+        return None
+    try:
+        cost = float(value)
+    except (TypeError, ValueError):
+        logger.warning("openrouter_cost_parse_failed")
+        return None
+    if math.isnan(cost) or math.isinf(cost) or cost < 0:
+        logger.warning("openrouter_cost_parse_failed")
+        return None
+    return cost
 
 
 def _content_to_text(content: Any) -> str:
