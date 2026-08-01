@@ -384,6 +384,76 @@ async def test_run_census_keeps_failed_classification_discovered_and_skips_websi
 
 
 @pytest.mark.asyncio
+async def test_run_census_passes_stored_country_profile_into_grid_planner(db, auth, monkeypatch):
+    """Assertion #4: run_census must pass the profile stored on the run (by the
+    Task 1 profile stage) into the grid planner's ``country_profile`` kwarg.
+    """
+    run = await _create_run(db, auth)
+    captured_kwargs: dict = {}
+    stored_profile = {
+        "query_families": ["generic"],
+        "provider_terms": {"generic": ["rehab"]},
+    }
+
+    class _CapturingGridPlanner:
+        async def plan(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
+
+    async def fake_build_profile(session, *, run_id: str):
+        run_row = await session.get(MapsCensusRun, run_id)
+        run_row.country_profile = stored_profile
+        await session.commit()
+        return run_row.country_profile
+
+    monkeypatch.setattr(maps_country_profile_service, "build_profile_for_run", fake_build_profile)
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner",
+        _CapturingGridPlanner(),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({}),
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+    assert captured_kwargs.get("country_profile") == stored_profile
+
+
+@pytest.mark.asyncio
+async def test_run_census_persists_query_family_and_language_on_cells(db, auth, monkeypatch):
+    run = await _create_run(db, auth)
+    cells = [
+        MapsGridCell(
+            region_name="Minsk Region",
+            city_name="Minsk",
+            query_text="zxq-outpatient-clinic Minsk",
+            query_family="outpatient",
+            query_language="en",
+        )
+    ]
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner",
+        _FakeGridPlanner(cells),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({}),
+    )
+
+    await maps_census_service.run_census(db, run_id=run.id)
+
+    from app.db.models import MapsCensusCell
+
+    stored_cell = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalar_one()
+    assert stored_cell.query_family == "outpatient"
+    assert stored_cell.query_language == "en"
+
+
+@pytest.mark.asyncio
 async def test_run_census_fails_when_places_api_key_missing(db, auth, monkeypatch):
     run = await _create_run(db, auth)
     cells = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]

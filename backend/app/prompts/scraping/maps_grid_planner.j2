@@ -1,9 +1,32 @@
-You plan a Google Places Text Search grid for a census of NON-GOVERNMENT inpatient
-addiction rehabilitation facilities in one country. Target private clinics, NGO-run
-centers, and charity-funded residential programs whose core mission is clinical treatment
-of substance and/or behavioral addictions. The grid must give real geographic coverage and
-use both English and local-language search terms, because facility names and Places
-categories are often only findable in the local language.
+You plan a Google Places Text Search grid for a national DISCOVERY census of
+addiction-treatment provider locations — residential, inpatient, outpatient, detox,
+association/NGO-run, and generically-named facilities, regardless of ownership. This is
+a discovery pass only: later stages classify ownership, funding, and client eligibility
+from what is found here, so cast a wide net rather than pre-filtering by ownership or
+care setting at discovery time. The grid must give real geographic coverage and use both
+English and local-language search terms, because facility names and Places categories
+are often only findable in the local language.
+
+A country discovery profile (JSON below, may be an empty object if the discovery stage
+failed for this run) may already list this country's known administrative regions,
+spoken languages, and local search terminology grouped into query families such as
+generic, residential, outpatient, detox, association, and acronym.
+
+When the profile is non-empty:
+- Prefer its administrative_regions for geographic coverage and its languages for
+  local-language query variants.
+- Draw provider_terms from every listed query family (generic, residential, outpatient,
+  detox, association/NGO, acronym, and any others provided) — not only one family.
+- Include common_acronyms as their own query variants where present.
+
+When the profile is empty or missing:
+- Fall back to broad generic English search terms plus your own best knowledge of the
+  primary local language(s) for {{ country_name }}. Still cover outpatient,
+  association/NGO, residential, detox, and generic phrasings — never restrict discovery
+  to private/inpatient-only terms.
+
+Country discovery profile (JSON):
+{{ country_profile_json }}
 
 Return strict JSON only with this shape:
 {
@@ -11,7 +34,9 @@ Return strict JSON only with this shape:
     {
       "region_name": "Minsk Region",
       "city_name": "Minsk",
-      "query_text": "private inpatient drug rehabilitation center Minsk Belarus"
+      "query_text": "addiction rehabilitation center Minsk Belarus",
+      "query_family": "residential",
+      "query_language": "en"
     }
   ]
 }
@@ -19,12 +44,13 @@ Return strict JSON only with this shape:
 Rules:
 - Cover the country's major cities/regions — capital plus other large or regionally important cities, enough for real national coverage without wasteful overlap.
 - For each city, generate 2-4 query variants: at least one in English and at least one in the country's primary local language(s).
-- Query terms must target PRIVATE / NGO / charity inpatient or residential addiction rehabilitation and detox (e.g. private rehab center, private residential treatment, private detox clinic, NGO addiction recovery center, clinique privée de désintoxication, مصحة خاصة لعلاج الإدمان).
-- Include private clinic and charity phrasings where locally common.
+- Cover outpatient, association/NGO, detox, residential, and generic addiction-treatment phrasings for both substance and behavioral addictions — do not restrict discovery to private/inpatient-only terms, and do not ban outpatient, association, or NGO terms.
 - Include substance addiction terms where locally relevant (alcohol, drug, opioid, cocaine, meth, heroin, cannabis dependency, etc.) and behavioral addiction terms where locally relevant (gambling, gaming, internet, sex/porn addiction treatment, etc.).
-- Do NOT use keywords aimed at government/public/ministry/state facilities (e.g. centre intermédiaire public, national addiction office, hospital public, مركز وسيط حكومي).
-- Do NOT use keywords for: general psychiatric or mental-health-only clinics, outpatient-only programs, sober living, wellness retreats, coaching centers, or broad hospital searches.
+- Do not invent a target facility count.
+- Do not hardcode terminology for any specific country — use only the profile above plus these generic instructions, identically for every country.
 - Each query_text must include the city (or region) name so Google Places can geographically scope the text search.
+- When a query clearly matches one of the profile's query families, set query_family to that family's name (e.g. "outpatient"); otherwise omit it or set it to null.
+- Set query_language to the language used in query_text (e.g. "en" or the local language name/code) when known; otherwise omit it or set it to null.
 - Do not exceed {{ max_cells }} total cells.
 - Do not invent regions/cities that do not exist in {{ country_name }}.
 - region_name and city_name should be in a commonly recognized English or transliterated form; query_text may be in the local language.

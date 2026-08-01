@@ -543,11 +543,16 @@ class MapsCensusService:
                 "maps_census_country_profile_stage_failed run_id=%s", run_id, exc_info=True
             )
 
+        async with session_factory() as profile_db:
+            run = await profile_db.get(MapsCensusRun, run_id)
+            country_profile = run.country_profile if run is not None else None
+
         try:
             cells = await maps_grid_planner.plan(
                 country_code=country_code,
                 country_name=country_name,
                 max_cells=settings.maps_census_max_cells_per_run,
+                country_profile=country_profile,
             )
         except MapsGridPlanningError as exc:
             async with session_factory() as fail_db:
@@ -577,6 +582,8 @@ class MapsCensusService:
                     region_name=cell.region_name,
                     city_name=cell.city_name,
                     query_text=cell.query_text,
+                    query_family=cell.query_family,
+                    query_language=cell.query_language,
                 )
                 cells_db.add(row)
                 await cells_db.flush()
