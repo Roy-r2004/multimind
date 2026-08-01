@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as UsageRouteImport } from './routes/usage'
 import { Route as TemplatesRouteImport } from './routes/templates'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SavedVerdictsRouteImport } from './routes/saved-verdicts'
@@ -54,6 +55,11 @@ import { Route as ScrapingMissionIdRunsIndexRouteImport } from './routes/scrapin
 import { Route as ScrapingMissionIdRunsRunIdRouteImport } from './routes/scraping.$missionId.runs.$runId'
 import { Route as ScrapingMissionIdExecutionsExecutionIdRouteImport } from './routes/scraping.$missionId.executions.$executionId'
 
+const UsageRoute = UsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TemplatesRoute = TemplatesRouteImport.update({
   id: '/templates',
   path: '/templates',
@@ -295,6 +301,7 @@ export interface FileRoutesByFullPath {
   '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
+  '/usage': typeof UsageRoute
   '/scraping/$missionId': typeof ScrapingMissionIdRouteRouteWithChildren
   '/admin/audit': typeof AdminAuditRoute
   '/admin/brains': typeof AdminBrainsRoute
@@ -336,6 +343,7 @@ export interface FileRoutesByTo {
   '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
+  '/usage': typeof UsageRoute
   '/admin/audit': typeof AdminAuditRoute
   '/admin/brains': typeof AdminBrainsRoute
   '/admin/chats': typeof AdminChatsRouteWithChildren
@@ -381,6 +389,7 @@ export interface FileRoutesById {
   '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
+  '/usage': typeof UsageRoute
   '/scraping/$missionId': typeof ScrapingMissionIdRouteRouteWithChildren
   '/admin/audit': typeof AdminAuditRoute
   '/admin/brains': typeof AdminBrainsRoute
@@ -429,6 +438,7 @@ export interface FileRouteTypes {
     | '/saved-verdicts'
     | '/settings'
     | '/templates'
+    | '/usage'
     | '/scraping/$missionId'
     | '/admin/audit'
     | '/admin/brains'
@@ -470,6 +480,7 @@ export interface FileRouteTypes {
     | '/saved-verdicts'
     | '/settings'
     | '/templates'
+    | '/usage'
     | '/admin/audit'
     | '/admin/brains'
     | '/admin/chats'
@@ -514,6 +525,7 @@ export interface FileRouteTypes {
     | '/saved-verdicts'
     | '/settings'
     | '/templates'
+    | '/usage'
     | '/scraping/$missionId'
     | '/admin/audit'
     | '/admin/brains'
@@ -561,11 +573,19 @@ export interface RootRouteChildren {
   SavedVerdictsRoute: typeof SavedVerdictsRoute
   SettingsRoute: typeof SettingsRoute
   TemplatesRoute: typeof TemplatesRoute
+  UsageRoute: typeof UsageRoute
   SharedTokenRoute: typeof SharedTokenRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/usage': {
+      id: '/usage'
+      path: '/usage'
+      fullPath: '/usage'
+      preLoaderRoute: typeof UsageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/templates': {
       id: '/templates'
       path: '/templates'
@@ -1046,6 +1066,7 @@ const rootRouteChildren: RootRouteChildren = {
   SavedVerdictsRoute: SavedVerdictsRoute,
   SettingsRoute: SettingsRoute,
   TemplatesRoute: TemplatesRoute,
+  UsageRoute: UsageRoute,
   SharedTokenRoute: SharedTokenRoute,
 }
 export const routeTree = rootRouteImport

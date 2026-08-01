@@ -290,6 +290,78 @@ export type ApiCostSummary = {
   by_model: Array<{ model_id: string; cost_usd: number; tokens: number }>;
 };
 
+export type ApiUserUsageSummary = {
+  today_usd: number;
+  week_usd: number;
+  month_usd: number;
+  all_time_usd: number;
+  today_tokens: number;
+  month_tokens: number;
+  all_time_tokens: number;
+  tracked_calls: number;
+  failed_calls: number;
+  earliest_recorded_at: string | null;
+  historical_notice: boolean;
+  currency: string;
+};
+
+export type ApiUsageTimeseriesPoint = {
+  date: string;
+  cost_usd: number;
+  tokens: number;
+  call_count: number;
+};
+
+export type ApiUserUsageTimeseries = {
+  period: string;
+  points: ApiUsageTimeseriesPoint[];
+};
+
+export type ApiUsageBreakdownItem = {
+  key: string;
+  cost_usd: number;
+  tokens: number;
+  call_count: number;
+};
+
+export type ApiUserUsageBreakdown = {
+  group_by: string;
+  period: string;
+  items: ApiUsageBreakdownItem[];
+};
+
+export type ApiUserUsageRecord = {
+  id: string;
+  recorded_at: string;
+  model_id: string;
+  provider: string | null;
+  kind: string;
+  operation: string | null;
+  status: string | null;
+  tokens_input: number;
+  tokens_output: number;
+  tokens_reasoning: number | null;
+  tokens_cached_input: number | null;
+  tokens_total: number;
+  cost_usd: number;
+  cost_source: string | null;
+  latency_ms: number | null;
+  project_id: string | null;
+  chat_id: string | null;
+  turn_id: string | null;
+  mission_id: string | null;
+  execution_id: string | null;
+  request_id: string | null;
+  error_code: string | null;
+};
+
+export type ApiUserUsageRecords = {
+  items: ApiUserUsageRecord[];
+  page: number;
+  limit: number;
+  total: number;
+};
+
 export type ApiAdminOverview = {
   organization_id: string;
   organization_name: string;
@@ -331,6 +403,9 @@ export type ApiAdminUpdateMemberInput = {
 export type ApiAdminUsage = ApiCostSummary & {
   total_turns: number;
   total_cost_records: number;
+  all_time_usd?: number;
+  failed_calls?: number;
+  by_user?: Array<{ user_id: string; cost_usd: number; call_count: number }>;
 };
 
 export type ApiAdminAuditLog = {

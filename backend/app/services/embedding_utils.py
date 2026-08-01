@@ -5,12 +5,17 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import time
+from dataclasses import dataclass
 from typing import Sequence
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.db.models import UsageKind
+from app.services.cost_recorder import CostRecordInput, cost_recorder
 
 logger = get_logger(__name__)
 
@@ -19,6 +24,17 @@ OPENROUTER_EMBED_URL = "https://openrouter.ai/api/v1/embeddings"
 OPENROUTER_EMBED_MODEL = "openai/text-embedding-3-small"
 
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}", re.I)
+
+
+@dataclass(frozen=True)
+class EmbeddingCostContext:
+    org_id: str
+    user_id: str | None
+    operation: str
+    idempotency_key: str
+    project_id: str | None = None
+    chat_id: str | None = None
+    db: AsyncSession | None = None
 
 
 def local_embed(text: str, *, dim: int = EMBED_DIM) -> list[float]:
@@ -53,12 +69,17 @@ def _l2_normalize(vec: list[float]) -> list[float]:
     return [x / norm for x in vec]
 
 
-async def embed_text(text: str) -> list[float]:
+async def embed_text(
+    text: str,
+    *,
+    cost_context: EmbeddingCostContext | None = None,
+) -> list[float]:
     """Prefer OpenRouter embeddings when configured; otherwise local hash vectors."""
     settings = get_settings()
     api_key = settings.openrouter_api_key
     if not api_key:
         return local_embed(text)
+    started = time.perf_counter()
     try:
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -77,7 +98,45 @@ async def embed_text(text: str) -> list[float]:
             resp.raise_for_status()
             data = resp.json()
             vector = data["data"][0]["embedding"]
+            usage = data.get("usage") or {}
+            tokens_input = int(usage.get("prompt_tokens") or usage.get("total_tokens") or 0)
+            reported_cost = usage.get("cost")
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            if cost_context is not None and cost_context.db is not None:
+                await cost_recorder.record(
+                    cost_context.db,
+                    CostRecordInput(
+                        org_id=cost_context.org_id,
+                        user_id=cost_context.user_id,
+                        project_id=cost_context.project_id,
+                        chat_id=cost_context.chat_id,
+                        model_id="or:openai--text-embedding-3-small",
+                        kind=UsageKind.EMBEDDING,
+                        operation=cost_context.operation,
+                        idempotency_key=cost_context.idempotency_key,
+                        tokens_input=tokens_input,
+                        tokens_output=0,
+                        reported_cost_usd=float(reported_cost) if reported_cost is not None else None,
+                        latency_ms=latency_ms,
+                        request_id=str(data.get("id")) if data.get("id") else None,
+                        metadata={"provider_model": OPENROUTER_EMBED_MODEL},
+                    ),
+                )
             return _l2_normalize([float(x) for x in vector])
     except Exception as exc:  # noqa: BLE001 — fail-open to local embed
         logger.warning("openrouter_embed_failed", error=str(exc))
+        if cost_context is not None and cost_context.db is not None:
+            await cost_recorder.record_llm_failure(
+                cost_context.db,
+                org_id=cost_context.org_id,
+                user_id=cost_context.user_id,
+                project_id=cost_context.project_id,
+                chat_id=cost_context.chat_id,
+                model_id="or:openai--text-embedding-3-small",
+                kind=UsageKind.EMBEDDING,
+                operation=cost_context.operation,
+                idempotency_key=f"{cost_context.idempotency_key}:failed",
+                error_code="embedding_failed",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
         return local_embed(text)

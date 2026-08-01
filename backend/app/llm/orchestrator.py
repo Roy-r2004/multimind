@@ -23,6 +23,7 @@ from app.db.models import (
 from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
+from app.services.cost_recorder import cost_recorder
 
 logger = get_logger(__name__)
 
@@ -64,6 +65,12 @@ class TurnContext:
     user_brain_context: str | None = None
     previous_verdict_context: str | None = None
     skip_answer_seed: bool = False
+    user_id: str | None = None
+    # Optional overrides for lesson-discussion challenge turns, etc.
+    cost_kind: UsageKind | None = None
+    cost_operation_answer: str | None = None
+    cost_operation_verdict: str | None = None
+    cost_idempotency_prefix: str | None = None
 
 
 @dataclass
@@ -297,6 +304,28 @@ class TurnOrchestrator:
                 if updated.rowcount != 1:
                     await rollback_quietly()
                     return
+                answer_kind = ctx.cost_kind or UsageKind.ANSWER
+                answer_op = ctx.cost_operation_answer or "council_answer"
+                if ctx.cost_idempotency_prefix:
+                    answer_key = (
+                        f"{ctx.cost_idempotency_prefix}:{ctx.turn_id}:"
+                        f"{call_result.model_id}:failed"
+                    )
+                else:
+                    answer_key = f"answer:{ctx.turn_id}:{call_result.model_id}:failed"
+                await cost_recorder.record_llm_failure(
+                    db,
+                    org_id=ctx.org_id,
+                    user_id=ctx.user_id,
+                    chat_id=ctx.chat_id,
+                    project_id=ctx.project_id,
+                    turn_id=ctx.turn_id,
+                    model_id=call_result.model_id,
+                    kind=answer_kind,
+                    operation=answer_op,
+                    idempotency_key=answer_key,
+                    error_code=MODEL_ANSWER_FAILED_CODE,
+                )
                 await db.commit()
                 await emit(
                     "model_answer_failed",
@@ -340,18 +369,29 @@ class TurnOrchestrator:
                 await rollback_quietly()
                 return
 
-            cost = CostRecord(
+            answer_kind = ctx.cost_kind or UsageKind.ANSWER
+            answer_op = ctx.cost_operation_answer or "council_answer"
+            if ctx.cost_idempotency_prefix:
+                answer_key = (
+                    f"{ctx.cost_idempotency_prefix}:{ctx.turn_id}:{call_result.model_id}"
+                )
+            else:
+                answer_key = f"answer:{ctx.turn_id}:{call_result.model_id}"
+            cost = await cost_recorder.record_llm_success(
+                db,
                 org_id=ctx.org_id,
+                user_id=ctx.user_id,
                 chat_id=ctx.chat_id,
                 project_id=ctx.project_id,
                 turn_id=ctx.turn_id,
                 model_id=call_result.model_id,
-                kind=UsageKind.ANSWER,
-                tokens_input=response.tokens_input,
-                tokens_output=response.tokens_output,
-                cost_usd=cost_usd,
+                kind=answer_kind,
+                operation=answer_op,
+                idempotency_key=answer_key,
+                response=response,
             )
-            db.add(cost)
+            if cost is not None:
+                result.cost_records.append(cost)
             try:
                 await db.commit()
             except IntegrityError:
@@ -362,7 +402,6 @@ class TurnOrchestrator:
                 ):
                     raise TurnNoLongerWritable
                 raise
-            result.cost_records.append(cost)
             await emit(
                 "model_answer_completed",
                 {
@@ -506,19 +545,27 @@ class TurnOrchestrator:
             await db.flush()
 
             await self._ensure_not_deleted(db, ctx.turn_id)
-            cost = CostRecord(
+            verdict_kind = ctx.cost_kind or UsageKind.VERDICT
+            verdict_op = ctx.cost_operation_verdict or "verdict"
+            if ctx.cost_idempotency_prefix:
+                verdict_key = f"{ctx.cost_idempotency_prefix}:{ctx.turn_id}:verdict"
+            else:
+                verdict_key = f"verdict:{ctx.turn_id}"
+            cost = await cost_recorder.record_llm_success(
+                db,
                 org_id=ctx.org_id,
+                user_id=ctx.user_id,
                 chat_id=ctx.chat_id,
                 project_id=ctx.project_id,
                 turn_id=ctx.turn_id,
                 model_id=ctx.verdict_model_id,
-                kind=UsageKind.VERDICT,
-                tokens_input=verdict_response.tokens_input,
-                tokens_output=verdict_response.tokens_output,
-                cost_usd=verdict_row.cost_usd,
+                kind=verdict_kind,
+                operation=verdict_op,
+                idempotency_key=verdict_key,
+                response=verdict_response,
             )
-            db.add(cost)
-            result.cost_records.append(cost)
+            if cost is not None:
+                result.cost_records.append(cost)
             await db.flush()
 
             turn_updated = await db.execute(

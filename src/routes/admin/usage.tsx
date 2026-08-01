@@ -34,7 +34,7 @@ function AdminUsagePage() {
   const budgetUsed = Math.min(100, Math.max(0, usage.budget_used_pct));
 
   return (
-    <AdminPageFrame title="Usage & Billing" description="Spending, tokens, and budget utilization.">
+    <AdminPageFrame title="Usage & Costs" description="Organization spending, tokens, and budget utilization.">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Today" value={formatUsd(usage.today_usd)} />
         <StatCard label="This month" value={formatUsd(usage.month_usd)} />

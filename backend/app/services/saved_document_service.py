@@ -20,6 +20,7 @@ from app.db.models import (
     SavedDocument,
     SavedDocumentLabel,
     Turn,
+    UsageKind,
     Verdict,
 )
 from app.llm.catalog import get_model
@@ -34,6 +35,7 @@ from app.services.brain_knowledge_service import (
     SOURCE_SAVED_DOCUMENT,
     brain_knowledge_service,
 )
+from app.services.cost_recorder import cost_recorder
 
 logger = get_logger(__name__)
 
@@ -137,7 +139,42 @@ class SavedDocumentService:
                 f"Verdict: {(verdict.text if verdict else '')[:500]}\n"
                 f"Council: {council}"
             )
-            response = await provider.complete(system=system, user=user, model=model.provider_model)
+            try:
+                response = await provider.complete(
+                    system=system, user=user, model=model.provider_model
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("saved_document_suggest_failed", error=str(exc))
+                await cost_recorder.record_llm_failure(
+                    db,
+                    org_id=auth.org_id,
+                    user_id=auth.user.id,
+                    chat_id=chat.id,
+                    project_id=chat.project_id,
+                    turn_id=turn.id,
+                    model_id=DEFAULT_SUGGEST_MODEL,
+                    kind=UsageKind.DOCUMENT,
+                    operation="document_suggest",
+                    idempotency_key=f"document-suggest:{turn.id}:failed",
+                    error_code="document_suggest_failed",
+                )
+                return SavedDocumentSuggestResponse(
+                    name=fallback_name,
+                    label_suggestions=label_names[:3],
+                )
+            await cost_recorder.record_llm_success(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                chat_id=chat.id,
+                project_id=chat.project_id,
+                turn_id=turn.id,
+                model_id=DEFAULT_SUGGEST_MODEL,
+                kind=UsageKind.DOCUMENT,
+                operation="document_suggest",
+                idempotency_key=f"document-suggest:{turn.id}",
+                response=response,
+            )
             parsed = provider.parse_json_response(response.text)
             name = str(parsed.get("name") or fallback_name).strip()[:255] or fallback_name
             suggestions = [

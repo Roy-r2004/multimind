@@ -1054,6 +1054,11 @@ class SourceDiscoveryExecutionOrchestrator:
             ),
         )
         try:
+            from app.services.scraping.cost_tracking import resolve_mission_owner_user_id
+
+            owner_id, _mission_id = await resolve_mission_owner_user_id(
+                self.db, execution_id=execution.id, mission_id=execution.mission_id
+            )
             seeds = await official_source_seed_planner.plan(
                 country_code=execution.country_code or "XX",
                 country_name=execution.country_name or "Unknown",
@@ -1062,6 +1067,11 @@ class SourceDiscoveryExecutionOrchestrator:
                 registry_hints=registry_hints,
                 source_strategy=source_strategy,
                 max_sources=MAX_OFFICIAL_SEEDS,
+                db=self.db,
+                org_id=execution.organization_id,
+                user_id=owner_id,
+                mission_id=execution.mission_id,
+                execution_id=execution.id,
             )
         except Exception as exc:
             self._log(

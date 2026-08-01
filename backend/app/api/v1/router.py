@@ -23,6 +23,7 @@ from app.api.v1 import (
     share,
     templates,
     transcriptions,
+    usage,
     verdicts,
 )
 
@@ -43,6 +44,7 @@ api_router.include_router(model_sets.router, prefix="/model-sets", tags=["model-
 api_router.include_router(templates.router, prefix="/templates", tags=["templates"])
 api_router.include_router(prompt_builder.router, prefix="/prompt-builder", tags=["prompt-builder"])
 api_router.include_router(costs.router, prefix="/costs", tags=["costs"])
+api_router.include_router(usage.router, prefix="/usage", tags=["usage"])
 api_router.include_router(lessons.router, prefix="/lessons", tags=["lessons"])
 api_router.include_router(brain.router, prefix="/brain", tags=["brain"])
 api_router.include_router(scraping.router, prefix="/scraping", tags=["scraping"])

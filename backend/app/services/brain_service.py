@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
 from app.core.logging import get_logger
-from app.db.models import CostRecord, LessonStatus, UsageKind, UserBrain, VerdictLesson
-from app.llm.catalog import get_model, resolve_llm_cost
+from app.db.models import LessonStatus, UsageKind, UserBrain, VerdictLesson
+from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
 from app.schemas.api import BrainMemoryResponse, BrainResponse
@@ -18,6 +18,7 @@ from app.services.brain_knowledge_service import (
     SOURCE_LESSON,
     brain_knowledge_service,
 )
+from app.services.cost_recorder import cost_recorder
 
 logger = get_logger(__name__)
 
@@ -216,26 +217,19 @@ class BrainService:
             brain.lesson_count += 1
             brain.user_name = auth.user.full_name
 
-            cost_usd = resolve_llm_cost(
-                DEFAULT_BRAIN_MODEL,
-                response.tokens_input,
-                response.tokens_output,
-                response.cost_usd,
+            await cost_recorder.record_llm_success(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                chat_id=lesson.chat_id,
+                project_id=None,
+                turn_id=lesson.turn_id,
+                model_id=DEFAULT_BRAIN_MODEL,
+                kind=UsageKind.BRAIN,
+                operation="brain_learn",
+                idempotency_key=f"brain:{lesson.id}:learn",
+                response=response,
             )
-            db.add(
-                CostRecord(
-                    org_id=auth.org_id,
-                    chat_id=lesson.chat_id,
-                    project_id=None,
-                    turn_id=lesson.turn_id,
-                    model_id=DEFAULT_BRAIN_MODEL,
-                    kind=UsageKind.BRAIN,
-                    tokens_input=response.tokens_input,
-                    tokens_output=response.tokens_output,
-                    cost_usd=cost_usd,
-                )
-            )
-            await db.flush()
             try:
                 await brain_knowledge_service.upsert_item(
                     db,

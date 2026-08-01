@@ -85,6 +85,9 @@ class ScrapingRunService:
                 mission=mission,
                 blueprint=blueprint,
                 model_set=model_set,
+                db=db,
+                run_id=run.id,
+                user_id=auth.user.id,
             )
             await self._persist_successful_plan(db, run, plan, planner_model_id)
         except Exception:

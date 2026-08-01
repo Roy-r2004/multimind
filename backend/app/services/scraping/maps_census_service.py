@@ -33,11 +33,13 @@ from app.db.models import (
     MapsCensusRun,
     MapsCensusStatus,
     MapsPlace,
+    UsageKind,
 )
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
 from app.schemas.api import MapsCensusRunDetail, MapsCensusRunSummary, MapsPlaceItem
+from app.services.scraping.cost_tracking import record_scraping_llm
 from app.services.scraping.countries import resolve_country
 from app.services.scraping.facility_website_enrichment_service import (
     OfficialWebsiteCandidate,
@@ -356,12 +358,17 @@ class MapsCensusService:
             await start_db.commit()
             country_code = run.country_code
             country_name = run.country_name
+            org_id = run.organization_id
+            owner_id = run.created_by
 
         try:
             cells = await maps_grid_planner.plan(
                 country_code=country_code,
                 country_name=country_name,
                 max_cells=settings.maps_census_max_cells_per_run,
+                org_id=org_id,
+                user_id=owner_id,
+                run_id=run_id,
             )
         except MapsGridPlanningError as exc:
             async with session_factory() as fail_db:
@@ -488,7 +495,12 @@ class MapsCensusService:
                 summary["places_found"] += new_places
 
         classification_summary = await self._classify_pending(
-            session_factory, run_id=run_id, country_code=country_code, country_name=country_name
+            session_factory,
+            run_id=run_id,
+            country_code=country_code,
+            country_name=country_name,
+            org_id=org_id,
+            user_id=owner_id,
         )
         summary.update(classification_summary)
 
@@ -513,7 +525,14 @@ class MapsCensusService:
         return summary
 
     async def _classify_pending(
-        self, session_factory, *, run_id: str, country_code: str, country_name: str
+        self,
+        session_factory,
+        *,
+        run_id: str,
+        country_code: str,
+        country_name: str,
+        org_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict[str, int]:
         settings = get_settings()
         async with session_factory() as scan_db:
@@ -534,6 +553,7 @@ class MapsCensusService:
         provider = get_provider_registry().get_provider(model.provider)
         batch_size = max(int(settings.maps_census_classification_batch_size or 15), 1)
         classified = 0
+        catalog_model_id = settings.maps_census_model
 
         for offset in range(0, len(pending_ids), batch_size):
             batch_ids = pending_ids[offset : offset + batch_size]
@@ -558,9 +578,14 @@ class MapsCensusService:
             decisions = await self._classify_batch(
                 provider=provider,
                 model_slug=model.provider_model,
+                model_id=catalog_model_id,
                 country_code=country_code,
                 country_name=country_name,
                 payloads=payloads,
+                org_id=org_id,
+                user_id=user_id,
+                run_id=run_id,
+                batch_index=offset // batch_size,
             )
 
             async with session_factory() as write_db:
@@ -585,9 +610,15 @@ class MapsCensusService:
         *,
         provider: Any,
         model_slug: str,
+        model_id: str,
         country_code: str,
         country_name: str,
         payloads: list[dict[str, Any]],
+        org_id: str | None = None,
+        user_id: str | None = None,
+        run_id: str | None = None,
+        batch_index: int = 0,
+        db: AsyncSession | None = None,
     ) -> list[MapsRelevanceDecision]:
         prompt = get_prompt_engine().render(
             "scraping/maps_relevance_classifier.j2",
@@ -595,6 +626,7 @@ class MapsCensusService:
             country_name=(country_name or "Unknown")[:120],
             places_json=json.dumps(payloads, ensure_ascii=True),
         )
+        idem = f"maps-classify:{run_id or 'unknown'}:{batch_index}"
         try:
             response = await asyncio.wait_for(
                 provider.complete(
@@ -608,11 +640,46 @@ class MapsCensusService:
                 ),
                 timeout=CLASSIFICATION_BATCH_TIMEOUT_SECONDS,
             )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "maps_census_classification_batch_failed count=%s error=%s",
+                len(payloads),
+                exc,
+            )
+            await record_scraping_llm(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                model_id=model_id,
+                kind=UsageKind.CLASSIFICATION,
+                operation="maps_classify",
+                idempotency_key=f"{idem}:failed",
+                failed=True,
+                error_code="maps_classify_failed",
+            )
+            return [
+                MapsRelevanceDecision(
+                    place_id=item["place_id"], is_relevant=False, reason="classification_failed"
+                )
+                for item in payloads
+            ]
+        await record_scraping_llm(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            model_id=model_id,
+            kind=UsageKind.CLASSIFICATION,
+            operation="maps_classify",
+            idempotency_key=idem,
+            response=response,
+            metadata={"place_count": len(payloads)},
+        )
+        try:
             raw = LLMProvider.parse_json_response(response.text)
             plan = MapsRelevancePlan.model_validate(_normalize_relevance_payload(raw))
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "maps_census_classification_batch_failed count=%s error=%s",
+                "maps_census_classification_parse_failed count=%s error=%s",
                 len(payloads),
                 exc,
             )
@@ -751,6 +818,8 @@ class MapsCensusService:
             run = await scan_db.get(MapsCensusRun, run_id)
             country_name = run.country_name if run is not None else ""
             country_code = run.country_code if run is not None else ""
+            org_id = run.organization_id if run is not None else None
+            owner_id = run.created_by if run is not None else None
             pending = (
                 await scan_db.execute(
                     select(MapsPlace)
@@ -838,9 +907,14 @@ class MapsCensusService:
             decisions = await self._select_websites_llm_batch(
                 provider=llm_provider,
                 model_slug=model.provider_model,
+                model_id=settings.maps_census_website_llm_model,
                 country_code=country_code,
                 country_name=country_name,
                 batch=batch,
+                org_id=org_id,
+                user_id=owner_id,
+                run_id=run_id,
+                batch_index=offset // batch_size,
             )
             by_id = {d.place_id: d for d in decisions}
             for item in batch:
@@ -917,9 +991,14 @@ class MapsCensusService:
         *,
         provider: Any,
         model_slug: str,
+        model_id: str,
         country_code: str,
         country_name: str,
         batch: list[dict[str, Any]],
+        org_id: str | None = None,
+        user_id: str | None = None,
+        run_id: str | None = None,
+        batch_index: int = 0,
     ) -> list[MapsWebsiteDecision]:
         payloads = []
         for item in batch:
@@ -956,6 +1035,7 @@ class MapsCensusService:
             country_name=(country_name or "Unknown")[:120],
             facilities_json=json.dumps(payloads, ensure_ascii=False),
         )
+        idem = f"maps-website:{run_id or 'unknown'}:{batch_index}"
         try:
             response = await asyncio.wait_for(
                 provider.complete(
@@ -969,11 +1049,45 @@ class MapsCensusService:
                 ),
                 timeout=WEBSITE_LLM_BATCH_TIMEOUT_SECONDS,
             )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "maps_census_website_llm_batch_failed count=%s error=%s",
+                len(payloads),
+                exc,
+            )
+            await record_scraping_llm(
+                None,
+                org_id=org_id,
+                user_id=user_id,
+                model_id=model_id,
+                kind=UsageKind.CLASSIFICATION,
+                operation="maps_website_recovery",
+                idempotency_key=f"{idem}:failed",
+                failed=True,
+                error_code="maps_website_recovery_failed",
+            )
+            return [
+                MapsWebsiteDecision(place_id=p["place_id"], url=None, reason="llm_failed")
+                for p in payloads
+            ]
+
+        await record_scraping_llm(
+            None,
+            org_id=org_id,
+            user_id=user_id,
+            model_id=model_id,
+            kind=UsageKind.CLASSIFICATION,
+            operation="maps_website_recovery",
+            idempotency_key=idem,
+            response=response,
+            metadata={"place_count": len(payloads)},
+        )
+        try:
             raw = LLMProvider.parse_json_response(response.text)
             plan = MapsWebsitePlan.model_validate(_normalize_website_payload(raw))
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "maps_census_website_llm_batch_failed count=%s error=%s",
+                "maps_census_website_llm_parse_failed count=%s error=%s",
                 len(payloads),
                 exc,
             )

@@ -19,6 +19,7 @@ from app.db.models import (
     ScrapingSourceDiscoveryQuery,
     SourceCandidateStatus,
     SourceDiscoveryQueryStatus,
+    UsageKind,
 )
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
@@ -30,6 +31,10 @@ from app.schemas.api import (
     SourceDiscoveryQueryPlan,
     SourceDiscoveryQueryResponse,
     SourceDiscoverySummary,
+)
+from app.services.scraping.cost_tracking import (
+    record_scraping_llm,
+    resolve_mission_owner_user_id,
 )
 from app.services.scraping.search_providers import create_search_provider
 from app.services.scraping.search_providers.base import (
@@ -45,7 +50,14 @@ MAX_ERROR_MESSAGE_LENGTH = 500
 
 
 class SourceDiscoveryQueryPlanner:
-    async def plan_queries(self, context: SourceDiscoveryContext) -> list[SourceDiscoveryPlannedQuery]:
+    async def plan_queries(
+        self,
+        context: SourceDiscoveryContext,
+        *,
+        db: AsyncSession | None = None,
+        user_id: str | None = None,
+        mission_id: str | None = None,
+    ) -> list[SourceDiscoveryPlannedQuery]:
         settings = get_settings()
         max_queries = _max_queries_for_provider(context.provider, settings, context=context)
         model = get_model("gpt-4.1")
@@ -72,11 +84,46 @@ class SourceDiscoveryQueryPlanner:
                 :12
             ],
         )
-        response = await provider.complete(
-            system="You return strict JSON for source-discovery query planning.",
-            user=prompt,
-            model=model.provider_model,
-            max_tokens=1500,
+        scope = (
+            context.coverage_cell_id
+            or context.task_id
+            or context.execution_id
+            or "root"
+        )
+        idem = f"discovery-plan:{context.execution_id or 'none'}:{scope}"
+        try:
+            response = await provider.complete(
+                system="You return strict JSON for source-discovery query planning.",
+                user=prompt,
+                model=model.provider_model,
+                max_tokens=1500,
+            )
+        except Exception:
+            await record_scraping_llm(
+                db,
+                org_id=context.organization_id,
+                user_id=user_id,
+                mission_id=mission_id,
+                execution_id=context.execution_id,
+                model_id="gpt-4.1",
+                kind=UsageKind.SCRAPING,
+                operation="discovery_plan",
+                idempotency_key=f"{idem}:failed",
+                failed=True,
+                error_code="discovery_plan_failed",
+            )
+            raise
+        await record_scraping_llm(
+            db,
+            org_id=context.organization_id,
+            user_id=user_id,
+            mission_id=mission_id,
+            execution_id=context.execution_id,
+            model_id="gpt-4.1",
+            kind=UsageKind.SCRAPING,
+            operation="discovery_plan",
+            idempotency_key=idem,
+            response=response,
         )
         try:
             raw = LLMProvider.parse_json_response(response.text)
@@ -104,7 +151,15 @@ class SourceDiscoveryService:
         context: SourceDiscoveryContext,
     ) -> SourceDiscoverySummary:
         provider = self._provider(context.provider)
-        planned_queries = await self.planner.plan_queries(context)
+        owner_id, mission_id = await resolve_mission_owner_user_id(
+            db, execution_id=context.execution_id
+        )
+        planned_queries = await self.planner.plan_queries(
+            context,
+            db=db,
+            user_id=owner_id,
+            mission_id=mission_id,
+        )
         summary = SourceDiscoverySummary(
             provider=provider.name,
             planned_query_count=len(planned_queries),

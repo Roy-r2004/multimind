@@ -59,6 +59,10 @@ class OpenRouterFacilityExtractionProvider(FacilityExtractionProvider):
                 output=output,
                 diagnostics=diagnostics,
                 provider_request_id=provider_request_id,
+                tokens_input=response.tokens_input,
+                tokens_output=response.tokens_output,
+                cost_usd=response.cost_usd,
+                model_id=self.model_id,
             )
         except StructuredParseValidationError as exc:
             provider_request_id = _provider_request_id(getattr(locals().get("response", None), "raw", None))
@@ -93,6 +97,19 @@ class OpenRouterFacilityExtractionProvider(FacilityExtractionProvider):
                 output=output,
                 diagnostics={**repair_diagnostics, "repair_attempted": True},
                 provider_request_id=provider_request_id or _provider_request_id(repaired.raw),
+                tokens_input=(
+                    getattr(locals().get("response", None), "tokens_input", 0) or 0
+                )
+                + repaired.tokens_input,
+                tokens_output=(
+                    getattr(locals().get("response", None), "tokens_output", 0) or 0
+                )
+                + repaired.tokens_output,
+                cost_usd=_sum_optional_cost(
+                    getattr(locals().get("response", None), "cost_usd", None),
+                    repaired.cost_usd,
+                ),
+                model_id=self.model_id,
             )
         except httpx.TimeoutException as exc:
             raise FacilityProviderError("timeout", "Provider request timed out", retryable=True) from exc
@@ -309,6 +326,12 @@ def _provider_request_id(raw: dict[str, Any] | None) -> str | None:
         return None
     value = raw.get("id")
     return str(value)[:255] if value is not None else None
+
+
+def _sum_optional_cost(a: float | None, b: float | None) -> float | None:
+    if a is None and b is None:
+        return None
+    return float(a or 0.0) + float(b or 0.0)
 
 
 def _bounded_text(value: Any, limit: int) -> str:

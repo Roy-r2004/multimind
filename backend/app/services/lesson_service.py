@@ -11,7 +11,6 @@ from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
-    CostRecord,
     LessonStatus,
     ModelAnswer,
     ModelSet,
@@ -21,7 +20,6 @@ from app.db.models import (
     Verdict,
     VerdictLesson,
 )
-from app.services.brain_service import brain_service
 from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.orchestrator import TurnContext, get_orchestrator
 from app.llm.prompt_engine import get_prompt_engine
@@ -34,6 +32,8 @@ from app.schemas.api import (
     LessonListItemResponse,
     VerdictDisagreeRequest,
 )
+from app.services.brain_service import brain_service
+from app.services.cost_recorder import cost_recorder
 
 logger = get_logger(__name__)
 
@@ -221,7 +221,7 @@ class LessonService:
         turn_id: str,
         message: str,
     ) -> DiscussResponse:
-        turn, _chat, verdict_model, answer_context = await self._load_turn_context(
+        turn, _chat, _verdict_model, answer_context = await self._load_turn_context(
             db, auth, turn_id
         )
         if turn.lesson is None or turn.lesson.status != LessonStatus.DISCUSSING:
@@ -280,6 +280,19 @@ class LessonService:
                     "facilitator_stance is whether the facilitator agreed with the USER."
                 ),
                 model=verdict_model.provider_model,
+            )
+            await cost_recorder.record_llm_success(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                chat_id=turn.chat_id,
+                project_id=chat.project_id if chat else None,
+                turn_id=turn.id,
+                model_id=turn.verdict.model_id,
+                kind=UsageKind.LESSON,
+                operation="lesson_extract",
+                idempotency_key=f"lesson:{lesson.id}:extract",
+                response=extract_resp,
             )
             extracted = provider.parse_json_response(extract_resp.text)
             lesson.disagreement_reason = extracted.get(
@@ -456,6 +469,11 @@ class LessonService:
             model_set_name=f"{model_set.name} challenge council",
             custom_instructions=turn.custom_instructions,
             previous_verdict_context=previous_context,
+            user_id=auth.user.id,
+            cost_kind=UsageKind.LESSON,
+            cost_operation_answer="lesson_discuss",
+            cost_operation_verdict="lesson_discuss",
+            cost_idempotency_prefix="lesson-discuss",
         )
         result = await get_orchestrator().run(db, ctx)
 
@@ -626,27 +644,28 @@ class LessonService:
             lesson.summary = parsed.get("summary", "")
             lesson.comparison = comparison
             lesson.status = LessonStatus.COMPLETED
-            lesson.tokens_input += response.tokens_input
-            lesson.tokens_output += response.tokens_output
-            lesson.cost_usd += resolve_llm_cost(
+            call_cost = resolve_llm_cost(
                 turn.verdict.model_id,
                 response.tokens_input,
                 response.tokens_output,
                 response.cost_usd,
             )
+            lesson.tokens_input += response.tokens_input
+            lesson.tokens_output += response.tokens_output
+            lesson.cost_usd += call_cost
 
-            db.add(
-                CostRecord(
-                    org_id=auth.org_id,
-                    chat_id=turn.chat_id,
-                    project_id=chat.project_id if chat else None,
-                    turn_id=turn.id,
-                    model_id=turn.verdict.model_id,
-                    kind=UsageKind.LESSON,
-                    tokens_input=response.tokens_input,
-                    tokens_output=response.tokens_output,
-                    cost_usd=lesson.cost_usd,
-                )
+            await cost_recorder.record_llm_success(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                chat_id=turn.chat_id,
+                project_id=chat.project_id if chat else None,
+                turn_id=turn.id,
+                model_id=turn.verdict.model_id,
+                kind=UsageKind.LESSON,
+                operation="lesson_build",
+                idempotency_key=f"lesson:{lesson.id}:build",
+                response=response,
             )
             await brain_service.learn_from_lesson(db, auth, lesson)
         except Exception as exc:

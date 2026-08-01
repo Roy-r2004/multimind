@@ -70,6 +70,28 @@ class UsageKind(str, enum.Enum):
     INSURANCE = "insurance"
     LESSON = "lesson"
     BRAIN = "brain"
+    EMBEDDING = "embedding"
+    SCRAPING = "scraping"
+    BLUEPRINT = "blueprint"
+    EXTRACTION = "extraction"
+    CLASSIFICATION = "classification"
+    PLANNER = "planner"
+    DOCUMENT = "document"
+    HELPER = "helper"
+    OTHER = "other"
+
+
+class CostRecordStatus(str, enum.Enum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class CostSource(str, enum.Enum):
+    REPORTED = "reported"
+    CALCULATED = "calculated"
+    BACKFILLED = "backfilled"
+    UNKNOWN = "unknown"
 
 
 class LessonStatus(str, enum.Enum):
@@ -2200,22 +2222,45 @@ class DecisionInsurance(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class CostRecord(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "cost_records"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_cost_records_idempotency_key"),
+        Index("ix_cost_records_user_recorded", "user_id", "recorded_at"),
+        Index("ix_cost_records_org_recorded", "org_id", "recorded_at"),
+        Index("ix_cost_records_kind_recorded", "kind", "recorded_at"),
+        Index("ix_cost_records_status_recorded", "status", "recorded_at"),
+        Index("ix_cost_records_operation", "operation"),
+        Index("ix_cost_records_chat_turn", "chat_id", "turn_id"),
+        Index("ix_cost_records_mission_execution", "mission_id", "execution_id"),
+    )
 
     org_id: Mapped[str] = UuidFK("organizations")
-    chat_id: Mapped[str] = UuidFK("chats")
+    user_id: Mapped[str | None] = UuidFK("users", nullable=True)
+    chat_id: Mapped[str | None] = UuidFK("chats", nullable=True)
     project_id: Mapped[str | None] = UuidFK("projects", nullable=True)
-    turn_id: Mapped[str] = UuidFK("turns")
+    turn_id: Mapped[str | None] = UuidFK("turns", nullable=True)
+    mission_id: Mapped[str | None] = UuidFK("scraping_missions", nullable=True)
+    execution_id: Mapped[str | None] = UuidFK("scraping_executions", nullable=True)
     model_id: Mapped[str] = mapped_column(String(64), nullable=False)
     kind: Mapped[UsageKind] = mapped_column(Enum(UsageKind), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    operation: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(191), nullable=True)
     tokens_input: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tokens_output: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_reasoning: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_cached_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    cost_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON, nullable=True)
 
-    turn: Mapped["Turn"] = relationship(back_populates="cost_records")
+    turn: Mapped["Turn | None"] = relationship(back_populates="cost_records")
 
 
 class ShareLink(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -1332,6 +1332,92 @@ class CostSummaryResponse(BaseModel):
     by_model: list[dict]
 
 
+class UserUsageSummaryResponse(BaseModel):
+    today_usd: float
+    week_usd: float
+    month_usd: float
+    all_time_usd: float
+    today_tokens: int
+    month_tokens: int
+    all_time_tokens: int
+    tracked_calls: int
+    failed_calls: int
+    earliest_recorded_at: datetime | None = None
+    historical_notice: bool = True
+    currency: str = "USD"
+
+
+class UsageTimeseriesPoint(BaseModel):
+    date: str
+    cost_usd: float
+    tokens: int
+    call_count: int
+
+
+class UserUsageTimeseriesResponse(BaseModel):
+    period: str
+    points: list[UsageTimeseriesPoint]
+
+
+class UsageBreakdownItem(BaseModel):
+    key: str
+    cost_usd: float
+    tokens: int
+    call_count: int
+
+
+class UserUsageBreakdownResponse(BaseModel):
+    group_by: str
+    period: str
+    items: list[UsageBreakdownItem]
+
+
+class UserUsageRecordItem(BaseModel):
+    id: str
+    recorded_at: datetime
+    model_id: str
+    provider: str | None = None
+    kind: str
+    operation: str | None = None
+    status: str | None = None
+    tokens_input: int = 0
+    tokens_output: int = 0
+    tokens_reasoning: int | None = None
+    tokens_cached_input: int | None = None
+    tokens_total: int = 0
+    cost_usd: float = 0.0
+    cost_source: str | None = None
+    latency_ms: int | None = None
+    project_id: str | None = None
+    chat_id: str | None = None
+    turn_id: str | None = None
+    mission_id: str | None = None
+    execution_id: str | None = None
+    request_id: str | None = None
+    error_code: str | None = None
+
+
+class UserUsageRecordsResponse(BaseModel):
+    items: list[UserUsageRecordItem]
+    page: int
+    limit: int
+    total: int
+
+
+class AdminUsageByUserItem(BaseModel):
+    user_id: str
+    cost_usd: float
+    call_count: int
+
+
+class AdminUsageResponse(CostSummaryResponse):
+    total_turns: int
+    total_cost_records: int
+    all_time_usd: float = 0.0
+    failed_calls: int = 0
+    by_user: list[AdminUsageByUserItem] = Field(default_factory=list)
+
+
 class AdminOverviewResponse(BaseModel):
     organization_id: str
     organization_name: str
@@ -1372,11 +1458,6 @@ class AdminUpdateMemberRequest(BaseModel):
 
 class AdminMemberActionResponse(BaseModel):
     message: str
-
-
-class AdminUsageResponse(CostSummaryResponse):
-    total_turns: int
-    total_cost_records: int
 
 
 class AdminAuditLogResponse(BaseModel):

@@ -6,12 +6,14 @@ from collections.abc import Iterable
 from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ValidationError
-from app.db.models import ModelSet, ScrapingBlueprint, ScrapingMission
+from app.db.models import ModelSet, ScrapingBlueprint, ScrapingMission, UsageKind
 from app.llm.catalog import get_model
 from app.llm.providers import LLMProvider, get_provider_registry
 from app.schemas.api import ScrapingTeamPlanOutput
+from app.services.scraping.cost_tracking import record_scraping_llm
 
 MIN_SCRAPING_TEAM_AGENTS = 2
 MAX_SCRAPING_TEAM_AGENTS = 12
@@ -23,29 +25,69 @@ class TeamPlannerService:
         mission: ScrapingMission,
         blueprint: ScrapingBlueprint,
         model_set: ModelSet,
+        *,
+        db: AsyncSession | None = None,
+        run_id: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[ScrapingTeamPlanOutput, str]:
         planner_model_id = self.planner_model_id(model_set)
         model = get_model(planner_model_id)
         provider = get_provider_registry().get_provider(model.provider)
         allowed_model_ids = list(dict.fromkeys(model_set.models))
-        response = await provider.complete(
-            system=self._system_prompt(),
-            user=self._user_prompt(
-                mission=mission,
-                blueprint=blueprint,
-                model_set=model_set,
-                planner_model_id=planner_model_id,
-                allowed_model_ids=allowed_model_ids,
-            ),
-            model=model.provider_model,
-            max_tokens=5000,
+        org_id = getattr(mission, "org_id", None)
+        mission_id = getattr(mission, "id", None)
+        owner_id = user_id or getattr(mission, "created_by", None)
+        plan_key = run_id or blueprint.id or mission_id or "unknown"
+        try:
+            response = await provider.complete(
+                system=self._system_prompt(),
+                user=self._user_prompt(
+                    mission=mission,
+                    blueprint=blueprint,
+                    model_set=model_set,
+                    planner_model_id=planner_model_id,
+                    allowed_model_ids=allowed_model_ids,
+                ),
+                model=model.provider_model,
+                max_tokens=5000,
+            )
+        except Exception:
+            await record_scraping_llm(
+                db,
+                org_id=org_id,
+                user_id=owner_id,
+                mission_id=mission_id,
+                model_id=planner_model_id,
+                kind=UsageKind.PLANNER,
+                operation="team_planner",
+                idempotency_key=f"planner:{plan_key}:failed",
+                failed=True,
+                error_code="team_planner_failed",
+            )
+            raise
+        await record_scraping_llm(
+            db,
+            org_id=org_id,
+            user_id=owner_id,
+            mission_id=mission_id,
+            model_id=planner_model_id,
+            kind=UsageKind.PLANNER,
+            operation="team_planner",
+            idempotency_key=f"planner:{plan_key}",
+            response=response,
         )
         return (
             await self.parse_validate_or_repair(
                 provider=provider,
                 provider_model=model.provider_model,
+                planner_model_id=planner_model_id,
                 raw_text=response.text,
                 allowed_model_ids=allowed_model_ids,
+                db=db,
+                org_id=org_id,
+                user_id=owner_id,
+                mission_id=mission_id,
+                plan_key=plan_key,
             ),
             planner_model_id,
         )
@@ -60,21 +102,54 @@ class TeamPlannerService:
         provider_model: str,
         raw_text: str,
         allowed_model_ids: list[str],
+        planner_model_id: str | None = None,
+        db: AsyncSession | None = None,
+        org_id: str | None = None,
+        user_id: str | None = None,
+        mission_id: str | None = None,
+        plan_key: str = "unknown",
     ) -> ScrapingTeamPlanOutput:
+        model_id = planner_model_id or provider_model
         try:
             return self.validate_raw_plan(raw_text, allowed_model_ids=allowed_model_ids)
         except Exception as exc:
             validation_problem = self._safe_validation_problem(exc)
 
-        repair_response = await provider.complete(
-            system=self._repair_system_prompt(),
-            user=(
-                "The previous AI scraping team plan was invalid.\n\n"
-                f"Validation problem:\n{validation_problem}\n\n"
-                "Return only valid JSON that matches the required schema. Do not include markdown."
-            ),
-            model=provider_model,
-            max_tokens=5000,
+        try:
+            repair_response = await provider.complete(
+                system=self._repair_system_prompt(),
+                user=(
+                    "The previous AI scraping team plan was invalid.\n\n"
+                    f"Validation problem:\n{validation_problem}\n\n"
+                    "Return only valid JSON that matches the required schema. Do not include markdown."
+                ),
+                model=provider_model,
+                max_tokens=5000,
+            )
+        except Exception:
+            await record_scraping_llm(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                mission_id=mission_id,
+                model_id=model_id,
+                kind=UsageKind.PLANNER,
+                operation="team_planner",
+                idempotency_key=f"planner:{plan_key}:repair:failed",
+                failed=True,
+                error_code="team_planner_repair_failed",
+            )
+            raise
+        await record_scraping_llm(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            mission_id=mission_id,
+            model_id=model_id,
+            kind=UsageKind.PLANNER,
+            operation="team_planner",
+            idempotency_key=f"planner:{plan_key}:repair",
+            response=repair_response,
         )
         return self.validate_raw_plan(repair_response.text, allowed_model_ids=allowed_model_ids)
 

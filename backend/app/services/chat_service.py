@@ -727,6 +727,7 @@ class ChatService:
             user_brain_context=user_brain_context or None,
             previous_verdict_context=previous_verdict_context,
             skip_answer_seed=True,
+            user_id=auth.user.id,
         )
 
         claimed = await db.execute(

@@ -18,10 +18,16 @@ from app.db.models import (
     RehabilitationFacility,
     RehabilitationFacilityContact,
     RehabilitationFacilitySourceLink,
+    ScrapingExecution,
+    UsageKind,
 )
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
+from app.services.scraping.cost_tracking import (
+    record_scraping_llm,
+    resolve_mission_owner_user_id,
+)
 from app.services.scraping.result_metrics import normalized_publication_class
 from app.services.scraping.url_canonicalization import UrlRejected, canonicalize_discovery_url
 
@@ -106,6 +112,20 @@ class FacilityAiCleanupService:
         if not getattr(settings, "facility_ai_cleanup_enabled", True):
             return {"enabled": 0, "reviewed": 0, "excluded": 0, "websites_fixed": 0}
 
+        org_id: str | None = None
+        mission_id: str | None = None
+        owner_id: str | None = None
+        async with AsyncSessionLocal() as attr_db:
+            execution = await attr_db.get(ScrapingExecution, execution_id)
+            if execution is not None:
+                org_id = execution.organization_id
+                owner_id, mission_id = await resolve_mission_owner_user_id(
+                    attr_db,
+                    execution_id=execution_id,
+                    mission_id=execution.mission_id,
+                )
+            await attr_db.commit()
+
         async with AsyncSessionLocal() as scan_db:
             light_rows = (
                 await scan_db.execute(
@@ -180,6 +200,12 @@ class FacilityAiCleanupService:
                     mission_goal=mission_goal,
                     facility_ids=facility_ids,
                     facility_payloads=facility_payloads,
+                    org_id=org_id,
+                    user_id=owner_id,
+                    mission_id=mission_id,
+                    execution_id=execution_id,
+                    batch_index=offset // batch_size,
+                    model_id=str(model_name),
                 )
 
                 async with AsyncSessionLocal() as write_db:
@@ -276,6 +302,12 @@ class FacilityAiCleanupService:
         mission_goal: str,
         facility_ids: list[str],
         facility_payloads: list[dict[str, Any]],
+        org_id: str | None = None,
+        user_id: str | None = None,
+        mission_id: str | None = None,
+        execution_id: str | None = None,
+        batch_index: int = 0,
+        model_id: str = "gpt-4.1",
     ) -> list[FacilityCleanupDecision]:
         """Plan a batch; on failure, fall back to solo calls so one hung prompt cannot wedge forever."""
         decisions = await self._plan_batch(
@@ -286,6 +318,12 @@ class FacilityAiCleanupService:
             mission_goal=mission_goal,
             facility_ids=facility_ids,
             facility_payloads=facility_payloads,
+            org_id=org_id,
+            user_id=user_id,
+            mission_id=mission_id,
+            execution_id=execution_id,
+            batch_index=batch_index,
+            model_id=model_id,
         )
         if not any(d.reason == "cleanup_batch_failed" for d in decisions):
             return decisions
@@ -303,7 +341,9 @@ class FacilityAiCleanupService:
             len(facility_ids),
         )
         solo: list[FacilityCleanupDecision] = []
-        for facility_id, payload in zip(facility_ids, facility_payloads, strict=True):
+        for solo_index, (facility_id, payload) in enumerate(
+            zip(facility_ids, facility_payloads, strict=True)
+        ):
             solo.extend(
                 await self._plan_batch_with_fallback(
                     provider=provider,
@@ -313,6 +353,12 @@ class FacilityAiCleanupService:
                     mission_goal=mission_goal,
                     facility_ids=[facility_id],
                     facility_payloads=[payload],
+                    org_id=org_id,
+                    user_id=user_id,
+                    mission_id=mission_id,
+                    execution_id=execution_id,
+                    batch_index=batch_index * 1000 + solo_index,
+                    model_id=model_id,
                 )
             )
         return solo
@@ -327,6 +373,12 @@ class FacilityAiCleanupService:
         mission_goal: str,
         facility_ids: list[str],
         facility_payloads: list[dict[str, Any]],
+        org_id: str | None = None,
+        user_id: str | None = None,
+        mission_id: str | None = None,
+        execution_id: str | None = None,
+        batch_index: int = 0,
+        model_id: str = "gpt-4.1",
     ) -> list[FacilityCleanupDecision]:
         prompt = get_prompt_engine().render(
             "scraping/facility_cleanup.j2",
@@ -335,6 +387,7 @@ class FacilityAiCleanupService:
             mission_goal=(mission_goal or "Find rehabilitation facilities.")[:2000],
             facilities_json=json.dumps(facility_payloads, ensure_ascii=True),
         )
+        idem = f"facility-cleanup:{execution_id or 'unknown'}:{batch_index}"
         try:
             response = await asyncio.wait_for(
                 provider.complete(
@@ -348,11 +401,50 @@ class FacilityAiCleanupService:
                 ),
                 timeout=BATCH_LLM_TIMEOUT_SECONDS,
             )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "facility_ai_cleanup_batch_failed count=%s error=%s",
+                len(facility_ids),
+                exc,
+            )
+            await record_scraping_llm(
+                None,
+                org_id=org_id,
+                user_id=user_id,
+                mission_id=mission_id,
+                execution_id=execution_id,
+                model_id=model_id,
+                kind=UsageKind.SCRAPING,
+                operation="facility_cleanup",
+                idempotency_key=f"{idem}:failed",
+                failed=True,
+                error_code="facility_cleanup_failed",
+                metadata={"facility_count": len(facility_ids)},
+            )
+            return [
+                FacilityCleanupDecision(facility_id=facility_id, action="keep", reason="cleanup_batch_failed")
+                for facility_id in facility_ids
+            ]
+
+        await record_scraping_llm(
+            None,
+            org_id=org_id,
+            user_id=user_id,
+            mission_id=mission_id,
+            execution_id=execution_id,
+            model_id=model_id,
+            kind=UsageKind.SCRAPING,
+            operation="facility_cleanup",
+            idempotency_key=idem,
+            response=response,
+            metadata={"facility_count": len(facility_ids)},
+        )
+        try:
             raw = LLMProvider.parse_json_response(response.text)
             plan = FacilityCleanupPlan.model_validate(_normalize_cleanup_payload(raw))
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "facility_ai_cleanup_batch_failed count=%s error=%s",
+                "facility_ai_cleanup_batch_parse_failed count=%s error=%s",
                 len(facility_ids),
                 exc,
             )

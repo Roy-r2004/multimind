@@ -26,7 +26,7 @@ const NAV = [
   { to: "/admin/lessons", label: "Lessons", icon: FileText },
   { to: "/admin/members", label: "Members", icon: UserCog },
   { to: "/admin/projects", label: "Projects", icon: FolderKanban },
-  { to: "/admin/usage", label: "Usage & Billing", icon: BarChart3 },
+  { to: "/admin/usage", label: "Usage & Costs", icon: BarChart3 },
   { to: "/admin/security", label: "Security", icon: Shield },
   { to: "/admin/organization", label: "Organization", icon: Building2 },
 ] as const;

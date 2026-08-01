@@ -11,10 +11,13 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import UsageKind
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
+from app.services.scraping.cost_tracking import record_scraping_llm
 
 DEFAULT_MODEL = "gpt-4.1"
 
@@ -46,6 +49,10 @@ class MapsGridPlanner:
         country_code: str,
         country_name: str,
         max_cells: int,
+        db: AsyncSession | None = None,
+        org_id: str | None = None,
+        user_id: str | None = None,
+        run_id: str | None = None,
     ) -> list[MapsGridCell]:
         capped = max(1, int(max_cells or 1))
         model = get_model(DEFAULT_MODEL)
@@ -56,6 +63,7 @@ class MapsGridPlanner:
             country_code=(country_code or "XX")[:2].upper(),
             country_name=(country_name or "Unknown")[:120],
         )
+        idem = f"maps-grid:{run_id or 'unknown'}"
         try:
             response = await provider.complete(
                 system=(
@@ -66,9 +74,33 @@ class MapsGridPlanner:
                 model=model.provider_model,
                 max_tokens=3500,
             )
+        except Exception as exc:
+            await record_scraping_llm(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                model_id=DEFAULT_MODEL,
+                kind=UsageKind.CLASSIFICATION,
+                operation="maps_grid_plan",
+                idempotency_key=f"{idem}:failed",
+                failed=True,
+                error_code="maps_grid_plan_failed",
+            )
+            raise MapsGridPlanningError("Maps census grid planning failed.") from exc
+        await record_scraping_llm(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            model_id=DEFAULT_MODEL,
+            kind=UsageKind.CLASSIFICATION,
+            operation="maps_grid_plan",
+            idempotency_key=idem,
+            response=response,
+        )
+        try:
             raw = LLMProvider.parse_json_response(response.text)
             plan = MapsGridPlan.model_validate(_normalize_grid_payload(raw))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise MapsGridPlanningError("Maps census grid planning failed.") from exc
         return _dedupe_cells(plan.cells, max_cells=capped)
 

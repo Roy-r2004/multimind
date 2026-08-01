@@ -28,6 +28,7 @@ from app.schemas.api import (
 )
 from app.services.audit_service import audit_service
 from app.services.domain_service import cost_service
+from app.services.usage_service import usage_service
 
 router = APIRouter()
 MANAGEABLE_ROLES = {OrgRole.ADMIN, OrgRole.MEMBER, OrgRole.VIEWER}
@@ -317,9 +318,13 @@ async def admin_usage(
         db,
         select(func.count()).select_from(CostRecord).where(CostRecord.org_id == auth.org_id),
     )
+    extras = await usage_service.org_extras(db, auth)
 
     return AdminUsageResponse(
         **summary.model_dump(),
         total_turns=total_turns,
         total_cost_records=total_cost_records,
+        all_time_usd=extras["all_time_usd"],
+        failed_calls=extras["failed_calls"],
+        by_user=extras["by_user"],
     )

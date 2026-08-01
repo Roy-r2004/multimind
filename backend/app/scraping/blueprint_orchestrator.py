@@ -3,12 +3,15 @@
 import json
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.exceptions import AppError
+from app.db.models import UsageKind
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
 from app.schemas.api import ScrapingBlueprintContent
-
+from app.services.scraping.cost_tracking import record_scraping_llm
 
 PLANNING_ROLES = [
     ("Mission Interpreter", "scraping/mission_interpreter.j2"),
@@ -35,10 +38,19 @@ class BlueprintOrchestrator:
         model_set: Any,
         previous_blueprint: dict[str, Any] | None = None,
         change_instructions: str | None = None,
+        *,
+        db: AsyncSession | None = None,
+        blueprint_id: str | None = None,
+        user_id: str | None = None,
     ) -> ScrapingBlueprintContent:
         council_models = list(model_set.models or [])
         if not council_models:
             raise BlueprintGenerationError("Selected model set has no council models")
+
+        org_id = getattr(mission, "org_id", None)
+        mission_id = getattr(mission, "id", None)
+        owner_id = user_id or getattr(mission, "created_by", None)
+        run_key = blueprint_id or mission_id or "unknown"
 
         analyses: list[dict[str, str]] = []
         for index, (role, template) in enumerate(PLANNING_ROLES):
@@ -53,11 +65,39 @@ class BlueprintOrchestrator:
                 change_instructions=change_instructions,
             )
             provider = self._providers.get_provider(model.provider)
-            response = await provider.complete(
-                system=prompt,
-                user="Return planning analysis for the Blueprint Judge.",
-                model=model.provider_model,
-                max_tokens=4096,
+            try:
+                response = await provider.complete(
+                    system=prompt,
+                    user="Return planning analysis for the Blueprint Judge.",
+                    model=model.provider_model,
+                    max_tokens=4096,
+                )
+            except Exception:
+                await record_scraping_llm(
+                    db,
+                    org_id=org_id,
+                    user_id=owner_id,
+                    mission_id=mission_id,
+                    model_id=model_id,
+                    kind=UsageKind.BLUEPRINT,
+                    operation="blueprint_research",
+                    idempotency_key=f"blueprint-research:{run_key}:{index}:failed",
+                    failed=True,
+                    error_code="blueprint_research_failed",
+                    metadata={"role_index": index},
+                )
+                raise
+            await record_scraping_llm(
+                db,
+                org_id=org_id,
+                user_id=owner_id,
+                mission_id=mission_id,
+                model_id=model_id,
+                kind=UsageKind.BLUEPRINT,
+                operation="blueprint_research",
+                idempotency_key=f"blueprint-research:{run_key}:{index}",
+                response=response,
+                metadata={"role_index": index},
             )
             analyses.append({"role": role, "model_id": model_id, "analysis": response.text})
 
@@ -73,16 +113,48 @@ class BlueprintOrchestrator:
             required_json_structure=self.required_json_structure(),
         )
         provider = self._providers.get_provider(judge_model.provider)
-        response = await provider.complete(
-            system=judge_prompt,
-            user="Return only the final JSON object.",
-            model=judge_model.provider_model,
-            max_tokens=8192,
+        try:
+            response = await provider.complete(
+                system=judge_prompt,
+                user="Return only the final JSON object.",
+                model=judge_model.provider_model,
+                max_tokens=8192,
+            )
+        except Exception:
+            await record_scraping_llm(
+                db,
+                org_id=org_id,
+                user_id=owner_id,
+                mission_id=mission_id,
+                model_id=judge_model_id,
+                kind=UsageKind.BLUEPRINT,
+                operation="blueprint_structure",
+                idempotency_key=f"blueprint-structure:{run_key}:failed",
+                failed=True,
+                error_code="blueprint_structure_failed",
+            )
+            raise
+        await record_scraping_llm(
+            db,
+            org_id=org_id,
+            user_id=owner_id,
+            mission_id=mission_id,
+            model_id=judge_model_id,
+            kind=UsageKind.BLUEPRINT,
+            operation="blueprint_structure",
+            idempotency_key=f"blueprint-structure:{run_key}",
+            response=response,
         )
         return await self._parse_validate_or_repair(
             provider=provider,
             model=judge_model.provider_model,
+            model_id=judge_model_id,
             invalid_output=response.text,
+            db=db,
+            org_id=org_id,
+            user_id=owner_id,
+            mission_id=mission_id,
+            run_key=run_key,
         )
 
     async def _parse_validate_or_repair(
@@ -91,7 +163,14 @@ class BlueprintOrchestrator:
         provider: Any,
         model: str,
         invalid_output: str,
+        model_id: str | None = None,
+        db: AsyncSession | None = None,
+        org_id: str | None = None,
+        user_id: str | None = None,
+        mission_id: str | None = None,
+        run_key: str = "unknown",
     ) -> ScrapingBlueprintContent:
+        resolved_model_id = model_id or model
         try:
             return self._parse_and_validate(invalid_output)
         except Exception as exc:
@@ -117,11 +196,37 @@ class BlueprintOrchestrator:
             "Required JSON structure:\n"
             f"{json.dumps(self.required_json_structure(), indent=2)}"
         )
-        repair_response = await provider.complete(
-            system=repair_system,
-            user=repair_user,
-            model=model,
-            max_tokens=8192,
+        try:
+            repair_response = await provider.complete(
+                system=repair_system,
+                user=repair_user,
+                model=model,
+                max_tokens=8192,
+            )
+        except Exception:
+            await record_scraping_llm(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                mission_id=mission_id,
+                model_id=resolved_model_id,
+                kind=UsageKind.BLUEPRINT,
+                operation="blueprint_repair",
+                idempotency_key=f"blueprint-repair:{run_key}:failed",
+                failed=True,
+                error_code="blueprint_repair_failed",
+            )
+            raise
+        await record_scraping_llm(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            mission_id=mission_id,
+            model_id=resolved_model_id,
+            kind=UsageKind.BLUEPRINT,
+            operation="blueprint_repair",
+            idempotency_key=f"blueprint-repair:{run_key}",
+            response=repair_response,
         )
         try:
             return self._parse_and_validate(repair_response.text)

@@ -1,18 +1,23 @@
 """Prompt builder support — rewrite rough user prompts into better prompts."""
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.dependencies import AuthContext
 from app.core.exceptions import AppError, ValidationError
+from app.db.models import UsageKind
 from app.llm.catalog import get_model
 from app.llm.providers import get_provider_registry
 from app.schemas.api import PromptBuilderImproveResponse
 from app.services.brain_service import DEFAULT_BRAIN_MODEL
+from app.services.cost_recorder import cost_recorder
 
 
 class PromptBuilderService:
     async def improve(
         self,
-        _auth: AuthContext,
+        auth: AuthContext,
         raw_prompt: str | None,
+        db: AsyncSession | None = None,
     ) -> PromptBuilderImproveResponse:
         prompt = (raw_prompt or "").strip()
         if not prompt:
@@ -37,6 +42,21 @@ class PromptBuilderService:
             model=model.provider_model,
             max_tokens=512,
         )
+        if db is not None:
+            await cost_recorder.record_llm_success(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                model_id=DEFAULT_BRAIN_MODEL,
+                kind=UsageKind.HELPER,
+                operation="prompt_improve",
+                idempotency_key=(
+                    f"helper:prompt_improve:{auth.user.id}:"
+                    f"{abs(hash(prompt)) % 10_000_000}"
+                ),
+                response=response,
+            )
+            await db.commit()
         improved = response.text.strip()
         if not improved:
             raise AppError("Prompt improvement failed", code="LLM_ERROR")

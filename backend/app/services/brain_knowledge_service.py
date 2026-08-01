@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+import hashlib
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +13,7 @@ from app.core.dependencies import AuthContext
 from app.core.logging import get_logger
 from app.db.models import BrainKnowledgeItem
 from app.schemas.api import BrainKnowledgeItemResponse
-from app.services.embedding_utils import cosine_similarity, embed_text
+from app.services.embedding_utils import EmbeddingCostContext, cosine_similarity, embed_text
 
 logger = get_logger(__name__)
 
@@ -45,7 +46,17 @@ class BrainKnowledgeService:
         if not text:
             return None
         try:
-            embedding = await embed_text(f"{title}\n{text}")
+            embedding = await embed_text(
+                f"{title}\n{text}",
+                cost_context=EmbeddingCostContext(
+                    db=db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    project_id=project_id,
+                    operation="brain_index",
+                    idempotency_key=f"embedding:index:{org_id}:{user_id}:{source_type}:{source_id}",
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_embed_failed", error=str(exc))
             embedding = None
@@ -159,7 +170,20 @@ class BrainKnowledgeService:
         if not (query or "").strip():
             return []
         try:
-            query_vec = await embed_text(query)
+            query_vec = await embed_text(
+                query,
+                cost_context=EmbeddingCostContext(
+                    db=db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    project_id=project_id,
+                    operation="brain_retrieve",
+                    idempotency_key=(
+                        f"embedding:retrieve:{org_id}:{user_id}:"
+                        f"{hashlib.sha256(query.encode()).hexdigest()[:24]}"
+                    ),
+                ),
+            )
         except Exception:
             query_vec = None
 

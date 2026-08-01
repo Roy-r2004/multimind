@@ -5,12 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ValidationError
+from app.db.models import UsageKind
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
 from app.schemas.api import OfficialSourceSeed, OfficialSourceSeedPlan
+from app.services.scraping.cost_tracking import record_scraping_llm
 from app.services.scraping.url_canonicalization import UrlRejected, canonicalize_discovery_url
 
 MAX_OFFICIAL_SEEDS = 16
@@ -28,6 +31,11 @@ class OfficialSourceSeedPlanner:
         registry_hints: list[str],
         source_strategy: list[str],
         max_sources: int = MAX_OFFICIAL_SEEDS,
+        db: AsyncSession | None = None,
+        org_id: str | None = None,
+        user_id: str | None = None,
+        mission_id: str | None = None,
+        execution_id: str | None = None,
     ) -> list[OfficialSourceSeed]:
         model = get_model("gpt-4.1")
         provider = get_provider_registry().get_provider(model.provider)
@@ -42,11 +50,40 @@ class OfficialSourceSeedPlanner:
             registry_hints=registry_hints[:20],
             source_strategy=source_strategy[:20],
         )
-        response = await provider.complete(
-            system="You return strict JSON listing official registry and directory URLs.",
-            user=prompt,
-            model=model.provider_model,
-            max_tokens=2000,
+        idem = f"official-seed:{execution_id or mission_id or 'unknown'}"
+        try:
+            response = await provider.complete(
+                system="You return strict JSON listing official registry and directory URLs.",
+                user=prompt,
+                model=model.provider_model,
+                max_tokens=2000,
+            )
+        except Exception:
+            await record_scraping_llm(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                mission_id=mission_id,
+                execution_id=execution_id,
+                model_id="gpt-4.1",
+                kind=UsageKind.SCRAPING,
+                operation="official_source_seed",
+                idempotency_key=f"{idem}:failed",
+                failed=True,
+                error_code="official_source_seed_failed",
+            )
+            raise
+        await record_scraping_llm(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            mission_id=mission_id,
+            execution_id=execution_id,
+            model_id="gpt-4.1",
+            kind=UsageKind.SCRAPING,
+            operation="official_source_seed",
+            idempotency_key=idem,
+            response=response,
         )
         try:
             raw = LLMProvider.parse_json_response(response.text)

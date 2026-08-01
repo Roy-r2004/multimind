@@ -50,7 +50,13 @@ class ScrapingBlueprintService:
         await db.refresh(blueprint)
 
         try:
-            content = await get_blueprint_orchestrator().generate(mission, model_set)
+            content = await get_blueprint_orchestrator().generate(
+                mission,
+                model_set,
+                db=db,
+                blueprint_id=blueprint.id,
+                user_id=auth.user.id,
+            )
             validated = enrich_blueprint_payload(
                 content.model_dump(mode="json"),
                 mission_title=mission.title,
@@ -220,6 +226,9 @@ class ScrapingBlueprintService:
                 model_set,
                 previous_blueprint=source.blueprint_json,
                 change_instructions=change_instructions,
+                db=db,
+                blueprint_id=new_blueprint.id,
+                user_id=auth.user.id,
             )
             new_blueprint.blueprint_json = enrich_blueprint_payload(
                 content.model_dump(mode="json"),

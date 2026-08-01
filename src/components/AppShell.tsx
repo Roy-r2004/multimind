@@ -11,6 +11,7 @@ import {
   Map as MapIcon,
   Menu,
   MessageSquare,
+  Receipt,
   Search,
   Settings,
   X,
@@ -30,6 +31,7 @@ const NAV = [
   { to: "/lessons", label: "Lessons", icon: BookOpen },
   { to: "/saved-documents", label: "Saved Documents", icon: FileText },
   { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
+  { to: "/usage", label: "Usage & Costs", icon: Receipt },
 ];
 
 const WORKSPACES = [

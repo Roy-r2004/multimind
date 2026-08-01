@@ -28,7 +28,11 @@ from app.db.models import (
     ScrapingSourceDocumentChunk,
     ScrapingSourceDocumentText,
     SourceDocumentTextPreparationStatus,
+    UsageKind,
 )
+from app.llm.providers import LLMResponse
+from app.services.cost_recorder import cost_recorder
+from app.services.scraping.cost_tracking import resolve_mission_owner_user_id
 from app.services.scraping.document_text_preparation_service import (
     SourceDocumentPreparationContext,
     document_text_preparation_service,
@@ -177,6 +181,42 @@ class FacilityExtractionService:
                 "schema_version": self.provider.schema_version,
                 "structured_output": _safe_metadata(provider_diagnostics),
             }
+            if isinstance(provider_result, FacilityExtractionProviderResult):
+                synthetic = LLMResponse(
+                    text="",
+                    tokens_input=provider_result.tokens_input,
+                    tokens_output=provider_result.tokens_output,
+                    cost_usd=provider_result.cost_usd,
+                    raw={"id": provider_request_id} if provider_request_id else None,
+                )
+                model_id = (
+                    provider_result.model_id
+                    or getattr(self.provider, "model_id", None)
+                    or "gpt-4.1"
+                )
+                execution = await db.get(ScrapingExecution, context.execution_id)
+                owner_id, mission_id = await resolve_mission_owner_user_id(
+                    db,
+                    execution_id=context.execution_id,
+                    mission_id=execution.mission_id if execution else None,
+                )
+                await cost_recorder.record_llm_success(
+                    db,
+                    org_id=context.organization_id,
+                    user_id=owner_id,
+                    mission_id=mission_id,
+                    execution_id=context.execution_id,
+                    model_id=model_id,
+                    kind=UsageKind.EXTRACTION,
+                    operation="facility_extract",
+                    idempotency_key=(
+                        f"extraction:{attempt.id}"
+                        if attempt.id
+                        else f"extraction:attempt:{attempt_key}"
+                    ),
+                    response=synthetic,
+                    metadata={"chunk_id": chunk_id},
+                )
             await db.commit()
             await db.refresh(attempt)
             return FacilityExtractionSummary(

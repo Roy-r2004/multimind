@@ -91,7 +91,7 @@ class FakeOrchestrator:
         self.should_fail = should_fail
         self.calls = []
 
-    async def generate(self, mission, model_set, previous_blueprint=None, change_instructions=None):
+    async def generate(self, mission, model_set, previous_blueprint=None, change_instructions=None, **_kwargs):
         self.calls.append((mission, model_set, previous_blueprint, change_instructions))
         if self.should_fail:
             raise RuntimeError("provider failed")

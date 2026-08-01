@@ -63,6 +63,10 @@ class FacilityExtractionProviderResult(BaseModel):
     output: FacilityExtractionOutput
     diagnostics: dict[str, Any] = Field(default_factory=dict)
     provider_request_id: str | None = Field(default=None, max_length=255)
+    tokens_input: int = 0
+    tokens_output: int = 0
+    cost_usd: float | None = None
+    model_id: str | None = None
 
 
 class FacilityExtractionProvider(ABC):

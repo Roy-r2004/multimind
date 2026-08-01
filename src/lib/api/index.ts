@@ -4,6 +4,10 @@ import { apiFormRequest, apiRequest } from "@/lib/api/client";
 import type {
   ApiChat,
   ApiCostSummary,
+  ApiUserUsageBreakdown,
+  ApiUserUsageRecords,
+  ApiUserUsageSummary,
+  ApiUserUsageTimeseries,
   ApiAdminAuditLogList,
   ApiAdminAuditStats,
   ApiAdminBrainDetail,
@@ -515,6 +519,52 @@ export const api = {
 
     pricing: (auth: Auth) =>
       apiRequest<ApiPricingCatalog>("/costs/pricing", { token: auth.token, orgId: auth.orgId }),
+  },
+
+  usage: {
+    summary: (auth: Auth) =>
+      apiRequest<ApiUserUsageSummary>("/usage/summary", { token: auth.token, orgId: auth.orgId }),
+
+    timeseries: (auth: Auth, period: "7d" | "30d" | "90d" | "all" = "30d") =>
+      apiRequest<ApiUserUsageTimeseries>(`/usage/timeseries?period=${period}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    breakdown: (
+      auth: Auth,
+      groupBy: "model" | "kind" | "operation" | "status" | "project" | "cost_source" = "model",
+      period: "7d" | "30d" | "90d" | "all" = "30d",
+    ) =>
+      apiRequest<ApiUserUsageBreakdown>(
+        `/usage/breakdown?group_by=${groupBy}&period=${period}`,
+        { token: auth.token, orgId: auth.orgId },
+      ),
+
+    records: (
+      auth: Auth,
+      params?: {
+        page?: number;
+        limit?: number;
+        kind?: string;
+        status?: string;
+        model_id?: string;
+        operation?: string;
+      },
+    ) => {
+      const search = new URLSearchParams();
+      if (params?.page) search.set("page", String(params.page));
+      if (params?.limit) search.set("limit", String(params.limit));
+      if (params?.kind) search.set("kind", params.kind);
+      if (params?.status) search.set("status", params.status);
+      if (params?.model_id) search.set("model_id", params.model_id);
+      if (params?.operation) search.set("operation", params.operation);
+      const qs = search.toString();
+      return apiRequest<ApiUserUsageRecords>(`/usage/records${qs ? `?${qs}` : ""}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
   },
 
   admin: {

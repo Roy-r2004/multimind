@@ -12,7 +12,7 @@ from conftest import create_model_set, valid_blueprint
 
 
 class FakeOrchestrator:
-    async def generate(self, mission, model_set, previous_blueprint=None, change_instructions=None):
+    async def generate(self, mission, model_set, previous_blueprint=None, change_instructions=None, **_kwargs):
         return ScrapingBlueprintContent.model_validate(valid_blueprint())
 
 
