@@ -59,6 +59,8 @@ async def list_maps_census_places(
     run_id: str,
     relevant_only: bool = Query(default=False),
     with_website_only: bool = Query(default=False),
+    client_eligibility: str | None = Query(default=None),
+    lifecycle_status: str | None = Query(default=None),
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -68,6 +70,8 @@ async def list_maps_census_places(
         run_id,
         relevant_only=relevant_only,
         with_website_only=with_website_only,
+        client_eligibility=client_eligibility,
+        lifecycle_status=lifecycle_status,
     )
 
 

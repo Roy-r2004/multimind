@@ -737,6 +737,22 @@ class MapsPlaceItem(BaseModel):
     raw_website: str | None = None
     official_website: str | None = None
     website_source: str | None = None
+    lifecycle_status: str = "discovered"
+    client_eligibility: str = "excluded"
+    operator_type: str | None = None
+    ownership_status: str | None = None
+    funding_type: str | None = None
+    facility_type: str | None = None
+    care_setting: str | None = None
+    organization_scope: str | None = None
+    operator_name: str | None = None
+    contact_status: str | None = None
+    addiction_focus_confirmed: bool | None = None
+    medical_detox: bool | None = None
+    residential_accommodation: bool | None = None
+    classification_confidence: float | None = None
+    classification_evidence: dict[str, Any] | None = None
+    discovery_sources: list[str] = Field(default_factory=list)
     is_relevant: bool | None = None
     relevance_reason: str | None = None
     confidence_score: float | None = None

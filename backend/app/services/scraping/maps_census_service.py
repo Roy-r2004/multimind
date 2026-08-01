@@ -35,6 +35,7 @@ from app.db.models import (
     MapsCensusCellStatus,
     MapsCensusRun,
     MapsCensusStatus,
+    MapsClientEligibility,
     MapsContactStatus,
     MapsLifecycleStatus,
     MapsPlace,
@@ -256,6 +257,8 @@ class MapsCensusService:
         *,
         relevant_only: bool = False,
         with_website_only: bool = False,
+        client_eligibility: str | None = None,
+        lifecycle_status: str | None = None,
     ) -> list[MapsPlaceItem]:
         run = await db.get(MapsCensusRun, run_id)
         if run is None or run.organization_id != auth.org_id:
@@ -265,6 +268,10 @@ class MapsCensusService:
             query = query.where(MapsPlace.is_relevant.is_(True))
         if with_website_only:
             query = query.where(MapsPlace.official_website.is_not(None))
+        if client_eligibility is not None:
+            query = query.where(MapsPlace.client_eligibility == client_eligibility.strip().lower())
+        if lifecycle_status is not None:
+            query = query.where(MapsPlace.lifecycle_status == lifecycle_status.strip().lower())
         rows = (await db.execute(query.order_by(MapsPlace.canonical_name))).scalars().all()
         return [_place_item(place) for place in rows]
 
@@ -1697,6 +1704,9 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
 
 
 def _place_item(place: MapsPlace) -> MapsPlaceItem:
+    verification_verdict = place.verification_verdict or derive_legacy_verification_verdict(
+        place.lifecycle_status
+    )
     return MapsPlaceItem(
         id=place.id,
         google_place_id=place.google_place_id,
@@ -1711,18 +1721,36 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         raw_website=place.raw_website,
         official_website=place.official_website,
         website_source=place.website_source,
+        lifecycle_status=place.lifecycle_status or MapsLifecycleStatus.DISCOVERED.value,
+        client_eligibility=place.client_eligibility or MapsClientEligibility.EXCLUDED.value,
+        operator_type=place.operator_type,
+        ownership_status=place.ownership_status,
+        funding_type=place.funding_type,
+        facility_type=place.facility_type,
+        care_setting=place.care_setting,
+        organization_scope=place.organization_scope,
+        operator_name=place.operator_name,
+        contact_status=place.contact_status,
+        addiction_focus_confirmed=place.addiction_focus_confirmed,
+        medical_detox=place.medical_detox,
+        residential_accommodation=place.residential_accommodation,
+        classification_confidence=(
+            float(place.classification_confidence) if place.classification_confidence is not None else None
+        ),
+        classification_evidence=place.classification_evidence,
+        discovery_sources=list(place.discovery_sources or []),
         is_relevant=place.is_relevant,
         relevance_reason=place.relevance_reason,
         confidence_score=float(place.confidence_score) if place.confidence_score is not None else None,
         discovered_via_query=place.discovered_via_query,
         has_photo=bool(place.photo_reference),
         verification_tier=_verification_tier(place),
-        export_eligible=_export_eligible(place),
+        export_eligible=place.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
         enrichment_status=place.enrichment_status or "pending",
         addictions_treated=list(place.addictions_treated or []),
         languages_spoken=list(place.languages_spoken or []),
         treatment_price=place.treatment_price,
-        verification_verdict=place.verification_verdict,
+        verification_verdict=verification_verdict,
         verification_reason=place.verification_reason,
         verification_source_url=place.verification_source_url,
     )
