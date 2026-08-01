@@ -2662,6 +2662,12 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source_record_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     registry_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     classification_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    enrichment_pipeline_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    website_relationship: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    website_relationship_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    website_relationship_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    website_resolution_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    enrichment_extraction_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="places")
 
