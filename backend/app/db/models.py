@@ -2330,6 +2330,14 @@ class MapsCensusCellStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class MapsPlaceEnrichmentStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """A standalone Google Places census run for one country — independent of the
     Scraping Council pipeline so it can later be compared against it."""
@@ -2368,6 +2376,11 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     hero_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    places_enriched: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    enrichment_refresh_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    enrichment_refresh_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     cells: Mapped[list["MapsCensusCell"]] = relationship(
         back_populates="run",
@@ -2443,5 +2456,21 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     relevance_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     discovered_via_query: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    enrichment_status: Mapped[str] = mapped_column(
+        String(20), default=MapsPlaceEnrichmentStatus.PENDING.value, nullable=False
+    )
+    enrichment_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enrichment_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    enrichment_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    addictions_treated: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    languages_spoken: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    treatment_price: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    enrichment_pages_crawled: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # Web-search verification of whether the listing really is an addiction facility.
+    verification_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    verification_reason: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    verification_source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="places")

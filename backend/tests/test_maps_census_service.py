@@ -11,14 +11,21 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
 from app.services.scraping.maps_census_service import (
+    MapsWebsitePlan,
+    _accepted_direct_llm_website_url,
     _accepted_llm_website_url,
     _maps_website_search_queries,
     _match_official_website_by_address,
     _normalize_website_payload,
+    _is_facebook_url,
     auto_refresh_maps_census_websites,
+    has_street_address,
+    is_generic_facility_name,
+    has_contact_channel,
     maps_census_service,
 )
 from app.services.scraping.maps_grid_planner import MapsGridCell
@@ -64,6 +71,37 @@ class _FakeProviderRegistry:
 
     def get_provider(self, _name: str) -> _FakeProvider:
         return self._provider
+
+
+def _use_serper_website_search(monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "maps_census_website_search_mode", "serper")
+
+
+def _patch_direct_llm_website_finder(monkeypatch, *, url: str, confidence: float = 0.95) -> None:
+    async def fake_find_batch(self, *, provider, model_slug, country_code, country_name, batch):
+        from app.services.scraping.maps_census_service import MapsWebsiteDecision
+
+        return [
+            MapsWebsiteDecision(
+                place_id=item["id"],
+                url=url,
+                reason="known facility",
+                confidence=confidence,
+            )
+            for item in batch
+        ]
+
+    async def verify_always(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._find_websites_llm_batch",
+        fake_find_batch,
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service._verify_website_reachable",
+        verify_always,
+    )
 
 
 async def _create_run(db, auth: AuthContext) -> MapsCensusRun:
@@ -188,7 +226,7 @@ async def test_run_census_dedupes_places_and_applies_website_validation(db, auth
 
 
 @pytest.mark.asyncio
-async def test_run_census_falls_back_to_search_when_places_has_no_website(db, auth, monkeypatch):
+async def test_run_census_falls_back_to_llm_when_places_has_no_website(db, auth, monkeypatch):
     run = await _create_run(db, auth)
 
     cells = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
@@ -235,27 +273,14 @@ async def test_run_census_falls_back_to_search_when_places_has_no_website(db, au
         lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
     )
 
-    class _FakeSearchProvider:
-        name = "fake"
-
-        def __init__(self) -> None:
-            self.requests: list[str] = []
-
-        async def search(self, request) -> list[SearchProviderResult]:
-            self.requests.append(request.query)
-            return [
-                SearchProviderResult(
-                    rank=1,
-                    url="https://centre-gamma.by/",
-                    title="Centre Gamma — official site",
-                    snippet="Official rehabilitation center in Minsk, Belarus",
-                )
-            ]
-
-    fake_search_provider = _FakeSearchProvider()
+    _patch_direct_llm_website_finder(monkeypatch, url="https://centre-gamma.by/")
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_search_provider",
-        lambda: fake_search_provider,
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="anthropic/claude-sonnet-4"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -264,14 +289,13 @@ async def test_run_census_falls_back_to_search_when_places_has_no_website(db, au
     await db.refresh(run)
     assert run.status == MapsCensusStatus.COMPLETED
     assert run.places_with_website == 1
-    assert len(fake_search_provider.requests) == 1
 
     place = (
         await db.execute(select(MapsPlace).where(MapsPlace.google_place_id == "place-no-site"))
     ).scalar_one()
     assert place.is_relevant is True
     assert place.official_website == "https://centre-gamma.by/"
-    assert place.website_source == "search"
+    assert place.website_source == "llm"
 
 
 @pytest.mark.asyncio
@@ -572,22 +596,14 @@ async def test_run_website_refresh_backfills_missing_website_and_completes(db, a
     db.add(place)
     await db.commit()
 
-    class _FakeSearchProvider:
-        name = "fake"
-
-        async def search(self, request) -> list[SearchProviderResult]:
-            return [
-                SearchProviderResult(
-                    rank=1,
-                    url="https://centre-delta.by/",
-                    title="Centre Delta — official site",
-                    snippet="Official rehabilitation center in Minsk, Belarus",
-                )
-            ]
-
+    _patch_direct_llm_website_finder(monkeypatch, url="https://centre-delta.by/")
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_search_provider",
-        lambda: _FakeSearchProvider(),
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="anthropic/claude-sonnet-4"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider("{}")),
     )
 
     summary = await maps_census_service.run_website_refresh(db, run_id=run.id)
@@ -599,7 +615,7 @@ async def test_run_website_refresh_backfills_missing_website_and_completes(db, a
 
     await db.refresh(place)
     assert place.official_website == "https://centre-delta.by/"
-    assert place.website_source == "search"
+    assert place.website_source == "llm"
 
 
 def _tracking_create_task(monkeypatch, *, marker: str):
@@ -646,12 +662,177 @@ def test_accepted_llm_website_url_requires_candidate_host_and_homepage():
     assert _accepted_llm_website_url("https://facebook.com/gknd", candidates=candidates) is None
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://facebook.com/ALT.Association/",
+        "https://www.facebook.com/profile.php?id=123",
+        "https://web.facebook.com/clinic/",
+        "https://m.facebook.com/clinic/",
+    ],
+)
+def test_places_facebook_urls_are_accepted_as_social_fallbacks(url):
+    assert _is_facebook_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "not-a-url",
+        "https://facebook.example/clinic",
+        "https://evil.example/?next=facebook.com/clinic",
+        "https://instagram.com/clinic",
+        "https://directory.example/clinic",
+        "https://www.facebook.com/groups/algeria-health",
+        "https://www.facebook.com/login/",
+        "https://www.facebook.com/",
+    ],
+)
+def test_only_real_facebook_hosts_are_places_social_fallbacks(url):
+    assert _is_facebook_url(url) is False
+
+
+@pytest.mark.asyncio
+async def test_llm_facebook_page_accepted_when_page_name_identifies_facility():
+    accepted = await _accepted_direct_llm_website_url(
+        "https://www.facebook.com/EhsFernaneOuedAissi/",
+        confidence=0.9,
+        page_name="Ehs fernane oued aissi",
+        facility_name="Psychiatric Hospital Fernane Hanafi",
+    )
+    assert accepted == "https://www.facebook.com/EhsFernaneOuedAissi/"
+
+
+@pytest.mark.asyncio
+async def test_llm_facebook_page_accepted_via_vanity_handle_without_page_name():
+    accepted = await _accepted_direct_llm_website_url(
+        "https://www.facebook.com/CliniqueLilasAlger/",
+        confidence=0.9,
+        page_name="",
+        facility_name="Clinique Psychiatrique Lilas",
+    )
+    assert accepted == "https://www.facebook.com/CliniqueLilasAlger/"
+
+
+@pytest.mark.asyncio
+async def test_llm_facebook_page_rejected_when_it_belongs_to_another_clinic():
+    accepted = await _accepted_direct_llm_website_url(
+        "https://www.facebook.com/cgsahydra/",
+        confidence=0.95,
+        page_name="Clinique CGSA Hydra",
+        facility_name="مركز معالجة الادمان - يسر.polyclinic",
+    )
+    assert accepted is None
+
+
+@pytest.mark.asyncio
+async def test_llm_opaque_facebook_profile_rejected_without_identity_proof():
+    accepted = await _accepted_direct_llm_website_url(
+        "https://www.facebook.com/profile.php?id=61559475466892",
+        confidence=0.95,
+        page_name="",
+        facility_name="Dr. Fekar psychiatre et addictologue",
+    )
+    assert accepted is None
+
+
+@pytest.mark.asyncio
+async def test_places_facebook_page_is_used_only_when_official_site_is_missing(db, auth):
+    run = await _create_run(db, auth)
+    fallback = MapsPlace(
+        run_id=run.id,
+        google_place_id="place-facebook-only",
+        raw_name="ALT Association",
+        canonical_name="ALT Association",
+        formatted_address="60 Hai Essabah, Oran",
+        city_name="Oran",
+        is_relevant=True,
+        raw_website="https://web.facebook.com/ALT.Association/",
+    )
+    official = MapsPlace(
+        run_id=run.id,
+        google_place_id="place-with-domain",
+        raw_name="Clinic With Domain",
+        canonical_name="Clinic With Domain",
+        formatted_address="1 Main Street, Oran",
+        city_name="Oran",
+        is_relevant=True,
+        raw_website="https://facebook.com/clinic/",
+        official_website="https://clinic.dz/",
+        website_source="llm",
+    )
+    db.add_all([fallback, official])
+    await db.commit()
+
+    applied = await maps_census_service._apply_places_social_fallbacks(
+        maps_census_service._session_factory(db), run_id=run.id
+    )
+
+    assert applied == 1
+    await db.refresh(fallback)
+    await db.refresh(official)
+    assert fallback.official_website == "https://web.facebook.com/ALT.Association/"
+    assert fallback.website_source == "places_social"
+    assert official.official_website == "https://clinic.dz/"
+    assert official.website_source == "llm"
+
+
+@pytest.mark.asyncio
+async def test_accepted_direct_llm_website_url_requires_confidence_and_rejects_social(
+    monkeypatch,
+):
+    async def verify_ok(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service._verify_website_reachable",
+        verify_ok,
+    )
+    assert (
+        await _accepted_direct_llm_website_url(
+            "https://rehab-center-alger.com/",
+            confidence=0.95,
+        )
+        == "https://rehab-center-alger.com/"
+    )
+    assert (
+        await _accepted_direct_llm_website_url(
+            "https://facebook.com/clinic",
+            confidence=0.95,
+        )
+        is None
+    )
+    assert (
+        await _accepted_direct_llm_website_url(
+            "https://rehab-center-alger.com/",
+            confidence=0.5,
+        )
+        is None
+    )
+
+
 def test_normalize_website_payload_accepts_url_aliases():
     payload = _normalize_website_payload(
         [{"id": "p1", "website": "https://gknd.by/", "confidence": 0.8}]
     )
     assert payload["decisions"][0]["place_id"] == "p1"
     assert payload["decisions"][0]["url"] == "https://gknd.by/"
+
+
+def test_normalize_website_payload_truncates_long_sonar_reasons():
+    long_reason = "x" * 500
+    payload = _normalize_website_payload(
+        [{"place_id": "p1", "url": None, "reason": long_reason, "confidence": 0.5}]
+    )
+    assert len(payload["decisions"][0]["reason"]) <= 2000
+    MapsWebsitePlan.model_validate(payload)
+
+    payload = _normalize_website_payload(
+        [{"place_id": "p1", "url": None, "reason": "y" * 2500, "confidence": 0.5}]
+    )
+    assert len(payload["decisions"][0]["reason"]) == 2000
+    MapsWebsitePlan.model_validate(payload)
 
 
 @pytest.mark.asyncio
@@ -785,6 +966,7 @@ async def test_propagate_does_not_overwrite_conflicting_websites(db, auth):
 
 @pytest.mark.asyncio
 async def test_run_website_refresh_uses_llm_when_rule_matchers_fail(db, auth, monkeypatch):
+    _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
     run.cells_total = 1
@@ -865,7 +1047,7 @@ async def test_run_website_refresh_uses_llm_when_rule_matchers_fail(db, auth, mo
     await db.refresh(place)
     assert place.official_website == "https://www.gknd.by/"
     assert place.website_source == "search"
-    assert requested_models == ["claude"]
+    assert requested_models == ["sonar-pro"]
 
 
 @pytest.mark.asyncio
@@ -908,33 +1090,40 @@ async def test_delete_unverified_places_removes_only_relevant_rows_without_websi
 
 
 @pytest.mark.asyncio
-async def test_refresh_recounts_only_retained_verified_facilities(db, auth, monkeypatch):
+async def test_refresh_recounts_after_dropping_places_without_contact(db, auth, monkeypatch):
+    """Website refresh demotes places with neither phone nor website, then recounts."""
+    _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
-    run.places_found = 2
-    run.places_classified_relevant = 2
+    run.places_found = 3
+    run.places_classified_relevant = 3
     await db.commit()
 
-    db.add_all(
-        [
-            MapsPlace(
-                run_id=run.id,
-                google_place_id="verified-count",
-                raw_name="Verified Rehab",
-                canonical_name="Verified Rehab",
-                is_relevant=True,
-                official_website="https://verified.example/",
-                website_source="search",
-            ),
-            MapsPlace(
-                run_id=run.id,
-                google_place_id="unverified-count",
-                raw_name="Unverified Rehab",
-                canonical_name="Unverified Rehab",
-                is_relevant=True,
-            ),
-        ]
+    verified = MapsPlace(
+        run_id=run.id,
+        google_place_id="verified-count",
+        raw_name="Verified Rehab",
+        canonical_name="Verified Rehab",
+        is_relevant=True,
+        official_website="https://verified.example/",
+        website_source="search",
     )
+    phone_only = MapsPlace(
+        run_id=run.id,
+        google_place_id="phone-count",
+        raw_name="Phone Only Rehab",
+        canonical_name="Phone Only Rehab",
+        is_relevant=True,
+        international_phone_number="+213 555 00 00",
+    )
+    no_contact = MapsPlace(
+        run_id=run.id,
+        google_place_id="unverified-count",
+        raw_name="Unverified Rehab",
+        canonical_name="Unverified Rehab",
+        is_relevant=True,
+    )
+    db.add_all([verified, phone_only, no_contact])
     await db.commit()
 
     class _EmptySearchProvider:
@@ -948,10 +1137,12 @@ async def test_refresh_recounts_only_retained_verified_facilities(db, auth, monk
 
     await maps_census_service.run_website_refresh(db, run_id=run.id)
     await db.refresh(run)
-    assert run.places_found == 2
-    assert run.places_classified_relevant == 1
+    await db.refresh(no_contact)
+    assert run.places_found == 3
+    assert run.places_classified_relevant == 2
     assert run.places_with_website == 1
-
+    assert no_contact.is_relevant is False
+    assert no_contact.relevance_reason == "excluded: missing phone and website"
 
 def test_maps_website_search_queries_fall_back_from_quoted_to_address():
     queries = _maps_website_search_queries(
@@ -974,6 +1165,7 @@ async def test_run_website_refresh_retries_unquoted_when_quoted_query_empty(
     """Live Belarus gap: quoting the Latin transliteration returns 0 Serper hits;
     the unquoted retry surfaces the real homepage which address-matching accepts.
     """
+    _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
     run.cells_total = 1
@@ -1103,10 +1295,153 @@ def test_address_fallback_returns_none_for_short_address():
     assert selected is None
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        "QW2G+35C, Chéraga",
+        "8J6J+7RF, Constantine",
+        "G4XH+7F9, Batna",
+        "C44M+R28, Khenchela",
+        "M746+5JJ, Djelfa",
+    ],
+)
+def test_plus_code_only_address_is_not_a_street_address(address):
+    assert has_street_address(address) is False
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "7VQ8+8J9, Rue DES FRÈRES BEN FISSA, Aïn Témouchent",
+        "QW2G+35C, N41, Chéraga",
+        "12 Rue Ahmed Ouaked, Hydra, Alger",
+        "Route de Dar El Beida, Alger",
+    ],
+)
+def test_real_street_survives_alongside_plus_code(address):
+    assert has_street_address(address) is True
+
+
+def test_missing_address_is_not_a_street_address():
+    assert has_street_address(None) is False
+    assert has_street_address("   ") is False
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "désintoxication",
+        "Centre De Désintoxication",
+        "Clinique",
+        "Addiction Treatment Center",
+        "مركز معالجة الادمان",
+        "",
+    ],
+)
+def test_generic_category_names_are_rejected(name):
+    assert is_generic_facility_name(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Abidat centre anti drogues",
+        "Traitement des Addictions (CERTA-TO)",
+        "Clinique Psychiatrique Lilas - Hygiène mentale",
+        "Clinique CGSA",
+        "مركز بوشاوي للادمان",
+    ],
+)
+def test_named_facilities_survive_generic_name_guard(name):
+    assert is_generic_facility_name(name) is False
+
+
+def test_contact_channel_requires_phone_or_website():
+    phone_only = SimpleNamespace(
+        international_phone_number="+213 555 00 00",
+        official_website=None,
+        raw_website=None,
+    )
+    website_only = SimpleNamespace(
+        international_phone_number=None,
+        official_website="https://clinic.dz/",
+        raw_website=None,
+    )
+    facebook_raw = SimpleNamespace(
+        international_phone_number=None,
+        official_website=None,
+        raw_website="https://web.facebook.com/ALT.Association/",
+    )
+    neither = SimpleNamespace(
+        international_phone_number=None,
+        official_website=None,
+        raw_website=None,
+    )
+    blank = SimpleNamespace(
+        international_phone_number="  ",
+        official_website="",
+        raw_website=None,
+    )
+    assert has_contact_channel(phone_only) is True
+    assert has_contact_channel(website_only) is True
+    assert has_contact_channel(facebook_raw) is True
+    assert has_contact_channel(neither) is False
+    assert has_contact_channel(blank) is False
+
+
+@pytest.mark.asyncio
+async def test_missing_contact_filter_demotes_places_without_phone_or_website(db, auth):
+    run = await _create_run(db, auth)
+    keep_phone = MapsPlace(
+        run_id=run.id,
+        google_place_id="phone-only",
+        raw_name="Phone Only Rehab",
+        canonical_name="Phone Only Rehab",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="1 Street, Algiers",
+        international_phone_number="+213 21 00 00 00",
+    )
+    keep_site = MapsPlace(
+        run_id=run.id,
+        google_place_id="site-only",
+        raw_name="Site Only Rehab",
+        canonical_name="Site Only Rehab",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="2 Street, Algiers",
+        official_website="https://site.example/",
+    )
+    drop = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-contact",
+        raw_name="No Contact Rehab",
+        canonical_name="No Contact Rehab",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="3 Street, Algiers",
+    )
+    db.add_all([keep_phone, keep_site, drop])
+    await db.commit()
+
+    demoted = await maps_census_service._apply_missing_contact_filter(
+        maps_census_service._session_factory(db), run_id=run.id
+    )
+    assert demoted == 1
+    await db.refresh(keep_phone)
+    await db.refresh(keep_site)
+    await db.refresh(drop)
+    assert keep_phone.is_relevant is True
+    assert keep_site.is_relevant is True
+    assert drop.is_relevant is False
+    assert drop.relevance_reason == "excluded: missing phone and website"
+
+
 @pytest.mark.asyncio
 async def test_run_website_refresh_uses_address_fallback_when_name_match_fails(
     db, auth, monkeypatch
 ):
+    _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
     run.cells_total = 1
@@ -1249,3 +1584,142 @@ async def test_auto_refresh_noop_when_disabled(db, auth, monkeypatch):
 
     await db.refresh(run)
     assert run.status == MapsCensusStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_export_run_csv_without_addictions_when_enrichment_disabled(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", False)
+    run = await _create_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-enrich",
+        raw_name="Basic Rehab",
+        canonical_name="Basic Rehab",
+        is_relevant=True,
+        confidence_score=0.92,
+        formatted_address="1 Street, Minsk",
+    )
+    db.add(place)
+    await db.commit()
+
+    _, csv_body = await maps_census_service.export_run_csv(db, auth, run.id, tier="all")
+    assert "Basic Rehab" in csv_body
+    assert "Not Specified" in csv_body
+
+
+@pytest.mark.asyncio
+async def test_apply_post_classification_filters_demotes_low_confidence_and_missing_address(
+    db, auth
+):
+    run = await _create_run(db, auth)
+    low_confidence = MapsPlace(
+        run_id=run.id,
+        google_place_id="low",
+        raw_name="Low Confidence Rehab",
+        canonical_name="Low Confidence Rehab",
+        is_relevant=True,
+        confidence_score=0.65,
+        formatted_address="123 Main St, Minsk",
+    )
+    missing_address = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-address",
+        raw_name="No Address Rehab",
+        canonical_name="No Address Rehab",
+        is_relevant=True,
+        confidence_score=0.85,
+    )
+    export_ready = MapsPlace(
+        run_id=run.id,
+        google_place_id="ready",
+        raw_name="Ready Rehab",
+        canonical_name="Ready Rehab",
+        is_relevant=True,
+        confidence_score=0.92,
+        formatted_address="456 Oak Ave, Minsk",
+    )
+    db.add_all([low_confidence, missing_address, export_ready])
+    await db.commit()
+
+    session_factory = maps_census_service._session_factory(db)
+    demoted = await maps_census_service._apply_post_classification_filters(
+        session_factory, run_id=run.id
+    )
+    assert demoted == 2
+
+    await db.refresh(low_confidence)
+    await db.refresh(missing_address)
+    await db.refresh(export_ready)
+    assert low_confidence.is_relevant is False
+    assert missing_address.is_relevant is False
+    assert export_ready.is_relevant is True
+
+
+@pytest.mark.asyncio
+async def test_export_run_csv_includes_eligible_rows_with_placeholders(db, auth):
+    run = await _create_run(db, auth)
+    verified = MapsPlace(
+        run_id=run.id,
+        google_place_id="verified",
+        raw_name="Verified Rehab",
+        canonical_name="Verified Rehab",
+        is_relevant=True,
+        confidence_score=0.95,
+        formatted_address="1 Rehab Lane, Minsk",
+        official_website="https://verified.example/",
+        international_phone_number="+375 17 123 4567",
+        addictions_treated=["Alcohol", "Gambling"],
+        languages_spoken=["English"],
+        treatment_price="Contact for pricing",
+        enrichment_status="completed",
+    )
+    flagged = MapsPlace(
+        run_id=run.id,
+        google_place_id="flagged",
+        raw_name="Flagged Rehab",
+        canonical_name="Flagged Rehab",
+        is_relevant=True,
+        confidence_score=0.75,
+        formatted_address="2 Review St, Minsk",
+        addictions_treated=["Heroin"],
+        enrichment_status="completed",
+    )
+    excluded = MapsPlace(
+        run_id=run.id,
+        google_place_id="excluded",
+        raw_name="Excluded Rehab",
+        canonical_name="Excluded Rehab",
+        is_relevant=False,
+        confidence_score=0.95,
+        formatted_address="3 Skip Rd, Minsk",
+    )
+    db.add_all([verified, flagged, excluded])
+    await db.commit()
+
+    filename, csv_body = await maps_census_service.export_run_csv(
+        db, auth, run.id, tier="all"
+    )
+    assert filename == "by-maps-census-export.csv"
+    lines = csv_body.strip().splitlines()
+    assert lines[0] == (
+        "Facility Name,Addictions Treated,Location,Languages Spoken,Website,Phone Number,Treatment Price"
+    )
+    assert len(lines) == 3
+    assert any("Verified Rehab" in line for line in lines[1:])
+    assert any("Flagged Rehab" in line for line in lines[1:])
+    assert any("Alcohol, Gambling" in line for line in lines[1:])
+    assert any("https://verified.example/" in line for line in lines[1:])
+
+    _, verified_only = await maps_census_service.export_run_csv(
+        db, auth, run.id, tier="verified"
+    )
+    assert "Verified Rehab" in verified_only
+    assert "Flagged Rehab" not in verified_only
+
+    _, flagged_only = await maps_census_service.export_run_csv(
+        db, auth, run.id, tier="flagged"
+    )
+    assert "Flagged Rehab" in flagged_only
+    assert "Verified Rehab" not in flagged_only

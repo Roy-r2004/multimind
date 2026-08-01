@@ -697,6 +697,8 @@ class MapsCensusRunSummary(BaseModel):
     places_found: int
     places_classified_relevant: int
     places_with_website: int
+    places_enriched: int = 0
+    enrichment_refresh_completed_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime
@@ -706,6 +708,17 @@ class MapsCensusRunSummary(BaseModel):
 
 class MapsCensusRunDetail(MapsCensusRunSummary):
     pass
+
+
+class MapsCensusCellItem(BaseModel):
+    id: str
+    region_name: str
+    city_name: str | None = None
+    query_text: str
+    status: str
+    places_found: int
+    error_message: str | None = None
+    completed_at: datetime | None = None
 
 
 class MapsPlaceItem(BaseModel):
@@ -727,6 +740,15 @@ class MapsPlaceItem(BaseModel):
     confidence_score: float | None = None
     discovered_via_query: str | None = None
     has_photo: bool = False
+    verification_tier: str = "excluded"
+    export_eligible: bool = False
+    enrichment_status: str = "pending"
+    addictions_treated: list[str] = Field(default_factory=list)
+    languages_spoken: list[str] = Field(default_factory=list)
+    treatment_price: str | None = None
+    verification_verdict: str | None = None
+    verification_reason: str | None = None
+    verification_source_url: str | None = None
 
 
 class SourceDiscoveryContext(BaseModel):

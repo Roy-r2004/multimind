@@ -2,31 +2,59 @@ import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-r
 import {
   ArrowLeft,
   Building2,
+  Download,
   ExternalLink,
-  Globe,
   Grid2x2,
-  Layers,
   Loader2,
-  MapPin,
-  Phone,
   Search,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { CountryOutline } from "@/components/maps/CountryOutline";
-import { MapsPlacePhoto } from "@/components/maps/MapsPlacePhoto";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
+import {
+  EXPORT_COLUMNS,
+  placeToExportRow,
+  sortPlacesForExport,
+} from "@/lib/maps/exportDisplay";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { getMapsCensusRun, listMapsCensusPlaces, refreshMapsCensusWebsites } from "@/lib/maps/api";
-import { groupVerifiedPlaces, type PlaceGroup } from "@/lib/maps/groupPlaces";
-import type { MapsCensusRunDetail, MapsPlaceItem } from "@/lib/maps/types";
+import {
+  downloadMapsCensusExport,
+  enrichMapsCensusRun,
+  getMapsCensusRun,
+  listMapsCensusCells,
+  listMapsCensusPlaces,
+  refreshMapsCensusWebsites,
+} from "@/lib/maps/api";
+import type { MapsCensusCellItem, MapsCensusRunDetail, MapsPlaceItem } from "@/lib/maps/types";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const POLL_INTERVAL_MS = 5000;
+const ENRICHMENT_BUSY = new Set(["pending", "running"]);
+
+function enrichmentStillRunning(
+  run: {
+    status: string;
+    completed_at?: string | null;
+    enrichment_refresh_completed_at?: string | null;
+  },
+  places: { enrichment_status: string }[],
+  enrichmentPollUntil: number | null,
+): boolean {
+  if (run.status !== "completed") return false;
+  // Enrichment job finished — stop even if some rows stayed empty.
+  if (run.enrichment_refresh_completed_at) return false;
+  if (!places.some((place) => ENRICHMENT_BUSY.has(place.enrichment_status))) return false;
+  if (enrichmentPollUntil != null && Date.now() < enrichmentPollUntil) return true;
+  // Don't poll forever on old runs that never started enrichment.
+  if (!run.completed_at) return false;
+  const ageMs = Date.now() - new Date(run.completed_at).getTime();
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 15 * 60 * 1000;
+}
 
 export const Route = createFileRoute("/maps/$runId")({
   head: () => ({ meta: [{ title: "Maps Census Run - MultiAI" }] }),
@@ -39,10 +67,15 @@ function MapsRunDetailPage() {
   const navigate = useNavigate();
   const [run, setRun] = useState<MapsCensusRunDetail | null>(null);
   const [places, setPlaces] = useState<MapsPlaceItem[]>([]);
+  const [searchCells, setSearchCells] = useState<MapsCensusCellItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const [pollTick, setPollTick] = useState(0);
+  const [showExportOnly, setShowExportOnly] = useState(false);
+  const [enrichmentPollUntil, setEnrichmentPollUntil] = useState<number | null>(null);
 
   useEffect(() => {
     const auth = authHeaders();
@@ -55,15 +88,20 @@ function MapsRunDetailPage() {
 
     async function load() {
       try {
-        const [runDetail, placeItems] = await Promise.all([
+        const [runDetail, placeItems, cellItems] = await Promise.all([
           getMapsCensusRun(auth!, runId),
-          listMapsCensusPlaces(auth!, runId, { relevantOnly: true, withWebsiteOnly: true }),
+          listMapsCensusPlaces(auth!, runId, { relevantOnly: true }),
+          listMapsCensusCells(auth!, runId),
         ]);
         if (cancelled) return;
         setRun(runDetail);
         setPlaces(placeItems);
+        setSearchCells(cellItems);
         setError(null);
-        if (ACTIVE_STATUSES.has(runDetail.status)) {
+        if (
+          ACTIVE_STATUSES.has(runDetail.status) ||
+          enrichmentStillRunning(runDetail, placeItems, enrichmentPollUntil)
+        ) {
           timer = setTimeout(load, POLL_INTERVAL_MS);
         }
       } catch (err) {
@@ -81,7 +119,7 @@ function MapsRunDetailPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [authHeaders, navigate, runId, pollTick]);
+  }, [authHeaders, navigate, runId, pollTick, enrichmentPollUntil]);
 
   async function handleFindMissingWebsites() {
     const auth = authHeaders();
@@ -99,11 +137,48 @@ function MapsRunDetailPage() {
     }
   }
 
-  const groupedPlaces = groupVerifiedPlaces(places);
+  async function handleDownloadExport() {
+    const auth = authHeaders();
+    if (!auth || run?.status !== "completed") return;
+    setExporting(true);
+    setError(null);
+    try {
+      await downloadMapsCensusExport(auth, runId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to download Excel export");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleEnrichWebsites() {
+    const auth = authHeaders();
+    if (!auth) return;
+    setEnriching(true);
+    setError(null);
+    setEnrichmentPollUntil(Date.now() + 15 * 60 * 1000);
+    try {
+      const updated = await enrichMapsCensusRun(auth, runId);
+      setRun(updated);
+      setPollTick((tick) => tick + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start AI enrichment");
+    } finally {
+      setEnriching(false);
+    }
+  }
+
+  const exportRows = useMemo(() => {
+    if (!run) return [];
+    const filtered = showExportOnly ? places.filter((place) => place.export_eligible) : places;
+    return sortPlacesForExport(filtered).map((place) => placeToExportRow(place, run.country_name));
+  }, [places, run, showExportOnly]);
+
+  const exportEligibleCount = places.filter((place) => place.export_eligible).length;
 
   return (
     <AppShell>
-      <DreamPageShell maxWidth="max-w-6xl">
+      <DreamPageShell maxWidth="max-w-[96rem]">
         {!run && (
           <Link
             to="/maps"
@@ -124,7 +199,11 @@ function MapsRunDetailPage() {
             <MapsRunHero
               run={run}
               refreshing={refreshing}
+              exporting={exporting}
+              enriching={enriching}
               onFindMissingWebsites={() => void handleFindMissingWebsites()}
+              onDownloadExport={() => void handleDownloadExport()}
+              onEnrichWebsites={() => void handleEnrichWebsites()}
             />
             {run.error_message && (
               <DreamPanel className="mt-6 text-sm text-rose-600">{run.error_message}</DreamPanel>
@@ -133,15 +212,15 @@ function MapsRunDetailPage() {
             <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
               <MapsStatCard
                 icon={<Building2 className="size-4" />}
-                label="Verified rehab centers"
-                value={groupedPlaces.length}
+                label="Relevant facilities"
+                value={places.length}
                 tone="teal"
                 emphasize
               />
               <MapsStatCard
-                icon={<Globe className="size-4" />}
-                label="Verified locations"
-                value={places.length}
+                icon={<Download className="size-4" />}
+                label="Export-ready rows"
+                value={exportEligibleCount}
                 tone="sky"
               />
               <MapsStatCard
@@ -152,28 +231,22 @@ function MapsRunDetailPage() {
               />
               <MapsStatCard
                 icon={<Grid2x2 className="size-4" />}
-                label="Cells searched"
-                value={`${run.cells_completed}/${run.cells_total}`}
+                label="Search queries"
+                value={searchCells.length}
                 tone="violet"
               />
             </div>
 
-            <div className="mt-10 space-y-3">
-              {places.length === 0 && (
-                <DreamPanel className="text-sm text-muted-foreground">
-                  {ACTIVE_STATUSES.has(run.status)
-                    ? "Census still running — rehab facilities will appear here as they're found and verified."
-                    : "No rehab facilities were confirmed for this country."}
-                </DreamPanel>
-              )}
-              {groupedPlaces.map((group) =>
-                group.places.length > 1 ? (
-                  <GroupedPlaceCard key={group.key} runId={run.id} group={group} />
-                ) : (
-                  <PlaceRow key={group.places[0].id} runId={run.id} place={group.places[0]} />
-                ),
-              )}
-            </div>
+            <SearchKeywordsTable cells={searchCells} isRunning={ACTIVE_STATUSES.has(run.status)} />
+
+            <FacilitiesExportTable
+              rows={exportRows}
+              isRunning={ACTIVE_STATUSES.has(run.status)}
+              showExportOnly={showExportOnly}
+              onToggleExportOnly={() => setShowExportOnly((value) => !value)}
+              exportEligibleCount={exportEligibleCount}
+              totalCount={places.length}
+            />
           </>
         )}
       </DreamPageShell>
@@ -181,18 +254,223 @@ function MapsRunDetailPage() {
   );
 }
 
+function SearchKeywordsTable({
+  cells,
+  isRunning,
+}: {
+  cells: MapsCensusCellItem[];
+  isRunning: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <DreamPanel className="mt-8 p-0 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition hover:bg-muted/30"
+      >
+        <div>
+          <h2 className="font-display text-base font-semibold text-foreground">Search keywords</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {cells.length} Google Places queries used for this run
+          </p>
+        </div>
+        <span className="text-sm text-muted-foreground">{open ? "Hide" : "Show"}</span>
+      </button>
+
+      {open && (
+        <div className="max-h-72 overflow-auto border-t border-border/80">
+          <table className="w-full min-w-[640px] border-collapse text-sm">
+            <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
+              <tr className="border-b border-border/80 text-left text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                <th className="px-4 py-2.5 font-semibold w-12">#</th>
+                <th className="px-4 py-2.5 font-semibold w-36">City</th>
+                <th className="px-4 py-2.5 font-semibold w-40">Region</th>
+                <th className="px-4 py-2.5 font-semibold">Keyword</th>
+                <th className="px-4 py-2.5 font-semibold w-24 text-right">Found</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cells.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-4 py-4 text-sm text-muted-foreground"
+                  >
+                    {isRunning
+                      ? "Planning search grid… keyword rows will appear here once the run starts."
+                      : "No search keywords recorded."}
+                  </td>
+                </tr>
+              ) : (
+                cells.map((cell, index) => (
+                  <tr
+                    key={cell.id}
+                    className="border-b border-border/50 odd:bg-background even:bg-muted/20"
+                  >
+                    <td className="px-4 py-2 text-muted-foreground tabular-nums">{index + 1}</td>
+                    <td className="px-4 py-2 text-foreground">{cell.city_name || "—"}</td>
+                    <td className="px-4 py-2 text-foreground">{cell.region_name}</td>
+                    <td className="px-4 py-2 font-mono text-[13px] text-foreground">{cell.query_text}</td>
+                    <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
+                      {cell.places_found}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </DreamPanel>
+  );
+}
+
+function FacilitiesExportTable({
+  rows,
+  isRunning,
+  showExportOnly,
+  onToggleExportOnly,
+  exportEligibleCount,
+  totalCount,
+}: {
+  rows: ReturnType<typeof placeToExportRow>[];
+  isRunning: boolean;
+  showExportOnly: boolean;
+  onToggleExportOnly: () => void;
+  exportEligibleCount: number;
+  totalCount: number;
+}) {
+  return (
+    <DreamPanel className="mt-8 p-0 overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 px-5 py-4">
+        <div>
+          <h2 className="font-display text-base font-semibold text-foreground">
+            Rehabilitation facilities
+          </h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            All 7 export columns are always shown. Addictions, languages, and price use placeholders
+            until AI enrichment fills them in. Download Excel exports every relevant row.
+          </p>
+        </div>
+        <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={showExportOnly}
+            onChange={onToggleExportOnly}
+            className="size-4 rounded border-border"
+          />
+          Show export-ready only ({exportEligibleCount}/{totalCount})
+        </label>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[1100px] border-collapse text-sm">
+          <thead className="sticky top-0 z-10 bg-emerald-50/95 text-left text-[11px] uppercase tracking-[0.06em] text-emerald-900 dark:bg-emerald-950/90 dark:text-emerald-100">
+            <tr className="border-b border-emerald-200/80 dark:border-emerald-900">
+              {EXPORT_COLUMNS.map((column) => (
+                <th key={column} className="px-3 py-2.5 font-semibold whitespace-nowrap">
+                  {column}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={EXPORT_COLUMNS.length}
+                  className="px-5 py-8 text-sm text-muted-foreground"
+                >
+                  {isRunning
+                    ? "Census still running — facility rows will appear here as they are classified."
+                    : showExportOnly
+                      ? "No export-ready rows yet. Turn off the filter or run AI enrichment."
+                      : "No relevant rehabilitation facilities were confirmed for this country."}
+                </td>
+              </tr>
+            ) : (
+              rows.map(({ place, cells }) => (
+                <tr
+                  key={place.id}
+                  className={cn(
+                    "border-b border-border/60 align-top",
+                    "odd:bg-background even:bg-muted/15",
+                    !place.export_eligible && "opacity-75",
+                  )}
+                >
+                  {EXPORT_COLUMNS.map((column) => (
+                    <ExportTableCell
+                      key={`${place.id}-${column}`}
+                      column={column}
+                      value={cells[column]}
+                    />
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </DreamPanel>
+  );
+}
+
+function ExportTableCell({ column, value }: { column: string; value: string }) {
+  const isPlaceholder = value === "Not Specified" || value === "Contact for pricing";
+  const isLink = column === "Website" && !isPlaceholder;
+
+  return (
+    <td className="min-w-[8rem] max-w-[18rem] px-3 py-2.5 align-top text-foreground">
+      {isLink ? (
+        <a
+          href={value}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex max-w-full items-start gap-1 text-primary hover:underline"
+        >
+          <span className="break-all">{value}</span>
+          <ExternalLink className="mt-0.5 size-3 shrink-0" />
+        </a>
+      ) : (
+        <span
+          className={cn(
+            "block whitespace-pre-wrap break-words",
+            isPlaceholder && "italic text-muted-foreground",
+          )}
+        >
+          {value}
+        </span>
+      )}
+    </td>
+  );
+}
+
 function MapsRunHero({
   run,
   refreshing,
+  exporting,
+  enriching,
   onFindMissingWebsites,
+  onDownloadExport,
+  onEnrichWebsites,
 }: {
   run: MapsCensusRunDetail;
   refreshing: boolean;
+  exporting: boolean;
+  enriching: boolean;
   onFindMissingWebsites: () => void;
+  onDownloadExport: () => void;
+  onEnrichWebsites: () => void;
 }) {
   const [primary, secondary] = getFlagColors(run.country_code);
   const showFindMissingWebsites =
     run.status === "completed" && run.places_classified_relevant > run.places_with_website;
+  const showEnrichWebsites =
+    run.status === "completed" &&
+    run.places_classified_relevant > 0 &&
+    run.places_enriched < run.places_classified_relevant;
 
   return (
     <div className="dream-rise relative isolate overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950 shadow-[0_16px_44px_oklch(0.2_0.06_240/0.35)]">
@@ -246,11 +524,41 @@ function MapsRunHero({
               </h1>
             </div>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/75">
-              Rehabilitation, addiction, and psychiatric facilities discovered via Google Places
-              and verified by AI.
+              Non-government inpatient addiction rehab census — private/NGO centers and
+              private addictologues. Search keywords and export columns in spreadsheet view.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {run.status === "completed" && (
+              <button
+                type="button"
+                onClick={onDownloadExport}
+                disabled={exporting}
+                className="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-semibold text-white backdrop-blur-sm transition hover:bg-white/20 disabled:opacity-50"
+              >
+                {exporting ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Download className="size-3.5" />
+                )}
+                {exporting ? "Preparing Excel…" : "Download Excel"}
+              </button>
+            )}
+            {showEnrichWebsites && (
+              <button
+                type="button"
+                onClick={onEnrichWebsites}
+                disabled={enriching}
+                className="inline-flex items-center gap-2 rounded-xl bg-white/90 px-3.5 py-2 text-xs font-semibold text-slate-900 shadow-sm transition hover:bg-white disabled:opacity-50"
+              >
+                {enriching ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="size-3.5" />
+                )}
+                Enrich with AI
+              </button>
+            )}
             {showFindMissingWebsites && (
               <button
                 type="button"
@@ -312,119 +620,5 @@ function MapsStatCard({
         {label}
       </div>
     </div>
-  );
-}
-
-function PlaceRow({ runId, place }: { runId: string; place: MapsPlaceItem }) {
-  return (
-    <div className="flex gap-3 rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
-      <MapsPlacePhoto
-        runId={runId}
-        placeId={place.id}
-        hasPhoto={place.has_photo}
-        alt={place.canonical_name}
-        className="size-14"
-      />
-      <div className="min-w-0 flex-1">
-        <h3 className="truncate font-display text-base text-foreground">{place.canonical_name}</h3>
-        <PlaceLocationDetails place={place} />
-      </div>
-    </div>
-  );
-}
-
-function GroupedPlaceCard({ runId, group }: { runId: string; group: PlaceGroup }) {
-  const websites = [
-    ...new Set(
-      group.places
-        .map((place) => place.official_website)
-        .filter((url): url is string => Boolean(url)),
-    ),
-  ];
-  const sharedWebsite = websites.length === 1 ? websites[0] : null;
-  const coverPlace = group.places.find((place) => place.has_photo) ?? group.places[0];
-
-  return (
-    <div className="flex gap-3 rounded-2xl border border-border/90 bg-card/95 p-4 transition hover:border-primary/30">
-      <MapsPlacePhoto
-        runId={runId}
-        placeId={coverPlace.id}
-        hasPhoto={coverPlace.has_photo}
-        alt={group.name}
-        className="size-14"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="truncate font-display text-base text-foreground">{group.name}</h3>
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-primary">
-            <Layers className="size-3" />
-            {group.places.length} locations
-          </span>
-        </div>
-        {sharedWebsite ? (
-          <a
-            href={sharedWebsite}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
-          >
-            <Globe className="size-3" />
-            {sharedWebsite}
-            <ExternalLink className="size-3" />
-          </a>
-        ) : null}
-        <div className="mt-3 space-y-3 divide-y divide-border/70">
-          {group.places.map((place) => (
-            <div key={place.id} className="pt-3 first:mt-0 first:border-0 first:pt-0">
-              <PlaceLocationDetails place={place} hideWebsite={Boolean(sharedWebsite)} />
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PlaceLocationDetails({
-  place,
-  hideWebsite = false,
-}: {
-  place: MapsPlaceItem;
-  hideWebsite?: boolean;
-}) {
-  return (
-    <>
-      {place.formatted_address && (
-        <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <MapPin className="size-3 shrink-0" />
-          {place.formatted_address}
-        </p>
-      )}
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
-        {place.international_phone_number ? (
-          <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-            <Phone className="size-3" />
-            {place.international_phone_number}
-          </span>
-        ) : (
-          <span className="text-muted-foreground/60">no phone found</span>
-        )}
-        {!hideWebsite &&
-          (place.official_website ? (
-            <a
-              href={place.official_website}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-primary hover:underline"
-            >
-              <Globe className="size-3" />
-              {place.official_website}
-              <ExternalLink className="size-3" />
-            </a>
-          ) : (
-            <span className="text-muted-foreground/60">no verified official website found</span>
-          ))}
-      </div>
-    </>
   );
 }

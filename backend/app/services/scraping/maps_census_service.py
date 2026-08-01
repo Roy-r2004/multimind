@@ -11,9 +11,12 @@ country without coupling the two pipelines together.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import re
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,7 +41,12 @@ from app.db.models import (
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
-from app.schemas.api import MapsCensusRunDetail, MapsCensusRunSummary, MapsPlaceItem
+from app.schemas.api import (
+    MapsCensusCellItem,
+    MapsCensusRunDetail,
+    MapsCensusRunSummary,
+    MapsPlaceItem,
+)
 from app.services.scraping.cost_tracking import record_scraping_llm
 from app.services.scraping.countries import resolve_country
 from app.services.scraping.facility_website_enrichment_service import (
@@ -67,6 +75,80 @@ logger = logging.getLogger(__name__)
 CLASSIFICATION_BATCH_TIMEOUT_SECONDS = 90.0
 WEBSITE_LLM_BATCH_TIMEOUT_SECONDS = 90.0
 
+CONFIDENCE_VERIFIED_MIN = 0.90
+CONFIDENCE_EXPORT_MIN = 0.70
+EXPORT_NOT_SPECIFIED = "Not Specified"
+EXPORT_CONTACT_PRICING = "Contact for pricing"
+EXPORT_ADDICTIONS_PLACEHOLDER = "Not Specified"
+
+CSV_EXPORT_HEADERS = (
+    "Facility Name",
+    "Addictions Treated",
+    "Location",
+    "Languages Spoken",
+    "Website",
+    "Phone Number",
+    "Treatment Price",
+)
+
+# Google returns an Open Location Code ("QW2G+35C") in formatted_address when a
+# place has no street address at all — the signature of an unverified
+# user-submitted pin rather than a real listing.
+PLUS_CODE_RE = re.compile(r"^[23456789CFGHJMPQRVWX]{4,6}\+[23456789CFGHJMPQRVWX]{2,3}$", re.I)
+
+# Bare category words that carry no facility identity. A name made up only of
+# these (plus articles/prepositions) identifies nothing and cannot be exported.
+GENERIC_NAME_WORDS = frozenset(
+    {
+        "addiction",
+        "addictions",
+        "center",
+        "centre",
+        "clinic",
+        "clinique",
+        "desintoxication",
+        "detox",
+        "detoxification",
+        "hospital",
+        "medical",
+        "rehab",
+        "rehabilitation",
+        "traitement",
+        "treatment",
+        "الادمان",
+        "المدمنين",
+        "علاج",
+        "مركز",
+        "معالجة",
+        "مصحة",
+        "مكافحة",
+    }
+)
+GENERIC_NAME_STOPWORDS = frozenset(
+    {"a", "al", "and", "anti", "de", "des", "du", "et", "for", "la", "le", "les", "of", "the", "ال"}
+)
+
+# Facebook paths that belong to the platform rather than to a facility page.
+FACEBOOK_NON_PAGE_SEGMENTS = frozenset(
+    {
+        "events",
+        "groups",
+        "hashtag",
+        "help",
+        "login",
+        "marketplace",
+        "pages",
+        "people",
+        "photo",
+        "photo.php",
+        "search",
+        "sharer",
+        "sharer.php",
+        "story.php",
+        "watch",
+    }
+)
+
 
 class MapsRelevanceDecision(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -88,8 +170,11 @@ class MapsWebsiteDecision(BaseModel):
 
     place_id: str = Field(min_length=1, max_length=64)
     url: str | None = Field(default=None, max_length=512)
-    reason: str = Field(default="", max_length=300)
+    reason: str = Field(default="", max_length=2000)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Display name of the page behind ``url``. Required to prove identity when
+    # ``url`` is a social page, whose host alone says nothing about the facility.
+    page_name: str = Field(default="", max_length=300)
 
 
 class MapsWebsitePlan(BaseModel):
@@ -180,6 +265,58 @@ class MapsCensusService:
         rows = (await db.execute(query.order_by(MapsPlace.canonical_name))).scalars().all()
         return [_place_item(place) for place in rows]
 
+    async def list_cells(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> list[MapsCensusCellItem]:
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        rows = (
+            await db.execute(
+                select(MapsCensusCell)
+                .where(MapsCensusCell.run_id == run_id)
+                .order_by(MapsCensusCell.region_name, MapsCensusCell.city_name, MapsCensusCell.query_text)
+            )
+        ).scalars().all()
+        return [_cell_item(cell) for cell in rows]
+
+    async def export_run_csv(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        run_id: str,
+        *,
+        tier: str = "all",
+    ) -> tuple[str, str]:
+        """Phase 1 CSV export — name, location, phone, website; addictions/languages/price TBD."""
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        normalized_tier = tier.strip().lower()
+        if normalized_tier not in {"all", "verified", "flagged"}:
+            raise ValidationError("tier must be all, verified, or flagged")
+
+        rows = (
+            await db.execute(
+                select(MapsPlace)
+                .where(MapsPlace.run_id == run_id)
+                .order_by(MapsPlace.canonical_name)
+            )
+        ).scalars().all()
+        eligible = [
+            place
+            for place in rows
+            if _export_eligible(place) and _export_tier_matches(place, normalized_tier)
+        ]
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(CSV_EXPORT_HEADERS)
+        for place in eligible:
+            writer.writerow(_export_csv_row(place, country_name=run.country_name))
+        filename = f"{run.country_code.lower()}-maps-census-export.csv"
+        return filename, buffer.getvalue()
+
     async def get_place_photo(
         self, db: AsyncSession, auth: AuthContext, run_id: str, place_id: str
     ) -> Path:
@@ -233,6 +370,31 @@ class MapsCensusService:
             run_id,
             inline_runner=lambda: refresh_maps_census_websites_job({}, run_id),
         )
+
+    async def _enqueue_enrichment(self, run_id: str) -> None:
+        await self._enqueue_job(
+            "run_maps_census_enrichment_job",
+            run_id,
+            inline_runner=lambda: run_maps_census_enrichment_job({}, run_id),
+        )
+
+    async def _maybe_enqueue_enrichment(self, run_id: str) -> None:
+        settings = get_settings()
+        if settings.maps_census_enrichment_enabled and settings.maps_census_auto_enrichment_enabled:
+            await self._enqueue_enrichment(run_id)
+
+    async def request_enrichment(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCensusRunDetail:
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+        if run.status != MapsCensusStatus.COMPLETED:
+            raise ValidationError("Only a completed Maps census run can enrich facility websites.")
+        run.enrichment_refresh_completed_at = None
+        await db.commit()
+        await self._enqueue_enrichment(run_id)
+        return await self.get_run(db, auth, run_id)
 
     async def _enqueue_job(self, job_name: str, run_id: str, *, inline_runner) -> None:
         settings = get_settings()
@@ -303,7 +465,7 @@ class MapsCensusService:
         session_factory = self._session_factory(db)
         await self._search_missing_websites(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
-        await self._delete_unverified_places(session_factory, run_id=run_id)
+        await self._apply_missing_contact_filter(session_factory, run_id=run_id)
         async with session_factory() as final_db:
             run = await final_db.get(MapsCensusRun, run_id)
             summary = {"places_with_website": 0}
@@ -324,6 +486,7 @@ class MapsCensusService:
                 run.website_refresh_completed_at = datetime.now(UTC)
                 summary["places_with_website"] = run.places_with_website
                 await final_db.commit()
+        await self._maybe_enqueue_enrichment(run_id)
         return summary
 
     @staticmethod
@@ -522,6 +685,8 @@ class MapsCensusService:
                 run.completed_at = datetime.now(UTC)
                 run.heartbeat_at = datetime.now(UTC)
                 await final_db.commit()
+
+        await self._maybe_enqueue_enrichment(run_id)
         return summary
 
     async def _classify_pending(
@@ -570,6 +735,7 @@ class MapsCensusService:
                         "name": place.raw_name,
                         "place_types": place.place_types,
                         "address": place.formatted_address,
+                        "has_street_address": has_street_address(place.formatted_address),
                     }
                     for place in batch
                 ]
@@ -603,6 +769,7 @@ class MapsCensusService:
                     classified += 1
                 await write_db.commit()
 
+        await self._apply_post_classification_filters(session_factory, run_id=run_id)
         return {"classified": classified}
 
     async def _classify_batch(
@@ -631,8 +798,8 @@ class MapsCensusService:
             response = await asyncio.wait_for(
                 provider.complete(
                     system=(
-                        "You return strict JSON relevance decisions for candidate rehab/addiction/"
-                        "psychiatric facility places found via Google Places search."
+                        "You return strict JSON relevance decisions for candidate non-government"
+                        " inpatient addiction rehab facility places found via Google Places search."
                     ),
                     user=prompt,
                     model=model_slug,
@@ -721,8 +888,98 @@ class MapsCensusService:
 
         if settings.maps_census_website_search_enabled:
             await self._search_missing_websites(session_factory, run_id=run_id)
+        await self._apply_places_social_fallbacks(session_factory, run_id=run_id)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
-        await self._delete_unverified_places(session_factory, run_id=run_id)
+        await self._apply_missing_contact_filter(session_factory, run_id=run_id)
+
+    async def _apply_places_social_fallbacks(self, session_factory, *, run_id: str) -> int:
+        """Keep Google-provided Facebook pages when no official domain was found.
+
+        Search still runs first so a dedicated website wins. We only trust social
+        URLs attached directly to the Google Place; Sonar/search candidates remain
+        subject to the strict official-domain policy to avoid identity mismatches.
+        """
+        async with session_factory() as db:
+            places = (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.is_relevant.is_(True),
+                        MapsPlace.official_website.is_(None),
+                        MapsPlace.raw_website.is_not(None),
+                    )
+                )
+            ).scalars().all()
+            applied = 0
+            for place in places:
+                if _is_facebook_url(place.raw_website):
+                    place.official_website = place.raw_website
+                    place.website_source = "places_social"
+                    applied += 1
+            if applied:
+                await db.commit()
+            return applied
+
+    async def _apply_post_classification_filters(self, session_factory, *, run_id: str) -> int:
+        """Enforce Phase 1 gates in code: minimum confidence and mandatory street address."""
+        demoted = 0
+        async with session_factory() as db:
+            places = (
+                await db.execute(select(MapsPlace).where(MapsPlace.run_id == run_id))
+            ).scalars().all()
+            for place in places:
+                if not place.is_relevant:
+                    continue
+                confidence = float(place.confidence_score or 0)
+                if confidence < CONFIDENCE_EXPORT_MIN:
+                    place.is_relevant = False
+                    place.relevance_reason = "excluded: confidence below 0.70"
+                    demoted += 1
+                    continue
+                if not _has_export_location(place):
+                    place.is_relevant = False
+                    place.relevance_reason = "excluded: missing location"
+                    demoted += 1
+                    continue
+                if not has_street_address(place.formatted_address):
+                    place.is_relevant = False
+                    place.relevance_reason = "excluded: no street address (Plus Code only)"
+                    demoted += 1
+                    continue
+                if is_generic_facility_name(place.canonical_name or place.raw_name):
+                    place.is_relevant = False
+                    place.relevance_reason = "excluded: generic name with no facility identity"
+                    demoted += 1
+            if demoted:
+                await db.commit()
+        return demoted
+
+    async def _apply_missing_contact_filter(self, session_factory, *, run_id: str) -> int:
+        """Drop relevant facilities that have neither a phone number nor a website.
+
+        A place must keep at least one contact channel. Phone-only and website-only
+        both survive; rows with neither are demoted out of the result set.
+        Runs after website discovery so Places / Sonar / Facebook fills are counted.
+        """
+        demoted = 0
+        async with session_factory() as db:
+            places = (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.is_relevant.is_(True),
+                    )
+                )
+            ).scalars().all()
+            for place in places:
+                if has_contact_channel(place):
+                    continue
+                place.is_relevant = False
+                place.relevance_reason = "excluded: missing phone and website"
+                demoted += 1
+            if demoted:
+                await db.commit()
+        return demoted
 
     async def _delete_unverified_places(self, session_factory, *, run_id: str) -> int:
         """Permanently remove relevant facilities lacking a verified official site."""
@@ -756,7 +1013,9 @@ class MapsCensusService:
             ).scalars().all()
             dropped = 0
             for place in places:
-                if website_needs_enrichment(place.official_website):
+                if website_needs_enrichment(place.official_website) and not _is_facebook_url(
+                    place.official_website
+                ):
                     place.official_website = None
                     place.website_source = None
                     dropped += 1
@@ -847,6 +1106,84 @@ class MapsCensusService:
         if not pending_items:
             return
 
+        mode = (settings.maps_census_website_search_mode or "llm").strip().lower()
+        if mode == "llm":
+            await self._find_missing_websites_llm(
+                session_factory,
+                run_id=run_id,
+                pending_items=pending_items,
+                country_code=country_code,
+                country_name=country_name,
+            )
+            return
+
+        await self._find_missing_websites_serper(
+            session_factory,
+            run_id=run_id,
+            pending_items=pending_items,
+            country_code=country_code,
+            country_name=country_name,
+        )
+
+    async def _find_missing_websites_llm(
+        self,
+        session_factory,
+        *,
+        run_id: str,
+        pending_items: list[dict[str, Any]],
+        country_code: str,
+        country_name: str,
+    ) -> None:
+        settings = get_settings()
+        if not settings.maps_census_website_llm_enabled:
+            return
+
+        model = get_model(settings.maps_census_website_llm_model)
+        llm_provider = get_provider_registry().get_provider(model.provider)
+        batch_size = max(1, settings.maps_census_website_llm_batch_size)
+        for offset in range(0, len(pending_items), batch_size):
+            batch = pending_items[offset : offset + batch_size]
+            async with session_factory() as heartbeat_db:
+                run = await heartbeat_db.get(MapsCensusRun, run_id)
+                if run is not None:
+                    run.heartbeat_at = datetime.now(UTC)
+                    await heartbeat_db.commit()
+
+            decisions = await self._find_websites_llm_batch(
+                provider=llm_provider,
+                model_slug=model.provider_model,
+                country_code=country_code,
+                country_name=country_name,
+                batch=batch,
+            )
+            by_id = {d.place_id: d for d in decisions}
+            for item in batch:
+                decision = by_id.get(item["id"])
+                url = await _accepted_direct_llm_website_url(
+                    decision.url if decision is not None else None,
+                    confidence=float(decision.confidence if decision is not None else 0),
+                    page_name=decision.page_name if decision is not None else "",
+                    facility_name=item.get("name"),
+                )
+                if not url:
+                    continue
+                async with session_factory() as write_db:
+                    place = await write_db.get(MapsPlace, item["id"])
+                    if place is not None and place.official_website is None:
+                        place.official_website = url
+                        place.website_source = "llm_social" if _is_facebook_url(url) else "llm"
+                    await write_db.commit()
+
+    async def _find_missing_websites_serper(
+        self,
+        session_factory,
+        *,
+        run_id: str,
+        pending_items: list[dict[str, Any]],
+        country_code: str,
+        country_name: str,
+    ) -> None:
+        settings = get_settings()
         provider = create_search_provider()
         llm_queue: list[dict[str, Any]] = []
         for item in pending_items:
@@ -931,6 +1268,69 @@ class MapsCensusService:
                         place.official_website = url
                         place.website_source = "search"
                     await write_db.commit()
+
+    async def _find_websites_llm_batch(
+        self,
+        *,
+        provider: Any,
+        model_slug: str,
+        country_code: str,
+        country_name: str,
+        batch: list[dict[str, Any]],
+    ) -> list[MapsWebsiteDecision]:
+        payloads = [
+            {
+                "place_id": item["id"],
+                "name": item["name"],
+                "city": item.get("city"),
+                "address": item.get("address"),
+                "phone": item.get("phone"),
+            }
+            for item in batch
+        ]
+        settings = get_settings()
+        prompt = get_prompt_engine().render(
+            "scraping/maps_website_finder.j2",
+            country_code=(country_code or "XX")[:2].upper(),
+            country_name=(country_name or "Unknown")[:120],
+            facilities_json=json.dumps(payloads, ensure_ascii=False),
+        )
+        timeout_seconds = max(
+            WEBSITE_LLM_BATCH_TIMEOUT_SECONDS,
+            settings.maps_census_website_llm_timeout_seconds,
+        )
+        try:
+            response = await asyncio.wait_for(
+                provider.complete(
+                    system=(
+                        "You have live web search. Return strict JSON with official "
+                        "rehabilitation facility homepage URLs when found, otherwise null."
+                    ),
+                    user=prompt,
+                    model=model_slug,
+                    max_tokens=2500,
+                ),
+                timeout=timeout_seconds,
+            )
+            raw = LLMProvider.parse_json_response(response.text)
+            plan = MapsWebsitePlan.model_validate(_normalize_website_payload(raw))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "maps_census_website_finder_batch_failed count=%s error=%s",
+                len(payloads),
+                exc,
+            )
+            return [
+                MapsWebsiteDecision(place_id=p["place_id"], url=None, reason="llm_failed")
+                for p in payloads
+            ]
+
+        by_id = {d.place_id: d for d in plan.decisions}
+        return [
+            by_id.get(p["place_id"])
+            or MapsWebsiteDecision(place_id=p["place_id"], url=None, reason="missing_decision")
+            for p in payloads
+        ]
 
     async def _search_website_candidates(
         self,
@@ -1228,6 +1628,163 @@ def _match_official_website_by_address(
     return scored[0]
 
 
+def _verification_tier(place: MapsPlace) -> str:
+    if not place.is_relevant:
+        return "excluded"
+    confidence = float(place.confidence_score or 0)
+    if confidence >= CONFIDENCE_VERIFIED_MIN:
+        return "verified"
+    if confidence >= CONFIDENCE_EXPORT_MIN:
+        return "flagged"
+    return "excluded"
+
+
+def _has_export_location(place: MapsPlace) -> bool:
+    return bool((place.formatted_address or "").strip())
+
+
+def has_street_address(address: str | None) -> bool:
+    """True when the address carries a real street reference.
+
+    Google substitutes a Plus Code grid reference for the street portion when a
+    place has none, so ``"QW2G+35C, Chéraga"`` is a city name and a coordinate —
+    not an address we can verify or export. A Plus Code alongside a real street
+    (``"7VQ8+8J9, Rue DES FRÈRES BEN FISSA"``) still counts.
+    """
+    remaining = [
+        part.strip()
+        for part in (address or "").split(",")
+        if part.strip() and not PLUS_CODE_RE.match(part.strip().split(" ", 1)[0])
+    ]
+    if not remaining:
+        return False
+    # A lone trailing city/commune name is what's left of a Plus-Code-only
+    # address; a usable address needs more than a single bare token.
+    return len(remaining) > 1 or len(remaining[0].split()) > 1
+
+
+def is_generic_facility_name(name: str | None) -> bool:
+    """True when the name is only category words and carries no identity.
+
+    Rejects user-submitted pins labelled ``"désintoxication"`` or
+    ``"Centre De Désintoxication"`` while keeping any name with a distinguishing
+    token such as ``"Abidat centre anti drogues"`` or ``"CERTA-TO"``.
+    """
+    # Fold Latin accents so "désintoxication" matches the ASCII category word.
+    folded = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", (name or "").lower())
+        if not unicodedata.combining(char)
+    )
+    cleaned = re.sub(r"[^\w\s\u0600-\u06ff]+", " ", folded)
+    tokens = [
+        token
+        for token in cleaned.split()
+        if token not in GENERIC_NAME_STOPWORDS and not token.isdigit()
+    ]
+    if not tokens:
+        return True
+    return all(token in GENERIC_NAME_WORDS for token in tokens)
+
+
+def has_contact_channel(place: MapsPlace | Any) -> bool:
+    """True when the place has a phone number and/or a website URL.
+
+    Either channel alone is enough. Facebook and other raw Places websites count
+    even when they were not promoted to ``official_website``.
+    """
+    phone = (getattr(place, "international_phone_number", None) or "").strip()
+    website = (
+        getattr(place, "official_website", None)
+        or getattr(place, "raw_website", None)
+        or ""
+    ).strip()
+    return bool(phone or website)
+
+
+def _export_location(place: MapsPlace, *, country_name: str) -> str:
+    address = (place.formatted_address or "").strip()
+    if address:
+        return address
+    parts = [p for p in (place.city_name, place.region_name, country_name) if p]
+    return ", ".join(parts)
+
+
+def _has_enriched_addictions(place: MapsPlace) -> bool:
+    addictions = place.addictions_treated or []
+    return bool(addictions and any(str(item).strip() for item in addictions))
+
+
+def _export_eligible(place: MapsPlace) -> bool:
+    if not place.is_relevant:
+        return False
+    if not (place.canonical_name or place.raw_name or "").strip():
+        return False
+    if not _has_export_location(place):
+        return False
+    confidence = float(place.confidence_score or 0)
+    if confidence < CONFIDENCE_EXPORT_MIN:
+        return False
+    if get_settings().maps_census_enrichment_enabled:
+        return _has_enriched_addictions(place)
+    return True
+
+
+def _format_addictions(place: MapsPlace) -> str:
+    addictions = [str(item).strip() for item in (place.addictions_treated or []) if str(item).strip()]
+    return ", ".join(addictions) if addictions else EXPORT_ADDICTIONS_PLACEHOLDER
+
+
+def _format_languages(place: MapsPlace) -> str:
+    languages = [str(item).strip() for item in (place.languages_spoken or []) if str(item).strip()]
+    return ", ".join(languages) if languages else EXPORT_NOT_SPECIFIED
+
+
+def _export_tier_matches(place: MapsPlace, tier: str) -> bool:
+    if tier == "all":
+        return True
+    return _verification_tier(place) == tier
+
+
+def normalized_export_website(place: MapsPlace) -> str | None:
+    """Public: the website shown in exports, prefixed to a clickable URL."""
+    website = (place.official_website or place.raw_website or "").strip()
+    if not website:
+        return None
+    if not website.lower().startswith(("http://", "https://")):
+        website = f"https://{website}"
+    return website
+
+
+def _export_csv_row(place: MapsPlace, *, country_name: str) -> list[str]:
+    name = (place.canonical_name or place.raw_name or "").strip()
+    website = normalized_export_website(place) or ""
+    phone = (place.international_phone_number or "").strip()
+    price = (place.treatment_price or "").strip() or EXPORT_CONTACT_PRICING
+    return [
+        name,
+        _format_addictions(place),
+        _export_location(place, country_name=country_name),
+        _format_languages(place),
+        website if website else EXPORT_NOT_SPECIFIED,
+        phone if phone else EXPORT_NOT_SPECIFIED,
+        price,
+    ]
+
+
+def _cell_item(cell: MapsCensusCell) -> MapsCensusCellItem:
+    return MapsCensusCellItem(
+        id=cell.id,
+        region_name=cell.region_name,
+        city_name=cell.city_name,
+        query_text=cell.query_text,
+        status=cell.status.value if hasattr(cell.status, "value") else str(cell.status),
+        places_found=cell.places_found,
+        error_message=cell.error_message,
+        completed_at=cell.completed_at,
+    )
+
+
 def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
     return MapsCensusRunSummary(
         id=run.id,
@@ -1240,6 +1797,8 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
         places_found=run.places_found,
         places_classified_relevant=run.places_classified_relevant,
         places_with_website=run.places_with_website,
+        places_enriched=run.places_enriched,
+        enrichment_refresh_completed_at=run.enrichment_refresh_completed_at,
         started_at=run.started_at,
         completed_at=run.completed_at,
         created_at=run.created_at,
@@ -1268,6 +1827,15 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         confidence_score=float(place.confidence_score) if place.confidence_score is not None else None,
         discovered_via_query=place.discovered_via_query,
         has_photo=bool(place.photo_reference),
+        verification_tier=_verification_tier(place),
+        export_eligible=_export_eligible(place),
+        enrichment_status=place.enrichment_status or "pending",
+        addictions_treated=list(place.addictions_treated or []),
+        languages_spoken=list(place.languages_spoken or []),
+        treatment_price=place.treatment_price,
+        verification_verdict=place.verification_verdict,
+        verification_reason=place.verification_reason,
+        verification_source_url=place.verification_source_url,
     )
 
 
@@ -1293,8 +1861,11 @@ def _normalize_website_payload(raw: Any) -> dict[str, Any]:
             {
                 "place_id": item.get("place_id") or item.get("id"),
                 "url": url,
-                "reason": item.get("reason") or item.get("explanation") or "",
+                "reason": str(item.get("reason") or item.get("explanation") or "")[:2000],
                 "confidence": item.get("confidence", 0.5),
+                "page_name": str(
+                    item.get("page_name") or item.get("pageName") or item.get("title") or ""
+                )[:300],
             }
         )
     return {"decisions": normalized}
@@ -1329,6 +1900,111 @@ def _accepted_llm_website_url(
     if _is_rejected_result(probe):
         return None
     return homepage
+
+
+async def _accepted_direct_llm_website_url(
+    url: str | None,
+    *,
+    confidence: float,
+    page_name: str = "",
+    facility_name: str | None = None,
+) -> str | None:
+    """Accept a direct LLM website find after blocklist and optional HTTP checks.
+
+    A Facebook page is accepted as a fallback only when the page's own name
+    shares a distinguishing token with the facility name, so a real page for a
+    *different* clinic can never be attached to this one.
+    """
+    settings = get_settings()
+    if not url or confidence < settings.maps_census_website_llm_min_confidence:
+        return None
+    parsed = _safe_url(url)
+    if parsed is None:
+        return None
+    if _is_facebook_url(url):
+        return _accepted_social_page_url(url, page_name=page_name, facility_name=facility_name)
+    homepage = _homepage_url(parsed)
+    probe = SearchProviderResult(rank=1, url=homepage, title="", snippet="")
+    if _is_rejected_result(probe):
+        return None
+    if settings.maps_census_website_llm_verify_reachable:
+        if not await _verify_website_reachable(homepage):
+            return None
+    return homepage
+
+
+def _is_facebook_url(url: str | None) -> bool:
+    """True for genuine Facebook hosts, excluding platform (non-page) paths."""
+    parsed = _safe_url(url or "")
+    if parsed is None:
+        return False
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if host != "facebook.com" and not host.endswith(".facebook.com"):
+        return False
+    segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    if segments and segments[0].casefold() in FACEBOOK_NON_PAGE_SEGMENTS:
+        return False
+    return bool(segments) or bool(parsed.query)
+
+
+def _accepted_social_page_url(
+    url: str,
+    *,
+    page_name: str,
+    facility_name: str | None,
+) -> str | None:
+    """Keep a social page only when its name identifies this facility.
+
+    The URL path is included in the comparison so a vanity handle such as
+    ``/EhsFernaneOuedAissi`` can prove identity when no page name came back.
+    """
+    identity = _distinctive_tokens(facility_name)
+    if not identity:
+        return None
+    parsed = _safe_url(url)
+    handle = (parsed.path or "").replace("/", " ") if parsed is not None else ""
+    claimed = _distinctive_tokens(f"{page_name} {handle}")
+    if not claimed & identity:
+        return None
+    return url
+
+
+def _distinctive_tokens(text: str | None) -> set[str]:
+    """Tokens that identify a specific facility, minus generic category words.
+
+    Social vanity handles glue words together ("CliniqueLilasAlger"), so split
+    on case transitions before folding or the whole handle becomes one token.
+    """
+    split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text or "")
+    folded = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", split.lower())
+        if not unicodedata.combining(char)
+    )
+    cleaned = re.sub(r"[^\w\s\u0600-\u06ff]+", " ", folded)
+    return {
+        token
+        for token in cleaned.split()
+        if len(token) > 2
+        and not token.isdigit()
+        and token not in GENERIC_NAME_WORDS
+        and token not in GENERIC_NAME_STOPWORDS
+    }
+
+
+async def _verify_website_reachable(url: str) -> bool:
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(8.0, connect=4.0),
+            headers={"User-Agent": "MultiAI-MapsCensus/1.0"},
+        ) as client:
+            response = await client.head(url)
+            if response.status_code >= 400 or response.status_code < 200:
+                response = await client.get(url)
+            return 200 <= response.status_code < 400
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _normalize_relevance_payload(raw: Any) -> dict[str, Any]:
@@ -1394,6 +2070,18 @@ async def refresh_maps_census_websites_job(ctx: dict, run_id: str) -> None:
                 run.error_message = "Unexpected error while refreshing missing websites."
                 run.completed_at = datetime.now(UTC)
                 await db.commit()
+
+
+async def run_maps_census_enrichment_job(ctx: dict, run_id: str) -> None:
+    """ARQ entrypoint: crawl facility websites and extract export columns."""
+    del ctx
+    from app.services.scraping.maps_place_enrichment_service import maps_place_enrichment_service
+
+    logger.info("maps_census_enrichment_job_entered", extra={"run_id": run_id})
+    try:
+        await maps_place_enrichment_service.enrich_run(None, run_id=run_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("maps_census_enrichment_job_failed", extra={"run_id": run_id})
 
 
 async def recover_maps_census_runs(ctx: dict) -> None:

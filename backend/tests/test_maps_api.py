@@ -383,3 +383,149 @@ async def test_place_photo_scoped_to_org(db: AsyncSession, auth: AuthContext):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(f"/api/v1/maps/runs/{run.id}/places/{place.id}/photo")
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_maps_census_cells(db: AsyncSession, auth: AuthContext):
+    from app.db.models import MapsCensusCell, MapsCensusStatus
+
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="BY",
+        country_name="Belarus",
+        status=MapsCensusStatus.COMPLETED,
+        cells_total=2,
+        cells_completed=2,
+    )
+    db.add(run)
+    await db.flush()
+    db.add_all(
+        [
+            MapsCensusCell(
+                run_id=run.id,
+                region_name="Minsk Region",
+                city_name="Minsk",
+                query_text="inpatient addiction rehab Minsk Belarus",
+                status="completed",
+                places_found=12,
+            ),
+            MapsCensusCell(
+                run_id=run.id,
+                region_name="Minsk Region",
+                city_name="Minsk",
+                query_text="наркологическая клиника Минск",
+                status="completed",
+                places_found=8,
+            ),
+        ]
+    )
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/v1/maps/runs/{run.id}/cells")
+    assert response.status_code == 200
+    cells = response.json()
+    assert len(cells) == 2
+    assert cells[0]["query_text"] == "inpatient addiction rehab Minsk Belarus"
+    assert cells[1]["places_found"] == 8
+
+
+@pytest.mark.asyncio
+async def test_export_maps_census_run_csv(db: AsyncSession, auth: AuthContext):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="BY",
+        country_name="Belarus",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.flush()
+    db.add(
+        MapsPlace(
+            run_id=run.id,
+            google_place_id="export-1",
+            raw_name="Export Rehab",
+            canonical_name="Export Rehab",
+            is_relevant=True,
+            confidence_score=0.91,
+            formatted_address="10 Export St, Minsk",
+            official_website="export.example",
+            addictions_treated=["Alcohol"],
+            enrichment_status="completed",
+        )
+    )
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/v1/maps/runs/{run.id}/export.csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert 'filename="by-maps-census-export.csv"' in response.headers["content-disposition"]
+    body = response.content.decode("utf-8-sig")
+    assert "Facility Name,Addictions Treated,Location" in body.splitlines()[0]
+    assert "Export Rehab" in body
+    assert "Alcohol" in body
+    assert "https://export.example" in body
+
+
+@pytest.mark.asyncio
+async def test_export_maps_census_run_xlsx(db: AsyncSession, auth: AuthContext):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="DZ",
+        country_name="Algeria",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.flush()
+    db.add(
+        MapsPlace(
+            run_id=run.id,
+            google_place_id="xlsx-1",
+            raw_name="Excel Rehab",
+            canonical_name="Excel Rehab",
+            is_relevant=True,
+            confidence_score=0.91,
+            formatted_address="10 Export St, Algiers",
+        )
+    )
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/v1/maps/runs/{run.id}/export.xlsx")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert 'filename="dz-maps-census-export.xlsx"' in response.headers["content-disposition"]
+    assert response.content[:2] == b"PK"  # xlsx is a zip container
+
+
+@pytest.mark.asyncio
+async def test_export_maps_census_run_csv_rejects_invalid_tier(db: AsyncSession, auth: AuthContext):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="BY",
+        country_name="Belarus",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/api/v1/maps/runs/{run.id}/export.csv", params={"tier": "maybe"}
+        )
+    assert response.status_code == 422

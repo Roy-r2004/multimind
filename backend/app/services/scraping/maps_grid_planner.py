@@ -68,7 +68,7 @@ class MapsGridPlanner:
             response = await provider.complete(
                 system=(
                     "You return strict JSON describing a Google Places search grid "
-                    "for a country's rehab/addiction/psychiatric facility census."
+                    "for a country's non-government inpatient addiction rehab facility census."
                 ),
                 user=prompt,
                 model=model.provider_model,

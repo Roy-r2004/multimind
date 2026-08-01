@@ -1,0 +1,84 @@
+You research NON-GOVERNMENT addiction-rehabilitation facilities in {{ country_name }}
+({{ country_code }}) using live web search. For each facility below you must (1) verify it
+belongs in this census, and (2) find what addictions it treats and what languages its
+treatment is delivered in.
+
+Census scope — keep only facilities that are:
+- Non-government (private, NGO, or charity-funded)
+- Inpatient / residential addiction rehab OR a private addictologist / addiction specialist
+  practice that explicitly treats addiction
+- Core mission = clinical treatment of substance and/or behavioral addictions
+- Physical location
+
+The facility names come from Google Maps listings and can be wrong, stale, or user-submitted.
+Do not trust the name alone — check the web.
+
+You are given a batch of facilities. Treat each one independently — never mix findings
+between facilities. Match on the facility's own name, city, and address; if a search result
+is about a different facility (even a similarly named one elsewhere), ignore it.
+
+Facilities (JSON):
+{{ facilities_json }}
+
+For each facility, search the web (official site, Facebook page, directories, news, health
+ministry pages, etc.) and extract:
+
+verification.verdict — exactly one of:
+- "confirmed"    — independent web sources show this SPECIFIC facility exists and operates as a
+                   NON-GOVERNMENT addiction provider in scope (private/NGO/charity inpatient
+                   rehab, private detox, or private addictologue / addiction specialist).
+                   Private addictologues ARE confirmed.
+- "contradicted" — sources show it is OUT of scope: government/public/state-funded, a ministry
+                   or national coordination office, a general psychiatric clinic with no
+                   addiction program, outpatient-only with no residential stay and not an
+                   addictologue, physiotherapy, a shop, a school, permanently closed, or
+                   unrelated.
+- "unknown"      — you genuinely cannot find enough about this specific facility.
+
+A Google Maps listing is NOT evidence. A promising name is NOT evidence. To answer "confirmed"
+you must find something beyond the Maps pin itself — an official site, a Facebook page for the
+facility, a directory or registry entry, a news mention, or a health-authority listing — that
+shows this facility really provides addiction treatment. If all you have is the Maps listing or
+a suggestive name, the answer is "unknown".
+
+Include a short verification.reason and verification.source_url when you have one.
+
+addictions_treated:
+- Use ONLY values from this allowed list (exact spelling):
+{{ addiction_taxonomy_json }}
+- Include every addiction from the list the facility clearly treats.
+- Map local-language terms (Arabic, French, etc.) to the closest allowed English label.
+- Return [] if you cannot verify any addiction for that facility.
+
+languages_spoken:
+- Languages treatment is actually delivered in (staff / therapy languages).
+- Return [] if you cannot verify any.
+
+Rules:
+- Only report what web sources support. Do NOT guess from what is "typical" for the country
+  or the facility type. No source → return [].
+- Provide a short evidence_quote and the source_url you relied on for each value.
+- Do NOT report treatment prices, fees, or costs.
+
+Return strict JSON only with this shape:
+{
+  "results": [
+    {
+      "place_id": "the place_id exactly as given",
+      "verification": {
+        "verdict": "confirmed",
+        "reason": "short reason citing what you found",
+        "source_url": "https://..."
+      },
+      "addictions_treated": [
+        {"value": "Alcohol", "evidence_quote": "...", "source_url": "https://..."}
+      ],
+      "languages_spoken": [
+        {"value": "Arabic", "evidence_quote": "...", "source_url": "https://..."}
+      ]
+    }
+  ]
+}
+
+Include one object per facility in the batch, using its exact place_id. If you found nothing
+for a facility, still include it with empty arrays.
