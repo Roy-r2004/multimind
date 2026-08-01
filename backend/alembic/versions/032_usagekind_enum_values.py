@@ -1,11 +1,11 @@
 """Add missing UsageKind PostgreSQL enum labels for cost_records.
 
-Revision ID: 030
-Revises: 029
+Revision ID: 032
+Revises: 031
 Create Date: 2026-08-01
 
 SQLAlchemy ``Enum(UsageKind)`` persists member *names* (e.g. EMBEDDING), not
-values (embedding). Migration 029 did not extend the native ``usagekind`` type,
+values (embedding). Migration 031 did not extend the native ``usagekind`` type,
 so inserts for new kinds fail with:
 
   invalid input value for enum usagekind: "EMBEDDING"
@@ -17,11 +17,12 @@ PostgreSQL, so downgrade is a no-op.
 
 from __future__ import annotations
 
-from alembic import op
 from sqlalchemy import text
 
-revision = "030"
-down_revision = "029"
+from alembic import op
+
+revision = "032"
+down_revision = "031"
 branch_labels = None
 depends_on = None
 
@@ -47,6 +48,16 @@ REQUIRED_USAGEKIND_LABELS = (
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
+        return
+
+    # Fresh alembic-only DBs never created the native type (cost_records.kind is
+    # VARCHAR in 001). Older local DBs already have usagekind from SQLAlchemy.
+    type_exists = bind.execute(
+        text("SELECT 1 FROM pg_type WHERE typname = 'usagekind'")
+    ).scalar()
+    if not type_exists:
+        labels_sql = ", ".join(f"'{label}'" for label in REQUIRED_USAGEKIND_LABELS)
+        op.execute(text(f"CREATE TYPE usagekind AS ENUM ({labels_sql})"))
         return
 
     for label in REQUIRED_USAGEKIND_LABELS:

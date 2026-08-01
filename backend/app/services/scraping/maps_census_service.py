@@ -1077,8 +1077,6 @@ class MapsCensusService:
             run = await scan_db.get(MapsCensusRun, run_id)
             country_name = run.country_name if run is not None else ""
             country_code = run.country_code if run is not None else ""
-            org_id = run.organization_id if run is not None else None
-            owner_id = run.created_by if run is not None else None
             pending = (
                 await scan_db.execute(
                     select(MapsPlace)
@@ -1184,6 +1182,14 @@ class MapsCensusService:
         country_name: str,
     ) -> None:
         settings = get_settings()
+        org_id: str | None = None
+        owner_id: str | None = None
+        async with session_factory() as attr_db:
+            run = await attr_db.get(MapsCensusRun, run_id)
+            if run is not None:
+                org_id = run.organization_id
+                owner_id = run.created_by
+            await attr_db.commit()
         provider = create_search_provider()
         llm_queue: list[dict[str, Any]] = []
         for item in pending_items:

@@ -55,6 +55,10 @@ class _FakePlacesClient:
 class _FakeResponse:
     def __init__(self, text: str) -> None:
         self.text = text
+        self.raw = None
+        self.tokens_input = 0
+        self.tokens_output = 0
+        self.cost_usd = None
 
 
 class _FakeProvider:
@@ -78,7 +82,7 @@ def _use_serper_website_search(monkeypatch) -> None:
 
 
 def _patch_direct_llm_website_finder(monkeypatch, *, url: str, confidence: float = 0.95) -> None:
-    async def fake_find_batch(self, *, provider, model_slug, country_code, country_name, batch):
+    async def fake_find_batch(self, *, provider, model_slug, country_code, country_name, batch, **_kwargs):
         from app.services.scraping.maps_census_service import MapsWebsiteDecision
 
         return [
@@ -165,7 +169,7 @@ async def test_run_census_dedupes_places_and_applies_website_validation(db, auth
         }
     )
 
-    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
+    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads, **_kwargs):
         from app.services.scraping.maps_census_service import MapsRelevanceDecision
 
         decisions = []
@@ -250,7 +254,7 @@ async def test_run_census_falls_back_to_llm_when_places_has_no_website(db, auth,
         lambda: _FakePlacesClient(by_query),
     )
 
-    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
+    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads, **_kwargs):
         from app.services.scraping.maps_census_service import MapsRelevanceDecision
 
         return [
@@ -479,7 +483,7 @@ async def test_run_census_persists_photo_reference(db, auth, monkeypatch):
         lambda: _FakePlacesClient(by_query),
     )
 
-    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
+    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads, **_kwargs):
         from app.services.scraping.maps_census_service import MapsRelevanceDecision
 
         return [
@@ -1016,7 +1020,11 @@ async def test_run_website_refresh_uses_llm_when_rule_matchers_fail(db, auth, mo
                             }
                         ]
                     }
-                )
+                ),
+                raw=None,
+                tokens_input=0,
+                tokens_output=0,
+                cost_usd=None,
             )
 
     class _FakeRegistry:

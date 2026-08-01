@@ -47,9 +47,10 @@ class CostRecordInput:
 
 
 def request_id_from_llm_response(response: LLMResponse | None) -> str | None:
-    if response is None or not response.raw:
+    raw = getattr(response, "raw", None) if response is not None else None
+    if not raw:
         return None
-    raw_id = response.raw.get("id")
+    raw_id = raw.get("id")
     return str(raw_id) if raw_id else None
 
 
@@ -57,9 +58,10 @@ def usage_extras_from_llm_response(
     response: LLMResponse | None,
 ) -> tuple[int | None, int | None]:
     """Return (tokens_reasoning, tokens_cached_input) when OpenRouter provides them."""
-    if response is None or not response.raw:
+    raw = getattr(response, "raw", None) if response is not None else None
+    if not raw:
         return None, None
-    usage = response.raw.get("usage") or {}
+    usage = raw.get("usage") or {}
     reasoning = usage.get("reasoning_tokens")
     if reasoning is None:
         details = usage.get("completion_tokens_details") or {}
@@ -213,11 +215,11 @@ class CostRecorder:
                 operation=operation,
                 idempotency_key=idempotency_key,
                 request_id=request_id_from_llm_response(response),
-                tokens_input=response.tokens_input,
-                tokens_output=response.tokens_output,
+                tokens_input=int(getattr(response, "tokens_input", 0) or 0),
+                tokens_output=int(getattr(response, "tokens_output", 0) or 0),
                 tokens_reasoning=reasoning,
                 tokens_cached_input=cached,
-                reported_cost_usd=response.cost_usd,
+                reported_cost_usd=getattr(response, "cost_usd", None),
                 latency_ms=latency_ms,
                 status=CostRecordStatus.SUCCEEDED,
                 metadata=metadata,

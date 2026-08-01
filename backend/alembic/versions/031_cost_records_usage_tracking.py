@@ -1,15 +1,16 @@
 """Extend cost_records for unified AI usage tracking and historical attribution.
 
-Revision ID: 029
-Revises: 028
+Revision ID: 031
+Revises: 030
 Create Date: 2026-08-01
 """
 
-from alembic import op
 import sqlalchemy as sa
 
-revision = "029"
-down_revision = "028"
+from alembic import op
+
+revision = "031"
+down_revision = "030"
 branch_labels = None
 depends_on = None
 

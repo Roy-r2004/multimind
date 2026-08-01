@@ -1,4 +1,4 @@
-"""Focused checks for UsageKind PostgreSQL enum migration 030."""
+"""Focused checks for UsageKind PostgreSQL enum migration 032."""
 
 from __future__ import annotations
 
@@ -10,26 +10,26 @@ import pytest
 from app.db.models import UsageKind
 
 
-def load_migration_030():
+def load_migration_032():
     path = (
         Path(__file__).resolve().parents[1]
         / "alembic"
         / "versions"
-        / "030_usagekind_enum_values.py"
+        / "032_usagekind_enum_values.py"
     )
-    spec = importlib.util.spec_from_file_location("migration_030", path)
+    spec = importlib.util.spec_from_file_location("migration_032", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 
 
-def test_migration_030_covers_every_python_usagekind_member_name():
-    module = load_migration_030()
+def test_migration_032_covers_every_python_usagekind_member_name():
+    module = load_migration_032()
     python_names = {member.name for member in UsageKind}
     required = set(module.REQUIRED_USAGEKIND_LABELS)
     assert python_names == required
-    # New kinds that were missing from the live PG enum before 030.
+    # New kinds that were missing from the live PG enum before 032.
     for label in (
         "EMBEDDING",
         "SCRAPING",
@@ -42,20 +42,21 @@ def test_migration_030_covers_every_python_usagekind_member_name():
         "OTHER",
     ):
         assert label in required
-    # Historical labels must remain listed (never deleted/renamed by 030).
+    # Historical labels must remain listed (never deleted/renamed by 032).
     for label in ("ANSWER", "VERDICT", "INSURANCE", "LESSON", "BRAIN"):
         assert label in required
 
 
-def test_migration_030_uses_idempotent_add_value_sql():
+def test_migration_032_uses_idempotent_add_value_sql():
     source = (
         Path(__file__).resolve().parents[1]
         / "alembic"
         / "versions"
-        / "030_usagekind_enum_values.py"
+        / "032_usagekind_enum_values.py"
     ).read_text(encoding="utf-8")
     assert "ALTER TYPE usagekind ADD VALUE IF NOT EXISTS" in source
-    assert "down_revision = \"029\"" in source or "down_revision = '029'" in source
+    assert 'revision = "032"' in source or "revision = '032'" in source
+    assert "down_revision = \"031\"" in source or "down_revision = '031'" in source
     for label in (
         "EMBEDDING",
         "SCRAPING",
