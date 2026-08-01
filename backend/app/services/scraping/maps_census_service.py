@@ -71,6 +71,7 @@ from app.services.scraping.maps_cell_runner import (
 from app.services.scraping.maps_cell_subdivision import ChildCellSpec, subdivide_cell
 from app.services.scraping.maps_country_profile_service import maps_country_profile_service
 from app.services.scraping.maps_eligibility import derive_is_relevant, derive_legacy_verification_verdict
+from app.services.scraping.maps_external_discovery import maps_external_discovery_coordinator
 from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
 from app.services.scraping.maps_places_client import PlacesProviderError, create_places_client
 from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
@@ -801,6 +802,13 @@ class MapsCensusService:
                 duplicate_rate = (
                     duplicates_total / raw_results_total if raw_results_total else 0.0
                 )
+                external_candidates = []
+                if get_settings().maps_census_external_discovery_enabled:
+                    external_candidates = await maps_external_discovery_coordinator.discover_from_profile(
+                        country_code=run.country_code,
+                        country_name=run.country_name,
+                        profile=country_profile if isinstance(country_profile, dict) else None,
+                    )
 
                 run.funnel_metrics = {
                     "cells_planned": run.cells_total,
@@ -821,6 +829,7 @@ class MapsCensusService:
                     "individuals_found": sum(r.individuals_found for r in regions),
                     "unrelated_found": sum(r.unrelated_found for r in regions),
                     "country_profile_status": country_profile_status,
+                    "external_discovery_candidates": len(external_candidates),
                     "quota_metrics": quota_snapshot,
                 }
                 run.saturation_summary = {
