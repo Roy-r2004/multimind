@@ -49,7 +49,9 @@ export function ExpandableAnswer({
     return () => observer.disconnect();
   }, [children, collapsible]);
 
-  const showToggle = collapsible && (overflows || expanded);
+  // Only long (overflowing) answers get a control — short ones stay fully visible
+  // even when a parent syncs `expanded` (Horizontal mode).
+  const showToggle = collapsible && overflows;
 
   return (
     <div className={cn("relative", className)}>
@@ -63,6 +65,7 @@ export function ExpandableAnswer({
         <button
           type="button"
           onClick={onToggle}
+          aria-expanded={expanded}
           className="mt-2 text-[11px] font-medium text-primary hover:underline"
         >
           {expanded ? "Show less" : "Read full answer"}

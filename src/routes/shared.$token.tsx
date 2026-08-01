@@ -5,8 +5,12 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
 import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
+import { ChatTurnLayoutToggle } from "@/components/chat/ChatTurnLayoutToggle";
 import { api } from "@/lib/api";
 import type { ApiSharedChat } from "@/lib/api/types";
+import { chatAnswerCardsClassName } from "@/lib/chatTurnLayout";
+import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
+import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
 import { modelColor } from "@/lib/models";
 
 export const Route = createFileRoute("/shared/$token")({
@@ -19,6 +23,7 @@ function SharedPage() {
   const [data, setData] = useState<ApiSharedChat | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [turnLayout, setTurnLayout] = useChatTurnLayout();
 
   useEffect(() => {
     void api.share
@@ -48,12 +53,13 @@ function SharedPage() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border">
-        <div className="mx-auto flex h-14 max-w-4xl items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-4xl items-center justify-between gap-3 px-6">
           <Link to="/" className="flex items-center gap-2 font-display font-semibold">
             <BrandLogo className="size-7" />
             MultiAI
           </Link>
           <div className="flex items-center gap-2">
+            <ChatTurnLayoutToggle value={turnLayout} onChange={setTurnLayout} />
             <button
               onClick={() => {
                 void navigator.clipboard.writeText(window.location.href);
@@ -95,8 +101,9 @@ function SharedPage() {
 }
 
 function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
+  const [layout] = useChatTurnLayout();
+  const { isExpanded, toggle: toggleAnswerExpansion } = useTurnAnswerExpansion(layout);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
-  const [expandedAnswerId, setExpandedAnswerId] = useState<string | null>(null);
   const canCollapseAnswers = Boolean(turn.verdict);
   const hasVerdict = Boolean(turn.verdict);
 
@@ -121,41 +128,43 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
           </button>
         ) : null}
       </div>
-      {turn.model_answers.map((a) => {
-        const expanded = expandedAnswerId === a.model_id || !hasVerdict;
-        const color = modelColor(a.model_id);
-        return (
-          <div
-            key={a.model_id}
-            className="w-full rounded-2xl border border-border border-l-[3px] bg-card p-4 shadow-[0_1px_0_oklch(1_0_0/0.8)_inset,0_8px_28px_oklch(0.45_0.04_240/0.06)] sm:p-5"
-            style={{ borderLeftColor: color }}
-          >
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span
-                className="size-2.5 shrink-0 rounded-full"
-                style={{ background: color }}
-              />
-              <span className="min-w-0 flex-1 font-semibold leading-tight">{a.model_name}</span>
-              {a.confidence != null && (
-                <span className="shrink-0 text-xs text-primary">{a.confidence}%</span>
-              )}
+      <div
+        className={chatAnswerCardsClassName(layout)}
+        data-chat-answer-layout={layout}
+        data-testid="shared-answer-layout"
+      >
+        {turn.model_answers.map((a) => {
+          const expanded = isExpanded(a.model_id, hasVerdict);
+          const color = modelColor(a.model_id);
+          return (
+            <div
+              key={a.model_id}
+              className="min-w-0 w-full overflow-hidden rounded-2xl border border-border border-l-[3px] bg-card p-4 shadow-[0_1px_0_oklch(1_0_0/0.8)_inset,0_8px_28px_oklch(0.45_0.04_240/0.06)] sm:p-5"
+              style={{ borderLeftColor: color }}
+            >
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span
+                  className="size-2.5 shrink-0 rounded-full"
+                  style={{ background: color }}
+                />
+                <span className="min-w-0 flex-1 font-semibold leading-tight">{a.model_name}</span>
+                {a.confidence != null && (
+                  <span className="shrink-0 text-xs text-primary">{a.confidence}%</span>
+                )}
+              </div>
+              <div className="mt-3 border-t border-border/60 pt-3 sm:mt-4 sm:pt-4">
+                <ExpandableAnswer
+                  collapsible={hasVerdict}
+                  expanded={expanded}
+                  onToggle={() => toggleAnswerExpansion(a.model_id)}
+                >
+                  <MessageContent>{a.text ?? "-"}</MessageContent>
+                </ExpandableAnswer>
+              </div>
             </div>
-            <div className="mt-3 border-t border-border/60 pt-3 sm:mt-4 sm:pt-4">
-              <ExpandableAnswer
-                collapsible={hasVerdict}
-                expanded={expanded}
-                onToggle={() =>
-                  setExpandedAnswerId((current) =>
-                    current === a.model_id ? null : a.model_id,
-                  )
-                }
-              >
-                <MessageContent>{a.text ?? "-"}</MessageContent>
-              </ExpandableAnswer>
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   ) : (
     <button
@@ -169,7 +178,7 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
   );
 
   const verdictBlock = turn.verdict ? (
-    <div className="pt-2">
+    <div className="w-full pt-2" data-testid="shared-verdict">
       <div className="rounded-2xl border-2 border-primary/30 bg-primary/[0.04] p-5 shadow-[0_1px_0_oklch(1_0_0/0.9)_inset,0_16px_44px_oklch(0.55_0.1_240/0.14)] sm:p-6">
         <div className="flex flex-wrap items-start gap-3 border-b border-primary/15 pb-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
