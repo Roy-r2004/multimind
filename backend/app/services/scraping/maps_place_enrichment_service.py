@@ -14,15 +14,37 @@ import json
 import logging
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.db.models import MapsCensusRun, MapsPlace, MapsPlaceEnrichmentStatus
+from app.db.models import (
+    MapsCareSetting,
+    MapsCensusRun,
+    MapsClientEligibility,
+    MapsFacilityType,
+    MapsLifecycleStatus,
+    MapsOperatorType,
+    MapsOrganizationScope,
+    MapsOwnershipStatus,
+    MapsPlace,
+    MapsPlaceEnrichmentStatus,
+)
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
+from app.services.scraping.maps_eligibility import (
+    compute_client_eligibility,
+    derive_is_relevant,
+    derive_legacy_verification_verdict,
+)
+from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
+from app.services.scraping.maps_website_crawl_service import (
+    MapsWebsiteCrawlError,
+    maps_website_crawl_service,
+    path_keywords_from_country_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,29 +118,40 @@ class EvidenceField(BaseModel):
     source_url: str = Field(default="", max_length=1000)
 
 
-VERDICT_CONFIRMED = "confirmed"
-VERDICT_CONTRADICTED = "contradicted"
-VERDICT_UNKNOWN = "unknown"
-_VALID_VERDICTS = {VERDICT_CONFIRMED, VERDICT_CONTRADICTED, VERDICT_UNKNOWN}
-
-
-class VerificationField(BaseModel):
+class ClassificationEvidenceField(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    verdict: str = Field(default="", max_length=40)
-    reason: str = Field(default="", max_length=400)
+    value: str | bool | list[str] | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    evidence_quote: str = Field(default="", max_length=MAX_QUOTE_CHARACTERS)
     source_url: str = Field(default="", max_length=1000)
-
-    def normalized_verdict(self) -> str:
-        candidate = (self.verdict or "").strip().casefold()
-        return candidate if candidate in _VALID_VERDICTS else VERDICT_UNKNOWN
+    source_type: str = Field(default="", max_length=100)
 
 
 class MapsPlaceEnrichmentResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     place_id: str = Field(default="", max_length=64)
-    verification: VerificationField = Field(default_factory=VerificationField)
+    operator_type: str = Field(default="", max_length=40)
+    ownership_status: str = Field(default="", max_length=40)
+    funding_type: str = Field(default="", max_length=20)
+    facility_type: str = Field(default="", max_length=64)
+    care_setting: str = Field(default="", max_length=32)
+    organization_scope: str = Field(default="", max_length=32)
+    addiction_focus_confirmed: bool | None = None
+    medical_detox: bool | None = None
+    residential_accommodation: bool | None = None
+    operating_status: str = Field(default="", max_length=32)
+    classification_evidence: dict[str, ClassificationEvidenceField] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("classification_evidence", "evidence_map", "evidence"),
+    )
+    classification_confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("classification_confidence", "confidence"),
+    )
     addictions_treated: list[EvidenceField] = Field(default_factory=list)
     languages_spoken: list[EvidenceField] = Field(default_factory=list)
 
@@ -131,6 +164,28 @@ class MapsPlaceEnrichmentBatch(BaseModel):
 
 class EnrichmentError(Exception):
     pass
+
+
+OPERATING_STATUS_VALUES = {"open", "closed", "unknown"}
+FUNDING_TYPE_VALUES = {
+    "private",
+    "public",
+    "mixed",
+    "donation_based",
+    "insurance_based",
+    "unknown",
+}
+OPERATOR_TYPE_VALUES = {item.value for item in MapsOperatorType}
+OWNERSHIP_STATUS_VALUES = {item.value for item in MapsOwnershipStatus}
+FACILITY_TYPE_VALUES = {item.value for item in MapsFacilityType}
+CARE_SETTING_VALUES = {item.value for item in MapsCareSetting}
+ORGANIZATION_SCOPE_VALUES = {item.value for item in MapsOrganizationScope}
+EVIDENCE_REQUIRED_WHEN_SET: dict[str, set[str]] = {
+    "operator_type": {"unknown"},
+    "ownership_status": {MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value},
+    "facility_type": {"unknown", MapsFacilityType.UNRELATED.value},
+    "organization_scope": {"unknown"},
+}
 
 
 class MapsPlaceEnrichmentService:
@@ -151,34 +206,76 @@ class MapsPlaceEnrichmentService:
                 return {"enriched": 0}
             country_code = run.country_code
             country_name = run.country_name
-            pending = (
-                await scan_db.execute(
-                    select(MapsPlace).where(
-                        MapsPlace.run_id == run_id,
-                        MapsPlace.is_relevant.is_(True),
-                        MapsPlace.enrichment_status.in_(
-                            [
-                                MapsPlaceEnrichmentStatus.PENDING.value,
-                                MapsPlaceEnrichmentStatus.FAILED.value,
-                                MapsPlaceEnrichmentStatus.SKIPPED.value,
-                            ]
-                        ),
-                    )
-                )
-            ).scalars().all()
-            pending = pending[: max(1, settings.maps_census_enrichment_max_places_per_run)]
-            place_ids = [place.id for place in pending]
+            state = dict(run.processing_state or {})
+            cursor: str | None = state.get("enrichment_cursor") if state.get(
+                "enrichment_paused"
+            ) else None
 
+        # Resumable batch loop (Phase 2 gap #4): previously this sliced pending
+        # places to `maps_census_enrichment_max_places_per_run` (250) and
+        # silently dropped the rest. It now keyset-paginates by MapsPlace.id
+        # in fixed-size batches until none remain or the call budget is hit,
+        # persisting a resume cursor on run.processing_state when paused.
+        llm_batch_size = max(1, settings.maps_census_enrichment_batch_size)
+        processing_batch_size = max(1, settings.maps_census_enrichment_processing_batch_size)
+        max_calls = max(1, settings.maps_census_enrichment_max_calls_per_run)
+        tracker = MapsQuotaTracker()
         enriched = 0
-        batch_size = max(1, settings.maps_census_enrichment_batch_size)
-        for offset in range(0, len(place_ids), batch_size):
-            chunk = place_ids[offset : offset + batch_size]
-            enriched += await self._enrich_batch(
-                session_factory,
-                place_ids=chunk,
-                country_code=country_code,
-                country_name=country_name,
-            )
+        calls_made = 0
+        paused = False
+
+        while True:
+            async with session_factory() as scan_db:
+                query = select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.is_relevant.is_(True),
+                    MapsPlace.enrichment_status.in_(
+                        [
+                            MapsPlaceEnrichmentStatus.PENDING.value,
+                            MapsPlaceEnrichmentStatus.FAILED.value,
+                            MapsPlaceEnrichmentStatus.SKIPPED.value,
+                        ]
+                    ),
+                )
+                if cursor:
+                    query = query.where(MapsPlace.id > cursor)
+                batch_places = (
+                    await scan_db.execute(query.order_by(MapsPlace.id).limit(processing_batch_size))
+                ).scalars().all()
+                place_ids = [place.id for place in batch_places]
+
+            if not place_ids:
+                break
+            if calls_made >= max_calls:
+                paused = True
+                break
+
+            for offset in range(0, len(place_ids), llm_batch_size):
+                chunk = place_ids[offset : offset + llm_batch_size]
+                enriched += await self._enrich_batch(
+                    session_factory,
+                    place_ids=chunk,
+                    country_code=country_code,
+                    country_name=country_name,
+                )
+                tracker.add_enrichment_call()
+
+            calls_made += len(place_ids)
+            cursor = place_ids[-1]
+
+        async with session_factory() as state_db:
+            run = await state_db.get(MapsCensusRun, run_id)
+            if run is not None:
+                state = dict(run.processing_state or {})
+                state["enrichment_paused"] = paused
+                state["enrichment_cursor"] = cursor if paused else None
+                limits_reached = dict(state.get("limits_reached") or {})
+                limits_reached["enrichment"] = paused
+                state["limits_reached"] = limits_reached
+                run.processing_state = state
+                await state_db.commit()
+
+        await merge_quota_metrics(session_factory, run_id=run_id, tracker=tracker)
 
         async with session_factory() as final_db:
             run = await final_db.get(MapsCensusRun, run_id)
@@ -230,7 +327,39 @@ class MapsPlaceEnrichmentService:
             ).scalars().all()
             by_id = {place.id: place for place in places}
             ordered = [by_id[pid] for pid in place_ids if pid in by_id]
-            payloads = [self._facility_payload(place) for place in ordered]
+            run = await db.get(MapsCensusRun, ordered[0].run_id) if ordered else None
+            path_keywords = path_keywords_from_country_profile(
+                dict(run.country_profile or {}) if run is not None else None
+            )
+            crawl_excerpts: dict[str, str | None] = {}
+            settings = get_settings()
+            for place in ordered:
+                website = (place.official_website or place.raw_website or "").strip()
+                if not website or not settings.maps_census_website_crawl_enabled:
+                    crawl_excerpts[place.id] = None
+                    continue
+                try:
+                    outcome = await maps_website_crawl_service.crawl_website(
+                        db,
+                        website_url=website,
+                        path_keywords=path_keywords,
+                    )
+                    place.enrichment_pages_crawled = outcome.page_urls or None
+                    crawl_excerpts[place.id] = (
+                        outcome.combined_excerpt(
+                            max_chars=settings.maps_census_website_crawl_max_excerpt_chars
+                        )
+                        or None
+                    )
+                except MapsWebsiteCrawlError:
+                    crawl_excerpts[place.id] = None
+            payloads = [
+                self._facility_payload(
+                    place,
+                    website_crawl_excerpt=crawl_excerpts.get(place.id),
+                )
+                for place in ordered
+            ]
             for place in ordered:
                 place.enrichment_status = MapsPlaceEnrichmentStatus.RUNNING.value
                 place.enrichment_attempts = (place.enrichment_attempts or 0) + 1
@@ -301,31 +430,24 @@ class MapsPlaceEnrichmentService:
                     place.enrichment_completed_at = datetime.now(UTC)
                     continue
 
-                verdict = result.verification.normalized_verdict()
-                place.verification_verdict = verdict
-                place.verification_reason = (result.verification.reason or "").strip()[:400]
-                place.verification_source_url = (
-                    result.verification.source_url or ""
-                ).strip()[:1024] or None
+                _enforce_field_evidence(result)
+                _apply_structured_fields(place, result)
+                place.lifecycle_status = _derive_lifecycle_status(place)
+                place.client_eligibility = compute_client_eligibility(place)
+                place.is_relevant = derive_is_relevant(place.lifecycle_status)
+                place.verification_verdict = derive_legacy_verification_verdict(
+                    place.lifecycle_status
+                )
+                place.verification_reason = _derive_verification_reason(place)
+                place.verification_source_url = _derive_verification_source_url(result)
+                place.relevance_reason = _derive_relevance_reason(place)
 
-                if verdict != VERDICT_CONFIRMED:
-                    # Being on Google Maps is not evidence. Only facilities the web search
-                    # positively confirms as in-scope providers stay in the census.
-                    place.is_relevant = False
-                    place.addictions_treated = []
-                    place.languages_spoken = []
-                    place.relevance_reason = (
-                        "excluded: web sources contradict an addiction facility"
-                        if verdict == VERDICT_CONTRADICTED
-                        else "excluded: could not verify this is a real addiction facility"
-                    )
-                else:
-                    addictions = _normalize_addictions(result.addictions_treated)
-                    languages = _normalize_languages(result.languages_spoken)
-                    place.addictions_treated = addictions
-                    place.languages_spoken = languages
-                    if addictions or languages:
-                        enriched += 1
+                addictions = _normalize_addictions(result.addictions_treated)
+                languages = _normalize_languages(result.languages_spoken)
+                place.addictions_treated = addictions
+                place.languages_spoken = languages
+                if place.is_relevant and (addictions or languages):
+                    enriched += 1
 
                 place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                 place.enrichment_completed_at = datetime.now(UTC)
@@ -333,8 +455,13 @@ class MapsPlaceEnrichmentService:
             await db.commit()
         return enriched
 
-    def _facility_payload(self, place: MapsPlace) -> dict[str, str | list[str] | None]:
-        return {
+    def _facility_payload(
+        self,
+        place: MapsPlace,
+        *,
+        website_crawl_excerpt: str | None = None,
+    ) -> dict[str, str | list[str] | None]:
+        payload = {
             "place_id": place.id,
             "name": (place.canonical_name or place.raw_name or "").strip(),
             "city": (place.city_name or "").strip() or None,
@@ -344,6 +471,9 @@ class MapsPlaceEnrichmentService:
             "website": (place.official_website or place.raw_website or "").strip() or None,
             "place_types": list(place.place_types or []),
         }
+        if website_crawl_excerpt:
+            payload["website_crawl_excerpt"] = website_crawl_excerpt
+        return payload
 
     async def _search_fields(
         self,
@@ -394,15 +524,175 @@ class MapsPlaceEnrichmentService:
 
 def _normalize_batch_payload(raw: object) -> dict:
     if isinstance(raw, list):
-        return {"results": raw}
+        return {"results": [_normalize_result_payload(item) for item in raw]}
     if isinstance(raw, dict):
         items = raw.get("results") or raw.get("facilities") or raw.get("decisions") or []
-        return {"results": items if isinstance(items, list) else []}
+        if isinstance(items, list):
+            return {"results": [_normalize_result_payload(item) for item in items]}
+        return {"results": []}
     return {"results": []}
+
+
+def _normalize_result_payload(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+
+    payload = dict(raw)
+    if "classification_evidence" not in payload:
+        payload["classification_evidence"] = (
+            payload.get("evidence_map") or payload.get("evidence") or {}
+        )
+    if "classification_confidence" not in payload:
+        payload["classification_confidence"] = payload.get("confidence")
+    return payload
 
 
 def _non_empty_list(value: list[str] | None) -> bool:
     return bool(value and any(str(item).strip() for item in value))
+
+
+def _enforce_field_evidence(result: MapsPlaceEnrichmentResult) -> None:
+    """Phase 3: drop structured values that lack supporting field evidence."""
+    for field_name, unknown_values in EVIDENCE_REQUIRED_WHEN_SET.items():
+        raw_value = getattr(result, field_name, "")
+        normalized = (raw_value or "").strip().casefold() if isinstance(raw_value, str) else raw_value
+        if not normalized or normalized in unknown_values:
+            continue
+        evidence = result.classification_evidence.get(field_name)
+        if evidence is None:
+            setattr(result, field_name, "")
+            continue
+        if not evidence.evidence_quote.strip() or not evidence.source_url.strip():
+            setattr(result, field_name, "")
+
+
+def _apply_structured_fields(place: MapsPlace, result: MapsPlaceEnrichmentResult) -> None:
+    place.operator_type = _normalize_choice(result.operator_type, OPERATOR_TYPE_VALUES)
+    place.ownership_status = _normalize_choice(result.ownership_status, OWNERSHIP_STATUS_VALUES)
+    place.funding_type = _normalize_choice(result.funding_type, FUNDING_TYPE_VALUES)
+    place.facility_type = _normalize_choice(result.facility_type, FACILITY_TYPE_VALUES)
+    place.care_setting = _normalize_choice(result.care_setting, CARE_SETTING_VALUES)
+    place.organization_scope = _normalize_choice(
+        result.organization_scope, ORGANIZATION_SCOPE_VALUES
+    )
+    place.addiction_focus_confirmed = result.addiction_focus_confirmed
+    place.medical_detox = result.medical_detox
+    place.residential_accommodation = result.residential_accommodation
+    place.operating_status = _normalize_choice(result.operating_status, OPERATING_STATUS_VALUES)
+    place.classification_evidence = _dump_classification_evidence(result.classification_evidence)
+    place.classification_confidence = result.classification_confidence
+
+
+def _derive_lifecycle_status(place: MapsPlace) -> str:
+    if place.operating_status == "closed":
+        return MapsLifecycleStatus.PERMANENTLY_CLOSED.value
+
+    if place.ownership_status == MapsOwnershipStatus.CONFIRMED_GOVERNMENT.value or place.operator_type in {
+        MapsOperatorType.PUBLIC_HOSPITAL.value,
+        MapsOperatorType.GOVERNMENT_AGENCY.value,
+    }:
+        return MapsLifecycleStatus.CONFIRMED_PUBLIC.value
+
+    if (
+        place.organization_scope == MapsOrganizationScope.INDIVIDUAL_PRACTICE.value
+        or place.operator_type == MapsOperatorType.INDIVIDUAL_PRACTICE.value
+        or place.facility_type
+        in {
+            MapsFacilityType.INDIVIDUAL_ADDICTOLOGIST.value,
+            MapsFacilityType.THERAPIST_OR_COUNSELOR.value,
+        }
+    ):
+        return MapsLifecycleStatus.CONFIRMED_INDIVIDUAL_PRACTITIONER.value
+
+    if place.facility_type == MapsFacilityType.CESSATION_SERVICE.value:
+        return MapsLifecycleStatus.CONFIRMED_CESSATION_ONLY.value
+
+    if place.facility_type == MapsFacilityType.UNRELATED.value:
+        return MapsLifecycleStatus.UNRELATED.value
+
+    if place.facility_type == MapsFacilityType.HARM_REDUCTION_ONLY.value:
+        return MapsLifecycleStatus.CONTRADICTED.value
+
+    if (
+        place.facility_type == MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value
+        and place.addiction_focus_confirmed is not True
+    ):
+        return MapsLifecycleStatus.CONTRADICTED.value
+
+    client_eligibility = compute_client_eligibility(place)
+    if client_eligibility == MapsClientEligibility.ELIGIBLE.value:
+        return MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
+
+    if client_eligibility == MapsClientEligibility.REVIEW.value:
+        if place.ownership_status == MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value:
+            return MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
+        return MapsLifecycleStatus.NEEDS_REVIEW.value
+
+    # Preserve uncertain or partially evidenced candidates for manual review unless
+    # the structured fields positively contradicted the facility above.
+    return MapsLifecycleStatus.NEEDS_REVIEW.value
+
+
+def _derive_verification_reason(place: MapsPlace) -> str:
+    reasons = {
+        MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value: "structured enrichment confirmed an eligible non-government addiction facility",
+        MapsLifecycleStatus.PROBABLE_ELIGIBLE.value: "structured enrichment found probable non-government addiction treatment evidence",
+        MapsLifecycleStatus.NEEDS_REVIEW.value: "structured enrichment found insufficient evidence for automatic confirmation",
+        MapsLifecycleStatus.CONFIRMED_PUBLIC.value: "structured enrichment identified a public or government-operated provider",
+        MapsLifecycleStatus.CONFIRMED_INDIVIDUAL_PRACTITIONER.value: "structured enrichment identified an individual practitioner rather than a center",
+        MapsLifecycleStatus.CONFIRMED_CESSATION_ONLY.value: "structured enrichment identified a cessation-only service",
+        MapsLifecycleStatus.CONTRADICTED.value: "structured enrichment contradicted an in-scope addiction treatment facility",
+        MapsLifecycleStatus.UNRELATED.value: "structured enrichment found an unrelated facility",
+        MapsLifecycleStatus.PERMANENTLY_CLOSED.value: "structured enrichment found the facility is closed",
+    }
+    return reasons.get(place.lifecycle_status, "structured enrichment updated facility classification")[
+        :400
+    ]
+
+
+def _derive_verification_source_url(result: MapsPlaceEnrichmentResult) -> str | None:
+    for field in result.classification_evidence.values():
+        if field.source_url.strip():
+            return field.source_url.strip()[:1024]
+    for field in [*result.addictions_treated, *result.languages_spoken]:
+        if field.source_url.strip():
+            return field.source_url.strip()[:1024]
+    return None
+
+
+def _derive_relevance_reason(place: MapsPlace) -> str:
+    reasons = {
+        MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value: "confirmed eligible by structured enrichment",
+        MapsLifecycleStatus.PROBABLE_ELIGIBLE.value: "kept for review after structured enrichment",
+        MapsLifecycleStatus.NEEDS_REVIEW.value: "kept for review pending stronger structured evidence",
+        MapsLifecycleStatus.CONFIRMED_PUBLIC.value: "excluded: public or government-operated provider",
+        MapsLifecycleStatus.CONFIRMED_INDIVIDUAL_PRACTITIONER.value: "individual practitioner retained outside center export",
+        MapsLifecycleStatus.CONFIRMED_CESSATION_ONLY.value: "excluded: cessation-only service",
+        MapsLifecycleStatus.CONTRADICTED.value: "excluded: structured evidence contradicted an in-scope addiction facility",
+        MapsLifecycleStatus.UNRELATED.value: "excluded: unrelated facility",
+        MapsLifecycleStatus.PERMANENTLY_CLOSED.value: "excluded: permanently closed",
+    }
+    return reasons.get(place.lifecycle_status, "structured enrichment updated facility classification")[
+        :300
+    ]
+
+
+def _normalize_choice(value: str | None, allowed: set[str]) -> str | None:
+    candidate = (value or "").strip().casefold()
+    return candidate if candidate in allowed else None
+
+
+def _dump_classification_evidence(
+    evidence: dict[str, ClassificationEvidenceField],
+) -> dict[str, dict] | None:
+    if not evidence:
+        return None
+    dumped = {
+        key: field.model_dump(mode="json", exclude_none=True)
+        for key, field in evidence.items()
+        if key.strip()
+    }
+    return dumped or None
 
 
 def _normalize_languages(fields: list[EvidenceField]) -> list[str]:

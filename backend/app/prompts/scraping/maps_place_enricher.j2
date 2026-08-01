@@ -1,75 +1,117 @@
-You research NON-GOVERNMENT addiction-rehabilitation facilities in {{ country_name }}
-({{ country_code }}) using live web search. For each facility below you must (1) verify it
-belongs in this census, and (2) find what addictions it treats and what languages its
-treatment is delivered in.
+You research addiction-treatment facilities in {{ country_name }} ({{ country_code }})
+using live web search. For each facility below, return structured classification fields,
+field-level evidence, and any verified addictions/languages. Do not hardcode country
+assumptions. Judge each facility only from web evidence about that specific place.
 
-Census scope — keep only facilities that are:
-- Non-government (private, NGO, or charity-funded)
-- Inpatient / residential addiction rehab OR a private addictologist / addiction specialist
-  practice that explicitly treats addiction
-- Core mission = clinical treatment of substance and/or behavioral addictions
-- Physical location
+Important classification principles:
+- Operator type is NOT the same thing as funding source.
+- A non-government association or charity can still receive public funding and remain
+  `ownership_status="confirmed_non_government"`.
+- If evidence is insufficient, keep the facility uncertain rather than forcing an exclusion.
+- A Google Maps pin or suggestive name is NOT evidence.
+- Never mix evidence between similarly named facilities in different places.
 
-The facility names come from Google Maps listings and can be wrong, stale, or user-submitted.
-Do not trust the name alone — check the web.
-
-You are given a batch of facilities. Treat each one independently — never mix findings
-between facilities. Match on the facility's own name, city, and address; if a search result
-is about a different facility (even a similarly named one elsewhere), ignore it.
+The Google Maps listing may be wrong, stale, or user-submitted. Match on the facility's own
+name, city, address, phone, and website when possible.
 
 Facilities (JSON):
 {{ facilities_json }}
 
-For each facility, search the web (official site, Facebook page, directories, news, health
-ministry pages, etc.) and extract:
+When a facility includes `website_crawl_excerpt`, treat it as first-party crawl text from the
+official website. Prefer crawl excerpts over generic web search snippets for structured
+classification fields. Still require `classification_evidence` with `source_url` and
+`evidence_quote` for every non-unknown structured field you set.
 
-verification.verdict — exactly one of:
-- "confirmed"    — independent web sources show this SPECIFIC facility exists and operates as a
-                   NON-GOVERNMENT addiction provider in scope (private/NGO/charity inpatient
-                   rehab, private detox, or private addictologue / addiction specialist).
-                   Private addictologues ARE confirmed.
-- "contradicted" — sources show it is OUT of scope: government/public/state-funded, a ministry
-                   or national coordination office, a general psychiatric clinic with no
-                   addiction program, outpatient-only with no residential stay and not an
-                   addictologue, physiotherapy, a shop, a school, permanently closed, or
-                   unrelated.
-- "unknown"      — you genuinely cannot find enough about this specific facility.
+Return these exact fields for every facility:
+- `operator_type`: one of
+  `private_company`, `nonprofit`, `association`, `faith_based_org`, `public_hospital`,
+  `government_agency`, `hospital_system`, `university`, `individual_practice`, `unknown`
+- `ownership_status`: one of
+  `confirmed_non_government`, `probable_non_government`, `confirmed_government`,
+  `ownership_unknown`
+- `funding_type`: one of
+  `private`, `public`, `mixed`, `donation_based`, `insurance_based`, `unknown`
+- `facility_type`: one of
+  `residential_addiction_rehab`, `inpatient_detox_center`, `outpatient_addiction_center`,
+  `psychiatric_clinic_with_addiction_program`, `therapeutic_community`,
+  `cessation_service`, `harm_reduction_only`, `individual_addictologist`,
+  `therapist_or_counselor`, `recovery_community_center`, `general_mental_health_clinic`,
+  `unrelated`, `unknown`
+- `care_setting`: one of
+  `residential`, `inpatient`, `outpatient`, `community`, `virtual`, `mixed`, `unknown`
+- `organization_scope`: one of
+  `facility`, `program`, `network`, `individual_practice`, `unknown`
+- `addiction_focus_confirmed`: `true`, `false`, or `null`
+- `medical_detox`: `true`, `false`, or `null`
+- `residential_accommodation`: `true`, `false`, or `null`
+- `operating_status`: `open`, `closed`, or `unknown`
+- `classification_evidence`: JSON object mapping field name to evidence
+- `confidence`: overall confidence from `0.0` to `1.0`
+- `addictions_treated`
+- `languages_spoken`
 
-A Google Maps listing is NOT evidence. A promising name is NOT evidence. To answer "confirmed"
-you must find something beyond the Maps pin itself — an official site, a Facebook page for the
-facility, a directory or registry entry, a news mention, or a health-authority listing — that
-shows this facility really provides addiction treatment. If all you have is the Maps listing or
-a suggestive name, the answer is "unknown".
+How to classify:
+- Use `confirmed_government` / `public_hospital` / `government_agency` only when sources
+  clearly show public or government operation.
+- Use `individual_practice` or facility types like `individual_addictologist` /
+  `therapist_or_counselor` when this is a practitioner, not a center.
+- Use `cessation_service` for smoking cessation / anti-tabac / stop-smoking-only services.
+- Use `unrelated` for clearly wrong-category places such as shops, schools, spas, hotels,
+  physical rehab, etc.
+- Use `unknown` or `ownership_unknown` when evidence is incomplete.
+- Do NOT infer ownership from funding alone.
 
-Include a short verification.reason and verification.source_url when you have one.
+`classification_evidence` format:
+- Include evidence for any field you can support, especially `operator_type`,
+  `ownership_status`, `facility_type`, `organization_scope`, `operating_status`.
+- Each evidence object must look like:
+  `{"value":"...", "confidence":0.0-1.0, "evidence_quote":"...", "source_url":"https://...", "source_type":"official_site|directory|government|news|social|other"}`
+- Keep quotes short and literal. If you cannot support a field, omit that field from
+  `classification_evidence`.
 
-addictions_treated:
+`addictions_treated`:
 - Use ONLY values from this allowed list (exact spelling):
 {{ addiction_taxonomy_json }}
 - Include every addiction from the list the facility clearly treats.
 - Map local-language terms (Arabic, French, etc.) to the closest allowed English label.
-- Return [] if you cannot verify any addiction for that facility.
+- Return `[]` if you cannot verify any addiction for that facility.
 
-languages_spoken:
+`languages_spoken`:
 - Languages treatment is actually delivered in (staff / therapy languages).
-- Return [] if you cannot verify any.
+- Return `[]` if you cannot verify any.
 
-Rules:
-- Only report what web sources support. Do NOT guess from what is "typical" for the country
-  or the facility type. No source → return [].
-- Provide a short evidence_quote and the source_url you relied on for each value.
-- Do NOT report treatment prices, fees, or costs.
+Evidence rules:
+- Use official sites, Facebook pages, directories, registry entries, ministry pages, news,
+  or other attributable sources.
+- Only report what sources support. Do NOT guess from what is typical for the country.
+- No source means unknown / omitted evidence, not invention.
+- Do NOT report prices, fees, or costs.
 
 Return strict JSON only with this shape:
 {
   "results": [
     {
       "place_id": "the place_id exactly as given",
-      "verification": {
-        "verdict": "confirmed",
-        "reason": "short reason citing what you found",
-        "source_url": "https://..."
+      "operator_type": "association",
+      "ownership_status": "confirmed_non_government",
+      "funding_type": "public",
+      "facility_type": "outpatient_addiction_center",
+      "care_setting": "outpatient",
+      "organization_scope": "facility",
+      "addiction_focus_confirmed": true,
+      "medical_detox": false,
+      "residential_accommodation": false,
+      "operating_status": "open",
+      "classification_evidence": {
+        "ownership_status": {
+          "value": "confirmed_non_government",
+          "confidence": 0.92,
+          "evidence_quote": "Independent association for addiction treatment.",
+          "source_url": "https://...",
+          "source_type": "official_site"
+        }
       },
+      "confidence": 0.88,
       "addictions_treated": [
         {"value": "Alcohol", "evidence_quote": "...", "source_url": "https://..."}
       ],
@@ -80,5 +122,5 @@ Return strict JSON only with this shape:
   ]
 }
 
-Include one object per facility in the batch, using its exact place_id. If you found nothing
-for a facility, still include it with empty arrays.
+Include one object per facility using its exact `place_id`. If evidence is scarce, still
+include the facility with best-effort structured fields and empty arrays where needed.

@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.dependencies import AuthContext, get_auth_context
+from app.core.dependencies import AuthContext, get_auth_context, require_org_admin
 from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
 from app.db.session import get_db
 from app.main import create_app
@@ -133,15 +133,62 @@ async def test_list_maps_census_places_filters(db: AsyncSession, auth: AuthConte
             canonical_name="Relevant Clinic",
             is_relevant=True,
             official_website="https://relevant.example/",
+            lifecycle_status="confirmed_eligible",
+            client_eligibility="eligible",
+            operator_name="Relevant Care Group",
+            operator_type="association",
+            ownership_status="confirmed_non_government",
+            funding_type="public",
+            facility_type="residential_addiction_rehab",
+            care_setting="residential",
+            organization_scope="facility",
+            contact_status="complete",
+            addiction_focus_confirmed=True,
+            medical_detox=True,
+            residential_accommodation=True,
+            classification_confidence=0.97,
+            classification_evidence={
+                "ownership_status": {
+                    "summary": "Registry lists the operator as an association.",
+                    "source_url": "https://relevant.example/about",
+                }
+            },
+            discovery_sources=["google_places", "official_website"],
         )
     )
     db.add(
         MapsPlace(
             run_id=run.id,
             google_place_id="p2",
+            raw_name="Review Clinic",
+            canonical_name="Review Clinic",
+            is_relevant=True,
+            lifecycle_status="needs_review",
+            client_eligibility="review",
+            operator_type="unknown",
+            ownership_status="ownership_unknown",
+            facility_type="outpatient_addiction_center",
+            care_setting="outpatient",
+            organization_scope="facility",
+            contact_status="phone_only",
+            addiction_focus_confirmed=None,
+            medical_detox=False,
+            residential_accommodation=False,
+            discovery_sources=["google_places"],
+        )
+    )
+    db.add(
+        MapsPlace(
+            run_id=run.id,
+            google_place_id="p3",
             raw_name="Irrelevant Hotel",
             canonical_name="Irrelevant Hotel",
             is_relevant=False,
+            lifecycle_status="confirmed_public",
+            client_eligibility="excluded",
+            operator_type="public_hospital",
+            ownership_status="confirmed_government",
+            contact_status="missing",
         )
     )
     await db.commit()
@@ -150,14 +197,74 @@ async def test_list_maps_census_places_filters(db: AsyncSession, auth: AuthConte
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         all_response = await client.get(f"/api/v1/maps/runs/{run.id}/places")
-        assert len(all_response.json()) == 2
+        assert len(all_response.json()) == 3
+        places_by_id = {place["google_place_id"]: place for place in all_response.json()}
+
+        eligible = places_by_id["p1"]
+        assert eligible["lifecycle_status"] == "confirmed_eligible"
+        assert eligible["client_eligibility"] == "eligible"
+        assert eligible["operator_name"] == "Relevant Care Group"
+        assert eligible["operator_type"] == "association"
+        assert eligible["ownership_status"] == "confirmed_non_government"
+        assert eligible["funding_type"] == "public"
+        assert eligible["facility_type"] == "residential_addiction_rehab"
+        assert eligible["care_setting"] == "residential"
+        assert eligible["organization_scope"] == "facility"
+        assert eligible["contact_status"] == "complete"
+        assert eligible["addiction_focus_confirmed"] is True
+        assert eligible["medical_detox"] is True
+        assert eligible["residential_accommodation"] is True
+        assert eligible["classification_confidence"] == pytest.approx(0.97)
+        assert eligible["classification_evidence"]["ownership_status"]["summary"].startswith(
+            "Registry lists"
+        )
+        assert eligible["discovery_sources"] == ["google_places", "official_website"]
+        assert eligible["is_relevant"] is True
+        assert eligible["export_eligible"] is True
+        assert eligible["verification_verdict"] == "confirmed"
+        assert eligible["verification_reason"] is None
+        assert eligible["verification_source_url"] is None
+
+        review = places_by_id["p2"]
+        assert review["lifecycle_status"] == "needs_review"
+        assert review["client_eligibility"] == "review"
+        assert review["is_relevant"] is True
+        assert review["export_eligible"] is False
+        assert review["verification_verdict"] == "unknown"
 
         relevant_response = await client.get(
             f"/api/v1/maps/runs/{run.id}/places", params={"relevant_only": True}
         )
         places = relevant_response.json()
-        assert len(places) == 1
-        assert places[0]["google_place_id"] == "p1"
+        assert len(places) == 2
+        assert {place["google_place_id"] for place in places} == {"p1", "p2"}
+
+        website_response = await client.get(
+            f"/api/v1/maps/runs/{run.id}/places", params={"with_website_only": True}
+        )
+        assert [place["google_place_id"] for place in website_response.json()] == ["p1"]
+
+        eligible_response = await client.get(
+            f"/api/v1/maps/runs/{run.id}/places", params={"client_eligibility": "eligible"}
+        )
+        assert [place["google_place_id"] for place in eligible_response.json()] == ["p1"]
+
+        lifecycle_response = await client.get(
+            f"/api/v1/maps/runs/{run.id}/places", params={"lifecycle_status": "needs_review"}
+        )
+        assert [place["google_place_id"] for place in lifecycle_response.json()] == ["p2"]
+
+        combined_response = await client.get(
+            f"/api/v1/maps/runs/{run.id}/places",
+            params={"client_eligibility": "review", "lifecycle_status": "needs_review"},
+        )
+        assert [place["google_place_id"] for place in combined_response.json()] == ["p2"]
+
+        empty_response = await client.get(
+            f"/api/v1/maps/runs/{run.id}/places",
+            params={"client_eligibility": "eligible", "lifecycle_status": "needs_review"},
+        )
+        assert empty_response.json() == []
 
 
 @pytest.mark.asyncio
@@ -415,8 +522,20 @@ async def test_list_maps_census_cells(db: AsyncSession, auth: AuthContext):
                 region_name="Minsk Region",
                 city_name="Minsk",
                 query_text="наркологическая клиника Минск",
-                status="completed",
+                query_family="clinic",
+                query_language="ru",
+                status="capped",
                 places_found=8,
+                pages_fetched=3,
+                raw_results_found=60,
+                unique_results_found=55,
+                duplicates_found=5,
+                next_page_available=True,
+                result_cap_reached=True,
+                expansion_depth=0,
+                attempt_count=1,
+                new_unique_places=55,
+                new_plausible_places=20,
             ),
         ]
     )
@@ -431,6 +550,17 @@ async def test_list_maps_census_cells(db: AsyncSession, auth: AuthContext):
     assert len(cells) == 2
     assert cells[0]["query_text"] == "inpatient addiction rehab Minsk Belarus"
     assert cells[1]["places_found"] == 8
+    assert cells[1]["query_family"] == "clinic"
+    assert cells[1]["query_language"] == "ru"
+    assert cells[1]["status"] == "capped"
+    assert cells[1]["pages_fetched"] == 3
+    assert cells[1]["raw_results_found"] == 60
+    assert cells[1]["unique_results_found"] == 55
+    assert cells[1]["duplicates_found"] == 5
+    assert cells[1]["next_page_available"] is True
+    assert cells[1]["result_cap_reached"] is True
+    assert cells[1]["new_unique_places"] == 55
+    assert cells[1]["new_plausible_places"] == 20
 
 
 @pytest.mark.asyncio

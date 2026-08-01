@@ -129,15 +129,40 @@ class Settings(BaseSettings):
     google_places_base_url: str = "https://places.googleapis.com/v1"
     google_places_timeout_seconds: float = 20.0
     maps_census_model: str = "gpt-4.1"
-    maps_census_max_cells_per_run: int = 120
+    maps_census_max_cells_per_run: int = 1500
+    maps_census_max_cells_per_campaign: int = 1500
+    maps_census_saturation_window: int = 10
+    maps_census_min_new_unique_for_expansion: int = 3
+    maps_census_min_new_plausible_for_expansion: int = 1
     maps_census_max_places_per_cell: int = 20
     maps_census_classification_batch_size: int = 15
+    # Google Places (New) pagination — each cell can page beyond the first 20
+    # results up to a bounded number of pages before triggering subdivision.
+    maps_census_max_pages_per_cell: int = 3
+    maps_census_places_page_size: int = 20
+    # Independent per-page retry budget (backoff+jitter), separate from the
+    # single-page tenacity retry used by the legacy search_text() path.
+    maps_census_places_page_max_attempts: int = 3
+    # Resumable cell claiming (SELECT ... SKIP LOCKED on Postgres; guarded
+    # atomic UPDATE elsewhere) so multiple workers never double-process a cell.
+    maps_census_cell_stale_seconds: int = 300
+    maps_census_cell_max_attempts: int = 3
+    # Cap on how deep capped-cell subdivision can recurse before giving up on
+    # a single geography instead of subdividing forever.
+    maps_census_max_subdivision_depth: int = 2
     # Fallback website discovery for relevant places Google Places returned with no
     # (or an untrustworthy) website. "llm" asks Claude directly; "serper" uses Google
     # search candidates plus optional Claude selection (legacy).
     maps_census_website_search_enabled: bool = True
     maps_census_website_search_mode: str = "llm"
+    # Legacy single-pass cap retained for backward compatibility; the resumable
+    # loop below now processes every pending place in batches instead of
+    # silently truncating at this number.
     maps_census_website_search_max_places_per_run: int = 250
+    # Resumable website-search batch processing (Phase 2 gap #4): pulls pending
+    # places in fixed-size batches until none remain or the call budget is hit.
+    maps_census_website_search_batch_size: int = 25
+    maps_census_website_search_max_calls_per_run: int = 5000
     maps_census_website_llm_enabled: bool = True
     maps_census_website_llm_model: str = "sonar-pro"
     maps_census_website_llm_batch_size: int = 3
@@ -156,12 +181,45 @@ class Settings(BaseSettings):
     # Local disk cache for Google Places facility photos (fetched once, reused after)
     maps_census_photo_cache_dir: str = "data/maps_photos"
 
+    # Phase 2: live-web country discovery profile, built once per run before grid planning
+    maps_census_country_profile_model: str = "sonar-pro"
+    maps_census_country_profile_timeout_seconds: float = 90.0
+
     # Phase 2: AI web-search enrichment of addictions/languages (no crawling)
     maps_census_enrichment_enabled: bool = True
+    # Legacy single-pass cap retained for backward compatibility; the resumable
+    # loop below now processes every pending place in batches instead of
+    # silently truncating at this number.
     maps_census_enrichment_max_places_per_run: int = 250
+    # LLM request grouping — how many facilities go into one Sonar prompt.
     maps_census_enrichment_batch_size: int = 5
+    # Resumable enrichment batch processing (Phase 2 gap #4): how many pending
+    # places the outer loop pulls per iteration before checking call budget.
+    maps_census_enrichment_processing_batch_size: int = 25
+    maps_census_enrichment_max_calls_per_run: int = 5000
     maps_census_enrichment_model: str = "sonar-pro"
     maps_census_auto_enrichment_enabled: bool = True
+
+    # Phase 3: limited official-site crawl before structured enrichment
+    maps_census_website_crawl_enabled: bool = True
+    maps_census_website_crawl_max_pages_per_domain: int = 5
+    maps_census_website_crawl_max_bytes_per_page: int = 524_288
+    maps_census_website_crawl_timeout_seconds: float = 15.0
+    maps_census_website_crawl_connect_timeout_seconds: float = 5.0
+    maps_census_website_crawl_cache_ttl_hours: int = 168
+    maps_census_website_crawl_max_excerpt_chars: int = 4000
+    maps_census_website_crawl_user_agent: str = (
+        "MultiMindMapsCrawl/1.0 (+https://multimind.local/maps-census-crawl)"
+    )
+    maps_census_website_crawl_max_redirects: int = 5
+
+    # Phase 3: optional external directory discovery (stub sources only)
+    maps_census_external_discovery_enabled: bool = False
+    maps_census_external_discovery_max_sources: int = 5
+    maps_census_external_discovery_max_candidates_per_source: int = 50
+
+    # Phase 4: Maps census admin UI (dashboard, review actions, campaign controls)
+    maps_census_admin_ui_enabled: bool = True
 
     # Public URL for share links
     public_app_url: str = Field(default="http://localhost:5173")

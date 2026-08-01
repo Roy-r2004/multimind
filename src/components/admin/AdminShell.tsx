@@ -7,6 +7,7 @@ import {
   FolderKanban,
   LayoutDashboard,
   LogOut,
+  MapPin,
   MessageSquare,
   ScrollText,
   Shield,
@@ -16,8 +17,9 @@ import {
 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { CinematicBackdrop } from "@/components/cinematic/PageChrome";
+import { mapsCensusAdminEnabled } from "@/lib/maps/adminFeature";
 
-const NAV = [
+const BASE_NAV = [
   { to: "/admin", label: "Dashboard", icon: LayoutDashboard, exact: true },
   { to: "/admin/audit", label: "Audit Logs", icon: ScrollText },
   { to: "/admin/users", label: "Users", icon: Users },
@@ -30,6 +32,12 @@ const NAV = [
   { to: "/admin/security", label: "Security", icon: Shield },
   { to: "/admin/organization", label: "Organization", icon: Building2 },
 ] as const;
+
+const MAPS_NAV = mapsCensusAdminEnabled
+  ? [{ to: "/admin/maps", label: "Maps Census", icon: MapPin } as const]
+  : [];
+
+const NAV = [...BASE_NAV.slice(0, 1), ...MAPS_NAV, ...BASE_NAV.slice(1)];
 
 export function AdminShell({
   orgName,
