@@ -65,6 +65,7 @@ from app.services.scraping.facility_website_enrichment_service import (
 )
 from app.services.scraping.maps_cell_runner import (
     fail_cell_for_retry,
+    is_campaign_paused,
     is_run_cancelled,
     recover_stale_running_cells,
 )
@@ -1049,6 +1050,8 @@ class MapsCensusService:
             cell_id = queue.popleft()
 
             if await is_run_cancelled(session_factory, run_id=run_id):
+                break
+            if await is_campaign_paused(session_factory, run_id=run_id):
                 break
 
             async with session_factory() as heartbeat_db:
@@ -2438,6 +2441,7 @@ def _cell_item(cell: MapsCensusCell) -> MapsCensusCellItem:
         places_found=cell.places_found,
         error_message=cell.error_message,
         completed_at=cell.completed_at,
+        started_at=cell.started_at,
         pages_fetched=cell.pages_fetched,
         raw_results_found=cell.raw_results_found,
         unique_results_found=cell.unique_results_found,

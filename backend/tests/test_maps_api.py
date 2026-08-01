@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.dependencies import AuthContext, get_auth_context
+from app.core.dependencies import AuthContext, get_auth_context, require_org_admin
 from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
 from app.db.session import get_db
 from app.main import create_app

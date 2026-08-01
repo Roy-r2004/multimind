@@ -190,6 +190,37 @@ class MapsExportService:
         filename = f"{run.country_code.lower()}-maps-census-export.xlsx"
         return buffer.getvalue(), filename
 
+    async def get_export_summary(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> dict[str, int]:
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+
+        places = (
+            await db.execute(select(MapsPlace).where(MapsPlace.run_id == run_id))
+        ).scalars().all()
+
+        counts = {
+            ELIGIBLE_CENTERS_SHEET: 0,
+            NEEDS_REVIEW_SHEET: 0,
+            PUBLIC_GOVERNMENT_SHEET: 0,
+            INDIVIDUAL_PRACTITIONERS_SHEET: 0,
+            EXCLUDED_UNRELATED_SHEET: 0,
+        }
+        for place in places:
+            if _is_eligible_center(place):
+                counts[ELIGIBLE_CENTERS_SHEET] += 1
+            elif _is_review_place(place):
+                counts[NEEDS_REVIEW_SHEET] += 1
+            elif _is_public_place(place):
+                counts[PUBLIC_GOVERNMENT_SHEET] += 1
+            elif _is_individual_practitioner(place):
+                counts[INDIVIDUAL_PRACTITIONERS_SHEET] += 1
+            else:
+                counts[EXCLUDED_UNRELATED_SHEET] += 1
+        return counts
+
     def _export_place_row(self, place: MapsPlace) -> list[Any]:
         return [
             _display_text(place.canonical_name or place.raw_name),

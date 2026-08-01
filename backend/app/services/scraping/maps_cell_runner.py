@@ -144,3 +144,14 @@ async def is_run_cancelled(session_factory, *, run_id: str) -> bool:
     async with session_factory() as db:
         status = await db.scalar(select(MapsCensusRun.status).where(MapsCensusRun.id == run_id))
         return status == MapsCensusStatus.CANCELLED
+
+
+async def is_campaign_paused(session_factory, *, run_id: str) -> bool:
+    from app.db.models import MapsCensusRun
+
+    async with session_factory() as db:
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None:
+            return False
+        state = run.processing_state or {}
+        return bool(state.get("campaign_paused"))

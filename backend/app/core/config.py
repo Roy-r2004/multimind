@@ -218,6 +218,9 @@ class Settings(BaseSettings):
     maps_census_external_discovery_max_sources: int = 5
     maps_census_external_discovery_max_candidates_per_source: int = 50
 
+    # Phase 4: Maps census admin UI (dashboard, review actions, campaign controls)
+    maps_census_admin_ui_enabled: bool = True
+
     # Public URL for share links
     public_app_url: str = Field(default="http://localhost:5173")
 
