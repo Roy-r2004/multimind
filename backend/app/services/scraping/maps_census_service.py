@@ -75,6 +75,7 @@ logger = logging.getLogger(__name__)
 
 CLASSIFICATION_BATCH_TIMEOUT_SECONDS = 90.0
 WEBSITE_LLM_BATCH_TIMEOUT_SECONDS = 90.0
+CLASSIFICATION_FALLBACK_REASONS = frozenset({"classification_failed", "missing_decision"})
 
 CONFIDENCE_VERIFIED_MIN = 0.90
 CONFIDENCE_EXPORT_MIN = 0.70
@@ -795,7 +796,10 @@ class MapsCensusService:
             )
             return [
                 MapsRelevanceDecision(
-                    place_id=item["place_id"], is_relevant=False, reason="classification_failed"
+                    place_id=item["place_id"],
+                    is_relevant=False,
+                    reason="classification_failed",
+                    confidence=0.0,
                 )
                 for item in payloads
             ]
@@ -803,7 +807,10 @@ class MapsCensusService:
         return [
             by_id.get(item["place_id"])
             or MapsRelevanceDecision(
-                place_id=item["place_id"], is_relevant=False, reason="missing_decision"
+                place_id=item["place_id"],
+                is_relevant=False,
+                reason="missing_decision",
+                confidence=0.0,
             )
             for item in payloads
         ]
@@ -1931,10 +1938,24 @@ def _is_explicitly_unrelated(decision: MapsRelevanceDecision) -> bool:
             "spa",
             "pharmacy",
             "school",
+            "university",
+            "college",
+            "campus",
+            "gym",
+            "fitness",
             "physical rehab",
             "physical therapy",
             "physiotherapy",
             "recycling",
+            "waste",
+            "wastewater",
+            "waste water",
+            "waste management",
+            "industrial",
+            "factory",
+            "educational rehab",
+            "educational rehabilitation",
+            "vocational rehab",
             "closed",
             "not a facility",
             "directory listing",
@@ -1943,6 +1964,8 @@ def _is_explicitly_unrelated(decision: MapsRelevanceDecision) -> bool:
 
 
 def _lifecycle_from_classification(decision: MapsRelevanceDecision) -> MapsLifecycleStatus:
+    if (decision.reason or "").strip().casefold() in CLASSIFICATION_FALLBACK_REASONS:
+        return MapsLifecycleStatus.DISCOVERED
     confidence = float(decision.confidence or 0)
     if confidence >= 0.75:
         return MapsLifecycleStatus.PLAUSIBLE

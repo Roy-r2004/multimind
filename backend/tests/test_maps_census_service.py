@@ -309,6 +309,64 @@ async def test_run_census_falls_back_to_llm_when_places_has_no_website(db, auth,
 
 
 @pytest.mark.asyncio
+async def test_run_census_keeps_failed_classification_discovered_and_skips_website_promotion(
+    db, auth, monkeypatch
+):
+    run = await _create_run(db, auth)
+
+    cells = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
+    place_with_raw_site = PlaceResult(
+        google_place_id="place-classification-failed",
+        raw_name="Centre Unknown",
+        formatted_address="9 Hope St, Minsk, Belarus",
+        place_types=["health"],
+        latitude=53.9,
+        longitude=27.5667,
+        website="https://centre-unknown.by/",
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner",
+        _FakeGridPlanner(cells),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({"rehab Minsk": [place_with_raw_site]}),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="openai/gpt-4.1"),
+    )
+
+    class _ExplodingProvider:
+        async def complete(self, **_kwargs):
+            raise RuntimeError("classifier offline")
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_ExplodingProvider()),
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.COMPLETED
+    assert run.places_classified_relevant == 0
+    assert run.places_with_website == 0
+
+    place = (
+        await db.execute(
+            select(MapsPlace).where(MapsPlace.google_place_id == "place-classification-failed")
+        )
+    ).scalar_one()
+    assert place.is_relevant is False
+    assert place.lifecycle_status == MapsLifecycleStatus.DISCOVERED.value
+    assert place.relevance_reason == "classification_failed"
+    assert place.classification_confidence == 0.0
+    assert place.official_website is None
+
+
+@pytest.mark.asyncio
 async def test_run_census_fails_when_places_api_key_missing(db, auth, monkeypatch):
     run = await _create_run(db, auth)
     cells = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
@@ -1423,6 +1481,33 @@ def test_contact_channel_requires_phone_or_website():
                 confidence=0.20,
             ),
             "needs_review",
+        ),
+        (
+            MapsRelevanceDecision(
+                place_id="p5",
+                is_relevant=False,
+                reason="classification_failed",
+                confidence=0.0,
+            ),
+            "discovered",
+        ),
+        (
+            MapsRelevanceDecision(
+                place_id="p6",
+                is_relevant=False,
+                reason="missing_decision",
+                confidence=0.0,
+            ),
+            "discovered",
+        ),
+        (
+            MapsRelevanceDecision(
+                place_id="p7",
+                is_relevant=False,
+                reason="university gym educational rehab waste management program",
+                confidence=0.20,
+            ),
+            "unrelated",
         ),
     ],
 )
