@@ -1,13 +1,13 @@
 """Excel workbook export for a Maps Census run.
 
-Produces a single-sheet ``.xlsx``:
+Produces a single ``.xlsx`` workbook split by client-facing facility categories:
 
-- ``Facilities`` — the seven business columns shown in the results table, one
-  row per relevant facility (no export-eligibility gate; incomplete rows are
-  kept so the user gets everything).
-
-Only Excel's own worksheet row limit bounds the output; the application applies
-no cap of its own.
+- ``Eligible Centers``
+- ``Needs Review``
+- ``Public/Government``
+- ``Individual Practitioners``
+- ``Excluded/Unrelated``
+- ``Discovery Audit``
 """
 
 from __future__ import annotations
@@ -26,30 +26,75 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError
-from app.db.models import MapsCensusRun, MapsPlace
-from app.services.scraping.maps_census_service import CSV_EXPORT_HEADERS, _export_csv_row
-
+from app.db.models import (
+    MapsCensusCell,
+    MapsCensusRun,
+    MapsClientEligibility,
+    MapsFacilityType,
+    MapsLifecycleStatus,
+    MapsOperatorType,
+    MapsOrganizationScope,
+    MapsOwnershipStatus,
+    MapsPlace,
+)
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-FACILITIES_SHEET = "Facilities"
+ELIGIBLE_CENTERS_SHEET = "Eligible Centers"
+NEEDS_REVIEW_SHEET = "Needs Review"
+PUBLIC_GOVERNMENT_SHEET = "Public Government"
+INDIVIDUAL_PRACTITIONERS_SHEET = "Individual Practitioners"
+EXCLUDED_UNRELATED_SHEET = "Excluded Unrelated"
+DISCOVERY_AUDIT_SHEET = "Discovery Audit"
+
+EXPORT_HEADERS = [
+    "Facility name",
+    "Operator name",
+    "Operator type",
+    "Ownership status",
+    "Funding type",
+    "Facility type",
+    "Care setting",
+    "Residential accommodation",
+    "Medical detox",
+    "Addictions treated",
+    "Treatment languages",
+    "Address",
+    "Website",
+    "Phone",
+    "Verification confidence",
+    "Evidence URL",
+    "Discovery sources",
+]
+
+AUDIT_HEADERS = ["Section", "Metric", "Value", "Details"]
 
 # Headers whose string cells should render as clickable links.
-_URL_HEADERS = {"Website"}
+_URL_HEADERS = {"Website", "Evidence URL"}
 # Headers whose values must stay textual so "+" and leading zeroes survive.
-_TEXT_HEADERS = {"Phone Number"}
+_TEXT_HEADERS = {"Phone"}
 # Short, scannable columns that read best centered in both axes.
 _CENTERED_HEADERS = {
-    "Phone Number",
-    "Treatment Price",
-    "Languages Spoken",
+    "Phone",
+    "Residential accommodation",
+    "Medical detox",
+    "Verification confidence",
 }
 
 _WIDE_COLUMNS = {
-    "Facility Name": 34,
-    "Location": 42,
+    "Facility name": 34,
+    "Operator name": 28,
+    "Operator type": 20,
+    "Ownership status": 24,
+    "Funding type": 20,
+    "Facility type": 28,
+    "Care setting": 18,
+    "Addictions treated": 26,
+    "Treatment languages": 22,
+    "Address": 42,
     "Website": 40,
-    "Addictions Treated": 26,
-    "Languages Spoken": 22,
+    "Evidence URL": 40,
+    "Discovery sources": 24,
+    "Details": 44,
 }
 
 
@@ -64,8 +109,19 @@ class MapsExportService:
         places = (
             await db.execute(
                 select(MapsPlace)
-                .where(MapsPlace.run_id == run_id, MapsPlace.is_relevant.is_(True))
+                .where(MapsPlace.run_id == run_id)
                 .order_by(MapsPlace.canonical_name)
+            )
+        ).scalars().all()
+        cells = (
+            await db.execute(
+                select(MapsCensusCell)
+                .where(MapsCensusCell.run_id == run_id)
+                .order_by(
+                    MapsCensusCell.region_name,
+                    MapsCensusCell.city_name,
+                    MapsCensusCell.query_text,
+                )
             )
         ).scalars().all()
 
@@ -74,18 +130,126 @@ class MapsExportService:
         workbook.properties.creator = "MultiAI Verdict"
         workbook.remove(workbook.active)
 
-        facilities_ws = workbook.create_sheet(FACILITIES_SHEET)
+        eligible_places: list[MapsPlace] = []
+        review_places: list[MapsPlace] = []
+        public_places: list[MapsPlace] = []
+        individual_places: list[MapsPlace] = []
+        excluded_places: list[MapsPlace] = []
+
+        for place in places:
+            if _is_eligible_center(place):
+                eligible_places.append(place)
+            elif _is_review_place(place):
+                review_places.append(place)
+            elif _is_public_place(place):
+                public_places.append(place)
+            elif _is_individual_practitioner(place):
+                individual_places.append(place)
+            else:
+                excluded_places.append(place)
+
         self._write_sheet(
-            facilities_ws,
-            list(CSV_EXPORT_HEADERS),
-            [_export_csv_row(place, country_name=run.country_name) for place in places],
-            table_name="Facilities",
+            workbook.create_sheet(ELIGIBLE_CENTERS_SHEET),
+            EXPORT_HEADERS,
+            [self._export_place_row(place) for place in eligible_places],
+            table_name="EligibleCenters",
+        )
+        self._write_sheet(
+            workbook.create_sheet(NEEDS_REVIEW_SHEET),
+            EXPORT_HEADERS,
+            [self._export_place_row(place) for place in review_places],
+            table_name="NeedsReview",
+        )
+        self._write_sheet(
+            workbook.create_sheet(PUBLIC_GOVERNMENT_SHEET),
+            EXPORT_HEADERS,
+            [self._export_place_row(place) for place in public_places],
+            table_name="PublicGovernment",
+        )
+        self._write_sheet(
+            workbook.create_sheet(INDIVIDUAL_PRACTITIONERS_SHEET),
+            EXPORT_HEADERS,
+            [self._export_place_row(place) for place in individual_places],
+            table_name="IndividualPractitioners",
+        )
+        self._write_sheet(
+            workbook.create_sheet(EXCLUDED_UNRELATED_SHEET),
+            EXPORT_HEADERS,
+            [self._export_place_row(place) for place in excluded_places],
+            table_name="ExcludedUnrelated",
+        )
+        self._write_sheet(
+            workbook.create_sheet(DISCOVERY_AUDIT_SHEET),
+            AUDIT_HEADERS,
+            self._audit_rows(run, cells, places),
+            table_name="DiscoveryAudit",
         )
 
         buffer = BytesIO()
         workbook.save(buffer)
         filename = f"{run.country_code.lower()}-maps-census-export.xlsx"
         return buffer.getvalue(), filename
+
+    def _export_place_row(self, place: MapsPlace) -> list[Any]:
+        return [
+            _display_text(place.canonical_name or place.raw_name),
+            _display_text(place.operator_name),
+            _display_choice(place.operator_type),
+            _display_choice(place.ownership_status),
+            _display_choice(place.funding_type),
+            _display_choice(place.facility_type),
+            _display_choice(place.care_setting),
+            _display_bool(place.residential_accommodation),
+            _display_bool(place.medical_detox),
+            _display_list(place.addictions_treated),
+            _display_list(place.languages_spoken),
+            _display_text(place.formatted_address),
+            _display_text(place.official_website or place.raw_website),
+            _display_text(place.international_phone_number),
+            _display_confidence(place.classification_confidence, place.confidence_score),
+            _display_text(place.verification_source_url),
+            _display_list(place.discovery_sources),
+        ]
+
+    def _audit_rows(
+        self, run: MapsCensusRun, cells: list[MapsCensusCell], places: list[MapsPlace]
+    ) -> list[list[Any]]:
+        rows: list[list[Any]] = [
+            ["Run", "Country", run.country_name, run.country_code],
+            ["Run", "Cells planned", run.cells_total, ""],
+            ["Run", "Cells completed", run.cells_completed, ""],
+            ["Run", "Places found", run.places_found, ""],
+            ["Run", "Relevant places", run.places_classified_relevant, ""],
+            ["Run", "Places with website", run.places_with_website, ""],
+            ["Run", "Places enriched", run.places_enriched, ""],
+            ["Run", "Website refresh attempts", run.website_refresh_attempts, ""],
+            ["Run", "Enrichment refresh attempts", run.enrichment_refresh_attempts, ""],
+            ["Run", "Workbook places", len(places), ""],
+        ]
+        rows.extend(_flatten_audit_mapping("Funnel", run.funnel_metrics))
+        rows.extend(_flatten_audit_mapping("Cell summary", run.saturation_summary))
+
+        if cells:
+            for cell in cells:
+                rows.append(
+                    [
+                        "Cell",
+                        cell.query_text,
+                        cell.status,
+                        "; ".join(
+                            [
+                                f"region={cell.region_name}",
+                                f"city={cell.city_name or 'n/a'}",
+                                f"places_found={cell.places_found}",
+                                f"new_unique_places={cell.new_unique_places}",
+                                f"new_plausible_places={cell.new_plausible_places}",
+                            ]
+                        ),
+                    ]
+                )
+        else:
+            rows.append(["Cell", "Summary", "No cells recorded", ""])
+        return rows
 
     def _write_sheet(
         self, ws: Any, headers: list[str], rows: list[list[Any]], *, table_name: str
@@ -209,6 +373,99 @@ def _safe_cell(value: Any) -> Any:
 def _is_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _display_text(value: Any) -> Any:
+    if value is None:
+        return "Not Specified"
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else "Not Specified"
+    return value
+
+
+def _display_choice(value: str | None) -> str:
+    text = _display_text(value)
+    if text == "Not Specified":
+        return text
+    return str(text).replace("_", " ").title()
+
+
+def _display_bool(value: bool | None) -> str:
+    if value is None:
+        return "Not Specified"
+    return "Yes" if value else "No"
+
+
+def _display_list(values: list[str] | None) -> str:
+    if not values:
+        return "Not Specified"
+    cleaned = [str(item).strip() for item in values if str(item).strip()]
+    return ", ".join(cleaned) if cleaned else "Not Specified"
+
+
+def _display_confidence(primary: Any, fallback: Any) -> str:
+    value = primary if primary is not None else fallback
+    if value is None:
+        return "Not Specified"
+    return f"{float(value):.2f}"
+
+
+def _flatten_audit_mapping(section: str, payload: dict[str, Any] | None) -> list[list[Any]]:
+    if not payload:
+        return []
+    rows: list[list[Any]] = []
+    for key in sorted(payload):
+        value = payload[key]
+        if isinstance(value, dict):
+            for nested_key in sorted(value):
+                rows.append(
+                    [
+                        section,
+                        f"{key}.{nested_key}",
+                        _display_text(value[nested_key]),
+                        "",
+                    ]
+                )
+        else:
+            rows.append([section, key, _display_text(value), ""])
+    return rows
+
+
+def _is_eligible_center(place: MapsPlace) -> bool:
+    return place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+
+
+def _is_review_place(place: MapsPlace) -> bool:
+    return place.client_eligibility == MapsClientEligibility.REVIEW.value or (
+        place.lifecycle_status == MapsLifecycleStatus.NEEDS_REVIEW.value
+    )
+
+
+def _is_public_place(place: MapsPlace) -> bool:
+    return (
+        place.lifecycle_status == MapsLifecycleStatus.CONFIRMED_PUBLIC.value
+        or place.ownership_status == MapsOwnershipStatus.CONFIRMED_GOVERNMENT.value
+        or place.operator_type
+        in {
+            MapsOperatorType.PUBLIC_HOSPITAL.value,
+            MapsOperatorType.GOVERNMENT_AGENCY.value,
+        }
+    )
+
+
+def _is_individual_practitioner(place: MapsPlace) -> bool:
+    return (
+        place.lifecycle_status
+        == MapsLifecycleStatus.CONFIRMED_INDIVIDUAL_PRACTITIONER.value
+        or place.organization_scope == MapsOrganizationScope.INDIVIDUAL_PRACTICE.value
+        or place.operator_type == MapsOperatorType.INDIVIDUAL_PRACTICE.value
+        or place.facility_type
+        in {
+            MapsFacilityType.INDIVIDUAL_ADDICTOLOGIST.value,
+            MapsFacilityType.THERAPIST_OR_COUNSELOR.value,
+        }
+    )
 
 
 maps_export_service = MapsExportService()
