@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from app.db.models import (
     MapsCensusRun,
@@ -411,6 +413,84 @@ async def test_empty_result_set_fails_batch_without_dropping(db, auth, monkeypat
     assert place.is_relevant is True
     assert place.lifecycle_status == MapsLifecycleStatus.PLAUSIBLE.value
     assert place.enrichment_status == MapsPlaceEnrichmentStatus.FAILED.value
+
+
+class _DynamicFakeProvider:
+    """Returns a valid structured result for every ``place_id`` embedded in
+    the prompt, regardless of batch size — lets a single fake stand in for
+    every LLM call across the resumable enrichment loop."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096):
+        del system, model, max_tokens
+        self.calls += 1
+        place_ids = re.findall(r'"place_id":\s*"([^"]+)"', user)
+        results = [_structured_result(pid) for pid in place_ids]
+        return SimpleNamespace(text=json.dumps({"results": results}))
+
+
+@pytest.mark.asyncio
+async def test_enrich_run_processes_more_than_250_places_without_truncation(db, auth, monkeypatch):
+    """Phase 2 gap #4: the legacy 250-place cap must no longer silently drop
+    places — the resumable batch loop must process every pending place in one
+    call when the call budget is not exhausted."""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_max_places_per_run", 250)
+    run = await _completed_run(db, auth)
+
+    total_places = 300
+    for i in range(total_places):
+        db.add(
+            MapsPlace(
+                run_id=run.id,
+                google_place_id=f"place-{i:04d}",
+                raw_name=f"Rehab Center {i}",
+                canonical_name=f"Rehab Center {i}",
+                is_relevant=True,
+                lifecycle_status=MapsLifecycleStatus.PLAUSIBLE.value,
+                confidence_score=0.9,
+                formatted_address=f"{i} Recovery Rd, Algiers",
+                enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+            )
+        )
+    await db.commit()
+
+    provider = _DynamicFakeProvider()
+    _patch_provider(monkeypatch, provider)
+
+    summary = await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+
+    assert summary["enriched"] == total_places
+
+    remaining_pending = (
+        await db.execute(
+            select(MapsPlace).where(
+                MapsPlace.run_id == run.id,
+                MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value,
+            )
+        )
+    ).scalars().all()
+    assert remaining_pending == []
+
+    completed = (
+        await db.execute(
+            select(MapsPlace).where(
+                MapsPlace.run_id == run.id,
+                MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value,
+            )
+        )
+    ).scalars().all()
+    assert len(completed) == total_places
+
+    await db.refresh(run)
+    assert run.processing_state is not None
+    assert run.processing_state.get("enrichment_paused") is False
+    assert run.quota_metrics is not None
+    assert run.quota_metrics.get("enrichment_calls", 0) >= total_places / 5
 
 
 def test_addiction_taxonomy_includes_substance_and_behavioral():

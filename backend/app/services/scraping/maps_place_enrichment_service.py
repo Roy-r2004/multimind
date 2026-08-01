@@ -39,6 +39,7 @@ from app.services.scraping.maps_eligibility import (
     derive_is_relevant,
     derive_legacy_verification_verdict,
 )
+from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -194,34 +195,76 @@ class MapsPlaceEnrichmentService:
                 return {"enriched": 0}
             country_code = run.country_code
             country_name = run.country_name
-            pending = (
-                await scan_db.execute(
-                    select(MapsPlace).where(
-                        MapsPlace.run_id == run_id,
-                        MapsPlace.is_relevant.is_(True),
-                        MapsPlace.enrichment_status.in_(
-                            [
-                                MapsPlaceEnrichmentStatus.PENDING.value,
-                                MapsPlaceEnrichmentStatus.FAILED.value,
-                                MapsPlaceEnrichmentStatus.SKIPPED.value,
-                            ]
-                        ),
-                    )
-                )
-            ).scalars().all()
-            pending = pending[: max(1, settings.maps_census_enrichment_max_places_per_run)]
-            place_ids = [place.id for place in pending]
+            state = dict(run.processing_state or {})
+            cursor: str | None = state.get("enrichment_cursor") if state.get(
+                "enrichment_paused"
+            ) else None
 
+        # Resumable batch loop (Phase 2 gap #4): previously this sliced pending
+        # places to `maps_census_enrichment_max_places_per_run` (250) and
+        # silently dropped the rest. It now keyset-paginates by MapsPlace.id
+        # in fixed-size batches until none remain or the call budget is hit,
+        # persisting a resume cursor on run.processing_state when paused.
+        llm_batch_size = max(1, settings.maps_census_enrichment_batch_size)
+        processing_batch_size = max(1, settings.maps_census_enrichment_processing_batch_size)
+        max_calls = max(1, settings.maps_census_enrichment_max_calls_per_run)
+        tracker = MapsQuotaTracker()
         enriched = 0
-        batch_size = max(1, settings.maps_census_enrichment_batch_size)
-        for offset in range(0, len(place_ids), batch_size):
-            chunk = place_ids[offset : offset + batch_size]
-            enriched += await self._enrich_batch(
-                session_factory,
-                place_ids=chunk,
-                country_code=country_code,
-                country_name=country_name,
-            )
+        calls_made = 0
+        paused = False
+
+        while True:
+            async with session_factory() as scan_db:
+                query = select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.is_relevant.is_(True),
+                    MapsPlace.enrichment_status.in_(
+                        [
+                            MapsPlaceEnrichmentStatus.PENDING.value,
+                            MapsPlaceEnrichmentStatus.FAILED.value,
+                            MapsPlaceEnrichmentStatus.SKIPPED.value,
+                        ]
+                    ),
+                )
+                if cursor:
+                    query = query.where(MapsPlace.id > cursor)
+                batch_places = (
+                    await scan_db.execute(query.order_by(MapsPlace.id).limit(processing_batch_size))
+                ).scalars().all()
+                place_ids = [place.id for place in batch_places]
+
+            if not place_ids:
+                break
+            if calls_made >= max_calls:
+                paused = True
+                break
+
+            for offset in range(0, len(place_ids), llm_batch_size):
+                chunk = place_ids[offset : offset + llm_batch_size]
+                enriched += await self._enrich_batch(
+                    session_factory,
+                    place_ids=chunk,
+                    country_code=country_code,
+                    country_name=country_name,
+                )
+                tracker.add_enrichment_call()
+
+            calls_made += len(place_ids)
+            cursor = place_ids[-1]
+
+        async with session_factory() as state_db:
+            run = await state_db.get(MapsCensusRun, run_id)
+            if run is not None:
+                state = dict(run.processing_state or {})
+                state["enrichment_paused"] = paused
+                state["enrichment_cursor"] = cursor if paused else None
+                limits_reached = dict(state.get("limits_reached") or {})
+                limits_reached["enrichment"] = paused
+                state["limits_reached"] = limits_reached
+                run.processing_state = state
+                await state_db.commit()
+
+        await merge_quota_metrics(session_factory, run_id=run_id, tracker=tracker)
 
         async with session_factory() as final_db:
             run = await final_db.get(MapsCensusRun, run_id)

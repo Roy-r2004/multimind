@@ -254,6 +254,12 @@ class _NoOpPlacesClient:
     async def search_text(self, *, query: str, region_code: str, max_results: int) -> list:
         return []
 
+    async def search_text_paginated(self, *, query: str, region_code: str, **_kwargs):
+        from app.services.scraping.maps_places_client import PlacesSearchOutcome
+
+        del query, region_code
+        return PlacesSearchOutcome()
+
 
 class _FakeCountryProfileService:
     def __init__(self, order: list[str]) -> None:

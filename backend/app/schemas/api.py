@@ -717,10 +717,31 @@ class MapsCensusCellItem(BaseModel):
     region_name: str
     city_name: str | None = None
     query_text: str
+    query_family: str | None = None
+    query_language: str | None = None
     status: str
     places_found: int
     error_message: str | None = None
     completed_at: datetime | None = None
+    # Pagination diagnostics (Phase 2 gap #1).
+    pages_fetched: int = 0
+    raw_results_found: int = 0
+    unique_results_found: int = 0
+    duplicates_found: int = 0
+    next_page_available: bool = False
+    result_cap_reached: bool = False
+    pagination_error: str | None = None
+    # Capped-cell subdivision diagnostics (Phase 2 gap #2).
+    parent_cell_id: str | None = None
+    expansion_reason: str | None = None
+    expansion_depth: int = 0
+    # Resumable-execution diagnostics (Phase 2 gap #3).
+    attempt_count: int = 0
+    last_error: str | None = None
+    next_retry_at: datetime | None = None
+    # Real-time classification counters (Phase 2 gap #5).
+    new_unique_places: int = 0
+    new_plausible_places: int = 0
 
 
 class MapsPlaceItem(BaseModel):

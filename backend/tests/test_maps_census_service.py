@@ -42,7 +42,7 @@ from app.services.scraping.maps_census_service import (
 )
 from app.services.scraping.maps_country_profile_service import maps_country_profile_service
 from app.services.scraping.maps_grid_planner import MapsGridCell
-from app.services.scraping.maps_places_client import PlaceResult
+from app.services.scraping.maps_places_client import PlaceResult, PlacesSearchOutcome
 from app.services.scraping.search_providers.base import SearchProviderResult
 
 
@@ -90,14 +90,54 @@ class _CountingGridPlanner:
 
 
 class _FakePlacesClient:
-    def __init__(self, by_query: dict[str, list[PlaceResult]]) -> None:
+    """Fake Google Places client for orchestration tests: single page, no
+    pagination cap, no error — every ``search_text_paginated`` call returns
+    every configured result for that query in one page.
+    """
+
+    def __init__(
+        self,
+        by_query: dict[str, list[PlaceResult]],
+        *,
+        errors_by_query: dict[str, Exception] | None = None,
+    ) -> None:
         self._by_query = by_query
+        self._errors_by_query = errors_by_query or {}
+        self.paginated_calls: list[dict] = []
 
     def is_configured(self) -> bool:
         return True
 
     async def search_text(self, *, query: str, region_code: str, max_results: int) -> list[PlaceResult]:
         return self._by_query.get(query, [])
+
+    async def search_text_paginated(
+        self,
+        *,
+        query: str,
+        region_code: str,
+        page_size: int | None = None,
+        max_pages: int | None = None,
+        resume_page_token: str | None = None,
+        cancel_check=None,
+    ) -> PlacesSearchOutcome:
+        del region_code, page_size, max_pages, resume_page_token, cancel_check
+        self.paginated_calls.append({"query": query})
+        error = self._errors_by_query.get(query)
+        if error is not None:
+            raise error
+        places = self._by_query.get(query, [])
+        return PlacesSearchOutcome(
+            places=list(places),
+            pages_fetched=1 if places else 0,
+            raw_results_found=len(places),
+            unique_results_found=len(places),
+            duplicates_found=0,
+            next_page_available=False,
+            result_cap_reached=False,
+            pagination_error=None,
+            resume_page_token=None,
+        )
 
 
 class _FakeResponse:
@@ -621,6 +661,107 @@ async def test_run_census_stops_expanding_unproductive_region(db, auth, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_run_census_saturates_region_with_many_unrelated_uniques_but_no_plausible(
+    db, auth, monkeypatch
+):
+    """Phase 2 gap #5: ``new_plausible_places`` must reflect real classified
+    plausibility, not raw discovery. A region that keeps finding brand-new
+    (high ``new_unique_places``) but consistently *unrelated* places — e.g.
+    random businesses that share search terms with rehab facilities — must
+    still be recognized as saturated because its *plausible* candidate count
+    never grows, even though its configured unique-place threshold is deliberately
+    set above the raw discovery count for this scenario.
+    """
+    monkeypatch.setattr(get_settings(), "maps_census_saturation_window", 3)
+    monkeypatch.setattr(get_settings(), "maps_census_min_new_unique_for_expansion", 1000)
+    monkeypatch.setattr(get_settings(), "maps_census_min_new_plausible_for_expansion", 1)
+
+    run = await _create_run(db, auth)
+    seed = [
+        MapsGridCell(region_name="Ghost Region", city_name="Nowhere", query_text=f"ghost query {i}")
+        for i in range(3)
+    ]
+    planner = _CountingGridPlanner([seed])
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner", planner
+    )
+
+    # Each of the 3 seed cells discovers 5 brand-new, distinct places (15
+    # unique total across the window) — none of them rehab-related.
+    by_query: dict[str, list[PlaceResult]] = {}
+    for i, cell in enumerate(seed):
+        by_query[cell.query_text] = [
+            PlaceResult(
+                google_place_id=f"ghost-{i}-{j}",
+                raw_name=f"Random Business {i}-{j}",
+                formatted_address="1 Nowhere St, Nowhere",
+            )
+            for j in range(5)
+        ]
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient(by_query),
+    )
+
+    async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
+        from app.services.scraping.maps_census_service import MapsRelevanceDecision
+
+        return [
+            MapsRelevanceDecision(
+                place_id=item["place_id"],
+                is_relevant=False,
+                reason="unrelated business, not a rehab facility",
+                confidence=0.1,
+            )
+            for item in payloads
+        ]
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._classify_batch",
+        fake_classify_batch,
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="openai/gpt-4.1"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+    # Never asked the planner for more "Ghost Region" cells once saturated.
+    assert len(planner.calls) == 1
+
+    region = (
+        await db.execute(
+            select(MapsCensusRegion).where(MapsCensusRegion.run_id == run.id)
+        )
+    ).scalar_one()
+
+    # High raw discovery, zero real plausibility — proves the two metrics are
+    # decoupled (new_plausible_places is NOT just a copy of new_unique_places).
+    assert region.unique_places_found == 15
+    assert region.plausible_providers_found == 0
+    assert region.unrelated_found == 15
+    assert region.eligible_candidates_found == 0
+    assert region.review_candidates_found == 0
+    assert region.individuals_found == 0
+    assert region.confirmed_public_found == 0
+
+    # Despite the high absolute unique-place count, the region still
+    # saturates because plausible discovery never grows.
+    assert region.saturation_status == "saturated"
+
+    cells = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalars().all()
+    assert sum(c.new_unique_places for c in cells) == 15
+    assert sum(c.new_plausible_places for c in cells) == 0
+
+
+@pytest.mark.asyncio
 async def test_run_census_respects_campaign_cell_ceiling(db, auth, monkeypatch):
     """A low campaign ceiling must cap total persisted cells even when the
     planner is willing to return more cells than it was asked for."""
@@ -939,6 +1080,60 @@ async def test_request_website_refresh_enqueues_and_marks_running(db, auth, monk
     detail = await maps_census_service.request_website_refresh(db, auth, run.id)
     assert detail.status == "running"
     assert captured["run_id"] == run.id
+
+
+@pytest.mark.asyncio
+async def test_run_website_refresh_processes_more_than_250_places_without_truncation(db, auth, monkeypatch):
+    """Phase 2 gap #4: the legacy 250-place cap must no longer silently drop
+    places from website backfill — the resumable batch loop should process
+    every relevant place missing a website in one call."""
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.RUNNING
+    await db.commit()
+
+    total_places = 300
+    for i in range(total_places):
+        db.add(
+            MapsPlace(
+                run_id=run.id,
+                google_place_id=f"p-missing-{i:04d}",
+                raw_name=f"Rehab Center {i}",
+                canonical_name=f"Rehab Center {i}",
+                city_name="Minsk",
+                is_relevant=True,
+            )
+        )
+    await db.commit()
+
+    _patch_direct_llm_website_finder(monkeypatch, url="https://example-rehab.by/")
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="anthropic/claude-sonnet-4"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider("{}")),
+    )
+
+    summary = await maps_census_service.run_website_refresh(db, run_id=run.id)
+    assert summary["places_with_website"] == total_places
+
+    remaining = (
+        await db.execute(
+            select(MapsPlace).where(
+                MapsPlace.run_id == run.id,
+                MapsPlace.official_website.is_(None),
+            )
+        )
+    ).scalars().all()
+    assert remaining == []
+
+    await db.refresh(run)
+    assert run.places_with_website == total_places
+    assert run.processing_state is not None
+    assert run.processing_state.get("website_search_paused") is False
+    assert run.quota_metrics is not None
+    assert run.quota_metrics.get("website_lookup_calls", 0) > 0
 
 
 @pytest.mark.asyncio

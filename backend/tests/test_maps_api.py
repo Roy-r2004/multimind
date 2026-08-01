@@ -522,8 +522,20 @@ async def test_list_maps_census_cells(db: AsyncSession, auth: AuthContext):
                 region_name="Minsk Region",
                 city_name="Minsk",
                 query_text="наркологическая клиника Минск",
-                status="completed",
+                query_family="clinic",
+                query_language="ru",
+                status="capped",
                 places_found=8,
+                pages_fetched=3,
+                raw_results_found=60,
+                unique_results_found=55,
+                duplicates_found=5,
+                next_page_available=True,
+                result_cap_reached=True,
+                expansion_depth=0,
+                attempt_count=1,
+                new_unique_places=55,
+                new_plausible_places=20,
             ),
         ]
     )
@@ -538,6 +550,17 @@ async def test_list_maps_census_cells(db: AsyncSession, auth: AuthContext):
     assert len(cells) == 2
     assert cells[0]["query_text"] == "inpatient addiction rehab Minsk Belarus"
     assert cells[1]["places_found"] == 8
+    assert cells[1]["query_family"] == "clinic"
+    assert cells[1]["query_language"] == "ru"
+    assert cells[1]["status"] == "capped"
+    assert cells[1]["pages_fetched"] == 3
+    assert cells[1]["raw_results_found"] == 60
+    assert cells[1]["unique_results_found"] == 55
+    assert cells[1]["duplicates_found"] == 5
+    assert cells[1]["next_page_available"] is True
+    assert cells[1]["result_cap_reached"] is True
+    assert cells[1]["new_unique_places"] == 55
+    assert cells[1]["new_plausible_places"] == 20
 
 
 @pytest.mark.asyncio
