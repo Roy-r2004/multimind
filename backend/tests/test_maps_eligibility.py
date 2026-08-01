@@ -132,12 +132,34 @@ def test_residential_ngo_is_eligible():
     assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
+def test_probable_non_government_with_addiction_focus_goes_to_review_without_scope_or_type_gate():
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value,
+        facility_type=MapsFacilityType.UNKNOWN.value,
+        organization_scope=MapsOrganizationScope.UNKNOWN.value,
+        addiction_focus_confirmed=True,
+    )
+
+    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+
+
 def test_ownership_unknown_eligible_facility_goes_to_review():
     place = make_place(
         ownership_status=MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value,
         facility_type=MapsFacilityType.INPATIENT_DETOX_CENTER.value,
         organization_scope=MapsOrganizationScope.FACILITY.value,
         addiction_focus_confirmed=True,
+    )
+
+    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+
+
+def test_ownership_unknown_eligible_facility_goes_to_review_without_scope_gate():
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value,
+        facility_type=MapsFacilityType.INPATIENT_DETOX_CENTER.value,
+        organization_scope=MapsOrganizationScope.UNKNOWN.value,
+        addiction_focus_confirmed=None,
     )
 
     assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value

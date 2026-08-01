@@ -101,15 +101,12 @@ def compute_client_eligibility(place: Any) -> str:
 
     if (
         ownership_status == MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value
-        and organization_scope == MapsOrganizationScope.FACILITY.value
-        and facility_type in ELIGIBLE_FACILITY_TYPES
         and addiction_focus_confirmed is True
     ):
         return MapsClientEligibility.REVIEW.value
 
     if (
         ownership_status == MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value
-        and organization_scope == MapsOrganizationScope.FACILITY.value
         and facility_type in ELIGIBLE_FACILITY_TYPES
     ):
         return MapsClientEligibility.REVIEW.value
