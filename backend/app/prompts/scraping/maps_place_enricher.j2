@@ -17,6 +17,11 @@ name, city, address, phone, and website when possible.
 Facilities (JSON):
 {{ facilities_json }}
 
+When a facility includes `website_crawl_excerpt`, treat it as first-party crawl text from the
+official website. Prefer crawl excerpts over generic web search snippets for structured
+classification fields. Still require `classification_evidence` with `source_url` and
+`evidence_quote` for every non-unknown structured field you set.
+
 Return these exact fields for every facility:
 - `operator_type`: one of
   `private_company`, `nonprofit`, `association`, `faith_based_org`, `public_hospital`,

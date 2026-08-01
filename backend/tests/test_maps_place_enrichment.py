@@ -54,6 +54,13 @@ def _patch_provider(monkeypatch, provider) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _disable_website_crawl_by_default(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_website_crawl_enabled", False)
+
+
 async def _completed_run(db, auth, *, country_code="DZ", country_name="Algeria") -> MapsCensusRun:
     run = MapsCensusRun(
         organization_id=auth.org_id,
@@ -81,13 +88,34 @@ def _structured_result(place_id: str, **overrides) -> dict:
         "residential_accommodation": True,
         "operating_status": "open",
         "classification_evidence": {
+            "operator_type": {
+                "value": MapsOperatorType.NONPROFIT.value,
+                "confidence": 0.9,
+                "evidence_quote": "Independent nonprofit addiction treatment provider.",
+                "source_url": "https://example.org/about",
+                "source_type": "official_site",
+            },
             "ownership_status": {
                 "value": MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
                 "confidence": 0.94,
                 "evidence_quote": "Association a but non lucratif dediee au traitement des addictions.",
                 "source_url": "https://example.org/about",
                 "source_type": "official_site",
-            }
+            },
+            "facility_type": {
+                "value": MapsFacilityType.RESIDENTIAL_ADDICTION_REHAB.value,
+                "confidence": 0.9,
+                "evidence_quote": "Residential addiction rehabilitation centre.",
+                "source_url": "https://example.org/programs",
+                "source_type": "official_site",
+            },
+            "organization_scope": {
+                "value": MapsOrganizationScope.FACILITY.value,
+                "confidence": 0.88,
+                "evidence_quote": "Standalone treatment facility.",
+                "source_url": "https://example.org/about",
+                "source_type": "official_site",
+            },
         },
         "confidence": 0.91,
         "addictions_treated": [
@@ -208,10 +236,31 @@ async def test_association_with_public_funding_stays_non_government_and_saves_ev
                     medical_detox=False,
                     residential_accommodation=False,
                     classification_evidence={
+                        "operator_type": {
+                            "value": MapsOperatorType.ASSOCIATION.value,
+                            "confidence": 0.9,
+                            "evidence_quote": "Association de traitement des addictions.",
+                            "source_url": "https://example.org/about",
+                            "source_type": "official_site",
+                        },
                         "ownership_status": {
                             "value": MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
                             "confidence": 0.93,
                             "evidence_quote": "Association independante subventionnee par la wilaya.",
+                            "source_url": "https://example.org/about",
+                            "source_type": "official_site",
+                        },
+                        "facility_type": {
+                            "value": MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
+                            "confidence": 0.88,
+                            "evidence_quote": "Centre ambulatoire de prise en charge des addictions.",
+                            "source_url": "https://example.org/programs",
+                            "source_type": "official_site",
+                        },
+                        "organization_scope": {
+                            "value": MapsOrganizationScope.FACILITY.value,
+                            "confidence": 0.86,
+                            "evidence_quote": "Structure de soin autonome.",
                             "source_url": "https://example.org/about",
                             "source_type": "official_site",
                         },
@@ -497,3 +546,98 @@ def test_addiction_taxonomy_includes_substance_and_behavioral():
     assert "Alcohol" in ADDICTION_TAXONOMY
     assert "Gambling" in ADDICTION_TAXONOMY
     assert "Cryptocurrency Trading" in ADDICTION_TAXONOMY
+
+
+@pytest.mark.asyncio
+async def test_enrichment_includes_website_crawl_excerpt_in_prompt(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    monkeypatch.setattr(get_settings(), "maps_census_website_crawl_enabled", True)
+
+    run = await _completed_run(db, auth)
+    run.country_profile = {"website_path_keywords": ["about"]}
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="crawl-1",
+        raw_name="Crawl Centre",
+        canonical_name="Crawl Centre",
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.PLAUSIBLE.value,
+        official_website="https://example.org/",
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    provider = _FakeProvider({"results": [_structured_result(place.id)]})
+    _patch_provider(monkeypatch, provider)
+
+    async def _fake_crawl(_db, *, website_url, path_keywords=None, force_refresh=False):
+        from app.services.scraping.maps_website_crawl_service import CrawledPage, WebsiteCrawlOutcome
+
+        return WebsiteCrawlOutcome(
+            normalized_domain="example.org",
+            pages=[
+                CrawledPage(
+                    url=website_url,
+                    title="About",
+                    text_excerpt="Official residential addiction rehab centre.",
+                    http_status=200,
+                )
+            ],
+            page_urls=[website_url],
+            cache_hit=False,
+        )
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_place_enrichment_service.maps_website_crawl_service.crawl_website",
+        _fake_crawl,
+    )
+
+    await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    await db.refresh(place)
+
+    assert "website_crawl_excerpt" in provider.last_user
+    assert "Official residential addiction rehab centre." in provider.last_user
+    assert place.enrichment_pages_crawled == ["https://example.org/"]
+
+
+@pytest.mark.asyncio
+async def test_enrichment_drops_structured_field_without_evidence(db, auth, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
+    run = await _completed_run(db, auth)
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="no-evidence",
+        raw_name="No Evidence Centre",
+        canonical_name="No Evidence Centre",
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.PLAUSIBLE.value,
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    provider = _FakeProvider(
+        {
+            "results": [
+                _structured_result(
+                    place.id,
+                    operator_type=MapsOperatorType.NONPROFIT.value,
+                    ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+                    facility_type=MapsFacilityType.RESIDENTIAL_ADDICTION_REHAB.value,
+                    classification_evidence={},
+                )
+            ]
+        }
+    )
+    _patch_provider(monkeypatch, provider)
+
+    await maps_place_enrichment_service.enrich_run(db, run_id=run.id)
+    await db.refresh(place)
+
+    assert place.facility_type is None
+    assert place.operator_type is None

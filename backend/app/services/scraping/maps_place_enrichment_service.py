@@ -40,6 +40,11 @@ from app.services.scraping.maps_eligibility import (
     derive_legacy_verification_verdict,
 )
 from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
+from app.services.scraping.maps_website_crawl_service import (
+    MapsWebsiteCrawlError,
+    maps_website_crawl_service,
+    path_keywords_from_country_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +180,12 @@ OWNERSHIP_STATUS_VALUES = {item.value for item in MapsOwnershipStatus}
 FACILITY_TYPE_VALUES = {item.value for item in MapsFacilityType}
 CARE_SETTING_VALUES = {item.value for item in MapsCareSetting}
 ORGANIZATION_SCOPE_VALUES = {item.value for item in MapsOrganizationScope}
+EVIDENCE_REQUIRED_WHEN_SET: dict[str, set[str]] = {
+    "operator_type": {"unknown"},
+    "ownership_status": {MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value},
+    "facility_type": {"unknown", MapsFacilityType.UNRELATED.value},
+    "organization_scope": {"unknown"},
+}
 
 
 class MapsPlaceEnrichmentService:
@@ -316,7 +327,39 @@ class MapsPlaceEnrichmentService:
             ).scalars().all()
             by_id = {place.id: place for place in places}
             ordered = [by_id[pid] for pid in place_ids if pid in by_id]
-            payloads = [self._facility_payload(place) for place in ordered]
+            run = await db.get(MapsCensusRun, ordered[0].run_id) if ordered else None
+            path_keywords = path_keywords_from_country_profile(
+                dict(run.country_profile or {}) if run is not None else None
+            )
+            crawl_excerpts: dict[str, str | None] = {}
+            settings = get_settings()
+            for place in ordered:
+                website = (place.official_website or place.raw_website or "").strip()
+                if not website or not settings.maps_census_website_crawl_enabled:
+                    crawl_excerpts[place.id] = None
+                    continue
+                try:
+                    outcome = await maps_website_crawl_service.crawl_website(
+                        db,
+                        website_url=website,
+                        path_keywords=path_keywords,
+                    )
+                    place.enrichment_pages_crawled = outcome.page_urls or None
+                    crawl_excerpts[place.id] = (
+                        outcome.combined_excerpt(
+                            max_chars=settings.maps_census_website_crawl_max_excerpt_chars
+                        )
+                        or None
+                    )
+                except MapsWebsiteCrawlError:
+                    crawl_excerpts[place.id] = None
+            payloads = [
+                self._facility_payload(
+                    place,
+                    website_crawl_excerpt=crawl_excerpts.get(place.id),
+                )
+                for place in ordered
+            ]
             for place in ordered:
                 place.enrichment_status = MapsPlaceEnrichmentStatus.RUNNING.value
                 place.enrichment_attempts = (place.enrichment_attempts or 0) + 1
@@ -387,6 +430,7 @@ class MapsPlaceEnrichmentService:
                     place.enrichment_completed_at = datetime.now(UTC)
                     continue
 
+                _enforce_field_evidence(result)
                 _apply_structured_fields(place, result)
                 place.lifecycle_status = _derive_lifecycle_status(place)
                 place.client_eligibility = compute_client_eligibility(place)
@@ -411,8 +455,13 @@ class MapsPlaceEnrichmentService:
             await db.commit()
         return enriched
 
-    def _facility_payload(self, place: MapsPlace) -> dict[str, str | list[str] | None]:
-        return {
+    def _facility_payload(
+        self,
+        place: MapsPlace,
+        *,
+        website_crawl_excerpt: str | None = None,
+    ) -> dict[str, str | list[str] | None]:
+        payload = {
             "place_id": place.id,
             "name": (place.canonical_name or place.raw_name or "").strip(),
             "city": (place.city_name or "").strip() or None,
@@ -422,6 +471,9 @@ class MapsPlaceEnrichmentService:
             "website": (place.official_website or place.raw_website or "").strip() or None,
             "place_types": list(place.place_types or []),
         }
+        if website_crawl_excerpt:
+            payload["website_crawl_excerpt"] = website_crawl_excerpt
+        return payload
 
     async def _search_fields(
         self,
@@ -497,6 +549,21 @@ def _normalize_result_payload(raw: object) -> dict:
 
 def _non_empty_list(value: list[str] | None) -> bool:
     return bool(value and any(str(item).strip() for item in value))
+
+
+def _enforce_field_evidence(result: MapsPlaceEnrichmentResult) -> None:
+    """Phase 3: drop structured values that lack supporting field evidence."""
+    for field_name, unknown_values in EVIDENCE_REQUIRED_WHEN_SET.items():
+        raw_value = getattr(result, field_name, "")
+        normalized = (raw_value or "").strip().casefold() if isinstance(raw_value, str) else raw_value
+        if not normalized or normalized in unknown_values:
+            continue
+        evidence = result.classification_evidence.get(field_name)
+        if evidence is None:
+            setattr(result, field_name, "")
+            continue
+        if not evidence.evidence_quote.strip() or not evidence.source_url.strip():
+            setattr(result, field_name, "")
 
 
 def _apply_structured_fields(place: MapsPlace, result: MapsPlaceEnrichmentResult) -> None:
