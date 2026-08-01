@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from asyncio import gather as asyncio_gather
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,11 +14,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
-from app.db.models import MapsCensusRun, MapsCensusStatus, MapsPlace
+from app.db.models import (
+    MapsCensusRun,
+    MapsCensusStatus,
+    MapsContactStatus,
+    MapsLifecycleStatus,
+    MapsPlace,
+)
 from app.services.scraping.maps_census_service import (
+    MapsRelevanceDecision,
     MapsWebsitePlan,
     _accepted_direct_llm_website_url,
     _accepted_llm_website_url,
+    _contact_status_for_place,
+    _lifecycle_from_classification,
     _maps_website_search_queries,
     _match_official_website_by_address,
     _normalize_website_payload,
@@ -176,7 +186,7 @@ async def test_run_census_dedupes_places_and_applies_website_validation(db, auth
                     place_id=item["place_id"],
                     is_relevant=is_rehab,
                     reason="rehab facility" if is_rehab else "directory listing, not a facility",
-                    confidence=0.9 if is_rehab else 0.8,
+                        confidence=0.9 if is_rehab else 0.2,
                 )
             )
         return decisions
@@ -1090,8 +1100,8 @@ async def test_delete_unverified_places_removes_only_relevant_rows_without_websi
 
 
 @pytest.mark.asyncio
-async def test_refresh_recounts_after_dropping_places_without_contact(db, auth, monkeypatch):
-    """Website refresh demotes places with neither phone nor website, then recounts."""
+async def test_refresh_recounts_after_contact_status_updates(db, auth, monkeypatch):
+    """Website refresh preserves uncertain places and refreshes contact completeness."""
     _use_serper_website_search(monkeypatch)
     run = await _create_run(db, auth)
     run.status = MapsCensusStatus.COMPLETED
@@ -1137,12 +1147,14 @@ async def test_refresh_recounts_after_dropping_places_without_contact(db, auth, 
 
     await maps_census_service.run_website_refresh(db, run_id=run.id)
     await db.refresh(run)
+    await db.refresh(phone_only)
     await db.refresh(no_contact)
     assert run.places_found == 3
-    assert run.places_classified_relevant == 2
+    assert run.places_classified_relevant == 3
     assert run.places_with_website == 1
-    assert no_contact.is_relevant is False
-    assert no_contact.relevance_reason == "excluded: missing phone and website"
+    assert phone_only.contact_status == MapsContactStatus.PHONE_ONLY.value
+    assert no_contact.is_relevant is True
+    assert no_contact.contact_status == MapsContactStatus.MISSING.value
 
 def test_maps_website_search_queries_fall_back_from_quoted_to_address():
     queries = _maps_website_search_queries(
@@ -1389,9 +1401,91 @@ def test_contact_channel_requires_phone_or_website():
     assert has_contact_channel(blank) is False
 
 
+@pytest.mark.parametrize(
+    ("decision", "expected"),
+    [
+        (MapsRelevanceDecision(place_id="p1", decision="plausible", confidence=0.82), "plausible"),
+        (MapsRelevanceDecision(place_id="p2", decision="unrelated", confidence=0.61), "needs_review"),
+        (
+            MapsRelevanceDecision(
+                place_id="p3",
+                is_relevant=False,
+                reason="hotel listing, not a facility",
+                confidence=0.20,
+            ),
+            "unrelated",
+        ),
+        (
+            MapsRelevanceDecision(
+                place_id="p4",
+                is_relevant=False,
+                reason="ownership unclear and metadata weak",
+                confidence=0.20,
+            ),
+            "needs_review",
+        ),
+    ],
+)
+def test_lifecycle_from_classification_uses_confidence_bands(decision, expected):
+    assert _lifecycle_from_classification(decision).value == expected
+
+
+def test_classifier_prompt_keeps_uncertain_outpatient_and_unknown_ownership_candidates():
+    prompt_path = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "prompts"
+        / "scraping"
+        / "maps_relevance_classifier.j2"
+    )
+    prompt = prompt_path.read_text(encoding="utf-8")
+    assert "outpatient addiction centers can stay in scope" in prompt
+    assert "ownership is unknown" in prompt
+    assert "association-operated" in prompt
+    assert "prefer `needs_review` over `unrelated`" in prompt
+
+
+def test_contact_status_for_place_distinguishes_complete_partial_and_missing():
+    complete = SimpleNamespace(
+        international_phone_number="+213 555 00 00",
+        official_website="https://clinic.dz/",
+        raw_website=None,
+    )
+    phone_only = SimpleNamespace(
+        international_phone_number="+213 555 00 00",
+        official_website=None,
+        raw_website=None,
+    )
+    website_only = SimpleNamespace(
+        international_phone_number=None,
+        official_website="https://clinic.dz/",
+        raw_website=None,
+    )
+    missing = SimpleNamespace(
+        international_phone_number=None,
+        official_website=None,
+        raw_website=None,
+    )
+    assert _contact_status_for_place(complete) == MapsContactStatus.COMPLETE.value
+    assert _contact_status_for_place(phone_only) == MapsContactStatus.PHONE_ONLY.value
+    assert _contact_status_for_place(website_only) == MapsContactStatus.WEBSITE_ONLY.value
+    assert _contact_status_for_place(missing) == MapsContactStatus.MISSING.value
+
+
 @pytest.mark.asyncio
-async def test_missing_contact_filter_demotes_places_without_phone_or_website(db, auth):
+async def test_missing_contact_filter_sets_contact_status_without_demoting_places(db, auth):
     run = await _create_run(db, auth)
+    keep_both = MapsPlace(
+        run_id=run.id,
+        google_place_id="both-contact",
+        raw_name="Both Contact Rehab",
+        canonical_name="Both Contact Rehab",
+        is_relevant=True,
+        confidence_score=0.9,
+        formatted_address="0 Street, Algiers",
+        international_phone_number="+213 21 00 00 01",
+        official_website="https://both.example/",
+    )
     keep_phone = MapsPlace(
         run_id=run.id,
         google_place_id="phone-only",
@@ -1421,20 +1515,25 @@ async def test_missing_contact_filter_demotes_places_without_phone_or_website(db
         confidence_score=0.9,
         formatted_address="3 Street, Algiers",
     )
-    db.add_all([keep_phone, keep_site, drop])
+    db.add_all([keep_both, keep_phone, keep_site, drop])
     await db.commit()
 
     demoted = await maps_census_service._apply_missing_contact_filter(
         maps_census_service._session_factory(db), run_id=run.id
     )
-    assert demoted == 1
+    assert demoted == 4
+    await db.refresh(keep_both)
     await db.refresh(keep_phone)
     await db.refresh(keep_site)
     await db.refresh(drop)
+    assert keep_both.is_relevant is True
     assert keep_phone.is_relevant is True
     assert keep_site.is_relevant is True
-    assert drop.is_relevant is False
-    assert drop.relevance_reason == "excluded: missing phone and website"
+    assert drop.is_relevant is True
+    assert keep_both.contact_status == MapsContactStatus.COMPLETE.value
+    assert keep_phone.contact_status == MapsContactStatus.PHONE_ONLY.value
+    assert keep_site.contact_status == MapsContactStatus.WEBSITE_ONLY.value
+    assert drop.contact_status == MapsContactStatus.MISSING.value
 
 
 @pytest.mark.asyncio
@@ -1610,7 +1709,7 @@ async def test_export_run_csv_without_addictions_when_enrichment_disabled(db, au
 
 
 @pytest.mark.asyncio
-async def test_apply_post_classification_filters_demotes_low_confidence_and_missing_address(
+async def test_apply_post_classification_filters_downgrades_plus_code_and_rejects_generic_name(
     db, auth
 ):
     run = await _create_run(db, auth)
@@ -1620,16 +1719,29 @@ async def test_apply_post_classification_filters_demotes_low_confidence_and_miss
         raw_name="Low Confidence Rehab",
         canonical_name="Low Confidence Rehab",
         is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.PLAUSIBLE.value,
         confidence_score=0.65,
         formatted_address="123 Main St, Minsk",
     )
-    missing_address = MapsPlace(
+    plus_code_only = MapsPlace(
         run_id=run.id,
-        google_place_id="no-address",
-        raw_name="No Address Rehab",
-        canonical_name="No Address Rehab",
+        google_place_id="plus-code",
+        raw_name="Plus Code Rehab",
+        canonical_name="Plus Code Rehab",
         is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.PLAUSIBLE.value,
         confidence_score=0.85,
+        formatted_address="QW2G+35C, Chéraga",
+    )
+    generic_name = MapsPlace(
+        run_id=run.id,
+        google_place_id="generic",
+        raw_name="Addiction Treatment Center",
+        canonical_name="Addiction Treatment Center",
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.PLAUSIBLE.value,
+        confidence_score=0.91,
+        formatted_address="22 Clinic Way, Minsk",
     )
     export_ready = MapsPlace(
         run_id=run.id,
@@ -1637,10 +1749,11 @@ async def test_apply_post_classification_filters_demotes_low_confidence_and_miss
         raw_name="Ready Rehab",
         canonical_name="Ready Rehab",
         is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.PLAUSIBLE.value,
         confidence_score=0.92,
         formatted_address="456 Oak Ave, Minsk",
     )
-    db.add_all([low_confidence, missing_address, export_ready])
+    db.add_all([low_confidence, plus_code_only, generic_name, export_ready])
     await db.commit()
 
     session_factory = maps_census_service._session_factory(db)
@@ -1650,10 +1763,15 @@ async def test_apply_post_classification_filters_demotes_low_confidence_and_miss
     assert demoted == 2
 
     await db.refresh(low_confidence)
-    await db.refresh(missing_address)
+    await db.refresh(plus_code_only)
+    await db.refresh(generic_name)
     await db.refresh(export_ready)
-    assert low_confidence.is_relevant is False
-    assert missing_address.is_relevant is False
+    assert low_confidence.is_relevant is True
+    assert low_confidence.lifecycle_status == MapsLifecycleStatus.PLAUSIBLE.value
+    assert plus_code_only.is_relevant is True
+    assert plus_code_only.lifecycle_status == MapsLifecycleStatus.NEEDS_REVIEW.value
+    assert generic_name.is_relevant is False
+    assert generic_name.lifecycle_status == MapsLifecycleStatus.UNRELATED.value
     assert export_ready.is_relevant is True
 
 

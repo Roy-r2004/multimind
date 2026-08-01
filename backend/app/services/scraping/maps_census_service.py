@@ -35,6 +35,8 @@ from app.db.models import (
     MapsCensusCellStatus,
     MapsCensusRun,
     MapsCensusStatus,
+    MapsContactStatus,
+    MapsLifecycleStatus,
     MapsPlace,
 )
 from app.llm.catalog import get_model
@@ -58,6 +60,7 @@ from app.services.scraping.facility_website_enrichment_service import (
     select_official_website,
     website_needs_enrichment,
 )
+from app.services.scraping.maps_eligibility import derive_is_relevant, derive_legacy_verification_verdict
 from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
 from app.services.scraping.maps_places_client import PlacesProviderError, create_places_client
 from app.services.scraping.pexels_client import create_pexels_client
@@ -152,6 +155,7 @@ class MapsRelevanceDecision(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     place_id: str = Field(min_length=1, max_length=64)
+    decision: str = Field(default="", max_length=40)
     is_relevant: bool = False
     reason: str = Field(default="", max_length=300)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -738,9 +742,15 @@ class MapsCensusService:
                     place = by_id.get(decision.place_id)
                     if place is None:
                         continue
-                    place.is_relevant = decision.is_relevant
+                    lifecycle_status = _lifecycle_from_classification(decision)
+                    place.lifecycle_status = lifecycle_status.value
+                    place.is_relevant = derive_is_relevant(lifecycle_status.value)
                     place.relevance_reason = decision.reason[:300]
                     place.confidence_score = decision.confidence
+                    place.classification_confidence = decision.confidence
+                    place.verification_verdict = derive_legacy_verification_verdict(
+                        lifecycle_status.value
+                    )
                     classified += 1
                 await write_db.commit()
 
@@ -766,8 +776,8 @@ class MapsCensusService:
             response = await asyncio.wait_for(
                 provider.complete(
                     system=(
-                        "You return strict JSON relevance decisions for candidate non-government"
-                        " inpatient addiction rehab facility places found via Google Places search."
+                        "You return strict JSON relevance decisions for candidate addiction-"
+                        "treatment provider places found via Google Places search."
                     ),
                     user=prompt,
                     model=model_slug,
@@ -854,8 +864,8 @@ class MapsCensusService:
             return applied
 
     async def _apply_post_classification_filters(self, session_factory, *, run_id: str) -> int:
-        """Enforce Phase 1 gates in code: minimum confidence and mandatory street address."""
-        demoted = 0
+        """Apply only the remaining hard guardrails after classifier banding."""
+        changed = 0
         async with session_factory() as db:
             places = (
                 await db.execute(select(MapsPlace).where(MapsPlace.run_id == run_id))
@@ -863,56 +873,42 @@ class MapsCensusService:
             for place in places:
                 if not place.is_relevant:
                     continue
-                confidence = float(place.confidence_score or 0)
-                if confidence < CONFIDENCE_EXPORT_MIN:
-                    place.is_relevant = False
-                    place.relevance_reason = "excluded: confidence below 0.70"
-                    demoted += 1
-                    continue
-                if not _has_export_location(place):
-                    place.is_relevant = False
-                    place.relevance_reason = "excluded: missing location"
-                    demoted += 1
+                if is_generic_facility_name(place.canonical_name or place.raw_name):
+                    _set_place_lifecycle(
+                        place,
+                        MapsLifecycleStatus.UNRELATED,
+                        reason="excluded: generic name with no facility identity",
+                    )
+                    changed += 1
                     continue
                 if not has_street_address(place.formatted_address):
-                    place.is_relevant = False
-                    place.relevance_reason = "excluded: no street address (Plus Code only)"
-                    demoted += 1
-                    continue
-                if is_generic_facility_name(place.canonical_name or place.raw_name):
-                    place.is_relevant = False
-                    place.relevance_reason = "excluded: generic name with no facility identity"
-                    demoted += 1
-            if demoted:
+                    if place.lifecycle_status != MapsLifecycleStatus.NEEDS_REVIEW.value:
+                        _set_place_lifecycle(
+                            place,
+                            MapsLifecycleStatus.NEEDS_REVIEW,
+                            reason="flagged: no street address (Plus Code only)",
+                        )
+                        changed += 1
+            if changed:
                 await db.commit()
-        return demoted
+        return changed
 
     async def _apply_missing_contact_filter(self, session_factory, *, run_id: str) -> int:
-        """Drop relevant facilities that have neither a phone number nor a website.
-
-        A place must keep at least one contact channel. Phone-only and website-only
-        both survive; rows with neither are demoted out of the result set.
-        Runs after website discovery so Places / Sonar / Facebook fills are counted.
-        """
-        demoted = 0
+        """Refresh contact completeness without demoting uncertain facilities."""
+        updated = 0
         async with session_factory() as db:
             places = (
-                await db.execute(
-                    select(MapsPlace).where(
-                        MapsPlace.run_id == run_id,
-                        MapsPlace.is_relevant.is_(True),
-                    )
-                )
+                await db.execute(select(MapsPlace).where(MapsPlace.run_id == run_id))
             ).scalars().all()
             for place in places:
-                if has_contact_channel(place):
+                contact_status = _contact_status_for_place(place)
+                if place.contact_status == contact_status:
                     continue
-                place.is_relevant = False
-                place.relevance_reason = "excluded: missing phone and website"
-                demoted += 1
-            if demoted:
+                place.contact_status = contact_status
+                updated += 1
+            if updated:
                 await db.commit()
-        return demoted
+        return updated
 
     async def _delete_unverified_places(self, session_factory, *, run_id: str) -> int:
         """Permanently remove relevant facilities lacking a verified official site."""
@@ -1909,12 +1905,79 @@ def _normalize_relevance_payload(raw: Any) -> dict[str, Any]:
         normalized.append(
             {
                 "place_id": item.get("place_id") or item.get("id"),
+                "decision": item.get("decision") or item.get("status") or "",
                 "is_relevant": bool(item.get("is_relevant") or item.get("relevant")),
                 "reason": item.get("reason") or item.get("explanation") or "",
                 "confidence": item.get("confidence", 0.5),
             }
         )
     return {"decisions": normalized}
+
+
+def _is_explicitly_unrelated(decision: MapsRelevanceDecision) -> bool:
+    normalized_decision = (decision.decision or "").strip().casefold()
+    if normalized_decision in {"unrelated", "irrelevant", "not_relevant", "excluded"}:
+        return True
+    if decision.is_relevant:
+        return False
+    reason = (decision.reason or "").casefold()
+    return any(
+        marker in reason
+        for marker in (
+            "unrelated",
+            "wrong country",
+            "outside",
+            "hotel",
+            "spa",
+            "pharmacy",
+            "school",
+            "physical rehab",
+            "physical therapy",
+            "physiotherapy",
+            "recycling",
+            "closed",
+            "not a facility",
+            "directory listing",
+        )
+    )
+
+
+def _lifecycle_from_classification(decision: MapsRelevanceDecision) -> MapsLifecycleStatus:
+    confidence = float(decision.confidence or 0)
+    if confidence >= 0.75:
+        return MapsLifecycleStatus.PLAUSIBLE
+    if confidence >= 0.45:
+        return MapsLifecycleStatus.NEEDS_REVIEW
+    if _is_explicitly_unrelated(decision):
+        return MapsLifecycleStatus.UNRELATED
+    return MapsLifecycleStatus.NEEDS_REVIEW
+
+
+def _set_place_lifecycle(
+    place: MapsPlace | Any,
+    lifecycle_status: MapsLifecycleStatus,
+    *,
+    reason: str | None = None,
+) -> None:
+    place.lifecycle_status = lifecycle_status.value
+    place.is_relevant = derive_is_relevant(lifecycle_status.value)
+    place.verification_verdict = derive_legacy_verification_verdict(lifecycle_status.value)
+    if reason:
+        place.relevance_reason = reason[:300]
+
+
+def _contact_status_for_place(place: MapsPlace | Any) -> str:
+    phone = (getattr(place, "international_phone_number", None) or "").strip()
+    website = (
+        getattr(place, "official_website", None) or getattr(place, "raw_website", None) or ""
+    ).strip()
+    if phone and website:
+        return MapsContactStatus.COMPLETE.value
+    if phone:
+        return MapsContactStatus.PHONE_ONLY.value
+    if website:
+        return MapsContactStatus.WEBSITE_ONLY.value
+    return MapsContactStatus.MISSING.value
 
 
 maps_census_service = MapsCensusService()
