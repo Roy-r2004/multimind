@@ -141,7 +141,7 @@ function MapsRunDetailPage() {
 
   async function handleDownloadExport() {
     const auth = authHeaders();
-    if (!auth || run?.status !== "completed") return;
+    if (!auth || !run || !SUCCESS_STATUSES.has(run.status)) return;
     setExporting(true);
     setError(null);
     try {

@@ -122,6 +122,9 @@ export async function downloadMapsCensusExport(auth: Auth, runId: string): Promi
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
   anchor.download = filename;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
   anchor.click();
+  anchor.remove();
   URL.revokeObjectURL(objectUrl);
 }
