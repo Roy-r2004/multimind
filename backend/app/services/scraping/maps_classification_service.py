@@ -120,6 +120,9 @@ def build_classification_query(run_id: str):
                         MapsEnrichmentPipelineState.CRAWL_FAILED.value,
                         MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_PENDING.value,
                         MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_FAILED.value,
+                        # Retryable classification failures must re-enter the
+                        # same claim path without a destructive Recover.
+                        MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value,
                     ]
                 ),
             ),

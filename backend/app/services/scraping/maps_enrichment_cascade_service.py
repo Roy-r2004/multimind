@@ -502,6 +502,9 @@ class MapsEnrichmentCascadeService:
 
         # Sweep anything orphaned by a previous crash before claiming new work.
         await self._finalize_stale_running_places(session_factory, run_id=run_id)
+        # Cheap-skip unrelated/public/individual pending rows so they cannot
+        # keep the campaign in exit_anomaly after relevant work is done.
+        await self._finalize_cheap_skips(session_factory, run_id=run_id)
 
         async with session_factory() as session:
             run = await session.get(MapsCensusRun, run_id)
