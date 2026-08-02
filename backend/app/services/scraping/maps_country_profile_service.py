@@ -137,11 +137,11 @@ class MapsCountryProfileService:
                 ),
                 user=prompt,
                 model=model.provider_model,
-                max_tokens=2000,
+                max_tokens=4000,
             ),
             timeout=timeout_seconds,
         )
-        raw = LLMProvider.parse_json_response(response.text)
+        raw = _parse_profile_json(response.text)
         return MapsCountryDiscoveryProfile.model_validate(_normalize_profile_payload(raw))
 
     @staticmethod
@@ -156,6 +156,43 @@ class MapsCountryProfileService:
         from app.db.session import AsyncSessionLocal
 
         return AsyncSessionLocal
+
+
+def _parse_profile_json(text: str) -> dict[str, Any]:
+    """Parse the profile JSON, repairing a truncated response when possible.
+
+    Sonar occasionally hits the token cap mid-string, producing invalid JSON
+    (``Unterminated string``). Rather than failing the whole profile, trim back
+    to the last complete top-level structure and close it so we keep whatever
+    regions/terms were fully emitted.
+    """
+    import json
+    import re
+
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Salvage: cut to the last complete '}' or ']' and close any open braces.
+    for end in range(len(cleaned), 0, -1):
+        if cleaned[end - 1] not in "}]":
+            continue
+        candidate = cleaned[:end]
+        open_braces = candidate.count("{") - candidate.count("}")
+        open_brackets = candidate.count("[") - candidate.count("]")
+        if open_braces < 0 or open_brackets < 0:
+            continue
+        candidate += "]" * open_brackets + "}" * open_braces
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    raise ValueError("Country profile response was not valid JSON")
 
 
 def _normalize_profile_payload(raw: Any) -> dict[str, Any]:
