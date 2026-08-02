@@ -3,8 +3,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "035_maps_cascade_enrichment"
-down_revision = "034_maps_place_review_actions"
+revision = "035"
+down_revision = "034"
 branch_labels = None
 depends_on = None
 
