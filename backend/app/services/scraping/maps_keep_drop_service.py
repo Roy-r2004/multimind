@@ -547,6 +547,12 @@ async def run_maps_keep_drop_job(ctx: dict, run_id: str) -> None:
             run_id,
             inline_runner=lambda: _run_enrichment_inline(run_id),
         )
+    else:
+        # No keeps means no enrichment will follow — reconcile now so the run
+        # does not sit at status=running with everything already decided.
+        from app.services.scraping.maps_census_service import reconcile_run_if_drained
+
+        await reconcile_run_if_drained(run_id)
 
 
 async def _run_enrichment_inline(run_id: str) -> None:

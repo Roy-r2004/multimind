@@ -3096,6 +3096,26 @@ async def run_maps_enrichment_batch_job(ctx: dict, run_id: str) -> None:
             "maps_enrichment_batch_job_complete",
             extra={"run_id": run_id, "batch_id": batch_id, "phase": outcome.get("phase")},
         )
+        # Enrichment drained with no more batches — stamp the run terminal so it
+        # does not sit at status=running forever (Finland manual keep/drop path).
+        await reconcile_run_if_drained(run_id)
+
+
+async def reconcile_run_if_drained(run_id: str) -> None:
+    """Best-effort terminal reconcile once a pipeline stage reports no work left.
+
+    ``reconcile_run_finalization`` has its own safety gates (active cells /
+    places / batch lock), so this is a no-op while any work remains. Never
+    raises — a reconcile failure must not break the worker chain.
+    """
+    from app.db.session import AsyncSessionLocal
+    from app.services.scraping.maps_run_finalization import reconcile_run_finalization
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await reconcile_run_finalization(db, run_id=run_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("maps_run_auto_reconcile_failed run_id=%s", run_id, exc_info=True)
 
 
 async def recover_maps_census_runs(ctx: dict) -> None:
