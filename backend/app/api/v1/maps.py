@@ -267,6 +267,16 @@ async def cancel_maps_census_run(
     return await maps_admin_service.cancel_run(db, auth, run_id)
 
 
+@router.post("/runs/{run_id}/recover", response_model=MapsCampaignActionResponse)
+async def recover_maps_census_run(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-enqueue the census job for a failed/stalled run (resumes, never re-plans)."""
+    return await maps_admin_service.recover_run(db, auth, run_id)
+
+
 @router.post("/runs/{run_id}/retry-failed-cells", response_model=MapsCampaignActionResponse)
 async def retry_maps_census_failed_cells(
     run_id: str,

@@ -607,12 +607,55 @@ class MapsCensusService:
             # replan failure previously flipped Algeria to FAILED and stamped
             # "Maps census grid planning failed." over a completed campaign.
             if existing_cells > 0 and active_cells == 0:
-                logger.info(
-                    "maps_census_skip_discovery_already_complete run_id=%s cells=%s",
-                    run_id,
-                    existing_cells,
+                # A crash between discovery and the post-discovery stages must
+                # not strand the run here — only skip when keep/drop and
+                # enrichment genuinely have nothing left to do.
+                from app.services.scraping.maps_keep_drop_service import (
+                    build_keep_drop_query,
                 )
-                return {"skipped": 1, "cells": existing_cells}
+
+                undecided = int(
+                    (
+                        await start_db.execute(
+                            select(func.count()).select_from(
+                                build_keep_drop_query(run_id).subquery()
+                            )
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                pending_enrichment = int(
+                    (
+                        await start_db.execute(
+                            select(func.count())
+                            .select_from(MapsPlace)
+                            .where(
+                                MapsPlace.run_id == run_id,
+                                MapsPlace.enrichment_status.in_(
+                                    [
+                                        MapsPlaceEnrichmentStatus.PENDING.value,
+                                        MapsPlaceEnrichmentStatus.RUNNING.value,
+                                    ]
+                                ),
+                            )
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                if undecided == 0 and pending_enrichment == 0:
+                    logger.info(
+                        "maps_census_skip_discovery_already_complete run_id=%s cells=%s",
+                        run_id,
+                        existing_cells,
+                    )
+                    return {"skipped": 1, "cells": existing_cells}
+                logger.info(
+                    "maps_census_resume_post_discovery run_id=%s undecided=%s "
+                    "pending_enrichment=%s",
+                    run_id,
+                    undecided,
+                    pending_enrichment,
+                )
 
             run.status = MapsCensusStatus.RUNNING
             if run.started_at is None:
@@ -1225,132 +1268,159 @@ class MapsCensusService:
 
             tracker.add_places_request(pages=max(1, outcome.pages_fetched))
 
-            async with session_factory() as write_db:
-                new_place_ids: list[str] = []
-                for result in outcome.places:
-                    existing = await write_db.scalar(
-                        select(MapsPlace).where(
-                            MapsPlace.run_id == run_id,
-                            MapsPlace.google_place_id == result.google_place_id,
+            try:
+                async with session_factory() as write_db:
+                    new_place_ids: list[str] = []
+                    for result in outcome.places:
+                        existing = await write_db.scalar(
+                            select(MapsPlace).where(
+                                MapsPlace.run_id == run_id,
+                                MapsPlace.google_place_id == result.google_place_id,
+                            )
                         )
-                    )
-                    if existing is not None:
-                        continue
-                    row = MapsPlace(
-                        run_id=run_id,
-                        google_place_id=result.google_place_id,
-                        raw_name=result.raw_name,
-                        canonical_name=result.raw_name,
-                        place_types=result.place_types,
-                        formatted_address=result.formatted_address,
-                        city_name=city_name,
-                        region_name=region_name,
-                        latitude=result.latitude,
-                        longitude=result.longitude,
-                        international_phone_number=result.international_phone_number,
-                        raw_website=result.website,
-                        discovered_via_query=query_text,
-                        photo_reference=result.photo_reference,
-                    )
-                    write_db.add(row)
-                    await write_db.flush()
-                    new_place_ids.append(row.id)
-                new_places = len(new_place_ids)
+                        if existing is not None:
+                            continue
+                        row = MapsPlace(
+                            run_id=run_id,
+                            google_place_id=result.google_place_id,
+                            raw_name=result.raw_name,
+                            canonical_name=result.raw_name,
+                            place_types=result.place_types,
+                            formatted_address=result.formatted_address,
+                            city_name=city_name,
+                            region_name=region_name,
+                            latitude=result.latitude,
+                            longitude=result.longitude,
+                            international_phone_number=result.international_phone_number,
+                            raw_website=result.website,
+                            discovered_via_query=query_text,
+                            photo_reference=result.photo_reference,
+                        )
+                        write_db.add(row)
+                        await write_db.flush()
+                        new_place_ids.append(row.id)
+                    new_places = len(new_place_ids)
 
-                cell = await write_db.get(MapsCensusCell, cell_id)
-                if cell is not None:
-                    cell.places_found = outcome.raw_results_found
-                    cell.pages_fetched = outcome.pages_fetched
-                    cell.raw_results_found = outcome.raw_results_found
-                    cell.unique_results_found = outcome.unique_results_found
-                    cell.duplicates_found = outcome.duplicates_found
-                    cell.next_page_available = outcome.next_page_available
-                    cell.result_cap_reached = outcome.result_cap_reached
-                    cell.pagination_error = outcome.pagination_error
-                    cell.pagination_resume_token = outcome.resume_page_token
-                    cell.new_unique_places = new_places
+                    cell = await write_db.get(MapsCensusCell, cell_id)
+                    if cell is not None:
+                        cell.places_found = outcome.raw_results_found
+                        cell.pages_fetched = outcome.pages_fetched
+                        cell.raw_results_found = outcome.raw_results_found
+                        cell.unique_results_found = outcome.unique_results_found
+                        cell.duplicates_found = outcome.duplicates_found
+                        cell.next_page_available = outcome.next_page_available
+                        cell.result_cap_reached = outcome.result_cap_reached
+                        cell.pagination_error = outcome.pagination_error
+                        cell.pagination_resume_token = outcome.resume_page_token
+                        cell.new_unique_places = new_places
 
-                run = await write_db.get(MapsCensusRun, run_id)
-                if run is not None:
-                    run.places_found += new_places
-                await write_db.commit()
-            summary["places_found"] += new_places
+                    run = await write_db.get(MapsCensusRun, run_id)
+                    if run is not None:
+                        run.places_found += new_places
+                    await write_db.commit()
+                summary["places_found"] += new_places
 
-            lifecycle_counts = await self._classify_new_place_ids(
-                session_factory,
-                place_ids=new_place_ids,
-                provider=classification_provider,
-                model_slug=classification_model_slug,
-                country_code=country_code,
-                country_name=country_name,
-                tracker=tracker,
-            )
-            new_plausible = lifecycle_counts.get("plausible_total", 0)
-
-            needs_subdivision = outcome.result_cap_reached and expansion_depth < max_depth
-            child_ids: list[str] = []
-            if needs_subdivision:
-                async with session_factory() as profile_db:
-                    run = await profile_db.get(MapsCensusRun, run_id)
-                    country_profile = run.country_profile if run is not None else None
-                specs = subdivide_cell(
-                    region_name=region_name,
-                    city_name=city_name,
-                    query_text=query_text,
-                    query_family=query_family,
-                    query_language=query_language,
-                    country_profile=country_profile,
-                    viewport_bounds=viewport_bounds,
-                    existing_query_texts=local_seen_query_texts,
+                lifecycle_counts = await self._classify_new_place_ids(
+                    session_factory,
+                    place_ids=new_place_ids,
+                    provider=classification_provider,
+                    model_slug=classification_model_slug,
+                    country_code=country_code,
+                    country_name=country_name,
+                    tracker=tracker,
                 )
-                if campaign_budget is not None:
-                    remaining = max(0, campaign_budget["max"] - campaign_budget["used"])
-                    specs = specs[:remaining]
-                if specs:
-                    child_ids = await self._persist_child_cells(
-                        session_factory,
-                        run_id=run_id,
-                        region_id=region_id,
-                        parent_cell_id=cell_id,
-                        expansion_depth=expansion_depth + 1,
-                        specs=specs,
-                        seen_query_texts=local_seen_query_texts,
+                new_plausible = lifecycle_counts.get("plausible_total", 0)
+
+                needs_subdivision = outcome.result_cap_reached and expansion_depth < max_depth
+                child_ids: list[str] = []
+                if needs_subdivision:
+                    async with session_factory() as profile_db:
+                        run = await profile_db.get(MapsCensusRun, run_id)
+                        country_profile = run.country_profile if run is not None else None
+                    specs = subdivide_cell(
+                        region_name=region_name,
+                        city_name=city_name,
+                        query_text=query_text,
+                        query_family=query_family,
+                        query_language=query_language,
+                        country_profile=country_profile,
+                        viewport_bounds=viewport_bounds,
+                        existing_query_texts=local_seen_query_texts,
                     )
                     if campaign_budget is not None:
-                        campaign_budget["used"] += len(child_ids)
+                        remaining = max(0, campaign_budget["max"] - campaign_budget["used"])
+                        specs = specs[:remaining]
+                    if specs:
+                        child_ids = await self._persist_child_cells(
+                            session_factory,
+                            run_id=run_id,
+                            region_id=region_id,
+                            parent_cell_id=cell_id,
+                            expansion_depth=expansion_depth + 1,
+                            specs=specs,
+                            seen_query_texts=local_seen_query_texts,
+                        )
+                        if campaign_budget is not None:
+                            campaign_budget["used"] += len(child_ids)
 
-            capped = bool(needs_subdivision and child_ids)
-            async with session_factory() as write_db:
-                cell = await write_db.get(MapsCensusCell, cell_id)
-                region = await write_db.get(MapsCensusRegion, region_id) if region_id else None
-                run = await write_db.get(MapsCensusRun, run_id)
-                if cell is not None:
-                    cell.new_plausible_places = new_plausible
-                    cell.completed_at = datetime.now(UTC)
-                    cell.status = (
-                        MapsCensusCellStatus.CAPPED if capped else MapsCensusCellStatus.COMPLETED
-                    )
-                if run is not None:
-                    run.cells_completed += 1
-                    if child_ids:
-                        run.cells_total += len(child_ids)
-                if region is not None:
-                    region.unique_places_found += new_places
-                    region.plausible_providers_found += new_plausible
-                    # A capped cell's own coverage of its geography is known
-                    # incomplete — its child cells (not it) count toward
-                    # region.cells_completed once they finish.
-                    if not capped:
-                        region.cells_completed += 1
-                    region.eligible_candidates_found += lifecycle_counts.get("eligible", 0)
-                    region.review_candidates_found += lifecycle_counts.get("review", 0)
-                    region.confirmed_public_found += lifecycle_counts.get("public", 0)
-                    region.individuals_found += lifecycle_counts.get("individual", 0)
-                    region.unrelated_found += lifecycle_counts.get("unrelated", 0)
-                await write_db.commit()
+                capped = bool(needs_subdivision and child_ids)
+                async with session_factory() as write_db:
+                    cell = await write_db.get(MapsCensusCell, cell_id)
+                    region = await write_db.get(MapsCensusRegion, region_id) if region_id else None
+                    run = await write_db.get(MapsCensusRun, run_id)
+                    if cell is not None:
+                        cell.new_plausible_places = new_plausible
+                        cell.completed_at = datetime.now(UTC)
+                        cell.status = (
+                            MapsCensusCellStatus.CAPPED if capped else MapsCensusCellStatus.COMPLETED
+                        )
+                    if run is not None:
+                        run.cells_completed += 1
+                        if child_ids:
+                            run.cells_total += len(child_ids)
+                    if region is not None:
+                        region.unique_places_found += new_places
+                        region.plausible_providers_found += new_plausible
+                        # A capped cell's own coverage of its geography is known
+                        # incomplete — its child cells (not it) count toward
+                        # region.cells_completed once they finish.
+                        if not capped:
+                            region.cells_completed += 1
+                        region.eligible_candidates_found += lifecycle_counts.get("eligible", 0)
+                        region.review_candidates_found += lifecycle_counts.get("review", 0)
+                        region.confirmed_public_found += lifecycle_counts.get("public", 0)
+                        region.individuals_found += lifecycle_counts.get("individual", 0)
+                        region.unrelated_found += lifecycle_counts.get("unrelated", 0)
+                    await write_db.commit()
 
-            if child_ids:
-                queue.extend(child_ids)
+                if child_ids:
+                    queue.extend(child_ids)
+            except Exception as exc:  # noqa: BLE001 - one bad cell must not kill a campaign
+                logger.exception(
+                    "maps_census_cell_processing_failed run_id=%s cell_id=%s",
+                    run_id,
+                    cell_id,
+                )
+                retry_info = await fail_cell_for_retry(
+                    session_factory,
+                    cell_id=cell_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                    max_attempts=max_cell_attempts,
+                )
+                if retry_info["terminal"]:
+                    summary["cell_failures"] += 1
+                    async with session_factory() as cell_db:
+                        run = await cell_db.get(MapsCensusRun, run_id)
+                        if run is not None:
+                            run.cells_completed += 1
+                        if region_id:
+                            region = await cell_db.get(MapsCensusRegion, region_id)
+                            if region is not None:
+                                region.cells_completed += 1
+                        await cell_db.commit()
+                else:
+                    queue.append(cell_id)
+                continue
 
     async def _classify_new_place_ids(
         self,
@@ -2965,7 +3035,7 @@ async def run_maps_census_job(ctx: dict, run_id: str) -> None:
     logger.info("maps_census_job_entered", extra={"run_id": run_id})
     try:
         await maps_census_service.run_census(None, run_id=run_id)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.exception("maps_census_job_failed", extra={"run_id": run_id})
         from app.db.session import AsyncSessionLocal
 
@@ -2976,7 +3046,9 @@ async def run_maps_census_job(ctx: dict, run_id: str) -> None:
                 MapsCensusStatus.COMPLETED_WITH_WARNINGS,
             }:
                 run.status = MapsCensusStatus.FAILED
-                run.error_message = "Unexpected error during Maps census execution."
+                # Persist the real exception — "Unexpected error" left France
+                # undiagnosable from the API (traceback only lived in logs).
+                run.error_message = f"{type(exc).__name__}: {exc}"[:2000]
                 run.completed_at = datetime.now(UTC)
                 await db.commit()
 

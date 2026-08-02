@@ -588,6 +588,49 @@ class MapsAdminService:
             message="Campaign cancelled",
         )
 
+    async def recover_run(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        """Re-enqueue the census job for a failed or stalled run.
+
+        ``run_census`` resumes from persisted state: finished discovery grids
+        are never re-planned, leftover pending/in-progress cells are
+        reprocessed, and post-discovery stages (keep/drop, websites,
+        enrichment) run when they have remaining work.
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        current = run.status
+        if current in {
+            MapsCensusStatus.COMPLETED,
+            MapsCensusStatus.COMPLETED_WITH_WARNINGS,
+            MapsCensusStatus.CANCELLED,
+        }:
+            status = current.value if hasattr(current, "value") else str(current)
+            return MapsCampaignActionResponse(
+                run_id=run.id,
+                status=status,
+                campaign_paused=_campaign_paused(run),
+                message=f"Run is already {status} — nothing to recover",
+            )
+        run.status = MapsCensusStatus.RUNNING
+        run.error_message = None
+        run.completed_at = None
+        run.heartbeat_at = datetime.now(UTC)
+        state = dict(run.processing_state or {})
+        state["campaign_paused"] = False
+        run.processing_state = state
+        await db.commit()
+
+        await maps_census_service._enqueue(run_id)
+
+        return MapsCampaignActionResponse(
+            run_id=run.id,
+            status=MapsCensusStatus.RUNNING.value,
+            campaign_paused=False,
+            message="Recovery queued — census resumes from persisted state",
+        )
+
     async def retry_failed_cells(
         self, db: AsyncSession, auth: AuthContext, run_id: str
     ) -> MapsCampaignActionResponse:

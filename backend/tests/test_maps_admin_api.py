@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -238,6 +240,81 @@ async def test_admin_pause_and_cancel_campaign(db: AsyncSession, auth: AuthConte
         cancel_response = await client.post(f"/api/v1/maps/runs/{run.id}/cancel")
         assert cancel_response.status_code == 200
         assert cancel_response.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_admin_recover_reenqueues_failed_run(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    from app.services.scraping.maps_census_service import maps_census_service
+
+    enqueued: list[str] = []
+
+    async def _fake_enqueue(run_id: str):
+        enqueued.append(run_id)
+
+    monkeypatch.setattr(maps_census_service, "_enqueue", _fake_enqueue)
+
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="FR",
+        country_name="France",
+        status=MapsCensusStatus.FAILED,
+        error_message="RuntimeError: boom",
+        completed_at=datetime.now(UTC),
+    )
+    db.add(run)
+    await db.commit()
+
+    app = _admin_client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(f"/api/v1/maps/runs/{run.id}/recover")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "running"
+    assert enqueued == [run.id]
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.RUNNING
+    assert run.error_message is None
+    assert run.completed_at is None
+
+
+@pytest.mark.asyncio
+async def test_admin_recover_refuses_terminal_run(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    from app.services.scraping.maps_census_service import maps_census_service
+
+    enqueued: list[str] = []
+
+    async def _fake_enqueue(run_id: str):
+        enqueued.append(run_id)
+
+    monkeypatch.setattr(maps_census_service, "_enqueue", _fake_enqueue)
+
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="FR",
+        country_name="France",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.commit()
+
+    app = _admin_client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(f"/api/v1/maps/runs/{run.id}/recover")
+
+    assert response.status_code == 200
+    assert "nothing to recover" in response.json()["message"]
+    assert enqueued == []
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.COMPLETED
 
 
 @pytest.mark.asyncio

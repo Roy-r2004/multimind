@@ -20,9 +20,11 @@ from app.db.models import (
     MapsCensusRegion,
     MapsCensusRun,
     MapsCensusStatus,
+    MapsClientEligibility,
     MapsContactStatus,
     MapsLifecycleStatus,
     MapsPlace,
+    MapsPlaceEnrichmentStatus,
 )
 from app.services.scraping.maps_census_service import (
     MapsRelevanceDecision,
@@ -2493,3 +2495,153 @@ async def test_export_run_csv_includes_eligible_rows_with_placeholders(db, auth)
     )
     assert "Flagged Rehab" in flagged_only
     assert "Verified Rehab" not in flagged_only
+
+
+def _stub_post_discoveryStages(monkeypatch, keep_drop_calls: list[str]) -> None:
+    """Stub every post-discovery stage so resume/containment tests stay hermetic."""
+
+    async def _terminal_saturation(self, session_factory, **_kwargs):
+        return True, []
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._refresh_region_saturation",
+        _terminal_saturation,
+    )
+
+    async def _fake_keep_drop_pass(session_factory, *, run_id, **_kwargs):
+        keep_drop_calls.append(run_id)
+        return {"kept": 0, "dropped": 0, "sonar": 0, "prefiltered": 0}
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.run_keep_drop_pass",
+        _fake_keep_drop_pass,
+    )
+
+    async def _noop_validate_websites(self, session_factory, *, run_id, tracker=None):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._validate_websites",
+        _noop_validate_websites,
+    )
+
+    async def _noop_merge_quota(session_factory, *, run_id, tracker):
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.merge_quota_metrics",
+        _noop_merge_quota,
+    )
+
+    async def _noop_enqueue_enrichment(self, run_id):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._maybe_enqueue_enrichment",
+        _noop_enqueue_enrichment,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_census_resume_runs_post_discovery_when_keep_drop_pending(
+    db, auth, monkeypatch
+):
+    """A crash after discovery but before keep/drop must not strand the run:
+    re-entering run_census with a terminal grid falls through to keep/drop."""
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.FAILED
+    run.error_message = "RuntimeError: boom"
+    db.add(
+        MapsCensusCell(
+            run_id=run.id,
+            region_name="Minsk Region",
+            city_name="Minsk",
+            query_text="rehab Minsk",
+            status=MapsCensusCellStatus.COMPLETED,
+        )
+    )
+    db.add(
+        MapsPlace(
+            run_id=run.id,
+            google_place_id="g1",
+            raw_name="Rehab Minsk",
+            canonical_name="Rehab Minsk",
+            is_relevant=True,
+            lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
+            client_eligibility=MapsClientEligibility.REVIEW.value,
+            enrichment_status=MapsPlaceEnrichmentStatus.SKIPPED.value,
+        )
+    )
+    await db.commit()
+
+    _stub_classification(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({}),
+    )
+    keep_drop_calls: list[str] = []
+    _stub_post_discoveryStages(monkeypatch, keep_drop_calls)
+
+    planner = _CountingGridPlanner([])
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner",
+        planner,
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+
+    assert summary.get("skipped") is None
+    assert keep_drop_calls == [run.id]
+    assert planner.calls == []
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_run_census_contains_unexpected_cell_error(db, auth, monkeypatch):
+    """An unexpected error inside cell processing must fail that cell (with
+    bounded retries) instead of killing the whole run."""
+    run = await _create_run(db, auth)
+    seed = [MapsGridCell(region_name="Minsk Region", city_name="Minsk", query_text="rehab Minsk")]
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner",
+        _FakeGridPlanner(seed),
+    )
+    place = PlaceResult(
+        google_place_id="g1",
+        raw_name="Rehab Minsk",
+        formatted_address="Minsk, Belarus",
+        place_types=["health"],
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient({"rehab Minsk": [place]}),
+    )
+    _stub_classification(monkeypatch)
+
+    classify_calls = {"count": 0}
+
+    async def _boom_classify(self, session_factory, **_kwargs):
+        classify_calls["count"] += 1
+        raise RuntimeError("classifier exploded")
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.MapsCensusService._classify_new_place_ids",
+        _boom_classify,
+    )
+    keep_drop_calls: list[str] = []
+    _stub_post_discoveryStages(monkeypatch, keep_drop_calls)
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+
+    # 3 attempts (maps_census_cell_max_attempts default) then the cell is
+    # terminally failed — the run itself survives and completes.
+    assert classify_calls["count"] == 3
+    assert summary["cell_failures"] == 1
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.COMPLETED
+    cell = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalar_one()
+    assert cell.status == MapsCensusCellStatus.FAILED
+    assert "classifier exploded" in (cell.last_error or "")
