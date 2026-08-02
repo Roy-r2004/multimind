@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   Send,
   Gavel,
@@ -41,11 +41,15 @@ import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/Ch
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
+import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
+import { UserPromptBubble } from "@/components/chat/UserPromptBubble";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
+import { CallCostLabel, TurnCostSummary } from "@/components/chat/CallCostLabel";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
 import { SaveTurnDialog } from "@/components/chat/SaveTurnDialog";
+import { ChatTurnLayoutToggle } from "@/components/chat/ChatTurnLayoutToggle";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
@@ -74,8 +78,17 @@ import {
   isHistoricalTurnDeleteDisabled,
   removeTurnFromList,
 } from "@/lib/turnState";
+import {
+  canEditUserPrompt,
+  countLaterTurns,
+  LATER_TURNS_EDIT_WARNING,
+} from "@/lib/promptEdit";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
+import { resolveModelSetIdFromTurns } from "@/lib/modelSetSelection";
+import { chatAnswerCardsClassName } from "@/lib/chatTurnLayout";
+import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
+import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
 import {
   findPinnedSynthesisElement,
   isChatNearBottom,
@@ -188,7 +201,14 @@ async function buildComposerInstructions(
   return text || undefined;
 }
 
-const SYSTEM_MODEL_SETS = new Set(["referee", "balanced", "coding", "business", "research"]);
+const SYSTEM_MODEL_SETS = new Set([
+  "referee",
+  "set-7edaefc8",
+  "balanced",
+  "coding",
+  "business",
+  "research",
+]);
 
 export function ChatPage() {
   const {
@@ -236,6 +256,10 @@ export function ChatPage() {
   const [saveTurnId, setSaveTurnId] = useState<string | null>(null);
   const [deletedTurns, setDeletedTurns] = useState<ApiTurn[]>([]);
   const [restoringTurnId, setRestoringTurnId] = useState<string | null>(null);
+  const [regeneratingTurnId, setRegeneratingTurnId] = useState<string | null>(null);
+  const [pendingEdit, setPendingEdit] = useState<{ turn: ApiTurn; prompt: string } | null>(
+    null,
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -243,6 +267,9 @@ export function ChatPage() {
   const shouldPinToBottomRef = useRef(true);
   const showScrollToLatestRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const modelSetRestoredForChatRef = useRef<string | null>(null);
+  const modelSetsRef = useRef(modelSets);
+  modelSetsRef.current = modelSets;
   const activeChat = chats.find((c) => c.id === activeChatId);
   const pinnedTurnId = activeChat?.pinnedTurnId ?? null;
   const pinnedVerdictId = activeChat?.pinnedVerdictId ?? null;
@@ -394,28 +421,57 @@ export function ChatPage() {
     if (!isApiMode || !activeChatId) {
       setApiTurns([]);
       setLoading(false);
+      modelSetRestoredForChatRef.current = null;
       return;
     }
     const auth = authHeaders();
     if (!auth) return;
 
-    const unsubTurns = subscribeChatTurns(activeChatId, setApiTurns);
-    const unsubRunning = subscribeChatRunning(activeChatId, setLoading);
-    const unsubActiveTurn = subscribeActiveTurn(activeChatId, setActiveTurnId);
+    let cancelled = false;
+    const chatId = activeChatId;
 
-    void api.chats.listTurns(auth, activeChatId).then((turns) => {
-      const merged = mergeWithCachedTurns(activeChatId, turns);
-      seedChatTurns(activeChatId, merged);
+    const unsubTurns = subscribeChatTurns(chatId, setApiTurns);
+    const unsubRunning = subscribeChatRunning(chatId, setLoading);
+    const unsubActiveTurn = subscribeActiveTurn(chatId, setActiveTurnId);
+
+    void api.chats.listTurns(auth, chatId).then((turns) => {
+      if (cancelled) return;
+      const merged = mergeWithCachedTurns(chatId, turns);
+      seedChatTurns(chatId, merged);
       setApiTurns(merged);
-      void resumeRunningTurns(auth, activeChatId, turns);
+
+      if (modelSetRestoredForChatRef.current !== chatId) {
+        const fromChat = resolveModelSetIdFromTurns(merged);
+        const sets = modelSetsRef.current;
+        if (fromChat && sets.some((item) => item.id === fromChat)) {
+          modelSetRestoredForChatRef.current = chatId;
+          setActiveModelSetId(fromChat);
+        } else if (!fromChat) {
+          // Empty chat: keep current selection (default or manual).
+          modelSetRestoredForChatRef.current = chatId;
+        }
+      }
+
+      void resumeRunningTurns(auth, chatId, turns);
     });
 
     return () => {
+      cancelled = true;
       unsubTurns();
       unsubRunning();
       unsubActiveTurn();
     };
-  }, [isApiMode, activeChatId, authHeaders]);
+  }, [isApiMode, activeChatId, authHeaders, setActiveModelSetId]);
+
+  useEffect(() => {
+    if (!activeChatId || !apiTurns.length || !modelSets.length) return;
+    if (modelSetRestoredForChatRef.current === activeChatId) return;
+    const fromChat = resolveModelSetIdFromTurns(apiTurns);
+    if (fromChat && modelSets.some((item) => item.id === fromChat)) {
+      modelSetRestoredForChatRef.current = activeChatId;
+      setActiveModelSetId(fromChat);
+    }
+  }, [activeChatId, apiTurns, modelSets, setActiveModelSetId]);
 
   function handleVoiceTranscript(result: ApiTranscriptionResponse) {
     const transcript = result.text.trim();
@@ -552,6 +608,56 @@ export function ChatPage() {
     }
   }
 
+  async function regenerateEditedPrompt(turn: ApiTurn, prompt: string) {
+    const auth = authHeaders();
+    if (!auth || !activeChatId || regeneratingTurnId) {
+      throw new Error("Cannot regenerate right now");
+    }
+    if (!canEditUserPrompt(turn, apiTurns)) {
+      toast.error("Wait for generation to finish before editing a prompt.");
+      throw new Error("Turn is not editable");
+    }
+
+    setRegeneratingTurnId(turn.id);
+    try {
+      const result = await api.chats.regenerateTurn(auth, activeChatId, turn.id, { prompt });
+      for (const supersededId of result.superseded_turn_ids) {
+        removeTurn(activeChatId, supersededId);
+      }
+      setApiTurns((prev) => {
+        const remaining = prev.filter((item) => !result.superseded_turn_ids.includes(item.id));
+        return [...remaining, result.new_turn].sort((a, b) =>
+          a.created_at.localeCompare(b.created_at),
+        );
+      });
+      setPendingEdit(null);
+      if (result.model_set_fallback) {
+        toast.warning(
+          "Original model set was unavailable. Regenerated with a fallback model set.",
+        );
+      }
+      scrollThreadToLatest("smooth");
+      void runTurnInBackground(auth, activeChatId, result.new_turn).catch((error) => {
+        console.error(error);
+        toast.error(error instanceof Error ? error.message : "Failed to regenerate turn");
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to regenerate turn";
+      toast.error(message);
+      throw error instanceof Error ? error : new Error(message);
+    } finally {
+      setRegeneratingTurnId(null);
+    }
+  }
+
+  async function requestPromptEdit(turn: ApiTurn, prompt: string) {
+    if (countLaterTurns(apiTurns, turn.id) > 0) {
+      setPendingEdit({ turn, prompt });
+      return;
+    }
+    await regenerateEditedPrompt(turn, prompt);
+  }
+
   async function undoDeletedTurn(turnId: string) {
     const auth = authHeaders();
     if (!auth || !activeChatId || restoringTurnId) return;
@@ -630,6 +736,7 @@ export function ChatPage() {
   const voiceDisabled = !voiceAuth || !set || sending || loading;
   const anyTurnGenerating = isAnyTurnGenerating(apiTurns) || loading;
   const turnDeleteDisabled = isHistoricalTurnDeleteDisabled(anyTurnGenerating);
+  const [turnLayout, setTurnLayout] = useChatTurnLayout();
 
   return (
     <AppShell>
@@ -678,6 +785,7 @@ export function ChatPage() {
             </div>
           )}
           <div className="ml-auto flex items-center gap-2">
+            <ChatTurnLayoutToggle value={turnLayout} onChange={setTurnLayout} />
             {pinnedTurnId && (
               <button
                 type="button"
@@ -770,6 +878,13 @@ export function ChatPage() {
             {set &&
               apiTurns.map((turn) => {
                 const showTurnDelete = canShowHistoricalTurnDelete(turn);
+                const showPromptEdit = canShowHistoricalTurnDelete(turn);
+                const promptDisabledReason =
+                  regeneratingTurnId && regeneratingTurnId !== turn.id
+                    ? "Regeneration in progress"
+                    : anyTurnGenerating
+                      ? "Wait for generation to finish"
+                      : undefined;
                 return (
                   <div
                     key={turn.id}
@@ -808,9 +923,18 @@ export function ChatPage() {
                           )}
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20">
-                        <p className="whitespace-pre-wrap leading-relaxed">{turn.user_message}</p>
-                      </div>
+                      <UserPromptBubble
+                        turnId={turn.id}
+                        message={turn.user_message}
+                        editable={showPromptEdit}
+                        disabledReason={
+                          canEditUserPrompt(turn, apiTurns) && !regeneratingTurnId
+                            ? undefined
+                            : promptDisabledReason
+                        }
+                        submitting={regeneratingTurnId === turn.id}
+                        onSubmit={(prompt) => requestPromptEdit(turn, prompt)}
+                      />
                     </div>
                     <AiTurn
                       set={set}
@@ -1202,6 +1326,41 @@ export function ChatPage() {
         </div>
       </Modal>
 
+      <Modal
+        open={!!pendingEdit}
+        onClose={() => {
+          if (regeneratingTurnId) return;
+          setPendingEdit(null);
+        }}
+        title="Regenerate this turn?"
+        size="sm"
+      >
+        <p className="text-sm text-muted-foreground">{LATER_TURNS_EDIT_WARNING}</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setPendingEdit(null)}
+            disabled={Boolean(regeneratingTurnId)}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!pendingEdit || Boolean(regeneratingTurnId)}
+            onClick={() => {
+              if (!pendingEdit) return;
+              void regenerateEditedPrompt(pendingEdit.turn, pendingEdit.prompt).catch(() => {
+                // Error toast handled in regenerateEditedPrompt; keep modal open on failure.
+              });
+            }}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
+            {regeneratingTurnId ? "Regenerating…" : "Save and regenerate"}
+          </button>
+        </div>
+      </Modal>
+
       <SaveTurnDialog
         open={Boolean(saveTurnId)}
         turnId={saveTurnId}
@@ -1278,24 +1437,41 @@ function LoadingTurn({
   set: ModelSet;
   modelById: (id: string) => { name: string; color: string; vendor: string };
 }) {
+  const [layout] = useChatTurnLayout();
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        {set.models.map((id) => {
+      <div
+        className={chatAnswerCardsClassName(layout)}
+        data-chat-answer-layout={layout}
+        data-testid="loading-answer-layout"
+      >
+        {set.models.map((id, index) => {
           const m = modelById(id);
           return (
-            <GlassCard key={id} className="relative min-h-[140px] overflow-hidden p-4">
+            <GlassCard
+              key={id}
+              className={cn(
+                "elevate-card relative min-h-[140px] w-full overflow-hidden border-l-[3px] p-4 sm:p-5",
+                index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
+              )}
+              style={{ borderLeftColor: m.color } satisfies CSSProperties}
+            >
               <VendorLogo
                 vendor={m.vendor}
                 watermark
                 className="pointer-events-none absolute -right-2 -bottom-2 size-20"
               />
-              <div className="relative flex items-center gap-2 text-sm font-medium">
-                <VendorLogo vendor={m.vendor} className="size-7" title={m.name} />
-                <span className="truncate">{m.name}</span>
-                <Loader2 className="ml-auto size-3.5 animate-spin text-primary" />
+              <div className="relative flex flex-wrap items-center gap-2 text-sm font-medium">
+                <VendorLogo vendor={m.vendor} className="size-7 shrink-0" title={m.name} />
+                <div className="min-w-0">
+                  <div className="truncate leading-tight">{m.name}</div>
+                  <div className="truncate text-[11px] font-normal text-muted-foreground">
+                    {m.vendor}
+                  </div>
+                </div>
+                <Loader2 className="ml-auto size-3.5 shrink-0 animate-spin text-primary" />
               </div>
-              <div className="relative mt-3 space-y-2">
+              <div className="relative mt-4 space-y-2 border-t border-border/60 pt-4">
                 <div className="h-2 animate-pulse rounded bg-muted" />
                 <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
               </div>
@@ -1303,7 +1479,11 @@ function LoadingTurn({
           );
         })}
       </div>
-      <GlassCard glow className="p-4 text-sm text-muted-foreground">
+      <GlassCard
+        glow
+        className="mt-2 w-full border-2 border-primary/25 bg-primary/[0.04] p-5 text-sm text-muted-foreground sm:p-6"
+        data-testid="loading-verdict"
+      >
         <Loader2 className="mr-2 inline size-3.5 animate-spin text-primary" /> Synthesizing
         verdict…
       </GlassCard>
@@ -1354,9 +1534,10 @@ function AiTurn({
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
 }) {
   const { session } = useAuth();
+  const [layout] = useChatTurnLayout();
+  const { isExpanded, toggle: toggleAnswerExpansion } = useTurnAnswerExpansion(layout);
   const [showDisagree, setShowDisagree] = useState(false);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
-  const [expandedAnswerId, setExpandedAnswerId] = useState<string | null>(null);
   const verdictRef = useRef<HTMLDivElement>(null);
   const answerCards = deriveTurnAnswerCards(turn, set.models);
   const cardModelIds = answerCards.map((card) => card.modelId);
@@ -1374,15 +1555,10 @@ function AiTurn({
     setShowDisagree(true);
   }
 
-  const councilRail = !answersCollapsed ? (
-    <aside
-      className={cn(
-        "space-y-3",
-        hasVerdict && "lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:overscroll-contain lg:pr-1",
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div>
+  const responseCards = !answersCollapsed ? (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
             AI Council
           </p>
@@ -1390,96 +1566,121 @@ function AiTurn({
             {answerCards.length} models · {answerCards.length} perspectives
           </p>
         </div>
-        {canCollapseAnswers ? (
-          <button
-            type="button"
-            onClick={() => setAnswersCollapsed(true)}
-            className="rounded-lg border border-border bg-card/70 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            Hide
-          </button>
-        ) : null}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {!hasVerdict ? (
+            <TurnCostSummary answers={turn.model_answers ?? []} />
+          ) : null}
+          {canCollapseAnswers ? (
+            <button
+              type="button"
+              onClick={() => setAnswersCollapsed(true)}
+              className="rounded-lg border border-border bg-card/70 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              Hide
+            </button>
+          ) : null}
+        </div>
       </div>
-      <div className="space-y-2.5">
+      <div
+        className={chatAnswerCardsClassName(layout)}
+        data-chat-answer-layout={layout}
+        data-testid="answer-layout"
+      >
         {answerCards.map(({ modelId: id, answer: a, status }, index) => {
           const baseModel = modelById(id);
           const m = a?.model_name ? { ...baseModel, name: a.model_name } : baseModel;
           const failed = status === "failed";
           const inProgress = status === "pending" || status === "running";
           const isTopPick = topModelId === id;
-          const expanded = expandedAnswerId === id || !hasVerdict;
+          const expanded = isExpanded(id, hasVerdict);
           return (
             <GlassCard
               key={id}
               featured={isTopPick}
+              style={{ borderLeftColor: m.color } satisfies CSSProperties}
               className={cn(
-                "elevate-card relative overflow-hidden p-3.5",
+                "elevate-card relative w-full min-w-0 overflow-hidden border-l-[3px] p-4 sm:p-5",
                 index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
                 isTopPick && "ring-1 ring-primary/35",
               )}
             >
-              <div className="relative flex items-start gap-2.5">
-                <VendorLogo vendor={m.vendor} className="size-8 shrink-0" title={m.name} />
-                <div className="min-w-0 flex-1">
+              <div className="relative flex items-start gap-2.5 sm:gap-3">
+                <VendorLogo vendor={m.vendor} className="size-8 shrink-0 sm:size-9" title={m.name} />
+                <div className="min-w-0 flex-1 space-y-1.5">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium leading-tight">{m.name}</div>
-                      <div className="truncate text-[11px] text-muted-foreground">{m.vendor}</div>
+                    <div className="min-w-0 text-sm font-semibold leading-tight sm:text-[0.9375rem]">
+                      {m.name}
                     </div>
-                    {!inProgress && a?.confidence != null ? (
-                      <ModelConfidenceBadge
-                        confidence={a.confidence}
-                        isTopPick={isTopPick}
-                        strategy={turnStrategy}
-                        modelName={m.name}
+                    {inProgress ? (
+                      <Loader2
+                        className="mt-0.5 size-3.5 shrink-0 animate-spin text-primary"
+                        aria-label="Generating"
                       />
                     ) : null}
                   </div>
-                  {isTopPick ? (
-                    <span className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-                      <Trophy className="size-3" />
-                      Top pick
-                    </span>
+                  <div className="text-[11px] leading-tight text-muted-foreground sm:text-xs">
+                    {m.vendor}
+                  </div>
+                  {!inProgress ? (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-0.5">
+                      <CallCostLabel cost={a?.cost_usd} />
+                      {a?.confidence != null ? (
+                        <ModelConfidenceBadge
+                          confidence={a.confidence}
+                          isTopPick={isTopPick}
+                          strategy={turnStrategy}
+                          modelName={m.name}
+                        />
+                      ) : null}
+                      {isTopPick ? (
+                        <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                          <Trophy className="size-3" />
+                          Top pick
+                        </span>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               </div>
-              {failed ? (
-                <p className="relative mt-3 text-xs text-destructive">
-                  <AlertCircle className="mr-1 inline size-3.5" />
-                  {a?.error_message ?? "Failed"}
-                </p>
-              ) : inProgress ? (
-                <div className="relative mt-3 space-y-2">
-                  <div className="h-2 animate-pulse rounded bg-muted" />
-                  <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
-                  <Loader2 className="size-3.5 animate-spin text-primary" />
-                </div>
-              ) : (
-                <ExpandableAnswer
-                  collapsible={hasVerdict}
-                  expanded={expanded}
-                  onToggle={() =>
-                    setExpandedAnswerId((current) => (current === id ? null : id))
-                  }
-                  className="relative mt-3"
-                >
-                  <MessageContent compact>{a?.text ?? ""}</MessageContent>
-                </ExpandableAnswer>
-              )}
+              <div className="relative mt-3 border-t border-border/60 pt-3 sm:mt-4 sm:pt-4">
+                {failed ? (
+                  <p className="text-sm text-destructive">
+                    <AlertCircle className="mr-1 inline size-3.5" />
+                    {a?.error_message ?? "Failed"}
+                  </p>
+                ) : inProgress ? (
+                  <div className="space-y-2">
+                    <div className="h-2 animate-pulse rounded bg-muted" />
+                    <div className="h-2 w-10/12 animate-pulse rounded bg-muted" />
+                    <div className="h-2 w-8/12 animate-pulse rounded bg-muted" />
+                  </div>
+                ) : (
+                  <ExpandableAnswer
+                    collapsible={hasVerdict}
+                    expanded={expanded}
+                    onToggle={() => toggleAnswerExpansion(id)}
+                  >
+                    <MessageContent>{a?.text ?? ""}</MessageContent>
+                  </ExpandableAnswer>
+                )}
+              </div>
             </GlassCard>
           );
         })}
       </div>
-    </aside>
+    </div>
   ) : (
-    <button
-      type="button"
-      onClick={() => setAnswersCollapsed(false)}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground lg:sticky lg:top-24"
-    >
-      <ChevronDown className="size-3.5 -rotate-90" />
-      Show AI council ({answerCards.length})
-    </button>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <button
+        type="button"
+        onClick={() => setAnswersCollapsed(false)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+      >
+        <ChevronDown className="size-3.5 -rotate-90" />
+        Show AI council ({answerCards.length})
+      </button>
+      {!hasVerdict ? <TurnCostSummary answers={turn.model_answers ?? []} /> : null}
+    </div>
   );
 
   const verdictBlock = turn.verdict ? (
@@ -1488,52 +1689,68 @@ function AiTurn({
       id={`verdict-${turn.verdict.id}`}
       data-verdict-synthesis="true"
       className={cn(
-        "elevate-verdict scroll-mt-28",
+        "elevate-verdict scroll-mt-28 pt-2",
         isPinned && "rounded-2xl ring-2 ring-amber-400/60 ring-offset-2 ring-offset-background",
       )}
     >
-      <GlassCard glow className="p-5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-            <Sparkles className="size-4" />
+      <GlassCard
+        glow
+        className="border-2 border-primary/30 bg-primary/[0.04] p-5 shadow-[0_1px_0_oklch(1_0_0/0.9)_inset,0_16px_44px_oklch(0.55_0.1_240/0.14)] sm:p-6"
+      >
+        <div className="flex flex-wrap items-start gap-3 border-b border-primary/15 pb-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Sparkles className="size-5" />
           </span>
-          <span className="font-medium">Verdict</span>
-          {isPinned && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-              <Pin className="size-3 fill-current" /> Pinned
-            </span>
-          )}
-          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
-            {turn.verdict.strategy}
-          </span>
-          {judgeModel && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium">
-              <VendorLogo vendor={judgeModel.vendor} className="size-4" />
-              Judge: {judgeModel.name}
-            </span>
-          )}
-          {topModelId && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-800">
-              <Trophy className="size-3" />
-              Best: {modelById(topModelId).name}
-            </span>
-          )}
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
-              title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
-              onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
-                isPinned
-                  ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
-                  : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-lg font-semibold tracking-tight sm:text-xl">Verdict</h3>
+              {isPinned && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                  <Pin className="size-3 fill-current" /> Pinned
+                </span>
               )}
-            >
-              <Pin className={cn("size-3.5", isPinned && "fill-current")} />
-              {isPinned ? "Unpin" : "Pin"}
-            </button>
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+                {turn.verdict.strategy}
+              </span>
+              <CallCostLabel cost={turn.verdict.cost_usd} kind="verdict" />
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground sm:text-sm">
+              {judgeModel && (
+                <span className="inline-flex items-center gap-1.5">
+                  <VendorLogo vendor={judgeModel.vendor} className="size-4" />
+                  Judge: {judgeModel.name}
+                </span>
+              )}
+              {topModelId && (
+                <span className="inline-flex items-center gap-1 font-medium text-amber-800">
+                  <Trophy className="size-3.5" />
+                  Best: {modelById(topModelId).name}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="ml-auto flex min-w-0 max-w-full shrink-0 flex-col items-stretch gap-2 sm:items-end">
+            <TurnCostSummary
+              answers={turn.model_answers ?? []}
+              verdictCost={turn.verdict.cost_usd}
+            />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <VerdictCopyButton text={turn.verdict.text} />
+              <button
+                type="button"
+                aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
+                title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
+                onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
+                  isPinned
+                    ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
+                    : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                <Pin className={cn("size-3.5", isPinned && "fill-current")} />
+                {isPinned ? "Unpin" : "Pin"}
+              </button>
             {bookmarkState.visible && bookmarkState.verdictId && (
               <button
                 type="button"
@@ -1577,9 +1794,10 @@ function AiTurn({
                 <Swords className="size-3.5" /> Challenge
               </button>
             )}
+            </div>
           </div>
         </div>
-        <div className="mt-4 space-y-3">
+        <div className="mt-5 space-y-3">
           <MessageContent>{turn.verdict.text}</MessageContent>
           {turn.verdict.reason && (
             <MessageContent
@@ -1596,14 +1814,8 @@ function AiTurn({
 
   return (
     <div className="space-y-4">
-      {hasVerdict ? (
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,22rem)]">
-          {verdictBlock}
-          {councilRail}
-        </div>
-      ) : (
-        councilRail
-      )}
+      {responseCards}
+      {verdictBlock}
 
       <VerdictDisagreeChat
         open={showDisagree}

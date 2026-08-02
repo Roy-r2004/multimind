@@ -4,8 +4,14 @@ import { ChevronDown, Copy, ExternalLink, Gavel, Loader2 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
+import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
+import { CallCostLabel, TurnCostSummary } from "@/components/chat/CallCostLabel";
+import { ChatTurnLayoutToggle } from "@/components/chat/ChatTurnLayoutToggle";
 import { api } from "@/lib/api";
 import type { ApiSharedChat } from "@/lib/api/types";
+import { chatAnswerCardsClassName } from "@/lib/chatTurnLayout";
+import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
+import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
 import { modelColor } from "@/lib/models";
 
 export const Route = createFileRoute("/shared/$token")({
@@ -18,6 +24,7 @@ function SharedPage() {
   const [data, setData] = useState<ApiSharedChat | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [turnLayout, setTurnLayout] = useChatTurnLayout();
 
   useEffect(() => {
     void api.share
@@ -47,12 +54,13 @@ function SharedPage() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border">
-        <div className="mx-auto flex h-14 max-w-4xl items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-4xl items-center justify-between gap-3 px-6">
           <Link to="/" className="flex items-center gap-2 font-display font-semibold">
             <BrandLogo className="size-7" />
             MultiAI
           </Link>
           <div className="flex items-center gap-2">
+            <ChatTurnLayoutToggle value={turnLayout} onChange={setTurnLayout} />
             <button
               onClick={() => {
                 void navigator.clipboard.writeText(window.location.href);
@@ -94,15 +102,16 @@ function SharedPage() {
 }
 
 function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
+  const [layout] = useChatTurnLayout();
+  const { isExpanded, toggle: toggleAnswerExpansion } = useTurnAnswerExpansion(layout);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
-  const [expandedAnswerId, setExpandedAnswerId] = useState<string | null>(null);
   const canCollapseAnswers = Boolean(turn.verdict);
   const hasVerdict = Boolean(turn.verdict);
 
-  const councilRail = !answersCollapsed ? (
-    <aside className="space-y-3">
-      <div className="flex items-start justify-between gap-2">
-        <div>
+  const responseCards = !answersCollapsed ? (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
             AI Council
           </p>
@@ -110,72 +119,107 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
             {turn.model_answers.length} models · {turn.model_answers.length} perspectives
           </p>
         </div>
-        {canCollapseAnswers ? (
-          <button
-            type="button"
-            onClick={() => setAnswersCollapsed(true)}
-            className="rounded-lg border border-border bg-card/70 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            Hide
-          </button>
-        ) : null}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {!hasVerdict ? <TurnCostSummary answers={turn.model_answers ?? []} /> : null}
+          {canCollapseAnswers ? (
+            <button
+              type="button"
+              onClick={() => setAnswersCollapsed(true)}
+              className="rounded-lg border border-border bg-card/70 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              Hide
+            </button>
+          ) : null}
+        </div>
       </div>
-      <div className="space-y-2.5">
+      <div
+        className={chatAnswerCardsClassName(layout)}
+        data-chat-answer-layout={layout}
+        data-testid="shared-answer-layout"
+      >
         {turn.model_answers.map((a) => {
-          const expanded = expandedAnswerId === a.model_id || !hasVerdict;
+          const expanded = isExpanded(a.model_id, hasVerdict);
+          const color = modelColor(a.model_id);
           return (
-            <div key={a.model_id} className="rounded-2xl border border-border bg-card p-3.5">
-              <div className="flex items-center gap-2 text-sm">
-                <span
-                  className="size-2 shrink-0 rounded-full"
-                  style={{ background: modelColor(a.model_id) }}
-                />
-                <span className="min-w-0 flex-1 truncate font-medium">{a.model_name}</span>
-                {a.confidence != null && (
-                  <span className="shrink-0 text-xs text-primary">{a.confidence}%</span>
-                )}
+            <div
+              key={a.model_id}
+              className="min-w-0 w-full overflow-hidden rounded-2xl border border-border border-l-[3px] bg-card p-4 shadow-[0_1px_0_oklch(1_0_0/0.8)_inset,0_8px_28px_oklch(0.45_0.04_240/0.06)] sm:p-5"
+              style={{ borderLeftColor: color }}
+            >
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-start gap-2 text-sm">
+                  <span
+                    className="mt-1.5 size-2.5 shrink-0 rounded-full"
+                    style={{ background: color }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold leading-tight">{a.model_name}</div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-[18px]">
+                  <CallCostLabel cost={a.cost_usd} />
+                  {a.confidence != null && (
+                    <span className="text-xs font-medium text-primary">{a.confidence}%</span>
+                  )}
+                </div>
               </div>
-              <ExpandableAnswer
-                collapsible={hasVerdict}
-                expanded={expanded}
-                onToggle={() =>
-                  setExpandedAnswerId((current) =>
-                    current === a.model_id ? null : a.model_id,
-                  )
-                }
-                className="mt-3"
-              >
-                <MessageContent compact>{a.text ?? "-"}</MessageContent>
-              </ExpandableAnswer>
+              <div className="mt-3 border-t border-border/60 pt-3 sm:mt-4 sm:pt-4">
+                <ExpandableAnswer
+                  collapsible={hasVerdict}
+                  expanded={expanded}
+                  onToggle={() => toggleAnswerExpansion(a.model_id)}
+                >
+                  <MessageContent>{a.text ?? "-"}</MessageContent>
+                </ExpandableAnswer>
+              </div>
             </div>
           );
         })}
       </div>
-    </aside>
+    </div>
   ) : (
-    <button
-      type="button"
-      onClick={() => setAnswersCollapsed(false)}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
-    >
-      <ChevronDown className="size-3.5 -rotate-90" />
-      Show AI council ({turn.model_answers.length})
-    </button>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <button
+        type="button"
+        onClick={() => setAnswersCollapsed(false)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+      >
+        <ChevronDown className="size-3.5 -rotate-90" />
+        Show AI council ({turn.model_answers.length})
+      </button>
+      {!hasVerdict ? <TurnCostSummary answers={turn.model_answers ?? []} /> : null}
+    </div>
   );
 
   const verdictBlock = turn.verdict ? (
-    <div className="rounded-2xl border border-primary/30 bg-primary/5 p-5">
-      <div className="flex items-center gap-2">
-        <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
-          <Gavel className="size-3.5" />
-        </span>
-        <div className="font-medium">Verdict AI</div>
-        <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
-          {turn.verdict.strategy}
-        </span>
-      </div>
-      <div className="mt-3">
-        <MessageContent>{turn.verdict.text}</MessageContent>
+    <div className="w-full pt-2" data-testid="shared-verdict">
+      <div className="rounded-2xl border-2 border-primary/30 bg-primary/[0.04] p-5 shadow-[0_1px_0_oklch(1_0_0/0.9)_inset,0_16px_44px_oklch(0.55_0.1_240/0.14)] sm:p-6">
+        <div className="flex flex-wrap items-start gap-3 border-b border-primary/15 pb-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Gavel className="size-5" />
+          </span>
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-lg font-semibold tracking-tight sm:text-xl">Verdict</h3>
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+                {turn.verdict.strategy}
+              </span>
+              <CallCostLabel cost={turn.verdict.cost_usd} kind="verdict" />
+            </div>
+          </div>
+          <div className="ml-auto flex min-w-0 max-w-full shrink-0 flex-col items-stretch gap-2 sm:items-end">
+            <TurnCostSummary
+              answers={turn.model_answers ?? []}
+              verdictCost={turn.verdict.cost_usd}
+            />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <VerdictCopyButton text={turn.verdict.text} />
+            </div>
+          </div>
+        </div>
+        <div className="mt-5">
+          <MessageContent>{turn.verdict.text}</MessageContent>
+        </div>
       </div>
     </div>
   ) : null;
@@ -188,14 +232,10 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
         </div>
       </div>
 
-      {hasVerdict ? (
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,22rem)]">
-          {verdictBlock}
-          {councilRail}
-        </div>
-      ) : (
-        councilRail
-      )}
+      <div className="space-y-4">
+        {responseCards}
+        {verdictBlock}
+      </div>
     </div>
   );
 }

@@ -196,13 +196,11 @@ class ScrapingMissionUpdate(BaseModel):
 class ScrapingBlueprintGenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    pass
 
 
 class ScrapingBlueprintApproveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    pass
 
 
 class ScrapingBlueprintRejectRequest(BaseModel):
@@ -1331,6 +1329,15 @@ class TurnCreateRequest(BaseModel):
     custom_instructions: str | None = None
 
 
+class TurnRegenerateRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=100_000)
+
+
+class TurnDeleteResponse(BaseModel):
+    turn_id: str
+    deleted: bool
+
+
 class PromptBuilderImproveRequest(BaseModel):
     raw_prompt: str | None = Field(default=None, max_length=4000)
 
@@ -1355,9 +1362,12 @@ class TurnResponse(BaseModel):
     created_at: datetime
 
 
-class TurnDeleteResponse(BaseModel):
-    turn_id: str
-    deleted: bool
+class TurnRegenerateResponse(BaseModel):
+    old_turn_id: str
+    new_turn: TurnResponse
+    superseded_turn_ids: list[str]
+    model_set_fallback: bool = False
+    status: str = "queued"
 
 
 class AttachmentResponse(BaseModel):

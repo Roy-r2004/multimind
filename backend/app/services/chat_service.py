@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import ForbiddenError, NotFoundError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
@@ -28,25 +28,27 @@ from app.db.models import (
 )
 from app.db.session import AsyncSessionLocal
 from app.llm.catalog import get_model
-from app.services.brain_service import brain_service
 from app.llm.orchestrator import (
     ACTIVE_TURN_STATUSES,
     TurnContext,
     get_orchestrator,
     is_turn_deleted,
 )
-from app.services.saved_verdict_service import saved_verdict_service
 from app.schemas.api import (
     ChatCreateRequest,
     ChatResponse,
     ChatUpdateRequest,
     DecisionInsuranceResponse,
     ModelAnswerResponse,
-    TurnDeleteResponse,
     TurnCreateRequest,
+    TurnDeleteResponse,
+    TurnRegenerateRequest,
+    TurnRegenerateResponse,
     TurnResponse,
     VerdictResponse,
 )
+from app.services.brain_service import brain_service
+from app.services.saved_verdict_service import saved_verdict_service
 
 logger = get_logger(__name__)
 CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
@@ -59,6 +61,9 @@ TURN_STREAM_INTERNAL_ERROR_MESSAGE = "An unexpected error occurred while process
 TURN_FAILED_CODE = "TURN_FAILED"
 TURN_FAILED_MESSAGE = "Turn failed."
 TURN_DELETE_FORBIDDEN_MESSAGE = "You do not have permission to delete this turn."
+TURN_REGENERATE_ACTIVE_MESSAGE = "Wait for the current generation to finish before editing a prompt."
+TURN_REGENERATE_SELF_ACTIVE_MESSAGE = "Cannot edit a turn that is still generating."
+DEFAULT_FALLBACK_MODEL_SET_SLUG = "referee"
 _orchestration_tasks: dict[str, asyncio.Task[None]] = {}
 
 
@@ -354,6 +359,176 @@ class ChatService:
         restored = result.scalar_one()
         saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [restored])
         return self._turn_response(restored, saved_verdict_ids)
+
+    async def _resolve_model_set_for_regenerate(
+        self, db: AsyncSession, auth: AuthContext, model_set_id: str
+    ) -> tuple[ModelSet, bool]:
+        """Resolve the original model set; fall back to a system default if missing."""
+        try:
+            return await self._resolve_model_set(db, auth, model_set_id), False
+        except NotFoundError:
+            pass
+
+        preferred = await db.execute(
+            select(ModelSet).where(
+                ModelSet.slug == DEFAULT_FALLBACK_MODEL_SET_SLUG,
+                ModelSet.is_system.is_(True),
+            )
+        )
+        model_set = preferred.scalar_one_or_none()
+        if model_set is None:
+            fallback = await db.execute(
+                select(ModelSet)
+                .where((ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True)))
+                .order_by(ModelSet.is_system.desc(), ModelSet.name.asc())
+                .limit(1)
+            )
+            model_set = fallback.scalar_one_or_none()
+        if model_set is None:
+            raise ValidationError(
+                f"Original model set '{model_set_id}' is unavailable and no fallback model set exists."
+            )
+        return model_set, True
+
+    async def regenerate_turn(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        chat_id: str,
+        turn_id: str,
+        data: TurnRegenerateRequest,
+    ) -> TurnRegenerateResponse:
+        """Soft-delete this turn and later turns, then create a replacement turn."""
+        chat = await self.get_chat(db, auth, chat_id)
+        self._authorize_turn_delete(chat, auth)
+
+        prompt = data.prompt.strip()
+        if not prompt:
+            raise ValidationError("Prompt cannot be empty")
+
+        try:
+            locked_chat = (
+                await db.execute(
+                    select(Chat)
+                    .where(Chat.id == chat_id, Chat.org_id == auth.org_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if locked_chat is None:
+                raise NotFoundError("Chat", str(chat_id))
+
+            active_turns = list(
+                (
+                    await db.execute(
+                        select(Turn)
+                        .where(Turn.chat_id == chat_id, Turn.deleted_at.is_(None))
+                        .order_by(Turn.created_at.asc(), Turn.id.asc())
+                        .with_for_update()
+                    )
+                ).scalars().all()
+            )
+
+            target_index = next(
+                (index for index, turn in enumerate(active_turns) if turn.id == turn_id),
+                None,
+            )
+            if target_index is None:
+                exists = await db.execute(
+                    select(Turn.id).where(Turn.id == turn_id, Turn.chat_id == chat_id)
+                )
+                if exists.scalar_one_or_none() is None:
+                    raise NotFoundError("Turn", str(turn_id))
+                raise NotFoundError("Turn", str(turn_id))
+
+            target = active_turns[target_index]
+            if target.status in ACTIVE_TURN_STATUSES:
+                raise ConflictError(TURN_REGENERATE_SELF_ACTIVE_MESSAGE)
+            if any(turn.status in ACTIVE_TURN_STATUSES for turn in active_turns):
+                raise ConflictError(TURN_REGENERATE_ACTIVE_MESSAGE)
+
+            to_supersede = active_turns[target_index:]
+            superseded_ids = [turn.id for turn in to_supersede]
+            captured_tasks = {
+                tid: _orchestration_tasks.get(tid) for tid in superseded_ids
+            }
+
+            model_set, used_fallback = await self._resolve_model_set_for_regenerate(
+                db, auth, target.model_set_id
+            )
+
+            now = datetime.now(UTC)
+            await db.execute(
+                update(Turn)
+                .where(Turn.id.in_(superseded_ids), Turn.chat_id == chat_id)
+                .values(deleted_at=now)
+            )
+
+            if locked_chat.pinned_verdict_id:
+                pinned_turn_id = (
+                    await db.execute(
+                        select(Verdict.turn_id).where(
+                            Verdict.id == locked_chat.pinned_verdict_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if pinned_turn_id in superseded_ids:
+                    locked_chat.pinned_verdict_id = None
+
+            set_instructions = (model_set.custom_instructions or "").strip()
+            target_instructions = (target.custom_instructions or "").strip()
+            if target_instructions and target_instructions != set_instructions:
+                merged_instructions = target_instructions
+            else:
+                merged_instructions = set_instructions or None
+
+            new_turn = Turn(
+                chat_id=locked_chat.id,
+                user_message=prompt,
+                model_set_id=model_set.slug,
+                strategy=model_set.strategy,
+                verdict_model=model_set.verdict_model,
+                status=TurnStatus.PENDING,
+                custom_instructions=merged_instructions,
+                decision_insurance_enabled=False,
+            )
+            db.add(new_turn)
+            await db.flush()
+
+            for model_id in model_set.models:
+                db.add(
+                    ModelAnswer(
+                        turn_id=new_turn.id,
+                        model_id=model_id,
+                        status=ModelAnswerStatus.PENDING,
+                    )
+                )
+            await db.flush()
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+        for tid, task in captured_tasks.items():
+            await _cancel_orchestration_task_after_commit(tid, task)
+
+        loaded = await db.execute(
+            select(Turn)
+            .where(Turn.id == new_turn.id)
+            .options(
+                selectinload(Turn.model_answers),
+                selectinload(Turn.verdict),
+                selectinload(Turn.decision_insurance),
+                selectinload(Turn.lesson),
+            )
+        )
+        created = loaded.scalar_one()
+        return TurnRegenerateResponse(
+            old_turn_id=turn_id,
+            new_turn=self._pending_turn_response(created),
+            superseded_turn_ids=superseded_ids,
+            model_set_fallback=used_fallback,
+            status="queued",
+        )
 
     async def _resolve_model_set(
         self, db: AsyncSession, auth: AuthContext, model_set_id: str
@@ -761,7 +936,7 @@ class ChatService:
         while True:
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=12.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield {"type": "ping", "data": {"ts": time.time()}}
                 continue
             if item is None:

@@ -119,7 +119,7 @@ export type ApiModelAnswer = {
   error_message?: string | null;
   tokens_input: number;
   tokens_output: number;
-  cost_usd: number;
+  cost_usd?: number | null;
 };
 
 export type ApiVerdict = {
@@ -131,7 +131,7 @@ export type ApiVerdict = {
   saved: boolean;
   tokens_input: number;
   tokens_output: number;
-  cost_usd: number;
+  cost_usd?: number | null;
 };
 
 export type ApiSavedVerdictState = {

@@ -208,6 +208,24 @@ export const api = {
         orgId: auth.orgId,
       }),
 
+    regenerateTurn: (
+      auth: Auth,
+      chatId: string,
+      turnId: string,
+      data: { prompt: string },
+    ) =>
+      apiRequest<{
+        old_turn_id: string;
+        new_turn: ApiTurn;
+        superseded_turn_ids: string[];
+        model_set_fallback: boolean;
+        status: string;
+      }>(`/chats/${chatId}/turns/${turnId}/regenerate`, {
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
     deleteTurn: (auth: Auth, chatId: string, turnId: string) =>
       apiRequest<{ turn_id: string; deleted: boolean }>(`/chats/${chatId}/turns/${turnId}`, {
         method: "DELETE",
