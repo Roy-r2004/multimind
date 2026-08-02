@@ -239,6 +239,43 @@ async def test_recovery_resets_stuck_running_place(db, auth):
 
 
 @pytest.mark.asyncio
+async def test_stale_running_place_finalized_at_enrich_start(db, auth):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="DZ",
+        country_name="Algeria",
+        status="completed",
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="stale-running",
+        raw_name="Stuck",
+        canonical_name="Stuck",
+        place_types=["health"],
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
+        client_eligibility=MapsClientEligibility.REVIEW.value,
+        enrichment_status=MapsPlaceEnrichmentStatus.RUNNING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    factory = async_sessionmaker(bind=db.bind, expire_on_commit=False)
+    finalized = await maps_enrichment_cascade_service._finalize_stale_running_places(
+        factory, run_id=run.id
+    )
+    assert finalized == 1
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
+    assert place.enrichment_pipeline_state == MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+
+
+@pytest.mark.asyncio
 async def test_cheap_skip_finalizes_not_relevant_pending(db, auth):
     run = MapsCensusRun(
         organization_id=auth.org_id,

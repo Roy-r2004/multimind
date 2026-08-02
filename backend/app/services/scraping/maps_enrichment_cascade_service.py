@@ -87,8 +87,13 @@ class MapsEnrichmentCascadeService:
                 return {"enriched": 0, "paused": True}
             country_code = run.country_code
             country_name = run.country_name
-            selection_report = await build_selection_report(session, run_id=run_id)
             cursor = state.get("enrichment_cursor") if state.get("enrichment_paused") else None
+
+        await self._finalize_stale_running_places(session_factory, run_id=run_id)
+        await self._finalize_cheap_skips(session_factory, run_id=run_id)
+
+        async with session_factory() as session:
+            selection_report = await build_selection_report(session, run_id=run_id)
 
         tracker = MapsQuotaTracker()
         parse_stats = EnrichmentParseStats()
@@ -165,25 +170,9 @@ class MapsEnrichmentCascadeService:
             primary_calls += len(places)
             cursor = places[-1].id
 
-        async with session_factory() as session:
-            skipped_places = (
-                await session.execute(
-                    select(MapsPlace).where(
-                        MapsPlace.run_id == run_id,
-                        MapsPlace.enrichment_status.in_(
-                            [
-                                MapsPlaceEnrichmentStatus.PENDING.value,
-                                MapsPlaceEnrichmentStatus.FAILED.value,
-                            ]
-                        ),
-                    )
-                )
-            ).scalars().all()
-            for place in skipped_places:
-                if should_select_for_expensive_pipeline(place):
-                    continue
-                await self._finalize_skipped_place(session, place, skip_reason_for_place(place))
+        await self._finalize_cheap_skips(session_factory, run_id=run_id)
 
+        async with session_factory() as session:
             run = await session.get(MapsCensusRun, run_id)
             if run is not None:
                 state = dict(run.processing_state or {})
@@ -461,6 +450,50 @@ class MapsEnrichmentCascadeService:
             place.classification_evidence = evidence
         place.client_eligibility = compute_client_eligibility(place)
         await session.flush()
+
+    async def _finalize_cheap_skips(self, session_factory, *, run_id: str) -> int:
+        async with session_factory() as session:
+            skipped_places = (
+                await session.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.enrichment_status.in_(
+                            [
+                                MapsPlaceEnrichmentStatus.PENDING.value,
+                                MapsPlaceEnrichmentStatus.FAILED.value,
+                            ]
+                        ),
+                    )
+                )
+            ).scalars().all()
+            finalized = 0
+            for place in skipped_places:
+                if should_select_for_expensive_pipeline(place):
+                    continue
+                await self._finalize_skipped_place(session, place, skip_reason_for_place(place))
+                finalized += 1
+            await session.commit()
+            return finalized
+
+    async def _finalize_stale_running_places(self, session_factory, *, run_id: str) -> int:
+        async with session_factory() as session:
+            places = (
+                await session.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.RUNNING.value,
+                    )
+                )
+            ).scalars().all()
+            for place in places:
+                place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                place.enrichment_error_message = (
+                    "stale running place finalized for manual review"
+                )
+                place.enrichment_completed_at = datetime.now(UTC)
+            await session.commit()
+            return len(places)
 
     async def _refresh_run_counters(self, session_factory, *, run_id: str) -> None:
         async with session_factory() as session:
