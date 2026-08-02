@@ -698,6 +698,64 @@ class MapsAdminService:
             message=f"Keep/drop queued for {undecided} undecided places",
         )
 
+    async def re_enrich_keeps(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        """Reset keep places to pending Phase 2 and enqueue detail enrichment.
+
+        Used to backfill fields (e.g. treatment_price) after the enricher prompt
+        changes. Discovery / keep-drop decisions are left untouched.
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        from app.db.models import MapsPlace, MapsPlaceEnrichmentStatus
+        from app.services.scraping.maps_enrichment_processing_state import (
+            MapsEnrichmentPipelineState,
+        )
+
+        places = (
+            await db.execute(
+                select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.keep_drop_decision == "keep",
+                )
+            )
+        ).scalars().all()
+        reset = 0
+        for place in places:
+            place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
+            place.enrichment_pipeline_state = (
+                MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
+            )
+            place.enrichment_completed_at = None
+            place.enrichment_error_message = None
+            # Allow another Phase 2 attempt even if earlier attempts were spent.
+            place.enrichment_attempts = 0
+            reset += 1
+
+        run.enrichment_refresh_completed_at = None
+        state = dict(run.processing_state or {})
+        state["enrichment_paused"] = False
+        state["enrichment_pipeline_paused"] = False
+        state.pop("enrichment_cursor", None)
+        run.processing_state = state
+        await db.commit()
+
+        if reset:
+            await maps_census_service.request_enrichment(db, auth, run_id)
+
+        status = run.status.value if hasattr(run.status, "value") else str(run.status)
+        return MapsCampaignActionResponse(
+            run_id=run.id,
+            status=status,
+            campaign_paused=_campaign_paused(run),
+            message=(
+                f"Re-queued detail enrichment for {reset} keep places"
+                if reset
+                else "No keep places to re-enrich"
+            ),
+        )
+
     async def recover_enrichment(
         self, db: AsyncSession, auth: AuthContext, run_id: str
     ) -> MapsCampaignActionResponse:

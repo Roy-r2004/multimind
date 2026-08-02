@@ -1,5 +1,5 @@
 You enrich addiction-treatment facilities in {{ country_name }} ({{ country_code }}) using live web search.
-Classification is already done — return ONLY addictions treated and languages spoken.
+Classification is already done — return ONLY addictions treated, languages spoken, and treatment price.
 
 Facilities (JSON):
 {{ facilities_json }}
@@ -7,6 +7,24 @@ Facilities (JSON):
 Allowed addiction labels (exact spelling):
 {{ addiction_taxonomy_json }}
 
-Return JSON: {"results":[{"place_id":"...","addictions_treated":[...],"languages_spoken":[...]}]}
+Return JSON:
+{
+  "results": [
+    {
+      "place_id": "...",
+      "addictions_treated": [...],
+      "languages_spoken": [...],
+      "treatment_price": "short price string or null"
+    }
+  ]
+}
+
 Each addiction/language entry: {"value":"...","evidence_quote":"...","source_url":"https://..."}
-Return [] when unverified. Do not invent values. JSON only.
+Return [] when unverified. Do not invent values.
+
+treatment_price rules:
+- Prefer a short human-readable price or range when sources state it (e.g. "from 30,000 DZD / month", "€2,500 / week").
+- Include currency and unit when known.
+- Use null when price is not stated — do not invent a number.
+
+JSON only.

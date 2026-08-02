@@ -322,6 +322,16 @@ async def run_maps_census_keep_drop(
     return await maps_admin_service.run_keep_drop(db, auth, run_id)
 
 
+@router.post("/runs/{run_id}/re-enrich-keeps", response_model=MapsCampaignActionResponse)
+async def re_enrich_maps_census_keeps(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset keep places to pending and re-run detail enrichment (e.g. for pricing)."""
+    return await maps_admin_service.re_enrich_keeps(db, auth, run_id)
+
+
 @router.post("/runs/{run_id}/reconcile-finalization")
 async def reconcile_maps_census_finalization(
     run_id: str,

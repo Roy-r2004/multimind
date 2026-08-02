@@ -1,4 +1,4 @@
-"""Phase 2: enrich addictions and languages for classification candidates only."""
+"""Phase 2: enrich addictions, languages, and treatment price for candidates."""
 
 from __future__ import annotations
 
@@ -358,6 +358,8 @@ class MapsDetailEnrichmentService:
                     languages = _normalize_languages(result.languages_spoken)
                     place.addictions_treated = addictions or None
                     place.languages_spoken = languages or None
+                    if result.treatment_price and str(result.treatment_price).strip():
+                        place.treatment_price = str(result.treatment_price).strip()[:512]
                     if place.enrichment_extraction_source in {
                         None,
                         "structured_classification",
@@ -402,8 +404,8 @@ class MapsDetailEnrichmentService:
         )
         response = await provider.complete(
             system=(
-                "You have live web search. Return addictions and languages only for each facility. "
-                "Return strict JSON only."
+                "You have live web search. Return addictions, languages, and treatment_price "
+                "for each facility. Return strict JSON only."
             ),
             user=prompt,
             model=model.provider_model,
