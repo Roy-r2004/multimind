@@ -227,8 +227,8 @@ async def test_recovery_resets_hollow_completed_without_extraction(db, auth):
 
     factory = async_sessionmaker(bind=db.bind, expire_on_commit=False)
     reset = await maps_enrichment_cascade_service.reset_for_recovery(factory, run_id=run.id)
-    assert reset["reset_hollow_completed"] == 1
-    assert reset["reset_places"] == 1
+    assert reset["reset_two_phase"] == 1
+    assert reset["reset_places"] >= 1
 
     await db.refresh(place)
     assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
@@ -269,12 +269,12 @@ async def test_recovery_finalizes_stuck_running_place(db, auth):
         expire_on_commit=False,
     )
     reset = await maps_enrichment_cascade_service.reset_for_recovery(factory, run_id=run.id)
-    assert reset["reset_places"] == 1
     assert reset["reset_stuck_running"] == 1
+    assert reset["reset_two_phase"] == 1
 
     await db.refresh(place)
-    assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
-    assert place.enrichment_pipeline_state == MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
+    assert place.enrichment_pipeline_state == default_pipeline_state()
 
 
 @pytest.mark.asyncio

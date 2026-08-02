@@ -79,6 +79,9 @@ class MapsEnrichmentCascadeService:
                     await session.commit()
             return {"enriched": 0}
 
+        if settings.maps_census_two_phase_pipeline_enabled:
+            return await self._enrich_run_two_phase(db, run_id=run_id)
+
         async with session_factory() as session:
             run = await session.get(MapsCensusRun, run_id)
             if run is None:
@@ -206,6 +209,124 @@ class MapsEnrichmentCascadeService:
         await self._refresh_run_counters(session_factory, run_id=run_id)
         return {
             "enriched": enriched,
+            "selection": selection_report.__dict__,
+            "sonar_fallback_stats": sonar_stats.as_dict(),
+            "paused": paused,
+        }
+
+    async def _enrich_run_two_phase(
+        self, db: AsyncSession | None, *, run_id: str
+    ) -> dict[str, Any]:
+        """Phase 1 classify all relevant places, then Phase 2 enrich addictions/languages."""
+        from app.services.scraping.maps_classification_service import maps_classification_service
+        from app.services.scraping.maps_detail_enrichment_service import maps_detail_enrichment_service
+
+        session_factory = maps_place_enrichment_service._session_factory(db)
+        settings = get_settings()
+
+        async with session_factory() as session:
+            run = await session.get(MapsCensusRun, run_id)
+            if run is None:
+                return {"enriched": 0}
+            state = dict(run.processing_state or {})
+            if state.get("enrichment_pipeline_paused") or state.get("campaign_paused"):
+                return {"enriched": 0, "paused": True}
+            country_code = run.country_code
+            country_name = run.country_name
+
+        await self._finalize_stale_running_places(session_factory, run_id=run_id)
+
+        async with session_factory() as session:
+            selection_report = await build_selection_report(session, run_id=run_id)
+            relevant_count = (
+                await session.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.is_relevant.is_(True),
+                    )
+                )
+            ).scalars().all()
+            relevant_total = len(relevant_count)
+
+        tracker = MapsQuotaTracker()
+        parse_stats = EnrichmentParseStats()
+        sonar_stats = SonarFallbackStats()
+        sonar_budget = SonarBudget(
+            enabled=settings.maps_sonar_fallback_enabled,
+            max_percent=settings.maps_sonar_fallback_max_percent,
+            max_per_campaign=settings.maps_sonar_fallback_max_per_campaign,
+            selected_candidates=relevant_total,
+            calls_used=int((state.get("sonar_fallback_stats") or {}).get("sonar_calls") or 0),
+        )
+
+        phase1 = await maps_classification_service.classify_run(
+            session_factory,
+            run_id=run_id,
+            country_code=country_code,
+            country_name=country_name,
+            tracker=tracker,
+            sonar_budget=sonar_budget,
+            sonar_stats=sonar_stats,
+            parse_stats=parse_stats,
+        )
+
+        phase2 = await maps_detail_enrichment_service.enrich_run(
+            session_factory,
+            run_id=run_id,
+            country_code=country_code,
+            country_name=country_name,
+            tracker=tracker,
+            parse_stats=parse_stats,
+        )
+
+        paused = phase1.get("paused") or phase2.get("paused")
+
+        async with session_factory() as session:
+            run = await session.get(MapsCensusRun, run_id)
+            if run is not None:
+                state = dict(run.processing_state or {})
+                state["enrichment_paused"] = paused
+                state["enrichment_cursor"] = None
+                state["enrichment_pipeline"] = "two_phase_v1"
+                state["classification_stats"] = {
+                    "classified": phase1.get("classified", 0),
+                    "paused": phase1.get("paused", False),
+                }
+                state["detail_enrichment_stats"] = {
+                    "enriched": phase2.get("enriched", 0),
+                    "paused": phase2.get("paused", False),
+                }
+                state["enrichment_selection"] = {
+                    "sql": selection_report.selection_sql,
+                    "selected_count": selection_report.selected_count,
+                    "skipped_count": selection_report.skipped_count,
+                    "skip_reasons": selection_report.skip_reasons,
+                    "relevant_total": relevant_total,
+                }
+                state["sonar_fallback_stats"] = sonar_stats.as_dict()
+                state["sonar_fallback_budget"] = {
+                    "enabled": sonar_budget.enabled,
+                    "max_calls": sonar_budget.max_calls,
+                    "calls_used": sonar_budget.calls_used,
+                    "remaining": sonar_budget.remaining,
+                    "budget_exhausted": sonar_stats.budget_exhausted,
+                }
+                limits_reached = dict(state.get("limits_reached") or {})
+                limits_reached["enrichment"] = paused
+                limits_reached["classification"] = phase1.get("paused", False)
+                limits_reached["detail_enrichment"] = phase2.get("paused", False)
+                limits_reached["sonar_fallback"] = sonar_stats.budget_exhausted
+                state["limits_reached"] = limits_reached
+                run.processing_state = state
+                await session.commit()
+
+        await merge_quota_metrics(session_factory, run_id=run_id, tracker=tracker)
+        await self._finalize_stale_running_places(session_factory, run_id=run_id)
+        await self._refresh_run_counters(session_factory, run_id=run_id)
+        return {
+            "enriched": phase2.get("enriched", 0),
+            "classified": phase1.get("classified", 0),
+            "pipeline": "two_phase_v1",
             "selection": selection_report.__dict__,
             "sonar_fallback_stats": sonar_stats.as_dict(),
             "paused": paused,
@@ -544,52 +665,62 @@ class MapsEnrichmentCascadeService:
 
     async def reset_for_recovery(self, session_factory, *, run_id: str) -> dict[str, int]:
         """Reset failed/pending/running enrichment states without touching discovery data."""
+        settings = get_settings()
         async with session_factory() as session:
-            places = (
+            stuck_places = (
                 await session.execute(
                     select(MapsPlace).where(
                         MapsPlace.run_id == run_id,
-                        MapsPlace.enrichment_status.in_(
-                            [
-                                MapsPlaceEnrichmentStatus.PENDING.value,
-                                MapsPlaceEnrichmentStatus.FAILED.value,
-                                MapsPlaceEnrichmentStatus.RUNNING.value,
-                            ]
-                        ),
+                        MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.RUNNING.value,
                     )
                 )
             ).scalars().all()
-            reset = 0
             stuck_running = 0
-            for place in places:
-                is_stuck_running = (
-                    place.enrichment_status == MapsPlaceEnrichmentStatus.RUNNING.value
+            for place in stuck_places:
+                place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                place.enrichment_error_message = (
+                    "stuck running place finalized for manual review"
                 )
-                if is_stuck_running:
-                    place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
-                    place.enrichment_pipeline_state = (
-                        MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                place.enrichment_extraction_source = "recovery_finalize"
+                place.enrichment_completed_at = datetime.now(UTC)
+                stuck_running += 1
+
+            if settings.maps_census_two_phase_pipeline_enabled:
+                two_phase_reset = await self._reset_two_phase_places(session, run_id=run_id)
+                reset = stuck_running + two_phase_reset
+                hollow_reset = 0
+                missing_addictions_reset = 0
+            else:
+                two_phase_reset = 0
+                places = (
+                    await session.execute(
+                        select(MapsPlace).where(
+                            MapsPlace.run_id == run_id,
+                            MapsPlace.enrichment_status.in_(
+                                [
+                                    MapsPlaceEnrichmentStatus.PENDING.value,
+                                    MapsPlaceEnrichmentStatus.FAILED.value,
+                                ]
+                            ),
+                        )
                     )
-                    place.enrichment_error_message = (
-                        "stuck running place finalized for manual review"
-                    )
-                    place.enrichment_extraction_source = "recovery_finalize"
-                    place.enrichment_completed_at = datetime.now(UTC)
+                ).scalars().all()
+                reset = stuck_running
+                for place in places:
+                    if not should_select_for_expensive_pipeline(place):
+                        continue
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
+                    place.enrichment_error_message = None
+                    place.enrichment_completed_at = None
+                    place.enrichment_pipeline_state = default_pipeline_state()
                     reset += 1
-                    stuck_running += 1
-                    continue
-                if not should_select_for_expensive_pipeline(place):
-                    continue
-                place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
-                place.enrichment_error_message = None
-                place.enrichment_completed_at = None
-                place.enrichment_pipeline_state = default_pipeline_state()
-                reset += 1
-            hollow_reset = await self._reset_hollow_completed_places(session, run_id=run_id)
-            missing_addictions_reset = await self._reset_completed_missing_addictions(
-                session, run_id=run_id
-            )
-            reset += hollow_reset + missing_addictions_reset
+                hollow_reset = await self._reset_hollow_completed_places(session, run_id=run_id)
+                missing_addictions_reset = await self._reset_completed_missing_addictions(
+                    session, run_id=run_id
+                )
+                reset += hollow_reset + missing_addictions_reset
+
             run = await session.get(MapsCensusRun, run_id)
             if run is not None:
                 state = dict(run.processing_state or {})
@@ -606,7 +737,41 @@ class MapsEnrichmentCascadeService:
                 "reset_stuck_running": stuck_running,
                 "reset_hollow_completed": hollow_reset,
                 "reset_missing_addictions": missing_addictions_reset,
+                "reset_two_phase": two_phase_reset,
             }
+
+    async def _reset_two_phase_places(self, session: AsyncSession, *, run_id: str) -> int:
+        """Re-queue all relevant places for a full classify + detail enrichment pass."""
+        places = (
+            await session.execute(
+                select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.is_relevant.is_(True),
+                )
+            )
+        ).scalars().all()
+        reset = 0
+        for place in places:
+            place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
+            place.enrichment_error_message = None
+            place.enrichment_completed_at = None
+            place.enrichment_pipeline_state = default_pipeline_state()
+            place.enrichment_extraction_source = None
+            place.addictions_treated = None
+            place.languages_spoken = None
+            place.facility_type = None
+            place.ownership_status = None
+            place.operator_type = None
+            place.organization_scope = None
+            place.addiction_focus_confirmed = None
+            place.medical_detox = None
+            place.residential_accommodation = None
+            place.classification_evidence = None
+            place.classification_confidence = None
+            place.client_eligibility = MapsClientEligibility.EXCLUDED.value
+            place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+            reset += 1
+        return reset
 
     async def _reset_completed_missing_addictions(
         self, session: AsyncSession, *, run_id: str

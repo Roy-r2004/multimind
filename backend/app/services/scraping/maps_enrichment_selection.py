@@ -82,6 +82,40 @@ def should_select_for_expensive_pipeline(place: Any) -> bool:
     return skip_reason_for_place(place) is None
 
 
+def is_detail_enrichment_candidate(place: Any) -> bool:
+    """Places that completed Phase 1 classification and need addictions/languages."""
+    if not getattr(place, "is_relevant", None):
+        return False
+
+    lifecycle = getattr(place, "lifecycle_status", None) or ""
+    if lifecycle in CONFIDENT_SKIP_LIFECYCLE:
+        return False
+
+    eligibility = getattr(place, "client_eligibility", None) or ""
+    if eligibility == MapsClientEligibility.EXCLUDED.value:
+        if lifecycle in {
+            MapsLifecycleStatus.UNRELATED.value,
+            MapsLifecycleStatus.CONFIRMED_PUBLIC.value,
+            MapsLifecycleStatus.CONFIRMED_INDIVIDUAL_PRACTITIONER.value,
+            MapsLifecycleStatus.CONFIRMED_CESSATION_ONLY.value,
+            MapsLifecycleStatus.CONTRADICTED.value,
+        }:
+            return False
+
+    if eligibility not in {
+        MapsClientEligibility.ELIGIBLE.value,
+        MapsClientEligibility.REVIEW.value,
+    }:
+        return False
+
+    return lifecycle in {
+        MapsLifecycleStatus.NEEDS_REVIEW.value,
+        MapsLifecycleStatus.PLAUSIBLE.value,
+        MapsLifecycleStatus.PROBABLE_ELIGIBLE.value,
+        MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value,
+    }
+
+
 def build_expensive_pipeline_query(run_id: str):
     """SQLAlchemy query for places that should enter the expensive cascade."""
     return (
@@ -144,6 +178,7 @@ __all__ = [
     "build_expensive_pipeline_query",
     "build_selection_report",
     "count_selection",
+    "is_detail_enrichment_candidate",
     "selection_query_sql",
     "should_select_for_expensive_pipeline",
     "skip_reason_for_place",

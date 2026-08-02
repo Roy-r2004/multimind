@@ -1,0 +1,29 @@
+You classify addiction-treatment facilities in {{ country_name }} ({{ country_code }}).
+Use ONLY the Google Maps metadata and optional official-website crawl excerpts below.
+Do NOT research addictions or languages — classification fields only.
+
+Return strict JSON matching the schema. Prefer null/unknown over guessing.
+A suggestive name alone is NOT evidence. When evidence is weak, keep fields unknown.
+
+Facility metadata (JSON):
+{{ facility_json }}
+
+{% if crawl_excerpt %}
+Official website crawl excerpts:
+{{ crawl_excerpt }}
+{% endif %}
+
+Return JSON with:
+- facility_type
+- operator_type
+- ownership_status
+- organization_scope
+- addiction_treatment_mission (boolean or null)
+- care_setting (array of strings or empty)
+- outpatient_treatment, inpatient_treatment, residential_accommodation (boolean or null)
+- medical_detox, therapeutic_community, psychiatric_addiction_program (boolean or null)
+- operating_status (open, closed, unknown)
+- evidence (array of objects: field, value, quote, source_url, page_title, confidence)
+
+Do NOT return addictions, languages, address, phone, or email.
+Return JSON only. No markdown fences.

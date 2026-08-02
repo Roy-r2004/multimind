@@ -1,0 +1,12 @@
+You enrich addiction-treatment facilities in {{ country_name }} ({{ country_code }}) using live web search.
+Classification is already done — return ONLY addictions treated and languages spoken.
+
+Facilities (JSON):
+{{ facilities_json }}
+
+Allowed addiction labels (exact spelling):
+{{ addiction_taxonomy_json }}
+
+Return JSON: {"results":[{"place_id":"...","addictions_treated":[...],"languages_spoken":[...]}]}
+Each addiction/language entry: {"value":"...","evidence_quote":"...","source_url":"https://..."}
+Return [] when unverified. Do not invent values. JSON only.

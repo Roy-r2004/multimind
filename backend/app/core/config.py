@@ -202,6 +202,7 @@ class Settings(BaseSettings):
     maps_census_enrichment_max_crawl_excerpt_chars: int = 1200
     maps_census_auto_enrichment_enabled: bool = True
     maps_census_cascade_enrichment_enabled: bool = True
+    maps_census_two_phase_pipeline_enabled: bool = True
 
     # Cascaded enrichment: bounded crawl context for primary extraction
     maps_crawl_max_relevant_pages: int = 5

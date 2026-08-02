@@ -1,0 +1,13 @@
+You classify ONE addiction-treatment facility in {{ country_name }} ({{ country_code }}) using live web search.
+Classification only — do NOT list addictions or languages.
+
+Facility (JSON):
+{{ facility_json }}
+
+Return strict JSON with the same classification fields as structured enrichment:
+operator_type, ownership_status, funding_type, facility_type, care_setting,
+organization_scope, addiction_focus_confirmed, medical_detox, residential_accommodation,
+operating_status, classification_evidence, confidence.
+
+Use classification_evidence with source_url and evidence_quote for every non-unknown field you set.
+Prefer uncertainty over false exclusions. Return JSON only.
