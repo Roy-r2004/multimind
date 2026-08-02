@@ -12,7 +12,9 @@ Produces a single ``.xlsx`` workbook split by client-facing facility categories:
 
 from __future__ import annotations
 
+import json
 import re
+from enum import Enum
 from io import BytesIO
 from typing import Any
 from urllib.parse import urlparse
@@ -338,8 +340,11 @@ class MapsExportService:
                     and isinstance(cell.value, str)
                     and _is_http_url(cell.value)
                 ):
-                    cell.hyperlink = cell.value
-                    cell.font = link_font
+                    try:
+                        cell.hyperlink = cell.value
+                        cell.font = link_font
+                    except Exception:  # noqa: BLE001 - keep export alive on bad URLs
+                        pass
             ws.row_dimensions[row[0].row].height = _estimate_row_height(row, widths)
 
         for index, header in enumerate(headers, start=1):
@@ -398,15 +403,20 @@ def _safe_cell(value: Any) -> Any:
         return None
     if isinstance(value, bool):
         return "Yes" if value else "No"
-    if isinstance(value, str):
-        # openpyxl rejects ASCII control chars that are illegal in OOXML.
-        cleaned = _ILLEGAL_XLSX_CHARS.sub("", value)
-        if cleaned[:1] in {"=", "+", "-", "@"}:
-            # Phone numbers are formatted as text elsewhere; anything else with a
-            # formula-like prefix is neutralized so Excel never evaluates it.
-            return cleaned
+    if isinstance(value, Enum):
+        value = value.value
+    if isinstance(value, (dict, list, tuple)):
+        value = json.dumps(value, ensure_ascii=False, default=str)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    text = str(value)
+    # openpyxl rejects ASCII control chars that are illegal in OOXML.
+    cleaned = _ILLEGAL_XLSX_CHARS.sub("", text)
+    if cleaned[:1] in {"=", "+", "-", "@"}:
+        # Phone numbers are formatted as text elsewhere; anything else with a
+        # formula-like prefix is neutralized so Excel never evaluates it.
         return cleaned
-    return value
+    return cleaned
 
 
 def _is_http_url(value: str) -> bool:
@@ -414,13 +424,21 @@ def _is_http_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-def _display_text(value: Any) -> Any:
+def _display_text(value: Any) -> str:
     if value is None:
         return "Not Specified"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, Enum):
+        value = value.value
+    if isinstance(value, (dict, list, tuple)):
+        text = json.dumps(value, ensure_ascii=False, default=str)
+        return text if text.strip() else "Not Specified"
     if isinstance(value, str):
         stripped = value.strip()
         return stripped if stripped else "Not Specified"
-    return value
+    text = str(value).strip()
+    return text if text else "Not Specified"
 
 
 def _display_choice(value: str | None) -> str:
