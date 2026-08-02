@@ -148,11 +148,15 @@ class MapsDetailEnrichmentService:
                 )
                 website = (fresh.official_website or fresh.raw_website or "").strip()
                 if website and settings.maps_census_website_crawl_enabled:
+                    crawl_budget = max(10.0, settings.maps_classification_crawl_timeout_seconds)
                     try:
-                        outcome = await maps_website_crawl_service.crawl_website(
-                            session,
-                            website_url=website,
-                            path_keywords=path_keywords,
+                        outcome = await asyncio.wait_for(
+                            maps_website_crawl_service.crawl_website(
+                                session,
+                                website_url=website,
+                                path_keywords=path_keywords,
+                            ),
+                            timeout=crawl_budget,
                         )
                         fresh.enrichment_pages_crawled = outcome.page_urls or None
                         crawl_excerpts[fresh.id] = (
@@ -161,7 +165,7 @@ class MapsDetailEnrichmentService:
                             )
                             or None
                         )
-                    except MapsWebsiteCrawlError:
+                    except (MapsWebsiteCrawlError, TimeoutError):
                         crawl_excerpts[fresh.id] = None
                 else:
                     crawl_excerpts[fresh.id] = None

@@ -739,6 +739,16 @@ class MapsEnrichmentCascadeService:
                 state.pop("enrichment_cursor", None)
                 state["enrichment_paused"] = False
                 state["enrichment_pipeline_paused"] = False
+                # A recovery pass gets a fresh Sonar budget; otherwise calls spent by a
+                # previously broken run keep the classification fallback disabled forever.
+                state.pop("sonar_fallback_stats", None)
+                state.pop("sonar_classify_stats", None)
+                state.pop("sonar_fallback_budget", None)
+                state.pop("sonar_classify_budget", None)
+                limits_reached = dict(state.get("limits_reached") or {})
+                limits_reached.pop("sonar_fallback", None)
+                limits_reached.pop("sonar_classify", None)
+                state["limits_reached"] = limits_reached
                 run.processing_state = state
                 run.enrichment_refresh_completed_at = None
                 if run.completed_at is not None:

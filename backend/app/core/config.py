@@ -197,6 +197,10 @@ class Settings(BaseSettings):
     # places the outer loop pulls per iteration before checking call budget.
     maps_census_enrichment_processing_batch_size: int = 25
     maps_cascade_place_timeout_seconds: float = 300.0
+    # Phase 1 classification is metadata-first, so a single slow domain must not
+    # consume a 300s place budget and stall its whole batch.
+    maps_classification_place_timeout_seconds: float = 120.0
+    maps_classification_crawl_timeout_seconds: float = 45.0
     maps_census_enrichment_max_calls_per_run: int = 5000
     maps_census_enrichment_model: str = "sonar-pro"
     maps_census_enrichment_max_crawl_excerpt_chars: int = 1200

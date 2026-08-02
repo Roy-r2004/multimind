@@ -128,7 +128,7 @@ class MapsClassificationService:
                 break
 
             semaphore = asyncio.Semaphore(max(1, settings.maps_primary_extraction_concurrency))
-            timeout = max(30.0, settings.maps_cascade_place_timeout_seconds)
+            timeout = max(30.0, settings.maps_classification_place_timeout_seconds)
 
             async def process_one(place_id: str) -> int:
                 async with semaphore:
@@ -153,7 +153,14 @@ class MapsClassificationService:
                             place = await session.get(MapsPlace, place_id)
                             if place is not None:
                                 place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
-                                place.enrichment_error_message = "classification timeout"
+                                # Terminal for this pass so the same hanging place is
+                                # not re-selected and stalls every later batch.
+                                place.enrichment_pipeline_state = (
+                                    MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
+                                )
+                                place.enrichment_error_message = (
+                                    f"classification timeout after {int(timeout)}s"
+                                )
                                 await session.commit()
                         return 0
 
@@ -161,6 +168,12 @@ class MapsClassificationService:
             classified += sum(results)
             calls += len(places)
             cursor = places[-1].id
+
+            async with session_factory() as session:
+                run = await session.get(MapsCensusRun, run_id)
+                if run is not None:
+                    run.heartbeat_at = datetime.now(UTC)
+                    await session.commit()
 
         return {"classified": classified, "paused": paused, "cursor": cursor}
 
@@ -243,19 +256,29 @@ class MapsClassificationService:
             if place is None:
                 return 0
             if place.official_website and place.website_relationship in CRAWLABLE_RELATIONSHIPS:
+                # Hard-bound the crawl: a slow domain must not consume the whole
+                # per-place budget and stall its batch (see clinique-tabet.com).
+                crawl_budget = max(10.0, get_settings().maps_classification_crawl_timeout_seconds)
                 try:
-                    outcome = await maps_website_crawl_service.crawl_website(
-                        session,
-                        website_url=place.official_website,
-                        path_keywords=path_keywords,
+                    outcome = await asyncio.wait_for(
+                        maps_website_crawl_service.crawl_website(
+                            session,
+                            website_url=place.official_website,
+                            path_keywords=path_keywords,
+                        ),
+                        timeout=crawl_budget,
                     )
                     tracker.add_crawl_request()
                     place.enrichment_pages_crawled = outcome.page_urls or None
                     crawl_excerpt = outcome.combined_excerpt(
                         max_chars=get_settings().maps_crawl_max_total_context_chars
                     ) or None
-                except MapsWebsiteCrawlError:
-                    pass
+                except (MapsWebsiteCrawlError, TimeoutError):
+                    logger.info(
+                        "maps_classification_crawl_skipped place=%s website=%s",
+                        place_id,
+                        place.official_website,
+                    )
                 await session.commit()
 
         payload = None
