@@ -196,7 +196,7 @@ async def test_recovery_preserves_discovery_data(db, auth):
 
 
 @pytest.mark.asyncio
-async def test_recovery_resets_stuck_running_place(db, auth):
+async def test_recovery_finalizes_stuck_running_place(db, auth):
     run = MapsCensusRun(
         organization_id=auth.org_id,
         created_by=auth.user.id,
@@ -234,8 +234,8 @@ async def test_recovery_resets_stuck_running_place(db, auth):
     assert reset["reset_stuck_running"] == 1
 
     await db.refresh(place)
-    assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
-    assert place.enrichment_pipeline_state == default_pipeline_state()
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
+    assert place.enrichment_pipeline_state == MapsEnrichmentPipelineState.NEEDS_REVIEW.value
 
 
 @pytest.mark.asyncio

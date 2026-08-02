@@ -201,6 +201,7 @@ class MapsEnrichmentCascadeService:
                 await session.commit()
 
         await merge_quota_metrics(session_factory, run_id=run_id, tracker=tracker)
+        await self._finalize_stale_running_places(session_factory, run_id=run_id)
         await self._refresh_run_counters(session_factory, run_id=run_id)
         return {
             "enriched": enriched,
@@ -548,15 +549,25 @@ class MapsEnrichmentCascadeService:
                 is_stuck_running = (
                     place.enrichment_status == MapsPlaceEnrichmentStatus.RUNNING.value
                 )
-                if not is_stuck_running and not should_select_for_expensive_pipeline(place):
+                if is_stuck_running:
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                    place.enrichment_pipeline_state = (
+                        MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                    )
+                    place.enrichment_error_message = (
+                        "stuck running place finalized for manual review"
+                    )
+                    place.enrichment_completed_at = datetime.now(UTC)
+                    reset += 1
+                    stuck_running += 1
+                    continue
+                if not should_select_for_expensive_pipeline(place):
                     continue
                 place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
                 place.enrichment_error_message = None
                 place.enrichment_completed_at = None
                 place.enrichment_pipeline_state = default_pipeline_state()
                 reset += 1
-                if is_stuck_running:
-                    stuck_running += 1
             run = await session.get(MapsCensusRun, run_id)
             if run is not None:
                 state = dict(run.processing_state or {})
