@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import select
 
@@ -193,6 +195,43 @@ async def test_recovery_preserves_discovery_data(db, auth):
     assert refreshed.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
     assert refreshed.google_place_id == "abc"
     assert refreshed.raw_name == "Test"
+
+
+@pytest.mark.asyncio
+async def test_recovery_resets_hollow_completed_without_extraction(db, auth):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="DZ",
+        country_name="Algeria",
+        status="completed",
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="hollow1",
+        raw_name="Hollow",
+        canonical_name="Hollow",
+        place_types=["health"],
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
+        client_eligibility=MapsClientEligibility.REVIEW.value,
+        enrichment_status=MapsPlaceEnrichmentStatus.COMPLETED.value,
+        enrichment_completed_at=datetime.now(UTC),
+    )
+    db.add(place)
+    await db.commit()
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    factory = async_sessionmaker(bind=db.bind, expire_on_commit=False)
+    reset = await maps_enrichment_cascade_service.reset_for_recovery(factory, run_id=run.id)
+    assert reset["reset_hollow_completed"] == 1
+    assert reset["reset_places"] == 1
+
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
 
 
 @pytest.mark.asyncio

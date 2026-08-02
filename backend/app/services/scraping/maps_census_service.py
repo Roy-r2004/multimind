@@ -2528,7 +2528,7 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         discovered_via_query=place.discovered_via_query,
         has_photo=bool(place.photo_reference),
         verification_tier=_verification_tier(place),
-        export_eligible=place.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
+        export_eligible=_export_eligible(place),
         enrichment_status=place.enrichment_status or "pending",
         addictions_treated=list(place.addictions_treated or []),
         languages_spoken=list(place.languages_spoken or []),

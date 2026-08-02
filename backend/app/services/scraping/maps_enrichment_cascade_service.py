@@ -31,6 +31,7 @@ from app.services.scraping.maps_enrichment_processing_state import (
 )
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_enrichment_selection import (
+    CONFIDENT_SKIP_LIFECYCLE,
     build_expensive_pipeline_query,
     build_selection_report,
     should_select_for_expensive_pipeline,
@@ -557,6 +558,7 @@ class MapsEnrichmentCascadeService:
                     place.enrichment_error_message = (
                         "stuck running place finalized for manual review"
                     )
+                    place.enrichment_extraction_source = "recovery_finalize"
                     place.enrichment_completed_at = datetime.now(UTC)
                     reset += 1
                     stuck_running += 1
@@ -568,6 +570,8 @@ class MapsEnrichmentCascadeService:
                 place.enrichment_completed_at = None
                 place.enrichment_pipeline_state = default_pipeline_state()
                 reset += 1
+            hollow_reset = await self._reset_hollow_completed_places(session, run_id=run_id)
+            reset += hollow_reset
             run = await session.get(MapsCensusRun, run_id)
             if run is not None:
                 state = dict(run.processing_state or {})
@@ -579,7 +583,43 @@ class MapsEnrichmentCascadeService:
                 if run.completed_at is not None:
                     run.status = MapsCensusStatus.COMPLETED
             await session.commit()
-            return {"reset_places": reset, "reset_stuck_running": stuck_running}
+            return {
+                "reset_places": reset,
+                "reset_stuck_running": stuck_running,
+                "reset_hollow_completed": hollow_reset,
+            }
+
+    async def _reset_hollow_completed_places(
+        self, session: AsyncSession, *, run_id: str
+    ) -> int:
+        """Re-queue relevant places marked completed without any extraction output."""
+        places = (
+            await session.execute(
+                select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.is_relevant.is_(True),
+                    MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value,
+                    MapsPlace.enrichment_extraction_source.is_(None),
+                )
+            )
+        ).scalars().all()
+        reset = 0
+        for place in places:
+            lifecycle = place.lifecycle_status or ""
+            if lifecycle in CONFIDENT_SKIP_LIFECYCLE:
+                continue
+            if lifecycle not in {
+                MapsLifecycleStatus.NEEDS_REVIEW.value,
+                MapsLifecycleStatus.PLAUSIBLE.value,
+            }:
+                continue
+            place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
+            place.enrichment_error_message = None
+            place.enrichment_completed_at = None
+            place.enrichment_pipeline_state = default_pipeline_state()
+            place.enrichment_extraction_source = None
+            reset += 1
+        return reset
 
 
 maps_enrichment_cascade_service = MapsEnrichmentCascadeService()
