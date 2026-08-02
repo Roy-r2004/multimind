@@ -18,6 +18,7 @@ from app.db.models import (
     MapsLifecycleStatus,
     MapsPlace,
     MapsPlaceEnrichmentStatus,
+    MapsCensusStatus,
 )
 from app.services.scraping.maps_eligibility import (
     compute_client_eligibility,
@@ -466,6 +467,8 @@ class MapsEnrichmentCascadeService:
             )
             run.enrichment_refresh_attempts = (run.enrichment_refresh_attempts or 0) + 1
             run.enrichment_refresh_completed_at = datetime.now(UTC)
+            if run.completed_at is not None:
+                run.status = MapsCensusStatus.COMPLETED
             await session.commit()
 
     async def reset_for_recovery(self, session_factory, *, run_id: str) -> dict[str, int]:
@@ -501,6 +504,8 @@ class MapsEnrichmentCascadeService:
                 state["enrichment_pipeline_paused"] = False
                 run.processing_state = state
                 run.enrichment_refresh_completed_at = None
+                if run.completed_at is not None:
+                    run.status = MapsCensusStatus.COMPLETED
             await session.commit()
             return {"reset_places": reset}
 

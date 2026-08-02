@@ -429,9 +429,13 @@ class MapsCensusService:
         run = await db.get(MapsCensusRun, run_id)
         if run is None or run.organization_id != auth.org_id:
             raise NotFoundError("Maps census run", run_id)
-        if run.status != MapsCensusStatus.COMPLETED:
+        if not _discovery_finished(run):
             raise ValidationError("Only a completed Maps census run can enrich facility websites.")
+        if run.status != MapsCensusStatus.COMPLETED:
+            # Website auto-refresh can leave status=running even after discovery finished.
+            run.status = MapsCensusStatus.COMPLETED
         run.enrichment_refresh_completed_at = None
+        run.heartbeat_at = datetime.now(UTC)
         await db.commit()
         await self._enqueue_enrichment(run_id)
         return await self.get_run(db, auth, run_id)
@@ -2801,6 +2805,15 @@ def _lifecycle_from_classification(decision: MapsRelevanceDecision) -> MapsLifec
     if _is_explicitly_unrelated(decision):
         return MapsLifecycleStatus.UNRELATED
     return MapsLifecycleStatus.NEEDS_REVIEW
+
+
+def _discovery_finished(run: MapsCensusRun | Any) -> bool:
+    """True once Google discovery has finished, even if a later refresh left status=running."""
+    if getattr(run, "completed_at", None) is not None:
+        return True
+    status = getattr(run, "status", None)
+    status_value = status.value if hasattr(status, "value") else status
+    return status_value == MapsCensusStatus.COMPLETED.value and (getattr(run, "places_found", 0) or 0) > 0
 
 
 def _set_place_lifecycle(
