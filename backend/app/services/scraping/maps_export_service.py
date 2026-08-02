@@ -1,13 +1,8 @@
 """Excel workbook export for a Maps Census run.
 
-Produces a single ``.xlsx`` workbook split by client-facing facility categories:
-
-- ``Eligible Centers``
-- ``Needs Review``
-- ``Public/Government``
-- ``Individual Practitioners``
-- ``Excluded/Unrelated``
-- ``Discovery Audit``
+Client-facing export is a single sheet: ``Eligible Centers`` — only facilities
+that passed the strict keep/drop gate (``keep_drop_decision == "keep"``). No
+review / excluded / audit sheets are produced for the client workbook.
 """
 
 from __future__ import annotations
@@ -133,59 +128,18 @@ class MapsExportService:
         workbook.properties.creator = "MultiAI Verdict"
         workbook.remove(workbook.active)
 
-        eligible_places: list[MapsPlace] = []
-        review_places: list[MapsPlace] = []
-        public_places: list[MapsPlace] = []
-        individual_places: list[MapsPlace] = []
-        excluded_places: list[MapsPlace] = []
-
-        for place in places:
-            if _is_eligible_center(place):
-                eligible_places.append(place)
-            elif _is_review_place(place):
-                review_places.append(place)
-            elif _is_public_place(place):
-                public_places.append(place)
-            elif _is_individual_practitioner(place):
-                individual_places.append(place)
-            else:
-                excluded_places.append(place)
+        # Client workbook = only the strict keep/drop "keep" rows.
+        eligible_places = [
+            place
+            for place in places
+            if place.keep_drop_decision == "keep"
+        ]
 
         self._write_sheet(
             workbook.create_sheet(ELIGIBLE_CENTERS_SHEET),
             EXPORT_HEADERS,
             [self._export_place_row(place) for place in eligible_places],
             table_name="EligibleCenters",
-        )
-        self._write_sheet(
-            workbook.create_sheet(NEEDS_REVIEW_SHEET),
-            EXPORT_HEADERS,
-            [self._export_place_row(place) for place in review_places],
-            table_name="NeedsReview",
-        )
-        self._write_sheet(
-            workbook.create_sheet(PUBLIC_GOVERNMENT_SHEET),
-            EXPORT_HEADERS,
-            [self._export_place_row(place) for place in public_places],
-            table_name="PublicGovernment",
-        )
-        self._write_sheet(
-            workbook.create_sheet(INDIVIDUAL_PRACTITIONERS_SHEET),
-            EXPORT_HEADERS,
-            [self._export_place_row(place) for place in individual_places],
-            table_name="IndividualPractitioners",
-        )
-        self._write_sheet(
-            workbook.create_sheet(EXCLUDED_UNRELATED_SHEET),
-            EXPORT_HEADERS,
-            [self._export_place_row(place) for place in excluded_places],
-            table_name="ExcludedUnrelated",
-        )
-        self._write_sheet(
-            workbook.create_sheet(DISCOVERY_AUDIT_SHEET),
-            AUDIT_HEADERS,
-            self._audit_rows(run, cells, places),
-            table_name="DiscoveryAudit",
         )
 
         buffer = BytesIO()

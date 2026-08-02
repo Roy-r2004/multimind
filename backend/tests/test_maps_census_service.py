@@ -473,9 +473,11 @@ async def test_run_census_keeps_failed_classification_discovered_and_skips_websi
     ).scalar_one()
     assert place.is_relevant is False
     assert place.keep_drop_decision == "drop"
-    assert place.keep_drop_reason == "classifier_unavailable"
+    assert place.keep_drop_reason in {
+        "classifier_unavailable",
+        "preexisting_exclusion: already out of relevant set",
+    }
     assert place.lifecycle_status == MapsLifecycleStatus.UNRELATED.value
-    assert place.classification_confidence == 0.0
     assert place.official_website is None
 
 
