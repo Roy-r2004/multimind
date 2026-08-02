@@ -25,76 +25,43 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError
 from app.db.models import (
-    MapsCensusCell,
     MapsCensusRun,
     MapsClientEligibility,
-    MapsFacilityType,
-    MapsLifecycleStatus,
-    MapsOperatorType,
-    MapsOrganizationScope,
-    MapsOwnershipStatus,
     MapsPlace,
 )
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 ELIGIBLE_CENTERS_SHEET = "Eligible Centers"
-NEEDS_REVIEW_SHEET = "Needs Review"
-PUBLIC_GOVERNMENT_SHEET = "Public Government"
-INDIVIDUAL_PRACTITIONERS_SHEET = "Individual Practitioners"
-EXCLUDED_UNRELATED_SHEET = "Excluded Unrelated"
-DISCOVERY_AUDIT_SHEET = "Discovery Audit"
 
+# Mirrors the UI table (src/lib/maps/exportDisplay.ts EXPORT_COLUMNS) exactly.
 EXPORT_HEADERS = [
-    "Facility name",
-    "Operator name",
-    "Operator type",
-    "Ownership status",
-    "Funding type",
-    "Facility type",
-    "Care setting",
-    "Residential accommodation",
-    "Medical detox",
-    "Addictions treated",
-    "Treatment languages",
-    "Price",
-    "Address",
+    "Facility Name",
+    "Addictions Treated",
+    "Location",
+    "Languages Spoken",
     "Website",
-    "Phone",
-    "Verification confidence",
-    "Evidence URL",
-    "Discovery sources",
+    "Phone Number",
+    "Treatment Price",
 ]
 
-AUDIT_HEADERS = ["Section", "Metric", "Value", "Details"]
+_NOT_SPECIFIED = "Not Specified"
+_CONTACT_PRICING = "Contact for pricing"
 
 # Headers whose string cells should render as clickable links.
-_URL_HEADERS = {"Website", "Evidence URL"}
+_URL_HEADERS = {"Website"}
 # Headers whose values must stay textual so "+" and leading zeroes survive.
-_TEXT_HEADERS = {"Phone"}
+_TEXT_HEADERS = {"Phone Number"}
 # Short, scannable columns that read best centered in both axes.
-_CENTERED_HEADERS = {
-    "Phone",
-    "Residential accommodation",
-    "Medical detox",
-    "Verification confidence",
-}
+_CENTERED_HEADERS = {"Phone Number", "Treatment Price"}
 
 _WIDE_COLUMNS = {
-    "Facility name": 34,
-    "Operator name": 28,
-    "Operator type": 20,
-    "Ownership status": 24,
-    "Funding type": 20,
-    "Facility type": 28,
-    "Care setting": 18,
-    "Addictions treated": 26,
-    "Treatment languages": 22,
-    "Price": 20,
-    "Address": 42,
+    "Facility Name": 34,
+    "Addictions Treated": 26,
+    "Location": 42,
+    "Languages Spoken": 22,
     "Website": 40,
-    "Evidence URL": 40,
-    "Discovery sources": 24,
-    "Details": 44,
+    "Phone Number": 20,
+    "Treatment Price": 20,
 }
 
 
@@ -113,17 +80,6 @@ class MapsExportService:
                 .order_by(MapsPlace.canonical_name)
             )
         ).scalars().all()
-        cells = (
-            await db.execute(
-                select(MapsCensusCell)
-                .where(MapsCensusCell.run_id == run_id)
-                .order_by(
-                    MapsCensusCell.region_name,
-                    MapsCensusCell.city_name,
-                    MapsCensusCell.query_text,
-                )
-            )
-        ).scalars().all()
 
         workbook = Workbook()
         workbook.properties.title = "Maps Census Export"
@@ -140,7 +96,7 @@ class MapsExportService:
         self._write_sheet(
             workbook.create_sheet(ELIGIBLE_CENTERS_SHEET),
             EXPORT_HEADERS,
-            [self._export_place_row(place) for place in eligible_places],
+            [self._export_place_row(place, run.country_name) for place in eligible_places],
             table_name="EligibleCenters",
         )
 
@@ -162,85 +118,26 @@ class MapsExportService:
 
         counts = {
             ELIGIBLE_CENTERS_SHEET: 0,
-            NEEDS_REVIEW_SHEET: 0,
-            PUBLIC_GOVERNMENT_SHEET: 0,
-            INDIVIDUAL_PRACTITIONERS_SHEET: 0,
-            EXCLUDED_UNRELATED_SHEET: 0,
+            "Other": 0,
         }
         for place in places:
             if _is_eligible_center(place):
                 counts[ELIGIBLE_CENTERS_SHEET] += 1
-            elif _is_review_place(place):
-                counts[NEEDS_REVIEW_SHEET] += 1
-            elif _is_public_place(place):
-                counts[PUBLIC_GOVERNMENT_SHEET] += 1
-            elif _is_individual_practitioner(place):
-                counts[INDIVIDUAL_PRACTITIONERS_SHEET] += 1
             else:
-                counts[EXCLUDED_UNRELATED_SHEET] += 1
+                counts["Other"] += 1
         return counts
 
-    def _export_place_row(self, place: MapsPlace) -> list[Any]:
+    def _export_place_row(self, place: MapsPlace, country_name: str | None = None) -> list[Any]:
+        """Mirror src/lib/maps/exportDisplay.ts placeToExportRow exactly."""
         return [
-            _display_text(place.canonical_name or place.raw_name),
-            _display_text(place.operator_name),
-            _display_choice(place.operator_type),
-            _display_choice(place.ownership_status),
-            _display_choice(place.funding_type),
-            _display_choice(place.facility_type),
-            _display_choice(place.care_setting),
-            _display_bool(place.residential_accommodation),
-            _display_bool(place.medical_detox),
-            _display_list(place.addictions_treated),
-            _display_list(place.languages_spoken),
-            _display_text(place.treatment_price),
-            _display_text(place.formatted_address),
-            _display_text(place.official_website or place.raw_website),
-            _display_text(place.international_phone_number),
-            _display_confidence(place.classification_confidence, place.confidence_score),
-            _display_text(place.verification_source_url),
-            _display_list(place.discovery_sources),
+            _ui_text(place.canonical_name or place.raw_name),
+            _ui_list(place.addictions_treated),
+            _ui_location(place, country_name),
+            _ui_list(place.languages_spoken),
+            _ui_website(place),
+            _ui_text(place.international_phone_number),
+            _ui_price(place.treatment_price),
         ]
-
-    def _audit_rows(
-        self, run: MapsCensusRun, cells: list[MapsCensusCell], places: list[MapsPlace]
-    ) -> list[list[Any]]:
-        rows: list[list[Any]] = [
-            ["Run", "Country", run.country_name, run.country_code],
-            ["Run", "Cells planned", run.cells_total, ""],
-            ["Run", "Cells completed", run.cells_completed, ""],
-            ["Run", "Places found", run.places_found, ""],
-            ["Run", "Relevant places", run.places_classified_relevant, ""],
-            ["Run", "Places with website", run.places_with_website, ""],
-            ["Run", "Places enriched", run.places_enriched, ""],
-            ["Run", "Website refresh attempts", run.website_refresh_attempts, ""],
-            ["Run", "Enrichment refresh attempts", run.enrichment_refresh_attempts, ""],
-            ["Run", "Workbook places", len(places), ""],
-        ]
-        rows.extend(_flatten_audit_mapping("Funnel", run.funnel_metrics))
-        rows.extend(_flatten_audit_mapping("Cell summary", run.saturation_summary))
-
-        if cells:
-            for cell in cells:
-                rows.append(
-                    [
-                        "Cell",
-                        cell.query_text,
-                        cell.status,
-                        "; ".join(
-                            [
-                                f"region={cell.region_name}",
-                                f"city={cell.city_name or 'n/a'}",
-                                f"places_found={cell.places_found}",
-                                f"new_unique_places={cell.new_unique_places}",
-                                f"new_plausible_places={cell.new_plausible_places}",
-                            ]
-                        ),
-                    ]
-                )
-        else:
-            rows.append(["Cell", "Summary", "No cells recorded", ""])
-        return rows
 
     def _write_sheet(
         self, ws: Any, headers: list[str], rows: list[list[Any]], *, table_name: str
@@ -398,88 +295,41 @@ def _display_text(value: Any) -> str:
     return text if text else "Not Specified"
 
 
-def _display_choice(value: str | None) -> str:
-    text = _display_text(value)
-    if text == "Not Specified":
-        return text
-    return str(text).replace("_", " ").title()
+# UI-mirroring helpers — match src/lib/maps/exportDisplay.ts exactly.
+def _ui_text(value: Any) -> str:
+    text = (str(value).strip() if value is not None else "")
+    return text if text else _NOT_SPECIFIED
 
 
-def _display_bool(value: bool | None) -> str:
-    if value is None:
-        return "Not Specified"
-    return "Yes" if value else "No"
+def _ui_list(values: list[str] | None) -> str:
+    cleaned = [str(item).strip() for item in (values or []) if str(item).strip()]
+    return ", ".join(cleaned) if cleaned else _NOT_SPECIFIED
 
 
-def _display_list(values: list[str] | None) -> str:
-    if not values:
-        return "Not Specified"
-    cleaned = [str(item).strip() for item in values if str(item).strip()]
-    return ", ".join(cleaned) if cleaned else "Not Specified"
+def _ui_location(place: MapsPlace, country_name: str | None = None) -> str:
+    address = (place.formatted_address or "").strip()
+    if address:
+        return address
+    parts = [p for p in (place.city_name, place.region_name, country_name) if p]
+    return ", ".join(parts) if parts else _NOT_SPECIFIED
 
 
-def _display_confidence(primary: Any, fallback: Any) -> str:
-    value = primary if primary is not None else fallback
-    if value is None:
-        return "Not Specified"
-    return f"{float(value):.2f}"
+def _ui_website(place: MapsPlace) -> str:
+    raw = (place.official_website or place.raw_website or "").strip()
+    if not raw:
+        return _NOT_SPECIFIED
+    if raw.lower().startswith(("http://", "https://")):
+        return raw
+    return f"https://{raw}"
 
 
-def _flatten_audit_mapping(section: str, payload: dict[str, Any] | None) -> list[list[Any]]:
-    if not payload:
-        return []
-    rows: list[list[Any]] = []
-    for key in sorted(payload):
-        value = payload[key]
-        if isinstance(value, dict):
-            for nested_key in sorted(value):
-                rows.append(
-                    [
-                        section,
-                        f"{key}.{nested_key}",
-                        _display_text(value[nested_key]),
-                        "",
-                    ]
-                )
-        else:
-            rows.append([section, key, _display_text(value), ""])
-    return rows
+def _ui_price(value: Any) -> str:
+    text = (str(value).strip() if value is not None else "")
+    return text if text else _CONTACT_PRICING
 
 
 def _is_eligible_center(place: MapsPlace) -> bool:
     return place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
-
-
-def _is_review_place(place: MapsPlace) -> bool:
-    return place.client_eligibility == MapsClientEligibility.REVIEW.value or (
-        place.lifecycle_status == MapsLifecycleStatus.NEEDS_REVIEW.value
-    )
-
-
-def _is_public_place(place: MapsPlace) -> bool:
-    return (
-        place.lifecycle_status == MapsLifecycleStatus.CONFIRMED_PUBLIC.value
-        or place.ownership_status == MapsOwnershipStatus.CONFIRMED_GOVERNMENT.value
-        or place.operator_type
-        in {
-            MapsOperatorType.PUBLIC_HOSPITAL.value,
-            MapsOperatorType.GOVERNMENT_AGENCY.value,
-        }
-    )
-
-
-def _is_individual_practitioner(place: MapsPlace) -> bool:
-    return (
-        place.lifecycle_status
-        == MapsLifecycleStatus.CONFIRMED_INDIVIDUAL_PRACTITIONER.value
-        or place.organization_scope == MapsOrganizationScope.INDIVIDUAL_PRACTICE.value
-        or place.operator_type == MapsOperatorType.INDIVIDUAL_PRACTICE.value
-        or place.facility_type
-        in {
-            MapsFacilityType.INDIVIDUAL_ADDICTOLOGIST.value,
-            MapsFacilityType.THERAPIST_OR_COUNSELOR.value,
-        }
-    )
 
 
 maps_export_service = MapsExportService()

@@ -17,7 +17,7 @@ from app.db.models import (
     MapsCensusStatus,
 )
 from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmentPipelineState
-from app.services.scraping.maps_export_service import _is_eligible_center, _is_review_place
+from app.services.scraping.maps_export_service import _is_eligible_center
 from app.services.scraping.maps_keep_drop_service import (
     KeepDropDecision,
     apply_keep_drop,
@@ -159,7 +159,6 @@ def test_apply_keep_drop_keep_maps_to_eligible():
     )
     assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
     assert _is_eligible_center(place)
-    assert not _is_review_place(place)
 
 
 def test_apply_keep_drop_drop_maps_to_excluded():

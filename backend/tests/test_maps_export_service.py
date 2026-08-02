@@ -130,7 +130,8 @@ async def test_export_xlsx_uses_placeholders_for_missing_values(db, auth):
     sheet = _workbook(content)[ELIGIBLE_CENTERS_SHEET]
     values = [cell.value for cell in sheet[2]]
 
-    assert values.count("Not Specified") >= 6
+    assert values.count("Not Specified") >= 4
+    assert "Contact for pricing" in values
 
 
 @pytest.mark.asyncio
@@ -171,17 +172,13 @@ async def test_export_xlsx_website_is_hyperlinked_and_phone_is_text(db, auth):
     sheet = _workbook(content)[ELIGIBLE_CENTERS_SHEET]
     header = [cell.value for cell in sheet[1]]
     website_col = header.index("Website") + 1
-    phone_col = header.index("Phone") + 1
-    evidence_col = header.index("Evidence URL") + 1
+    phone_col = header.index("Phone Number") + 1
 
     website_cell = sheet.cell(row=2, column=website_col)
     phone_cell = sheet.cell(row=2, column=phone_col)
-    evidence_cell = sheet.cell(row=2, column=evidence_col)
 
     assert website_cell.hyperlink is not None
     assert website_cell.hyperlink.target == "https://linked.example/"
-    assert evidence_cell.hyperlink is not None
-    assert evidence_cell.hyperlink.target == "https://linked.example/evidence"
     assert isinstance(phone_cell.value, str)
     assert phone_cell.value.startswith("+213")
     assert phone_cell.number_format == "@"
@@ -226,13 +223,13 @@ async def test_export_xlsx_alignment_is_readable(db, auth):
     assert header_cell.alignment.wrap_text is True
     assert (sheet.row_dimensions[1].height or 0) >= 24
 
-    name_col = header.index("Facility name") + 1
+    name_col = header.index("Facility Name") + 1
     name_cell = sheet.cell(row=2, column=name_col)
     assert name_cell.alignment.horizontal == "left"
     assert name_cell.alignment.vertical == "center"
     assert name_cell.alignment.wrap_text is True
 
-    phone_col = header.index("Phone") + 1
+    phone_col = header.index("Phone Number") + 1
     phone_cell = sheet.cell(row=2, column=phone_col)
     assert phone_cell.alignment.horizontal == "center"
     assert phone_cell.alignment.vertical == "center"
