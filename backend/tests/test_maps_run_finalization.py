@@ -113,6 +113,44 @@ async def test_reconcile_fixes_stale_cell_denominator_and_terminalizes(db, auth)
 
 
 @pytest.mark.asyncio
+async def test_reconcile_clears_false_grid_planning_error(db, auth):
+    run = _run(auth, error_message="Maps census grid planning failed.")
+    db.add(run)
+    await db.flush()
+    db.add(
+        MapsCensusCell(
+            run_id=run.id,
+            region_name="Algiers",
+            query_text="rehab",
+            status=MapsCensusCellStatus.COMPLETED,
+        )
+    )
+    db.add(
+        MapsPlace(
+            run_id=run.id,
+            google_place_id="p1",
+            raw_name="Centre",
+            canonical_name="Centre",
+            is_relevant=True,
+            lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
+            client_eligibility=MapsClientEligibility.REVIEW.value,
+            enrichment_status=MapsPlaceEnrichmentStatus.COMPLETED.value,
+            official_website="https://example.org",
+        )
+    )
+    await db.commit()
+
+    result = await reconcile_run_finalization(db, run_id=run.id)
+    assert result["reconciled"] is True
+    await db.refresh(run)
+    assert run.error_message is None
+    assert run.status in {
+        MapsCensusStatus.COMPLETED,
+        MapsCensusStatus.COMPLETED_WITH_WARNINGS,
+    }
+
+
+@pytest.mark.asyncio
 async def test_reconcile_refuses_when_discovery_cells_still_running(db, auth):
     run = _run(auth, cells_total=2, cells_completed=1)
     db.add(run)

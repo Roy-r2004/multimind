@@ -429,6 +429,17 @@ async def reconcile_run_finalization(
             run.completed_at = last_activity or datetime.now(UTC)
         # Completed campaigns do not need a live heartbeat.
         run.heartbeat_at = None
+        # Clear false discovery failures stamped by a stale replan after cells
+        # were already completed (e.g. "Maps census grid planning failed.").
+        err = (run.error_message or "").strip().casefold()
+        if stages["discovery_status"] in {
+            STAGE_COMPLETED,
+            STAGE_COMPLETED_WITH_FAILURES,
+        } and err in {
+            "maps census grid planning failed.",
+            "grid planning returned no cells.",
+        }:
+            run.error_message = None
 
     state["cell_metrics"] = cell_metrics
     state["stage_statuses"] = stages

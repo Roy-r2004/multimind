@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.db.models import (
     MapsCensusCell,
+    MapsCensusCellStatus,
     MapsCensusRegion,
     MapsCensusRun,
     MapsCensusStatus,
@@ -554,6 +555,43 @@ async def test_run_census_fails_gracefully_when_grid_planning_returns_nothing(db
     refreshed = run
     assert refreshed.status == MapsCensusStatus.FAILED
     assert refreshed.error_message
+
+
+@pytest.mark.asyncio
+async def test_run_census_skips_replan_when_discovery_cells_already_complete(db, auth, monkeypatch):
+    """Stale watchdog must not re-enter seed grid planning on a finished run."""
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.RUNNING
+    run.heartbeat_at = None
+    db.add(
+        MapsCensusCell(
+            run_id=run.id,
+            region_name="Minsk Region",
+            city_name="Minsk",
+            query_text="rehab Minsk",
+            status=MapsCensusCellStatus.COMPLETED,
+        )
+    )
+    await db.commit()
+
+    planned = {"called": False}
+
+    class _BoomPlanner:
+        async def plan(self, **_kwargs):
+            planned["called"] = True
+            raise AssertionError("seed planner must not run")
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner",
+        _BoomPlanner(),
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("skipped") == 1
+    assert planned["called"] is False
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.RUNNING
+    assert run.error_message is None
 
 
 async def _fake_classify_all_relevant(self, *, provider, model_slug, country_code, country_name, payloads):

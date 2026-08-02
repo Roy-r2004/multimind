@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
@@ -576,12 +576,52 @@ class MapsCensusService:
             run = await start_db.get(MapsCensusRun, run_id)
             if run is None:
                 return {"error": 1}
+            if run.status in {
+                MapsCensusStatus.COMPLETED,
+                MapsCensusStatus.COMPLETED_WITH_WARNINGS,
+                MapsCensusStatus.CANCELLED,
+            }:
+                logger.info(
+                    "maps_census_skip_terminal_run run_id=%s status=%s",
+                    run_id,
+                    run.status.value if hasattr(run.status, "value") else run.status,
+                )
+                return {"skipped": 1}
+
+            cell_status_rows = (
+                await start_db.execute(
+                    select(MapsCensusCell.status, func.count())
+                    .where(MapsCensusCell.run_id == run_id)
+                    .group_by(MapsCensusCell.status)
+                )
+            ).all()
+            cell_counts = {
+                (status.value if hasattr(status, "value") else str(status)): int(count)
+                for status, count in cell_status_rows
+            }
+            existing_cells = sum(cell_counts.values())
+            active_cells = cell_counts.get(MapsCensusCellStatus.PENDING.value, 0) + cell_counts.get(
+                MapsCensusCellStatus.IN_PROGRESS.value, 0
+            )
+            # Stale watchdog must never re-plan a finished discovery grid. A
+            # replan failure previously flipped Algeria to FAILED and stamped
+            # "Maps census grid planning failed." over a completed campaign.
+            if existing_cells > 0 and active_cells == 0:
+                logger.info(
+                    "maps_census_skip_discovery_already_complete run_id=%s cells=%s",
+                    run_id,
+                    existing_cells,
+                )
+                return {"skipped": 1, "cells": existing_cells}
+
             run.status = MapsCensusStatus.RUNNING
-            run.started_at = datetime.now(UTC)
+            if run.started_at is None:
+                run.started_at = datetime.now(UTC)
             run.heartbeat_at = datetime.now(UTC)
             await start_db.commit()
             country_code = run.country_code
             country_name = run.country_name
+            resume_existing = existing_cells > 0
 
         try:
             await maps_country_profile_service.build_profile_for_run(db, run_id=run_id)
@@ -603,51 +643,98 @@ class MapsCensusService:
         )
         seed_max = min(MAPS_CENSUS_SEED_CELLS, max_cells_per_campaign)
 
-        try:
-            seed_cells = await maps_grid_planner.plan(
-                country_code=country_code,
-                country_name=country_name,
-                max_cells=seed_max,
-                country_profile=country_profile,
+        if resume_existing:
+            # Resume pending/in-progress cells only — never call the seed planner
+            # again (that path destroyed terminal campaigns via false failures).
+            async with session_factory() as resume_db:
+                existing_rows = (
+                    await resume_db.execute(
+                        select(MapsCensusCell).where(MapsCensusCell.run_id == run_id)
+                    )
+                ).scalars().all()
+                seen_query_texts = {
+                    (cell.query_text or "").strip().casefold()
+                    for cell in existing_rows
+                    if (cell.query_text or "").strip()
+                }
+                region_ids_by_name = {
+                    cell.region_name: cell.region_id
+                    for cell in existing_rows
+                    if cell.region_id and cell.region_name
+                }
+                cell_ids = [
+                    cell.id
+                    for cell in existing_rows
+                    if cell.status
+                    in {MapsCensusCellStatus.PENDING, MapsCensusCellStatus.IN_PROGRESS}
+                ]
+                campaign_cells_used = len(existing_rows)
+            seed_cells = []
+        else:
+            try:
+                seed_cells = await maps_grid_planner.plan(
+                    country_code=country_code,
+                    country_name=country_name,
+                    max_cells=seed_max,
+                    country_profile=country_profile,
+                )
+            except MapsGridPlanningError as exc:
+                async with session_factory() as fail_db:
+                    run = await fail_db.get(MapsCensusRun, run_id)
+                    if run is not None:
+                        # Never fail a campaign that already has persisted cells.
+                        existing = int(
+                            (
+                                await fail_db.execute(
+                                    select(func.count())
+                                    .select_from(MapsCensusCell)
+                                    .where(MapsCensusCell.run_id == run_id)
+                                )
+                            ).scalar_one()
+                            or 0
+                        )
+                        if existing > 0:
+                            logger.warning(
+                                "maps_census_grid_plan_failed_ignored run_id=%s existing_cells=%s",
+                                run_id,
+                                existing,
+                            )
+                            return {"skipped": 1, "cells": existing}
+                        run.status = MapsCensusStatus.FAILED
+                        run.error_message = str(exc)[:2000]
+                        run.completed_at = datetime.now(UTC)
+                        await fail_db.commit()
+                return {"error": 1}
+
+        if not resume_existing:
+            if not seed_cells:
+                async with session_factory() as fail_db:
+                    run = await fail_db.get(MapsCensusRun, run_id)
+                    if run is not None:
+                        run.status = MapsCensusStatus.FAILED
+                        run.error_message = "Grid planning returned no cells."
+                        run.completed_at = datetime.now(UTC)
+                        await fail_db.commit()
+                return {"error": 1}
+
+            region_ids_by_name = {}
+            seen_query_texts = set()
+            seed_cells = _cap_to_budget(
+                seed_cells, max_cells_per_campaign=max_cells_per_campaign, already_persisted=0
             )
-        except MapsGridPlanningError as exc:
-            async with session_factory() as fail_db:
-                run = await fail_db.get(MapsCensusRun, run_id)
+            cell_ids = await self._persist_cells(
+                session_factory,
+                run_id=run_id,
+                cells=seed_cells,
+                region_ids_by_name=region_ids_by_name,
+                seen_query_texts=seen_query_texts,
+            )
+            campaign_cells_used = len(cell_ids)
+            async with session_factory() as cells_db:
+                run = await cells_db.get(MapsCensusRun, run_id)
                 if run is not None:
-                    run.status = MapsCensusStatus.FAILED
-                    run.error_message = str(exc)[:2000]
-                    run.completed_at = datetime.now(UTC)
-                    await fail_db.commit()
-            return {"error": 1}
-
-        if not seed_cells:
-            async with session_factory() as fail_db:
-                run = await fail_db.get(MapsCensusRun, run_id)
-                if run is not None:
-                    run.status = MapsCensusStatus.FAILED
-                    run.error_message = "Grid planning returned no cells."
-                    run.completed_at = datetime.now(UTC)
-                    await fail_db.commit()
-            return {"error": 1}
-
-        region_ids_by_name: dict[str, str] = {}
-        seen_query_texts: set[str] = set()
-        seed_cells = _cap_to_budget(
-            seed_cells, max_cells_per_campaign=max_cells_per_campaign, already_persisted=0
-        )
-        cell_ids = await self._persist_cells(
-            session_factory,
-            run_id=run_id,
-            cells=seed_cells,
-            region_ids_by_name=region_ids_by_name,
-            seen_query_texts=seen_query_texts,
-        )
-        campaign_cells_used = len(cell_ids)
-        async with session_factory() as cells_db:
-            run = await cells_db.get(MapsCensusRun, run_id)
-            if run is not None:
-                run.cells_total = campaign_cells_used
-                await cells_db.commit()
+                    run.cells_total = campaign_cells_used
+                    await cells_db.commit()
 
         client = create_places_client()
         summary = {"cells": campaign_cells_used, "places_found": 0, "cell_failures": 0}
@@ -3046,7 +3133,45 @@ async def recover_maps_census_runs(ctx: dict) -> None:
                 )
             )
         ).scalars().all()
-        stale_discovery_ids = [run.id for run in stale]
+        for run in stale:
+            active_cells = int(
+                (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(MapsCensusCell)
+                        .where(
+                            MapsCensusCell.run_id == run.id,
+                            MapsCensusCell.status.in_(
+                                [
+                                    MapsCensusCellStatus.PENDING,
+                                    MapsCensusCellStatus.IN_PROGRESS,
+                                ]
+                            ),
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            total_cells = int(
+                (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(MapsCensusCell)
+                        .where(MapsCensusCell.run_id == run.id)
+                    )
+                ).scalar_one()
+                or 0
+            )
+            # Finished discovery left RUNNING (e.g. website refresh / null
+            # heartbeat) must not re-enter seed grid planning.
+            if total_cells > 0 and active_cells == 0:
+                logger.warning(
+                    "maps_census_skip_stale_recover_discovery_done run_id=%s cells=%s",
+                    run.id,
+                    total_cells,
+                )
+                continue
+            stale_discovery_ids.append(run.id)
 
         # Broader than "enrichment_refresh_attempts > 0": small-batch enrichment
         # only increments that counter on full completion, so a campaign that
