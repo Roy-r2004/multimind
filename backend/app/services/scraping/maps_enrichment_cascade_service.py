@@ -124,19 +124,41 @@ class MapsEnrichmentCascadeService:
 
             semaphore = asyncio.Semaphore(max(1, settings.maps_primary_extraction_concurrency))
 
+            place_timeout = max(30.0, settings.maps_cascade_place_timeout_seconds)
+
             async def process_one(place_id: str) -> int:
                 async with semaphore:
-                    return await self._process_place(
-                        session_factory,
-                        place_id=place_id,
-                        country_code=country_code,
-                        country_name=country_name,
-                        primary_provider=primary_provider,
-                        sonar_budget=sonar_budget,
-                        sonar_stats=sonar_stats,
-                        parse_stats=parse_stats,
-                        tracker=tracker,
-                    )
+                    try:
+                        return await asyncio.wait_for(
+                            self._process_place(
+                                session_factory,
+                                place_id=place_id,
+                                country_code=country_code,
+                                country_name=country_name,
+                                primary_provider=primary_provider,
+                                sonar_budget=sonar_budget,
+                                sonar_stats=sonar_stats,
+                                parse_stats=parse_stats,
+                                tracker=tracker,
+                            ),
+                            timeout=place_timeout,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "maps_cascade_place_timeout place=%s timeout=%ss",
+                            place_id,
+                            place_timeout,
+                        )
+                        async with session_factory() as session:
+                            place = await session.get(MapsPlace, place_id)
+                            if place is not None:
+                                place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                                place.enrichment_error_message = (
+                                    f"cascade place timeout after {int(place_timeout)}s"
+                                )
+                                place.enrichment_completed_at = datetime.now(UTC)
+                                await session.commit()
+                        return 0
 
             results = await asyncio.gather(*(process_one(place.id) for place in places))
             enriched += sum(results)
@@ -472,7 +494,7 @@ class MapsEnrichmentCascadeService:
             await session.commit()
 
     async def reset_for_recovery(self, session_factory, *, run_id: str) -> dict[str, int]:
-        """Reset failed/pending enrichment states without touching discovery data."""
+        """Reset failed/pending/running enrichment states without touching discovery data."""
         async with session_factory() as session:
             places = (
                 await session.execute(
@@ -482,20 +504,27 @@ class MapsEnrichmentCascadeService:
                             [
                                 MapsPlaceEnrichmentStatus.PENDING.value,
                                 MapsPlaceEnrichmentStatus.FAILED.value,
+                                MapsPlaceEnrichmentStatus.RUNNING.value,
                             ]
                         ),
                     )
                 )
             ).scalars().all()
             reset = 0
+            stuck_running = 0
             for place in places:
-                if not should_select_for_expensive_pipeline(place):
+                is_stuck_running = (
+                    place.enrichment_status == MapsPlaceEnrichmentStatus.RUNNING.value
+                )
+                if not is_stuck_running and not should_select_for_expensive_pipeline(place):
                     continue
                 place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
                 place.enrichment_error_message = None
                 place.enrichment_completed_at = None
                 place.enrichment_pipeline_state = default_pipeline_state()
                 reset += 1
+                if is_stuck_running:
+                    stuck_running += 1
             run = await session.get(MapsCensusRun, run_id)
             if run is not None:
                 state = dict(run.processing_state or {})
@@ -507,7 +536,7 @@ class MapsEnrichmentCascadeService:
                 if run.completed_at is not None:
                     run.status = MapsCensusStatus.COMPLETED
             await session.commit()
-            return {"reset_places": reset}
+            return {"reset_places": reset, "reset_stuck_running": stuck_running}
 
 
 maps_enrichment_cascade_service = MapsEnrichmentCascadeService()

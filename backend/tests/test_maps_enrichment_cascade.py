@@ -21,6 +21,10 @@ from app.db.models import (
     MapsPlace,
     MapsPlaceEnrichmentStatus,
 )
+from app.services.scraping.maps_enrichment_processing_state import (
+    MapsEnrichmentPipelineState,
+    default_pipeline_state,
+)
 from app.services.scraping.maps_enrichment_cascade_service import maps_enrichment_cascade_service
 from app.services.scraping.maps_enrichment_selection import (
     build_selection_report,
@@ -189,6 +193,49 @@ async def test_recovery_preserves_discovery_data(db, auth):
     assert refreshed.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
     assert refreshed.google_place_id == "abc"
     assert refreshed.raw_name == "Test"
+
+
+@pytest.mark.asyncio
+async def test_recovery_resets_stuck_running_place(db, auth):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="DZ",
+        country_name="Algeria",
+        status="completed",
+        places_found=1,
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="running1",
+        raw_name="Stuck",
+        canonical_name="Stuck",
+        place_types=["health"],
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
+        client_eligibility=MapsClientEligibility.REVIEW.value,
+        enrichment_status=MapsPlaceEnrichmentStatus.RUNNING.value,
+        enrichment_pipeline_state=MapsEnrichmentPipelineState.CRAWL_PENDING.value,
+        official_website="http://example.com",
+    )
+    db.add(place)
+    await db.commit()
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    factory = async_sessionmaker(
+        bind=db.bind,
+        expire_on_commit=False,
+    )
+    reset = await maps_enrichment_cascade_service.reset_for_recovery(factory, run_id=run.id)
+    assert reset["reset_places"] == 1
+    assert reset["reset_stuck_running"] == 1
+
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
+    assert place.enrichment_pipeline_state == default_pipeline_state()
 
 
 @pytest.mark.asyncio

@@ -196,6 +196,7 @@ class Settings(BaseSettings):
     # Resumable enrichment batch processing (Phase 2 gap #4): how many pending
     # places the outer loop pulls per iteration before checking call budget.
     maps_census_enrichment_processing_batch_size: int = 25
+    maps_cascade_place_timeout_seconds: float = 300.0
     maps_census_enrichment_max_calls_per_run: int = 5000
     maps_census_enrichment_model: str = "sonar-pro"
     maps_census_enrichment_max_crawl_excerpt_chars: int = 1200
