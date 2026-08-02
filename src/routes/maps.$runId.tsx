@@ -33,6 +33,8 @@ import {
 import type { MapsCensusCellItem, MapsCensusRunDetail, MapsPlaceItem } from "@/lib/maps/types";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
+/** Terminal success — includes campaigns finished with optional-stage warnings. */
+const SUCCESS_STATUSES = new Set(["completed", "completed_with_warnings"]);
 const POLL_INTERVAL_MS = 5000;
 const ENRICHMENT_BUSY = new Set(["pending", "running"]);
 
@@ -45,7 +47,7 @@ function enrichmentStillRunning(
   places: { enrichment_status: string }[],
   enrichmentPollUntil: number | null,
 ): boolean {
-  if (run.status !== "completed") return false;
+  if (!SUCCESS_STATUSES.has(run.status)) return false;
   // Enrichment job finished — stop even if some rows stayed empty.
   if (run.enrichment_refresh_completed_at) return false;
   if (!places.some((place) => ENRICHMENT_BUSY.has(place.enrichment_status))) return false;
@@ -465,10 +467,11 @@ function MapsRunHero({
   onEnrichWebsites: () => void;
 }) {
   const [primary, secondary] = getFlagColors(run.country_code);
+  const isSuccess = SUCCESS_STATUSES.has(run.status);
   const showFindMissingWebsites =
-    run.status === "completed" && run.places_classified_relevant > run.places_with_website;
+    isSuccess && run.places_classified_relevant > run.places_with_website;
   const showEnrichWebsites =
-    run.status === "completed" &&
+    isSuccess &&
     run.places_classified_relevant > 0 &&
     run.places_enriched < run.places_classified_relevant;
 
@@ -529,7 +532,7 @@ function MapsRunHero({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {run.status === "completed" && (
+            {isSuccess && (
               <button
                 type="button"
                 onClick={onDownloadExport}
