@@ -849,6 +849,10 @@ class MapsCensusRunAdminDetail(MapsCensusRunSummary):
     places_eligible: int = 0
     places_review: int = 0
     places_excluded: int = 0
+    places_keep: int = 0
+    places_dropped: int = 0
+    places_undecided: int = 0
+    keep_drop_status: str | None = None
     website_refresh_attempts: int = 0
     enrichment_refresh_attempts: int = 0
     enrichment_status: str | None = None

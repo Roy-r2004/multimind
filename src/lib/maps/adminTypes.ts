@@ -48,6 +48,10 @@ export type MapsCensusRunAdminDetail = {
   places_eligible: number;
   places_review: number;
   places_excluded: number;
+  places_keep: number;
+  places_dropped: number;
+  places_undecided: number;
+  keep_drop_status: string | null;
   website_refresh_attempts: number;
   enrichment_refresh_attempts: number;
   enrichment_status: string | null;

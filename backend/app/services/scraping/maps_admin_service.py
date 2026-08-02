@@ -282,6 +282,15 @@ class MapsAdminService:
                 )
             ).all()
         )
+        keep_drop_counts = dict(
+            (
+                await db.execute(
+                    select(MapsPlace.keep_drop_decision, func.count())
+                    .where(MapsPlace.run_id == run_id)
+                    .group_by(MapsPlace.keep_drop_decision)
+                )
+            ).all()
+        )
         regions_total = await db.scalar(
             select(func.count()).select_from(MapsCensusRegion).where(MapsCensusRegion.run_id == run_id)
         )
@@ -329,6 +338,10 @@ class MapsAdminService:
             places_eligible=int(place_counts.get(MapsClientEligibility.ELIGIBLE.value, 0)),
             places_review=int(place_counts.get(MapsClientEligibility.REVIEW.value, 0)),
             places_excluded=int(place_counts.get(MapsClientEligibility.EXCLUDED.value, 0)),
+            places_keep=int(keep_drop_counts.get("keep", 0)),
+            places_dropped=int(keep_drop_counts.get("drop", 0)),
+            places_undecided=int(keep_drop_counts.get(None, 0)),
+            keep_drop_status=state.get("keep_drop_status"),
             website_refresh_attempts=run.website_refresh_attempts,
             enrichment_refresh_attempts=run.enrichment_refresh_attempts,
             enrichment_status=enrichment_status_from_run(run),
