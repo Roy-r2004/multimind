@@ -12,6 +12,7 @@ Produces a single ``.xlsx`` workbook split by client-facing facility categories:
 
 from __future__ import annotations
 
+import re
 from io import BytesIO
 from typing import Any
 from urllib.parse import urlparse
@@ -389,15 +390,22 @@ def _estimate_row_height(row: Any, widths: dict[int, int]) -> float:
     return min(15 * min(max_lines, 6) + 4, 96)
 
 
+_ILLEGAL_XLSX_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
 def _safe_cell(value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, bool):
         return "Yes" if value else "No"
-    if isinstance(value, str) and value[:1] in {"=", "+", "-", "@"}:
-        # Phone numbers are formatted as text elsewhere; anything else with a
-        # formula-like prefix is neutralized so Excel never evaluates it.
-        return value
+    if isinstance(value, str):
+        # openpyxl rejects ASCII control chars that are illegal in OOXML.
+        cleaned = _ILLEGAL_XLSX_CHARS.sub("", value)
+        if cleaned[:1] in {"=", "+", "-", "@"}:
+            # Phone numbers are formatted as text elsewhere; anything else with a
+            # formula-like prefix is neutralized so Excel never evaluates it.
+            return cleaned
+        return cleaned
     return value
 
 
