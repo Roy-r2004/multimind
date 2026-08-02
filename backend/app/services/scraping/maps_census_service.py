@@ -862,14 +862,19 @@ class MapsCensusService:
                     await expand_run_db.commit()
             work_queue = new_cell_ids
 
-        classification_summary = await self._classify_pending(
+        # Strict keep/drop gate replaces the old batch relevance classifier:
+        # one low-cost call per facility, Sonar fallback on low confidence,
+        # uncertain → drop. Only keeps flow into website validation + detail
+        # enrichment + the Eligible export sheet.
+        from app.services.scraping.maps_keep_drop_service import run_keep_drop_pass
+
+        keep_drop_summary = await run_keep_drop_pass(
             session_factory,
             run_id=run_id,
             country_code=country_code,
             country_name=country_name,
-            tracker=tracker,
         )
-        summary.update(classification_summary)
+        summary.update({f"keep_drop_{key}": value for key, value in keep_drop_summary.items()})
 
         await self._validate_websites(session_factory, run_id=run_id, tracker=tracker)
 

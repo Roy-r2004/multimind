@@ -2663,6 +2663,13 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source_record_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     registry_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     classification_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    # Strict keep/drop gate (one AI call per facility). keep → eligible sheet +
+    # detail enrichment; drop → excluded. Uncertain always lands on drop.
+    keep_drop_decision: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    keep_drop_reason: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    keep_drop_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    keep_drop_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    keep_drop_evidence: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     enrichment_pipeline_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
     website_relationship: Mapped[str | None] = mapped_column(String(32), nullable=True)
     website_relationship_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)

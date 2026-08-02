@@ -1,0 +1,22 @@
+You have live web search (low context). Verify ONE facility candidate in {{ country_name }} ({{ country_code }}) for a client delivery list of addiction-treatment facilities.
+
+Facility (JSON):
+{{ facility_json }}
+
+KEEP only if web evidence clearly confirms a private, nonprofit, or NGO addiction-TREATMENT facility (rehab / detox / addiction clinic / therapeutic community).
+
+DROP if it is a public/government hospital, a solo practitioner or cabinet, a general clinic without clear addiction treatment, a smoking-cessation/laser service, an awareness- or prevention-only association, an unrelated business — or if you cannot confirm treatment with confidence.
+
+When in doubt, DROP.
+
+Return a single JSON object with exactly these fields:
+{
+  "decision": "keep | drop",
+  "reason": "short explanation",
+  "confidence": 0.0,
+  "evidence": [
+    {"source": "sonar", "text": "supporting evidence", "url": "https://..."}
+  ]
+}
+
+Return JSON only. No markdown fences. No commentary.

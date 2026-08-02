@@ -649,6 +649,42 @@ class MapsAdminService:
             message="Enrichment pipeline paused",
         )
 
+    async def run_keep_drop(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        """Enqueue the strict keep/drop gate over existing places.
+
+        Resumable: places with a persisted decision are skipped, nothing is
+        rediscovered or deleted, and detail enrichment is enqueued for keeps
+        when the sweep finishes.
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        from app.services.scraping.maps_keep_drop_service import (
+            count_undecided,
+            run_maps_keep_drop_job,
+        )
+
+        undecided = await count_undecided(db, run_id=run_id)
+        if undecided == 0:
+            return MapsCampaignActionResponse(
+                run_id=run.id,
+                status=run.status.value if hasattr(run.status, "value") else str(run.status),
+                campaign_paused=_campaign_paused(run),
+                message="Keep/drop already decided for every place — nothing to do",
+            )
+        await maps_census_service._enqueue_job(
+            "run_maps_keep_drop_job",
+            run_id,
+            inline_runner=lambda: run_maps_keep_drop_job({}, run_id),
+        )
+        return MapsCampaignActionResponse(
+            run_id=run.id,
+            status=run.status.value if hasattr(run.status, "value") else str(run.status),
+            campaign_paused=_campaign_paused(run),
+            message=f"Keep/drop queued for {undecided} undecided places",
+        )
+
     async def recover_enrichment(
         self, db: AsyncSession, auth: AuthContext, run_id: str
     ) -> MapsCampaignActionResponse:

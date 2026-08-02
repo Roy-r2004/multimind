@@ -283,6 +283,22 @@ async def test_run_census_dedupes_places_and_applies_website_validation(db, auth
         lambda: _FakeProviderRegistry(_FakeProvider(decisions_payload)),
     )
 
+    from app.services.scraping.maps_keep_drop_service import KeepDropDecision
+
+    async def fake_keep_drop(_session, place, *, country_code, country_name):
+        if "Directory" in (place.canonical_name or ""):
+            return KeepDropDecision(
+                decision="drop", reason="directory listing, not a facility", confidence=0.9
+            ), "nano"
+        return KeepDropDecision(
+            decision="keep", reason="private rehab facility", confidence=0.95
+        ), "nano"
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.classify_place_keep_drop",
+        fake_keep_drop,
+    )
+
     summary = await maps_census_service.run_census(db, run_id=run.id)
     assert summary.get("error") is None
 
@@ -362,6 +378,18 @@ async def test_run_census_falls_back_to_llm_when_places_has_no_website(db, auth,
         lambda: _FakeProviderRegistry(_FakeProvider(json.dumps({"decisions": []}))),
     )
 
+    from app.services.scraping.maps_keep_drop_service import KeepDropDecision
+
+    async def fake_keep_drop(_session, place, *, country_code, country_name):
+        return KeepDropDecision(
+            decision="keep", reason="private rehab facility", confidence=0.95
+        ), "nano"
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.classify_place_keep_drop",
+        fake_keep_drop,
+    )
+
     _patch_direct_llm_website_finder(monkeypatch, url="https://centre-gamma.by/")
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.get_model",
@@ -424,6 +452,11 @@ async def test_run_census_keeps_failed_classification_discovered_and_skips_websi
         "app.services.scraping.maps_census_service.get_provider_registry",
         lambda: _FakeProviderRegistry(_ExplodingProvider()),
     )
+    # Keep/drop gate: both nano and Sonar offline → uncertain defaults to drop.
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_ExplodingProvider()),
+    )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
     assert summary.get("error") is None
@@ -439,8 +472,9 @@ async def test_run_census_keeps_failed_classification_discovered_and_skips_websi
         )
     ).scalar_one()
     assert place.is_relevant is False
-    assert place.lifecycle_status == MapsLifecycleStatus.DISCOVERED.value
-    assert place.relevance_reason == "classification_failed"
+    assert place.keep_drop_decision == "drop"
+    assert place.keep_drop_reason == "classifier_unavailable"
+    assert place.lifecycle_status == MapsLifecycleStatus.UNRELATED.value
     assert place.classification_confidence == 0.0
     assert place.official_website is None
 

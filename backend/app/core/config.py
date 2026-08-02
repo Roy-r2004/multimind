@@ -129,6 +129,15 @@ class Settings(BaseSettings):
     google_places_base_url: str = "https://places.googleapis.com/v1"
     google_places_timeout_seconds: float = 20.0
     maps_census_model: str = "gpt-4.1"
+    # Strict keep/drop gate: one low-cost call per facility, Sonar fallback only
+    # when evidence is insufficient or confidence is below the threshold.
+    maps_keep_drop_model: str = "gpt-5-nano"
+    maps_keep_drop_confidence_threshold: float = 0.85
+    maps_keep_drop_sonar_fallback_enabled: bool = True
+    maps_keep_drop_concurrency: int = 5
+    maps_keep_drop_batch_size: int = 25
+    maps_keep_drop_max_crawl_excerpt_chars: int = 4000
+    maps_keep_drop_place_timeout_seconds: float = 60.0
     maps_census_max_cells_per_run: int = 1500
     maps_census_max_cells_per_campaign: int = 1500
     maps_census_saturation_window: int = 10

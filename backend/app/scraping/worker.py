@@ -21,6 +21,7 @@ from app.services.scraping.maps_census_service import (
     run_maps_census_job,
     run_maps_enrichment_batch_job,
 )
+from app.services.scraping.maps_keep_drop_service import run_maps_keep_drop_job
 
 
 def _redis_settings() -> RedisSettings:
@@ -56,6 +57,7 @@ class WorkerSettings:
         refresh_maps_census_websites_job,
         run_maps_census_enrichment_job,
         run_maps_enrichment_batch_job,
+        run_maps_keep_drop_job,
     ]
     cron_jobs = [
         # Reclaim zombie "running" executions if the worker/job died mid-flight.

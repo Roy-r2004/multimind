@@ -312,6 +312,16 @@ async def recover_maps_census_enrichment(
     return await maps_admin_service.recover_enrichment(db, auth, run_id)
 
 
+@router.post("/runs/{run_id}/keep-drop", response_model=MapsCampaignActionResponse)
+async def run_maps_census_keep_drop(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run the strict keep/drop gate over existing places (no rediscovery)."""
+    return await maps_admin_service.run_keep_drop(db, auth, run_id)
+
+
 @router.post("/runs/{run_id}/reconcile-finalization")
 async def reconcile_maps_census_finalization(
     run_id: str,
