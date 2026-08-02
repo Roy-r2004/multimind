@@ -81,12 +81,16 @@ class PrimaryExtractionProvider(ABC):
 
 
 def _primary_json_schema() -> dict[str, Any]:
+    from app.services.scraping.openrouter_facility_extraction_provider import (
+        _strict_json_schema,
+    )
+
     return {
         "type": "json_schema",
         "json_schema": {
             "name": "maps_primary_extraction",
             "strict": True,
-            "schema": MapsPrimaryExtractionResult.model_json_schema(),
+            "schema": _strict_json_schema(MapsPrimaryExtractionResult.model_json_schema()),
         },
     }
 
