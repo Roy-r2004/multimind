@@ -239,6 +239,42 @@ async def test_recovery_resets_stuck_running_place(db, auth):
 
 
 @pytest.mark.asyncio
+async def test_cheap_skip_finalizes_not_relevant_pending(db, auth):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="DZ",
+        country_name="Algeria",
+        status="completed",
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="u-pending",
+        raw_name="Store",
+        canonical_name="Store",
+        place_types=["store"],
+        is_relevant=False,
+        lifecycle_status=MapsLifecycleStatus.UNRELATED.value,
+        client_eligibility=MapsClientEligibility.EXCLUDED.value,
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+    )
+    db.add(place)
+    await db.commit()
+
+    await maps_enrichment_cascade_service._finalize_skipped_place(
+        db,
+        place,
+        skip_reason_for_place(place),
+    )
+    await db.commit()
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.SKIPPED.value
+    assert place.enrichment_extraction_source == "deterministic_skip"
+
+
+@pytest.mark.asyncio
 async def test_selection_report_counts(db, auth):
     run = MapsCensusRun(
         organization_id=auth.org_id,

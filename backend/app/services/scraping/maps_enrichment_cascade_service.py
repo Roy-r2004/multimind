@@ -170,7 +170,6 @@ class MapsEnrichmentCascadeService:
                 await session.execute(
                     select(MapsPlace).where(
                         MapsPlace.run_id == run_id,
-                        MapsPlace.is_relevant.is_(True),
                         MapsPlace.enrichment_status.in_(
                             [
                                 MapsPlaceEnrichmentStatus.PENDING.value,
