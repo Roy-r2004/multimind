@@ -634,10 +634,14 @@ class MapsEnrichmentCascadeService:
                 **batch,
             }
 
+        # No selectable work remains, but attempt-exhausted / odd-state rows can
+        # still sit as pending/failed and force a self-enqueue spin. Finalize
+        # those without touching Phase 1 classification, then exit cleanly.
+        await self._finalize_unselectable_places(session_factory, run_id=run_id)
+        await self._finalize_stale_running_places(session_factory, run_id=run_id)
         exit_check = await assert_enrichment_exit_allowed(
             session_factory, run_id=run_id, paused=False, failed=False
         )
-        await self._finalize_stale_running_places(session_factory, run_id=run_id)
         await self._refresh_run_counters(session_factory, run_id=run_id)
         final_status = (
             ENRICHMENT_STATUS_COMPLETED if exit_check["ok"] else ENRICHMENT_STATUS_RUNNING
@@ -655,8 +659,10 @@ class MapsEnrichmentCascadeService:
                 "failed_count": exit_check.get("failed", 0),
             },
         )
+        # Never re-enqueue when the work queries are empty — that is the spin
+        # that kept Algeria alive with pending=4 / failed=25 and no provider calls.
         return {
-            "has_more": not exit_check["ok"],
+            "has_more": False,
             "phase": "complete",
             "exit_check": exit_check,
             **batch,
@@ -939,6 +945,77 @@ class MapsEnrichmentCascadeService:
                 if should_select_for_expensive_pipeline(place):
                     continue
                 await self._finalize_skipped_place(session, place, skip_reason_for_place(place))
+                finalized += 1
+            await session.commit()
+            return finalized
+
+    async def _finalize_unselectable_places(self, session_factory, *, run_id: str) -> int:
+        """Complete pending/failed rows that no claim query will ever pick up.
+
+        Typical cases: detail enrichment exhausted ``maps_place_max_attempts``,
+        or Phase 1 finished but Phase 2 is no longer selectable. Preserves
+        lifecycle_status / client_eligibility (Phase 1 delivery requirement).
+        """
+        from app.services.scraping.maps_classification_service import build_classification_query
+        from app.services.scraping.maps_detail_enrichment_service import (
+            build_detail_enrichment_query,
+        )
+
+        async with session_factory() as session:
+            classifiable = (
+                await session.execute(build_classification_query(run_id))
+            ).scalars().all()
+            detailable = (
+                await session.execute(build_detail_enrichment_query(run_id))
+            ).scalars().all()
+            selectable_ids = {p.id for p in classifiable} | {p.id for p in detailable}
+            stuck = (
+                await session.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.enrichment_status.in_(
+                            [
+                                MapsPlaceEnrichmentStatus.PENDING.value,
+                                MapsPlaceEnrichmentStatus.FAILED.value,
+                            ]
+                        ),
+                    )
+                )
+            ).scalars().all()
+            finalized = 0
+            now = datetime.now(UTC)
+            for place in stuck:
+                if place.id in selectable_ids:
+                    continue
+                if not place.is_relevant:
+                    await self._finalize_skipped_place(
+                        session, place, skip_reason_for_place(place) or "not_relevant"
+                    )
+                    finalized += 1
+                    continue
+                # Keep Phase 1 bucket; optional detail fields must not block delivery.
+                if place.enrichment_pipeline_state in {
+                    MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value,
+                    MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_PENDING.value,
+                    MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_FAILED.value,
+                }:
+                    place.enrichment_pipeline_state = (
+                        MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_FAILED.value
+                    )
+                elif not place.lifecycle_status or place.lifecycle_status in {
+                    MapsLifecycleStatus.DISCOVERED.value,
+                    MapsLifecycleStatus.PLAUSIBLE.value,
+                }:
+                    place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+                    place.client_eligibility = MapsClientEligibility.REVIEW.value
+                    place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                place.enrichment_completed_at = now
+                if not place.enrichment_error_message:
+                    place.enrichment_error_message = (
+                        "finalized_unselectable: optional detail enrichment incomplete"
+                    )
+                normalize_lifecycle_eligibility_consistency(place)
                 finalized += 1
             await session.commit()
             return finalized
