@@ -83,7 +83,11 @@ def should_select_for_expensive_pipeline(place: Any) -> bool:
 
 
 def is_detail_enrichment_candidate(place: Any) -> bool:
-    """Places that completed Phase 1 classification and need addictions/languages."""
+    """Places that completed Phase 1 classification and need addictions/languages.
+
+    Accepts eligible / review / needs_review candidates. Excludes public,
+    individual, unrelated, cessation-only, and other confident skip buckets.
+    """
     if not getattr(place, "is_relevant", None):
         return False
 
@@ -91,29 +95,36 @@ def is_detail_enrichment_candidate(place: Any) -> bool:
     if lifecycle in CONFIDENT_SKIP_LIFECYCLE:
         return False
 
-    eligibility = getattr(place, "client_eligibility", None) or ""
-    if eligibility == MapsClientEligibility.EXCLUDED.value:
-        if lifecycle in {
-            MapsLifecycleStatus.UNRELATED.value,
-            MapsLifecycleStatus.CONFIRMED_PUBLIC.value,
-            MapsLifecycleStatus.CONFIRMED_INDIVIDUAL_PRACTITIONER.value,
-            MapsLifecycleStatus.CONFIRMED_CESSATION_ONLY.value,
-            MapsLifecycleStatus.CONTRADICTED.value,
-        }:
-            return False
-
-    if eligibility not in {
-        MapsClientEligibility.ELIGIBLE.value,
-        MapsClientEligibility.REVIEW.value,
-    }:
-        return False
-
-    return lifecycle in {
+    if lifecycle not in {
         MapsLifecycleStatus.NEEDS_REVIEW.value,
         MapsLifecycleStatus.PLAUSIBLE.value,
         MapsLifecycleStatus.PROBABLE_ELIGIBLE.value,
         MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value,
-    }
+    }:
+        return False
+
+    eligibility = getattr(place, "client_eligibility", None) or ""
+    if eligibility in {
+        MapsClientEligibility.ELIGIBLE.value,
+        MapsClientEligibility.REVIEW.value,
+    }:
+        return True
+
+    # Stale rows may still have needs_review + excluded after incomplete
+    # classification. Route them to Phase 2 unless facility type is a hard exclude.
+    if lifecycle == MapsLifecycleStatus.NEEDS_REVIEW.value:
+        facility_type = getattr(place, "facility_type", None) or ""
+        if facility_type in {
+            "unrelated",
+            "cessation_service",
+            "harm_reduction_only",
+            "individual_addictologist",
+            "therapist_or_counselor",
+        }:
+            return False
+        return True
+
+    return False
 
 
 def build_expensive_pipeline_query(run_id: str):

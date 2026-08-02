@@ -52,14 +52,23 @@ def test_detail_candidate_requires_eligible_or_review():
         is_relevant=True,
         lifecycle_status=MapsLifecycleStatus.PROBABLE_ELIGIBLE.value,
         client_eligibility=MapsClientEligibility.REVIEW.value,
+        facility_type="unknown",
     )
     excluded_public = SimpleNamespace(
         is_relevant=True,
         lifecycle_status=MapsLifecycleStatus.CONFIRMED_PUBLIC.value,
         client_eligibility=MapsClientEligibility.EXCLUDED.value,
+        facility_type="general_mental_health_clinic",
+    )
+    needs_review = SimpleNamespace(
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
+        client_eligibility=MapsClientEligibility.EXCLUDED.value,
+        facility_type="unknown",
     )
     assert is_detail_enrichment_candidate(eligible) is True
     assert is_detail_enrichment_candidate(excluded_public) is False
+    assert is_detail_enrichment_candidate(needs_review) is True
 
 
 def test_build_classification_query_filters_pending_relevant():

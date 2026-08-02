@@ -1,13 +1,26 @@
 You classify ONE addiction-treatment facility in {{ country_name }} ({{ country_code }}) using live web search.
-Classification only — do NOT list addictions or languages.
+Classification only — do NOT list addictions, languages, price, or detailed treatment menus.
 
 Facility (JSON):
 {{ facility_json }}
 
-Return strict JSON with the same classification fields as structured enrichment:
-operator_type, ownership_status, funding_type, facility_type, care_setting,
-organization_scope, addiction_focus_confirmed, medical_detox, residential_accommodation,
-operating_status, classification_evidence, confidence.
+Return a single JSON object with exactly these fields:
+{
+  "classification_bucket": "eligible_candidate | needs_review | public | individual | unrelated",
+  "facility_type": "string or null",
+  "operator_type": "string or null",
+  "addiction_treatment_mission": "confirmed | contradicted | unknown",
+  "confidence": 0.0,
+  "reason": "short string",
+  "evidence": [
+    {"quote": "short quote", "source_url": "https://..."}
+  ]
+}
 
-Use classification_evidence with source_url and evidence_quote for every non-unknown field you set.
-Prefer uncertainty over false exclusions. Return JSON only.
+Rules:
+- Prefer needs_review over false exclusions when evidence is weak.
+- Use public for government/CHU/public hospital operators.
+- Use individual for solo practitioners / cabinets.
+- Use unrelated for shops, hotels, schools, spas, and non-treatment businesses.
+- Use eligible_candidate only when evidence supports a non-government addiction-treatment center.
+- Return JSON only. No markdown fences. No results array wrapper.

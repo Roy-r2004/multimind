@@ -111,6 +111,17 @@ def compute_client_eligibility(place: Any) -> str:
     ):
         return MapsClientEligibility.REVIEW.value
 
+    # Unresolved classification (unknown facility / ownership) stays in review so
+    # Phase 2 detail enrichment can still research treatment fields. Do not treat
+    # incomplete evidence as a hard exclusion.
+    if facility_type in {None, "", MapsFacilityType.UNKNOWN.value} and ownership_status in {
+        None,
+        "",
+        MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value,
+        MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value,
+    }:
+        return MapsClientEligibility.REVIEW.value
+
     return MapsClientEligibility.EXCLUDED.value
 
 

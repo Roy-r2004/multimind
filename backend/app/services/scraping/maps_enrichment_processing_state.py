@@ -18,6 +18,8 @@ class MapsEnrichmentPipelineState(str, Enum):
     PRIMARY_EXTRACTION_COMPLETED = "primary_extraction_completed"
     PRIMARY_EXTRACTION_FAILED = "primary_extraction_failed"
     CLASSIFICATION_COMPLETED = "classification_completed"
+    CLASSIFICATION_FAILED_RETRYABLE = "classification_failed_retryable"
+    DETAIL_NOT_REQUIRED = "detail_not_required"
     DETAIL_ENRICHMENT_PENDING = "detail_enrichment_pending"
     DETAIL_ENRICHMENT_COMPLETED = "detail_enrichment_completed"
     DETAIL_ENRICHMENT_FAILED = "detail_enrichment_failed"

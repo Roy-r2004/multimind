@@ -217,11 +217,13 @@ class Settings(BaseSettings):
     maps_primary_extraction_max_calls_per_run: int = 5000
     maps_primary_extraction_confidence_threshold: float = 0.55
 
-    # Sonar fallback budget (only unresolved records)
+    # Sonar classification budget (Phase 1 Layer 4) — separate from detail enrichment
     maps_sonar_fallback_enabled: bool = True
     maps_sonar_fallback_max_percent: float = 20.0
     maps_sonar_fallback_max_per_campaign: int = 200
     maps_sonar_fallback_concurrency: int = 5
+    # Detail enrichment (Phase 2) uses maps_census_enrichment_* call budget independently.
+    # Classification Sonar budget exhaustion must not abort Phase 2.
 
     # Phase 3: limited official-site crawl before structured enrichment
     maps_census_website_crawl_enabled: bool = True

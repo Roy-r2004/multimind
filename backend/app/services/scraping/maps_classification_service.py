@@ -39,6 +39,7 @@ from app.services.scraping.maps_place_website_resolution import (
 )
 from app.services.scraping.maps_quota_tracker import MapsQuotaTracker
 from app.services.scraping.maps_sonar_classify import (
+    apply_sonar_bucket_lifecycle,
     fetch_sonar_classify_one,
     needs_sonar_classification,
 )
@@ -211,12 +212,14 @@ class MapsClassificationService:
                 place.verification_reason = _derive_verification_reason(place)
                 place.relevance_reason = _derive_relevance_reason(place)
                 place.enrichment_pipeline_state = (
-                    MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
+                    MapsEnrichmentPipelineState.DETAIL_NOT_REQUIRED.value
+                    if not is_detail_enrichment_candidate(place)
+                    else MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
                 )
                 if is_detail_enrichment_candidate(place):
                     place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
                 else:
-                    place.enrichment_status = MapsPlaceEnrichmentStatus.SKIPPED.value
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                     place.enrichment_completed_at = datetime.now(UTC)
                 await session.commit()
                 return 1
@@ -312,37 +315,47 @@ class MapsClassificationService:
         if use_sonar:
             sonar_budget.calls_used += 1
             sonar_stats.sonar_calls += 1
+            sonar_failed = False
             try:
-                sonar_result = await fetch_sonar_classify_one(
+                sonar_result, classified = await fetch_sonar_classify_one(
                     country_code=country_code,
                     country_name=country_name,
                     payload=payload or {},
                     parse_stats=parse_stats,
                 )
                 tracker.add_sonar_fallback_call()
-                _enforce_field_evidence(sonar_result)
-                sonar_result.addictions_treated = []
-                sonar_result.languages_spoken = []
                 async with session_factory() as session:
                     place = await session.get(MapsPlace, place_id)
                     if place is None:
                         return 0
                     _apply_structured_fields(place, sonar_result)
+                    apply_sonar_bucket_lifecycle(place, classified.classification_bucket)
                     place.enrichment_extraction_source = "sonar_classification"
-                    place.lifecycle_status = _derive_lifecycle_status(place)
-                    place.client_eligibility = compute_client_eligibility(place)
                     place.is_relevant = derive_is_relevant(place.lifecycle_status)
                     place.verification_verdict = derive_legacy_verification_verdict(
                         place.lifecycle_status
                     )
-                    place.verification_reason = _derive_verification_reason(place)
+                    place.verification_reason = (
+                        classified.reason or _derive_verification_reason(place)
+                    )[:400]
                     place.verification_source_url = _derive_verification_source_url(sonar_result)
                     place.relevance_reason = _derive_relevance_reason(place)
+                    place.enrichment_error_message = None
                     await session.commit()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("maps_sonar_classify_failed place=%s error=%s", place_id, exc)
                 sonar_stats.sonar_final_failures += 1
+                sonar_failed = True
+                async with session_factory() as session:
+                    place = await session.get(MapsPlace, place_id)
+                    if place is not None:
+                        place.enrichment_error_message = f"sonar_classify_failed: {exc}"[:500]
+                        place.enrichment_pipeline_state = (
+                            MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
+                        )
+                        await session.commit()
         else:
+            sonar_failed = False
             async with session_factory() as session:
                 place = await session.get(MapsPlace, place_id)
                 if place is not None and needs_sonar_classification(place):
@@ -353,15 +366,28 @@ class MapsClassificationService:
             place = await session.get(MapsPlace, place_id)
             if place is None:
                 return 0
-            place.enrichment_pipeline_state = (
-                MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
-            )
-            if is_detail_enrichment_candidate(place):
+
+            still_unresolved = needs_sonar_classification(place)
+            if sonar_failed and still_unresolved:
+                place.enrichment_pipeline_state = (
+                    MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
+                )
+                place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+            elif is_detail_enrichment_candidate(place):
+                place.enrichment_pipeline_state = (
+                    MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
+                )
                 place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
+                place.enrichment_completed_at = None
+                if not place.enrichment_error_message:
+                    place.enrichment_error_message = None
             else:
-                place.enrichment_status = MapsPlaceEnrichmentStatus.SKIPPED.value
+                # Classification finished; detail enrichment not required.
+                place.enrichment_pipeline_state = (
+                    MapsEnrichmentPipelineState.DETAIL_NOT_REQUIRED.value
+                )
+                place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                 place.enrichment_completed_at = datetime.now(UTC)
-            place.enrichment_error_message = None
             await session.commit()
             return 1
 

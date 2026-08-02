@@ -303,19 +303,31 @@ class MapsEnrichmentCascadeService:
                     "skip_reasons": selection_report.skip_reasons,
                     "relevant_total": relevant_total,
                 }
+                # Classification Sonar budget — independent from Phase 2 detail enrichment.
+                state["sonar_classify_stats"] = sonar_stats.as_dict()
                 state["sonar_fallback_stats"] = sonar_stats.as_dict()
-                state["sonar_fallback_budget"] = {
+                state["sonar_classify_budget"] = {
                     "enabled": sonar_budget.enabled,
                     "max_calls": sonar_budget.max_calls,
                     "calls_used": sonar_budget.calls_used,
                     "remaining": sonar_budget.remaining,
                     "budget_exhausted": sonar_stats.budget_exhausted,
                 }
+                state["sonar_fallback_budget"] = state["sonar_classify_budget"]
+                state["detail_enrichment_budget"] = {
+                    "max_calls_per_run": settings.maps_census_enrichment_max_calls_per_run,
+                    "paused": phase2.get("paused", False),
+                    "note": "Phase 2 continues even when sonar_classify budget is exhausted",
+                }
                 limits_reached = dict(state.get("limits_reached") or {})
                 limits_reached["enrichment"] = paused
                 limits_reached["classification"] = phase1.get("paused", False)
                 limits_reached["detail_enrichment"] = phase2.get("paused", False)
+                limits_reached["sonar_classify"] = sonar_stats.budget_exhausted
                 limits_reached["sonar_fallback"] = sonar_stats.budget_exhausted
+                # Never treat classify-budget exhaustion as a global enrichment abort.
+                if sonar_stats.budget_exhausted and not phase2.get("paused"):
+                    limits_reached["enrichment"] = phase1.get("paused", False)
                 state["limits_reached"] = limits_reached
                 run.processing_state = state
                 await session.commit()

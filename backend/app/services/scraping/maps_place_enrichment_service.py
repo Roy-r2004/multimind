@@ -580,9 +580,22 @@ def _normalize_batch_payload(raw: object) -> dict:
     if isinstance(raw, list):
         return {"results": [_normalize_result_payload(item) for item in raw]}
     if isinstance(raw, dict):
-        items = raw.get("results") or raw.get("facilities") or raw.get("decisions") or []
+        items = raw.get("results") or raw.get("facilities") or raw.get("decisions")
         if isinstance(items, list):
             return {"results": [_normalize_result_payload(item) for item in items]}
+        # Single facility object (common for Sonar classify-one prompts).
+        if any(
+            key in raw
+            for key in (
+                "facility_type",
+                "operator_type",
+                "place_id",
+                "classification_bucket",
+                "ownership_status",
+                "addictions_treated",
+            )
+        ):
+            return {"results": [_normalize_result_payload(raw)]}
         return {"results": []}
     return {"results": []}
 
