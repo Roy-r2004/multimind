@@ -58,6 +58,15 @@ from app.services.scraping.maps_website_crawl_service import (
 logger = logging.getLogger(__name__)
 
 
+def _domain_of(url: str | None) -> str | None:
+    if not url:
+        return None
+    from urllib.parse import urlsplit
+
+    host = urlsplit(url.strip()).hostname
+    return host.lower() if host else None
+
+
 def build_classification_query(run_id: str):
     return (
         select(MapsPlace)
@@ -113,6 +122,9 @@ class MapsClassificationService:
         classified = 0
         paused = False
         cursor: str | None = None
+        # Domains that timed out / errored during crawl this run. Attempted once,
+        # then skipped so a single slow site can't stall batch after batch.
+        failed_crawl_domains: set[str] = set()
 
         while True:
             async with session_factory() as session:
@@ -144,6 +156,7 @@ class MapsClassificationService:
                                 sonar_stats=sonar_stats,
                                 parse_stats=parse_stats,
                                 tracker=tracker,
+                                failed_crawl_domains=failed_crawl_domains,
                             ),
                             timeout=timeout,
                         )
@@ -189,6 +202,7 @@ class MapsClassificationService:
         sonar_stats: SonarFallbackStats,
         parse_stats: EnrichmentParseStats,
         tracker: MapsQuotaTracker,
+        failed_crawl_domains: set[str] | None = None,
     ) -> int:
         from app.services.scraping.maps_place_enrichment_service import (
             _apply_structured_fields,
@@ -255,7 +269,12 @@ class MapsClassificationService:
             place = await session.get(MapsPlace, place_id)
             if place is None:
                 return 0
-            if place.official_website and place.website_relationship in CRAWLABLE_RELATIONSHIPS:
+            crawl_domain = _domain_of(place.official_website)
+            if (
+                place.official_website
+                and place.website_relationship in CRAWLABLE_RELATIONSHIPS
+                and not (failed_crawl_domains and crawl_domain in failed_crawl_domains)
+            ):
                 # Hard-bound the crawl: a slow domain must not consume the whole
                 # per-place budget and stall its batch (see clinique-tabet.com).
                 crawl_budget = max(10.0, get_settings().maps_classification_crawl_timeout_seconds)
@@ -274,12 +293,20 @@ class MapsClassificationService:
                         max_chars=get_settings().maps_crawl_max_total_context_chars
                     ) or None
                 except (MapsWebsiteCrawlError, TimeoutError):
+                    if failed_crawl_domains is not None and crawl_domain:
+                        failed_crawl_domains.add(crawl_domain)
                     logger.info(
                         "maps_classification_crawl_skipped place=%s website=%s",
                         place_id,
                         place.official_website,
                     )
                 await session.commit()
+            elif failed_crawl_domains and crawl_domain in failed_crawl_domains:
+                logger.info(
+                    "maps_classification_crawl_circuit_open place=%s website=%s",
+                    place_id,
+                    place.official_website,
+                )
 
         payload = None
         async with session_factory() as session:

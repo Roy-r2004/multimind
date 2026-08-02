@@ -249,7 +249,8 @@ class MapsWebsiteCrawlService:
         async with self._client_factory(timeout=timeout, follow_redirects=False) as client:
             await self._assert_robots_allowed(client, start_url, headers=headers)
             homepage = await self._fetch_page(client, start_url, headers=headers, max_bytes=max_bytes)
-            candidate_urls = _discover_same_domain_links(
+            candidate_urls = await asyncio.to_thread(
+                _discover_same_domain_links,
                 homepage.final_url,
                 html=homepage.content,
                 domain=domain,
@@ -258,11 +259,14 @@ class MapsWebsiteCrawlService:
             )
             queue = [url for url in candidate_urls if url.split("#", 1)[0] != homepage.final_url.split("#", 1)[0]]
 
+            homepage_title, homepage_text = await asyncio.to_thread(
+                _parse_page_content, homepage.content, max_excerpt
+            )
             pages: list[CrawledPage] = [
                 CrawledPage(
                     url=homepage.final_url,
-                    title=_extract_title(homepage.content),
-                    text_excerpt=_extract_text(homepage.content, max_chars=max_excerpt),
+                    title=homepage_title,
+                    text_excerpt=homepage_text,
                     http_status=homepage.status_code,
                 )
             ]
@@ -281,11 +285,14 @@ class MapsWebsiteCrawlService:
                     )
                 except MapsWebsiteCrawlError:
                     continue
+                fetched_title, fetched_text = await asyncio.to_thread(
+                    _parse_page_content, fetched.content, max_excerpt
+                )
                 pages.append(
                     CrawledPage(
                         url=fetched.final_url,
-                        title=_extract_title(fetched.content),
-                        text_excerpt=_extract_text(fetched.content, max_chars=max_excerpt),
+                        title=fetched_title,
+                        text_excerpt=fetched_text,
                         http_status=fetched.status_code,
                     )
                 )
@@ -437,7 +444,7 @@ def _discover_same_domain_links(
 ) -> list[str]:
     candidates: list[str] = []
     seen: set[str] = set()
-    for href in LINK_RE.findall(html):
+    for href in LINK_RE.findall(html[:MAX_PARSE_INPUT_CHARS]):
         absolute = urljoin(base_url, href.strip())
         parts = urlsplit(absolute)
         if parts.scheme not in {"http", "https"}:
@@ -457,20 +464,41 @@ def _discover_same_domain_links(
     return candidates
 
 
+# Hard cap on HTML handed to synchronous regex/parser work. Even linear regex on
+# very large or malformed markup can pin the CPU long enough to matter, and this
+# parsing historically ran on the event loop and could stall the whole worker
+# (see clinique-tabet.com). Bounding the input keeps every pass predictable.
+MAX_PARSE_INPUT_CHARS = 300_000
+
+
 def _extract_title(html: str) -> str:
-    match = TITLE_RE.search(html)
+    match = TITLE_RE.search(html[:MAX_PARSE_INPUT_CHARS])
     if not match:
         return ""
     return _collapse_whitespace(TAG_RE.sub(" ", match.group(1)))
 
 
 def _extract_text(html: str, *, max_chars: int) -> str:
-    cleaned = SCRIPT_STYLE_RE.sub(" ", html)
+    bounded = html[:MAX_PARSE_INPUT_CHARS]
+    cleaned = SCRIPT_STYLE_RE.sub(" ", bounded)
     cleaned = TAG_RE.sub(" ", cleaned)
     parser = _TextExtractor()
-    parser.feed(cleaned)
+    try:
+        parser.feed(cleaned)
+    except Exception:  # noqa: BLE001 - never let malformed markup abort a crawl
+        return _collapse_whitespace(cleaned)[:max_chars]
     text = _collapse_whitespace(parser.text() or cleaned)
     return text[:max_chars]
+
+
+def _parse_page_content(html: str, max_excerpt: int) -> tuple[str, str]:
+    """Run all synchronous title/text extraction for a page.
+
+    Bundled so callers can offload it via ``asyncio.to_thread`` and keep the
+    event loop responsive even on pathological markup.
+    """
+
+    return _extract_title(html), _extract_text(html, max_chars=max_excerpt)
 
 
 def _collapse_whitespace(value: str) -> str:

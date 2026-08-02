@@ -10,13 +10,40 @@ from sqlalchemy import select
 
 from app.db.models import MapsWebsiteCrawlCache
 from app.services.scraping.maps_website_crawl_service import (
+    MAX_PARSE_INPUT_CHARS,
     MapsWebsiteCrawlService,
+    _extract_text,
+    _extract_title,
+    _parse_page_content,
     path_keywords_from_country_profile,
 )
 
 
 async def _async_resolve(addresses: list[str]) -> list[str]:
     return addresses
+
+
+def test_extract_text_caps_input_and_survives_malformed_markup():
+    # A page far larger than the parse cap must be truncated before regex/parsing
+    # so one pathological document cannot pin the CPU (regression: clinique-tabet.com
+    # froze the worker because parsing ran unbounded on the event loop).
+    giant = "<p>real content</p>" + ("<div>" * (MAX_PARSE_INPUT_CHARS))
+    text = _extract_text(giant, max_chars=500)
+    assert len(text) <= 500
+    assert "real content" in text
+
+
+def test_extract_title_bounds_input():
+    padding = "x" * (MAX_PARSE_INPUT_CHARS + 5000)
+    html = f"<html><head><title>Centre</title></head><body>{padding}</body></html>"
+    assert _extract_title(html) == "Centre"
+
+
+def test_parse_page_content_returns_title_and_text():
+    html = "<html><head><title>Clinic</title></head><body><p>Treatment center</p></body></html>"
+    title, text = _parse_page_content(html, 200)
+    assert title == "Clinic"
+    assert "Treatment center" in text
 
 
 def _html(title: str, body: str, links: list[str] | None = None) -> str:
