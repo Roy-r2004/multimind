@@ -43,11 +43,23 @@ export type MapsCensusRunAdminDetail = {
   cells_pending: number;
   cells_failed: number;
   cells_capped: number;
+  initial_cells: number;
+  expansion_cells: number;
   places_eligible: number;
   places_review: number;
   places_excluded: number;
   website_refresh_attempts: number;
   enrichment_refresh_attempts: number;
+  enrichment_status: string | null;
+  enrichment_heartbeat_at: string | null;
+  discovery_status: string | null;
+  website_discovery_status: string | null;
+  crawl_status: string | null;
+  classification_status: string | null;
+  detail_enrichment_status: string | null;
+  overall_status: string | null;
+  last_activity_at: string | null;
+  website_refresh_completed_at: string | null;
   country_profile: Record<string, unknown> | null;
 };
 

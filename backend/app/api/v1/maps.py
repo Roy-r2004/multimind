@@ -312,6 +312,17 @@ async def recover_maps_census_enrichment(
     return await maps_admin_service.recover_enrichment(db, auth, run_id)
 
 
+@router.post("/runs/{run_id}/reconcile-finalization")
+async def reconcile_maps_census_finalization(
+    run_id: str,
+    force: bool = Query(default=False),
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reconcile campaign stage statuses and cell counters without reprocessing."""
+    return await maps_admin_service.reconcile_finalization(db, auth, run_id, force=force)
+
+
 @router.get("/runs/{run_id}/enrichment-projection")
 async def get_maps_enrichment_projection(
     run_id: str,

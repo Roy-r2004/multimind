@@ -10,6 +10,7 @@ import {
   mapsAdminPlaceReviewPath,
   mapsAdminPlacesPath,
   mapsAdminRegionsPath,
+  mapsAdminReconcileFinalizationPath,
   mapsAdminRetryEnrichmentPath,
   mapsAdminRetryFailedCellsPath,
   mapsAdminRetryWebsitesPath,
@@ -73,6 +74,14 @@ test("campaign control paths target pause/resume/cancel/retry endpoints", () => 
   assert.equal(mapsAdminRetryFailedCellsPath(RUN_ID), `/maps/runs/${RUN_ID}/retry-failed-cells`);
   assert.equal(mapsAdminRetryWebsitesPath(RUN_ID), `/maps/runs/${RUN_ID}/retry-websites`);
   assert.equal(mapsAdminRetryEnrichmentPath(RUN_ID), `/maps/runs/${RUN_ID}/retry-enrichment`);
+  assert.equal(
+    mapsAdminReconcileFinalizationPath(RUN_ID),
+    `/maps/runs/${RUN_ID}/reconcile-finalization`,
+  );
+  assert.equal(
+    mapsAdminReconcileFinalizationPath(RUN_ID, true),
+    `/maps/runs/${RUN_ID}/reconcile-finalization?force=true`,
+  );
 });
 
 test("mapsAdminExportSummaryPath targets export summary endpoint", () => {

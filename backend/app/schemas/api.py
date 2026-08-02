@@ -844,6 +844,8 @@ class MapsCensusRunAdminDetail(MapsCensusRunSummary):
     cells_pending: int = 0
     cells_failed: int = 0
     cells_capped: int = 0
+    initial_cells: int = 0
+    expansion_cells: int = 0
     places_eligible: int = 0
     places_review: int = 0
     places_excluded: int = 0
@@ -852,6 +854,13 @@ class MapsCensusRunAdminDetail(MapsCensusRunSummary):
     enrichment_status: str | None = None
     enrichment_heartbeat_at: datetime | None = None
     discovery_status: str | None = None
+    website_discovery_status: str | None = None
+    crawl_status: str | None = None
+    classification_status: str | None = None
+    detail_enrichment_status: str | None = None
+    overall_status: str | None = None
+    last_activity_at: datetime | None = None
+    website_refresh_completed_at: datetime | None = None
     country_profile: dict[str, Any] | None = None
 
 

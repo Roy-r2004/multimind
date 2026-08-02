@@ -1,4 +1,10 @@
-export type MapsCensusRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type MapsCensusRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "completed_with_warnings"
+  | "failed"
+  | "cancelled";
 
 export type MapsCensusRunSummary = {
   id: string;

@@ -440,7 +440,10 @@ class MapsCensusService:
             raise NotFoundError("Maps census run", run_id)
         if not _discovery_finished(run):
             raise ValidationError("Only a completed Maps census run can enrich facility websites.")
-        if run.status != MapsCensusStatus.COMPLETED:
+        if run.status not in {
+            MapsCensusStatus.COMPLETED,
+            MapsCensusStatus.COMPLETED_WITH_WARNINGS,
+        }:
             # Website auto-refresh can leave status=running even after discovery finished.
             run.status = MapsCensusStatus.COMPLETED
         run.enrichment_refresh_completed_at = None
@@ -506,7 +509,10 @@ class MapsCensusService:
         run = await db.get(MapsCensusRun, run_id)
         if run is None or run.organization_id != auth.org_id:
             raise NotFoundError("Maps census run", run_id)
-        if run.status != MapsCensusStatus.COMPLETED:
+        if run.status not in {
+            MapsCensusStatus.COMPLETED,
+            MapsCensusStatus.COMPLETED_WITH_WARNINGS,
+        }:
             raise ValidationError("Only a completed Maps census run can refresh missing websites.")
         run.status = MapsCensusStatus.RUNNING
         run.heartbeat_at = datetime.now(UTC)
@@ -2825,7 +2831,10 @@ def _discovery_finished(run: MapsCensusRun | Any) -> bool:
         return True
     status = getattr(run, "status", None)
     status_value = status.value if hasattr(status, "value") else status
-    return status_value == MapsCensusStatus.COMPLETED.value and (getattr(run, "places_found", 0) or 0) > 0
+    return status_value in {
+        MapsCensusStatus.COMPLETED.value,
+        MapsCensusStatus.COMPLETED_WITH_WARNINGS.value,
+    } and (getattr(run, "places_found", 0) or 0) > 0
 
 
 def _set_place_lifecycle(
@@ -2870,7 +2879,10 @@ async def run_maps_census_job(ctx: dict, run_id: str) -> None:
 
         async with AsyncSessionLocal() as db:
             run = await db.get(MapsCensusRun, run_id)
-            if run is not None and run.status != MapsCensusStatus.COMPLETED:
+            if run is not None and run.status not in {
+                MapsCensusStatus.COMPLETED,
+                MapsCensusStatus.COMPLETED_WITH_WARNINGS,
+            }:
                 run.status = MapsCensusStatus.FAILED
                 run.error_message = "Unexpected error during Maps census execution."
                 run.completed_at = datetime.now(UTC)
@@ -2889,7 +2901,10 @@ async def refresh_maps_census_websites_job(ctx: dict, run_id: str) -> None:
 
         async with AsyncSessionLocal() as db:
             run = await db.get(MapsCensusRun, run_id)
-            if run is not None and run.status != MapsCensusStatus.COMPLETED:
+            if run is not None and run.status not in {
+                MapsCensusStatus.COMPLETED,
+                MapsCensusStatus.COMPLETED_WITH_WARNINGS,
+            }:
                 run.status = MapsCensusStatus.FAILED
                 run.error_message = "Unexpected error while refreshing missing websites."
                 run.completed_at = datetime.now(UTC)

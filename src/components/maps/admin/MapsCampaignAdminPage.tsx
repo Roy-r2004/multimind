@@ -96,7 +96,18 @@ import { countryFlagEmoji } from "@/lib/maps/countryVisuals";
 import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 5000;
-const TERMINAL_STAGES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_STAGES = new Set([
+  "completed",
+  "completed_with_warnings",
+  "failed",
+  "cancelled",
+]);
+const TERMINAL_STATUSES = new Set([
+  "completed",
+  "completed_with_warnings",
+  "failed",
+  "cancelled",
+]);
 
 type ConfirmKind = "cancel" | "retry_cells" | "retry_websites" | "retry_enrichment" | null;
 type PendingReview = { placeId: string; action: string; label: string } | null;
@@ -119,8 +130,13 @@ function formatStage(stage: string): string {
 
 function isActiveCampaign(dashboard: MapsCensusRunAdminDetail | null): boolean {
   if (!dashboard) return false;
-  if (dashboard.status === "queued" || dashboard.status === "running") return true;
-  return !TERMINAL_STAGES.has(dashboard.current_stage);
+  if (TERMINAL_STATUSES.has(dashboard.status) || TERMINAL_STAGES.has(dashboard.current_stage)) {
+    return false;
+  }
+  if (dashboard.overall_status && TERMINAL_STAGES.has(dashboard.overall_status)) {
+    return false;
+  }
+  return dashboard.status === "queued" || dashboard.status === "running";
 }
 
 function metricValue(value: unknown): string | number {
@@ -444,7 +460,15 @@ export function MapsCampaignAdminPage({ runId }: { runId: string }) {
         )}
 
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
-          <StatCard label="Cells done" value={`${dashboard.cells_completed}/${dashboard.cells_total}`} />
+          <StatCard
+            label="Cells done"
+            value={`${dashboard.cells_completed}/${dashboard.cells_total}`}
+            hint={
+              dashboard.initial_cells || dashboard.expansion_cells
+                ? `seed ${dashboard.initial_cells ?? "—"} · expanded +${dashboard.expansion_cells ?? 0}`
+                : undefined
+            }
+          />
           <StatCard label="Pending cells" value={dashboard.cells_pending} />
           <StatCard label="Failed cells" value={dashboard.cells_failed} hint={`${dashboard.cells_capped} capped`} />
           <StatCard label="Places found" value={dashboard.places_found} />
@@ -458,6 +482,15 @@ export function MapsCampaignAdminPage({ runId }: { runId: string }) {
             hint={`Enrichment ${dashboard.enrichment_refresh_attempts}`}
           />
           <StatCard label="Regions" value={dashboard.regions_total} />
+          <StatCard
+            label="Discovery"
+            value={formatStage(dashboard.discovery_status || "—")}
+            hint={dashboard.last_activity_at ? `Last ${formatDt(dashboard.last_activity_at)}` : undefined}
+          />
+          <StatCard label="Website discovery" value={formatStage(dashboard.website_discovery_status || "—")} />
+          <StatCard label="Crawl" value={formatStage(dashboard.crawl_status || "—")} />
+          <StatCard label="Classification" value={formatStage(dashboard.classification_status || "—")} />
+          <StatCard label="Detail enrichment" value={formatStage(dashboard.detail_enrichment_status || "—")} />
           {funnelEntries.map(([key, value]) => (
             <StatCard key={key} label={key.replace(/_/g, " ")} value={metricValue(value)} />
           ))}

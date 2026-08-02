@@ -84,3 +84,12 @@ export function mapsAdminRetryWebsitesPath(runId: string): string {
 export function mapsAdminRetryEnrichmentPath(runId: string): string {
   return `/maps/runs/${runId}/retry-enrichment`;
 }
+
+export function mapsAdminReconcileFinalizationPath(runId: string, force = false): string {
+  const params = new URLSearchParams();
+  if (force) params.set("force", "true");
+  const query = params.toString();
+  return query
+    ? `/maps/runs/${runId}/reconcile-finalization?${query}`
+    : `/maps/runs/${runId}/reconcile-finalization`;
+}

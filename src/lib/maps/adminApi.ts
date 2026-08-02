@@ -9,6 +9,7 @@ import {
   mapsAdminPlaceReviewPath,
   mapsAdminPlacesPath,
   mapsAdminRegionsPath,
+  mapsAdminReconcileFinalizationPath,
   mapsAdminRetryEnrichmentPath,
   mapsAdminRetryFailedCellsPath,
   mapsAdminRetryWebsitesPath,
@@ -37,6 +38,7 @@ export {
   mapsAdminPlaceReviewPath,
   mapsAdminPlacesPath,
   mapsAdminRegionsPath,
+  mapsAdminReconcileFinalizationPath,
   mapsAdminRetryEnrichmentPath,
   mapsAdminRetryFailedCellsPath,
   mapsAdminRetryWebsitesPath,
@@ -137,6 +139,21 @@ export function retryMapsCensusEnrichment(auth: Auth, runId: string) {
     token: auth.token,
     orgId: auth.orgId,
   });
+}
+
+export function reconcileMapsCensusFinalization(
+  auth: Auth,
+  runId: string,
+  options: { force?: boolean } = {},
+) {
+  return apiRequest<Record<string, unknown>>(
+    mapsAdminReconcileFinalizationPath(runId, options.force === true),
+    {
+      method: "POST",
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
 }
 
 export function applyMapsPlaceReview(

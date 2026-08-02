@@ -100,12 +100,16 @@ def _campaign_paused(run: MapsCensusRun) -> bool:
     return bool((run.processing_state or {}).get("campaign_paused"))
 
 
-def _derive_current_stage(run: MapsCensusRun) -> str:
+def _derive_current_stage(
+    run: MapsCensusRun, stages: dict[str, str] | None = None
+) -> str:
     status = run.status.value if hasattr(run.status, "value") else str(run.status)
     state = run.processing_state or {}
+    stages = stages or state.get("stage_statuses") or {}
     from app.services.scraping.maps_enrichment_progress import enrichment_status_from_run
 
     enrichment_status = enrichment_status_from_run(run)
+    overall = stages.get("overall_status") or state.get("overall_status")
 
     if _campaign_paused(run):
         return "paused"
@@ -113,11 +117,28 @@ def _derive_current_stage(run: MapsCensusRun) -> str:
         return "queued"
     if status == MapsCensusStatus.CANCELLED.value:
         return "cancelled"
+    # Prefer reconciled stage overall over a stale run.status=failed left by a
+    # watchdog after enrichment already finished.
+    if overall in {"completed", "completed_with_warnings"} or status in {
+        MapsCensusStatus.COMPLETED.value,
+        MapsCensusStatus.COMPLETED_WITH_WARNINGS.value,
+    }:
+        return "completed"
     if status == MapsCensusStatus.FAILED.value:
         return "failed"
     # Discovery may be completed while enrichment is still running/failed.
     if enrichment_status in {"running", "failed_retryable", "stale_failed", "paused"}:
         return "enrichment"
+    if stages.get("classification_status") == "running" or stages.get(
+        "detail_enrichment_status"
+    ) == "running":
+        return "enrichment"
+    if stages.get("website_discovery_status") == "running" or state.get(
+        "website_search_paused"
+    ):
+        return "website_refresh"
+    if stages.get("discovery_status") == "running":
+        return "discovery"
     if status == MapsCensusStatus.COMPLETED.value:
         if state.get("enrichment_paused"):
             return "enrichment"
@@ -136,7 +157,14 @@ def _derive_current_stage(run: MapsCensusRun) -> str:
             return "website_refresh"
         if state.get("enrichment_paused"):
             return "enrichment"
-        if run.cells_completed < run.cells_total:
+        # Compare against actual persisted cells when available — never use a
+        # stale seed denominator that makes 1134 completed look unfinished.
+        metrics = state.get("cell_metrics") or {}
+        total = int(metrics.get("total_cells") or run.cells_total or 0)
+        completed = int(metrics.get("completed_cells") or run.cells_completed or 0)
+        pending = int(metrics.get("pending_cells") or 0)
+        running = int(metrics.get("running_cells") or 0)
+        if pending > 0 or running > 0 or (total > 0 and completed < total):
             return "discovery"
         return "post_processing"
     return status
@@ -216,17 +244,35 @@ class MapsAdminService:
         run = await _get_run_for_org(db, auth, run_id)
         summary = _run_summary(run)
 
-        cell_count_rows = (
-            await db.execute(
-                select(MapsCensusCell.status, func.count())
-                .where(MapsCensusCell.run_id == run_id)
-                .group_by(MapsCensusCell.status)
+        from app.services.scraping.maps_run_finalization import (
+            collect_run_stage_snapshot,
+            derive_stage_statuses,
+        )
+
+        snap = await collect_run_stage_snapshot(db, run_id=run_id)
+        state = run.processing_state or {}
+        metrics = dict(state.get("cell_metrics") or {})
+        # Prefer live counts so the denominator never lags behind persisted cells.
+        total_cells = int(snap["total_cells"])
+        completed_cells = int(snap["completed_cells"])
+        pending_cells = int(snap["pending_cells"])
+        failed_cells = int(snap["failed_cells"])
+        capped_cells = int(snap["capped_cells"])
+        initial_cells = int(
+            metrics.get("initial_cells")
+            or state.get("initial_cells")
+            or (
+                run.cells_total
+                if run.cells_total and run.cells_total < total_cells
+                else snap["initial_cells"]
             )
-        ).all()
-        cell_counts: dict[str, int] = {}
-        for status_value, count in cell_count_rows:
-            key = status_value.value if hasattr(status_value, "value") else str(status_value)
-            cell_counts[key] = int(count)
+            or total_cells
+        )
+        expansion_cells = max(0, total_cells - initial_cells)
+        # Always derive live from persisted rows so the badge cannot stick on a
+        # stale processing_state after adaptive expansion or enrichment finish.
+        stages = derive_stage_statuses(run, snap)
+
         place_counts = dict(
             (
                 await db.execute(
@@ -245,9 +291,28 @@ class MapsAdminService:
             parse_enrichment_heartbeat,
         )
 
+        last_activity_raw = state.get("last_activity_at")
+        last_activity_at = None
+        if last_activity_raw:
+            try:
+                last_activity_at = datetime.fromisoformat(
+                    str(last_activity_raw).replace("Z", "+00:00")
+                )
+            except ValueError:
+                last_activity_at = None
+        if last_activity_at is None:
+            last_activity_at = snap.get("last_place_activity") or snap.get("last_cell_activity")
+
+        summary_data = summary.model_dump()
+        # Dashboard denominator must be the actual persisted cell total.
+        summary_data["cells_total"] = total_cells
+        summary_data["cells_completed"] = completed_cells
+        if stages.get("overall_status"):
+            summary_data["status"] = stages["overall_status"]
+
         return MapsCensusRunAdminDetail(
-            **summary.model_dump(),
-            current_stage=_derive_current_stage(run),
+            **summary_data,
+            current_stage=_derive_current_stage(run, stages=stages),
             campaign_paused=_campaign_paused(run),
             country_profile_status=run.country_profile_status,
             country_profile_error=run.country_profile_error,
@@ -256,9 +321,11 @@ class MapsAdminService:
             processing_state=run.processing_state,
             quota_metrics=run.quota_metrics,
             regions_total=int(regions_total or 0),
-            cells_pending=cell_counts.get(MapsCensusCellStatus.PENDING.value, 0),
-            cells_failed=cell_counts.get(MapsCensusCellStatus.FAILED.value, 0),
-            cells_capped=cell_counts.get(MapsCensusCellStatus.CAPPED.value, 0),
+            cells_pending=pending_cells,
+            cells_failed=failed_cells,
+            cells_capped=capped_cells,
+            initial_cells=initial_cells,
+            expansion_cells=expansion_cells,
             places_eligible=int(place_counts.get(MapsClientEligibility.ELIGIBLE.value, 0)),
             places_review=int(place_counts.get(MapsClientEligibility.REVIEW.value, 0)),
             places_excluded=int(place_counts.get(MapsClientEligibility.EXCLUDED.value, 0)),
@@ -266,9 +333,14 @@ class MapsAdminService:
             enrichment_refresh_attempts=run.enrichment_refresh_attempts,
             enrichment_status=enrichment_status_from_run(run),
             enrichment_heartbeat_at=parse_enrichment_heartbeat(run),
-            discovery_status=(
-                run.status.value if hasattr(run.status, "value") else str(run.status)
-            ),
+            discovery_status=stages.get("discovery_status"),
+            website_discovery_status=stages.get("website_discovery_status"),
+            crawl_status=stages.get("crawl_status"),
+            classification_status=stages.get("classification_status"),
+            detail_enrichment_status=stages.get("detail_enrichment_status"),
+            overall_status=stages.get("overall_status"),
+            last_activity_at=last_activity_at,
+            website_refresh_completed_at=run.website_refresh_completed_at,
             country_profile=run.country_profile,
         )
 
@@ -596,6 +668,23 @@ class MapsAdminService:
             campaign_paused=_campaign_paused(await _get_run_for_org(db, auth, run_id)),
             message=f"Reset {reset.get('reset_places', 0)} places for cascaded enrichment recovery",
         )
+
+    async def reconcile_finalization(
+        self, db: AsyncSession, auth: AuthContext, run_id: str, *, force: bool = False
+    ) -> dict[str, Any]:
+        """Reconcile stage statuses/counters without re-running any processing."""
+        _require_admin_enabled()
+        await _get_run_for_org(db, auth, run_id)
+        from app.services.scraping.maps_run_finalization import reconcile_run_finalization
+
+        result = await reconcile_run_finalization(db, run_id=run_id, force=force)
+        # Reload so response reflects committed counters/status.
+        run = await _get_run_for_org(db, auth, run_id)
+        result["campaign_paused"] = _campaign_paused(run)
+        result["current_stage"] = _derive_current_stage(run)
+        result["cells_total"] = run.cells_total
+        result["cells_completed"] = run.cells_completed
+        return result
 
     async def enrichment_cost_projection(
         self, db: AsyncSession, auth: AuthContext, run_id: str

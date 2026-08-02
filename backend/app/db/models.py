@@ -2274,6 +2274,7 @@ class MapsCensusStatus(str, enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
+    COMPLETED_WITH_WARNINGS = "completed_with_warnings"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
