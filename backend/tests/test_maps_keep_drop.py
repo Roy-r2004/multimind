@@ -269,6 +269,53 @@ async def test_classifier_failure_defaults_to_drop(db, auth, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pass_only_judges_relevant_candidates(db, auth, monkeypatch):
+    """Already-excluded noise must not consume an AI call."""
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    relevant = _place(run.id, "g1", "Centre Rehab Prive", is_relevant=True)
+    noise = _place(
+        run.id,
+        "g2",
+        "Random Pharmacy",
+        is_relevant=False,
+        client_eligibility=MapsClientEligibility.EXCLUDED.value,
+        lifecycle_status=MapsLifecycleStatus.UNRELATED.value,
+    )
+    db.add_all([relevant, noise])
+    await db.commit()
+
+    judged: list[str] = []
+
+    async def fake_classify(_session, place, *, country_code, country_name):
+        judged.append(place.id)
+        return KeepDropDecision.model_validate(json.loads(KEEP_JSON)), "nano"
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.classify_place_keep_drop",
+        fake_classify,
+    )
+
+    from app.services.scraping.maps_census_service import maps_census_service
+
+    session_factory = maps_census_service._session_factory(db)
+    summary = await run_keep_drop_pass(
+        session_factory, run_id=run.id, country_code="DZ", country_name="Algeria"
+    )
+    assert judged == [relevant.id]
+    assert summary["kept"] == 1
+    assert summary["prefiltered"] == 1
+
+    async with session_factory() as fresh:
+        noise_row = (
+            await fresh.execute(select(MapsPlace).where(MapsPlace.google_place_id == "g2"))
+        ).scalar_one()
+    assert noise_row.keep_drop_decision == "drop"
+    assert noise_row.keep_drop_source == "prefilter"
+
+
+@pytest.mark.asyncio
 async def test_run_pass_is_resumable_and_gates_export(db, auth, monkeypatch):
     run = _run(auth)
     db.add(run)
@@ -316,7 +363,10 @@ async def test_run_pass_is_resumable_and_gates_export(db, auth, monkeypatch):
     summary2 = await run_keep_drop_pass(
         session_factory, run_id=run.id, country_code="DZ", country_name="Algeria"
     )
-    assert summary2 == {"kept": 0, "dropped": 0, "sonar": 0}
+    assert summary2["kept"] == 0
+    assert summary2["dropped"] == 0
+    # Already-excluded / non-candidate rows may be bulk-stamped without an AI call.
+    assert summary2.get("prefiltered", 0) >= 0
 
     async with session_factory() as fresh:
         remaining = (

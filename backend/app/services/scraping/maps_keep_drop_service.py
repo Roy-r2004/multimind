@@ -22,7 +22,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -266,12 +266,87 @@ def apply_keep_drop(place: MapsPlace, decision: KeepDropDecision, *, source: str
         place.enrichment_pipeline_state = MapsEnrichmentPipelineState.FINALIZED.value
 
 
-def build_keep_drop_query(run_id: str):
-    return (
-        select(MapsPlace)
-        .where(MapsPlace.run_id == run_id, MapsPlace.keep_drop_decision.is_(None))
-        .order_by(MapsPlace.id)
-    )
+def build_keep_drop_query(run_id: str, *, candidates_only: bool = True):
+    """Places that still need an AI keep/drop judgment.
+
+    When ``candidates_only`` is True (default for re-passes over existing data),
+    only previously-relevant / review / eligible facilities are judged. Already
+    excluded noise is never sent to the model — it is bulk-stamped as drop
+    without an API call.
+    """
+    filters = [
+        MapsPlace.run_id == run_id,
+        MapsPlace.keep_drop_decision.is_(None),
+    ]
+    if candidates_only:
+        filters.append(
+            or_(
+                MapsPlace.is_relevant.is_(True),
+                MapsPlace.client_eligibility.in_(
+                    [
+                        MapsClientEligibility.REVIEW.value,
+                        MapsClientEligibility.ELIGIBLE.value,
+                    ]
+                ),
+                MapsPlace.lifecycle_status.in_(
+                    [
+                        MapsLifecycleStatus.NEEDS_REVIEW.value,
+                        MapsLifecycleStatus.PLAUSIBLE.value,
+                        MapsLifecycleStatus.PROBABLE_ELIGIBLE.value,
+                        MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value,
+                    ]
+                ),
+            )
+        )
+    return select(MapsPlace).where(*filters).order_by(MapsPlace.id)
+
+
+async def stamp_non_candidate_drops(session_factory, *, run_id: str) -> int:
+    """Bulk-drop already-excluded places without an AI call.
+
+    These never belonged on the client list; persisting an explicit drop keeps
+    the undecided counter honest without burning nano/Sonar budget.
+    """
+    stamped = 0
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.keep_drop_decision.is_(None),
+                    MapsPlace.is_relevant.is_not(True),
+                    MapsPlace.client_eligibility.notin_(
+                        [
+                            MapsClientEligibility.REVIEW.value,
+                            MapsClientEligibility.ELIGIBLE.value,
+                        ]
+                    ),
+                    MapsPlace.lifecycle_status.notin_(
+                        [
+                            MapsLifecycleStatus.NEEDS_REVIEW.value,
+                            MapsLifecycleStatus.PLAUSIBLE.value,
+                            MapsLifecycleStatus.PROBABLE_ELIGIBLE.value,
+                            MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value,
+                        ]
+                    ),
+                )
+            )
+        ).scalars().all()
+        for place in rows:
+            apply_keep_drop(
+                place,
+                KeepDropDecision(
+                    decision=DROP,
+                    reason="preexisting_exclusion: already out of relevant set",
+                    confidence=1.0,
+                    evidence=[],
+                ),
+                source="prefilter",
+            )
+            stamped += 1
+        if stamped:
+            await session.commit()
+    return stamped
 
 
 async def run_keep_drop_pass(
@@ -280,11 +355,13 @@ async def run_keep_drop_pass(
     run_id: str,
     country_code: str | None = None,
     country_name: str | None = None,
+    candidates_only: bool = True,
 ) -> dict[str, int]:
-    """Resumable keep/drop sweep over every undecided place in a run.
+    """Resumable keep/drop sweep.
 
-    Never rediscovers, never deletes rows, never re-judges a place that already
-    has a persisted decision.
+    By default only judges relevant / review / eligible candidates. Already
+    excluded noise is stamped drop without an API call. Never rediscovers,
+    never deletes rows, never re-judges a place that already has a decision.
     """
     settings = get_settings()
     batch_size = max(1, int(settings.maps_keep_drop_batch_size))
@@ -303,6 +380,10 @@ async def run_keep_drop_pass(
         run.processing_state = state
         await session.commit()
 
+    prefiltered = 0
+    if candidates_only:
+        prefiltered = await stamp_non_candidate_drops(session_factory, run_id=run_id)
+
     kept = 0
     dropped = 0
     sonar_used = 0
@@ -310,7 +391,11 @@ async def run_keep_drop_pass(
     while True:
         async with session_factory() as session:
             batch = (
-                await session.execute(build_keep_drop_query(run_id).limit(batch_size))
+                await session.execute(
+                    build_keep_drop_query(run_id, candidates_only=candidates_only).limit(
+                        batch_size
+                    )
+                )
             ).scalars().all()
             batch_ids = [place.id for place in batch]
             run = await session.get(MapsCensusRun, run_id)
@@ -386,27 +471,59 @@ async def run_keep_drop_pass(
             state = dict(run.processing_state or {})
             state["keep_drop_status"] = "completed"
             state["keep_drop_completed_at"] = datetime.now(UTC).isoformat()
-            state["keep_drop_stats"] = {"kept": kept, "dropped": dropped, "sonar": sonar_used}
+            state["keep_drop_stats"] = {
+                "kept": kept,
+                "dropped": dropped,
+                "sonar": sonar_used,
+                "prefiltered": prefiltered,
+            }
             run.processing_state = state
             await session.commit()
 
     logger.info(
-        "maps_keep_drop_pass_complete run_id=%s kept=%s dropped=%s sonar=%s",
+        "maps_keep_drop_pass_complete run_id=%s kept=%s dropped=%s sonar=%s prefiltered=%s",
         run_id,
         kept,
         dropped,
         sonar_used,
+        prefiltered,
     )
-    return {"kept": kept, "dropped": dropped, "sonar": sonar_used}
+    return {
+        "kept": kept,
+        "dropped": dropped,
+        "sonar": sonar_used,
+        "prefiltered": prefiltered,
+    }
 
 
 async def count_undecided(session: AsyncSession, *, run_id: str) -> int:
+    """Count places that still need an AI keep/drop judgment (relevant set only)."""
     return int(
         (
             await session.execute(
                 select(func.count())
                 .select_from(MapsPlace)
-                .where(MapsPlace.run_id == run_id, MapsPlace.keep_drop_decision.is_(None))
+                .where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.keep_drop_decision.is_(None),
+                    or_(
+                        MapsPlace.is_relevant.is_(True),
+                        MapsPlace.client_eligibility.in_(
+                            [
+                                MapsClientEligibility.REVIEW.value,
+                                MapsClientEligibility.ELIGIBLE.value,
+                            ]
+                        ),
+                        MapsPlace.lifecycle_status.in_(
+                            [
+                                MapsLifecycleStatus.NEEDS_REVIEW.value,
+                                MapsLifecycleStatus.PLAUSIBLE.value,
+                                MapsLifecycleStatus.PROBABLE_ELIGIBLE.value,
+                                MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value,
+                            ]
+                        ),
+                    ),
+                )
             )
         ).scalar_one()
         or 0
@@ -448,4 +565,5 @@ __all__ = [
     "count_undecided",
     "run_keep_drop_pass",
     "run_maps_keep_drop_job",
+    "stamp_non_candidate_drops",
 ]
