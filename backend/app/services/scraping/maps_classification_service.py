@@ -67,6 +67,29 @@ def _domain_of(url: str | None) -> str | None:
     return host.lower() if host else None
 
 
+async def _persist_crawl_skip_domain(session_factory, *, run_id: str, domain: str) -> None:
+    """Remember a domain that hung/failed crawl so later recoveries skip it."""
+    host = (domain or "").strip().lower()
+    if not host or not run_id:
+        return
+    async with session_factory() as session:
+        run = await session.get(MapsCensusRun, run_id)
+        if run is None:
+            return
+        state = dict(run.processing_state or {})
+        skipped = {
+            str(item).strip().lower()
+            for item in (state.get("crawl_skip_domains") or [])
+            if str(item).strip()
+        }
+        if host in skipped:
+            return
+        skipped.add(host)
+        state["crawl_skip_domains"] = sorted(skipped)
+        run.processing_state = state
+        await session.commit()
+
+
 def build_classification_query(run_id: str):
     return (
         select(MapsPlace)
@@ -125,6 +148,13 @@ class MapsClassificationService:
         # Domains that timed out / errored during crawl this run. Attempted once,
         # then skipped so a single slow site can't stall batch after batch.
         failed_crawl_domains: set[str] = set()
+        async with session_factory() as session:
+            run = await session.get(MapsCensusRun, run_id)
+            if run is not None:
+                for item in (run.processing_state or {}).get("crawl_skip_domains") or []:
+                    host = str(item).strip().lower()
+                    if host:
+                        failed_crawl_domains.add(host)
 
         while True:
             async with session_factory() as session:
@@ -270,6 +300,7 @@ class MapsClassificationService:
             if place is None:
                 return 0
             crawl_domain = _domain_of(place.official_website)
+            run_id_for_skip = place.run_id
             if (
                 place.official_website
                 and place.website_relationship in CRAWLABLE_RELATIONSHIPS
@@ -295,6 +326,9 @@ class MapsClassificationService:
                 except (MapsWebsiteCrawlError, TimeoutError):
                     if failed_crawl_domains is not None and crawl_domain:
                         failed_crawl_domains.add(crawl_domain)
+                        await _persist_crawl_skip_domain(
+                            session_factory, run_id=run_id_for_skip, domain=crawl_domain
+                        )
                     logger.info(
                         "maps_classification_crawl_skipped place=%s website=%s",
                         place_id,

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import re
 import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -53,24 +52,69 @@ METADATA_IPS = {
     ipaddress.ip_address("169.254.169.254"),
     ipaddress.ip_address("100.100.100.200"),
 }
-LINK_RE = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
-TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
-TAG_RE = re.compile(r"(?s)<[^>]+>")
+# Hard cap on HTML handed to the parser. Keeps every pass predictable even on
+# pathological markup (see clinique-tabet.com worker freezes).
+MAX_PARSE_INPUT_CHARS = 300_000
+
+# DNS must fail fast; a hanging resolver must not burn the whole crawl budget.
+DNS_RESOLVE_TIMEOUT_SECONDS = 5.0
 
 
-class _TextExtractor(HTMLParser):
+class _SafeHtmlExtractor(HTMLParser):
+    """Linear HTML walk — no regex. Avoids ReDoS that can pin the GIL and freeze
+    the whole worker even when parsing is offloaded to a thread."""
+
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(convert_charrefs=True)
         self._chunks: list[str] = []
+        self._title_chunks: list[str] = []
+        self._hrefs: list[str] = []
+        self._skip_depth = 0
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = tag.lower()
+        if name in {"script", "style", "noscript"}:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if name == "title":
+            self._in_title = True
+            return
+        if name == "a":
+            for key, value in attrs:
+                if key.lower() == "href" and value:
+                    self._hrefs.append(value)
+
+    def handle_endtag(self, tag: str) -> None:
+        name = tag.lower()
+        if name in {"script", "style", "noscript"}:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if name == "title":
+            self._in_title = False
 
     def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
         text = data.strip()
-        if text:
+        if not text:
+            return
+        if self._in_title:
+            self._title_chunks.append(text)
+        else:
             self._chunks.append(text)
 
+    def title(self) -> str:
+        return _collapse_whitespace(" ".join(self._title_chunks))
+
     def text(self) -> str:
-        return " ".join(self._chunks)
+        return _collapse_whitespace(" ".join(self._chunks))
+
+    def hrefs(self) -> list[str]:
+        return list(self._hrefs)
 
 
 @dataclass(frozen=True)
@@ -380,7 +424,15 @@ class MapsWebsiteCrawlService:
         if self._resolver is not None:
             return await self._resolver(host)
         loop = asyncio.get_running_loop()
-        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        try:
+            infos = await asyncio.wait_for(
+                loop.getaddrinfo(host, None, type=socket.SOCK_STREAM),
+                timeout=DNS_RESOLVE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise MapsWebsiteCrawlError("dns timeout") from exc
+        except OSError as exc:
+            raise MapsWebsiteCrawlError("dns failed") from exc
         return sorted({info[4][0] for info in infos})
 
 
@@ -442,9 +494,14 @@ def _discover_same_domain_links(
     path_keywords: list[str],
     max_candidates: int,
 ) -> list[str]:
+    extractor = _SafeHtmlExtractor()
+    try:
+        extractor.feed(html[:MAX_PARSE_INPUT_CHARS])
+    except Exception:  # noqa: BLE001 - never let malformed markup abort link discovery
+        return []
     candidates: list[str] = []
     seen: set[str] = set()
-    for href in LINK_RE.findall(html[:MAX_PARSE_INPUT_CHARS]):
+    for href in extractor.hrefs():
         absolute = urljoin(base_url, href.strip())
         parts = urlsplit(absolute)
         if parts.scheme not in {"http", "https"}:
@@ -464,41 +521,37 @@ def _discover_same_domain_links(
     return candidates
 
 
-# Hard cap on HTML handed to synchronous regex/parser work. Even linear regex on
-# very large or malformed markup can pin the CPU long enough to matter, and this
-# parsing historically ran on the event loop and could stall the whole worker
-# (see clinique-tabet.com). Bounding the input keeps every pass predictable.
-MAX_PARSE_INPUT_CHARS = 300_000
-
-
 def _extract_title(html: str) -> str:
-    match = TITLE_RE.search(html[:MAX_PARSE_INPUT_CHARS])
-    if not match:
+    extractor = _SafeHtmlExtractor()
+    try:
+        extractor.feed(html[:MAX_PARSE_INPUT_CHARS])
+    except Exception:  # noqa: BLE001
         return ""
-    return _collapse_whitespace(TAG_RE.sub(" ", match.group(1)))
+    return extractor.title()
 
 
 def _extract_text(html: str, *, max_chars: int) -> str:
-    bounded = html[:MAX_PARSE_INPUT_CHARS]
-    cleaned = SCRIPT_STYLE_RE.sub(" ", bounded)
-    cleaned = TAG_RE.sub(" ", cleaned)
-    parser = _TextExtractor()
+    extractor = _SafeHtmlExtractor()
     try:
-        parser.feed(cleaned)
+        extractor.feed(html[:MAX_PARSE_INPUT_CHARS])
     except Exception:  # noqa: BLE001 - never let malformed markup abort a crawl
-        return _collapse_whitespace(cleaned)[:max_chars]
-    text = _collapse_whitespace(parser.text() or cleaned)
-    return text[:max_chars]
+        return ""
+    return extractor.text()[:max_chars]
 
 
 def _parse_page_content(html: str, max_excerpt: int) -> tuple[str, str]:
     """Run all synchronous title/text extraction for a page.
 
-    Bundled so callers can offload it via ``asyncio.to_thread`` and keep the
-    event loop responsive even on pathological markup.
+    Bundled so callers can offload it via ``asyncio.to_thread``. Parsing is
+    linear (HTMLParser only) so it cannot ReDoS-pin the GIL.
     """
 
-    return _extract_title(html), _extract_text(html, max_chars=max_excerpt)
+    extractor = _SafeHtmlExtractor()
+    try:
+        extractor.feed(html[:MAX_PARSE_INPUT_CHARS])
+    except Exception:  # noqa: BLE001
+        return "", ""
+    return extractor.title(), extractor.text()[:max_excerpt]
 
 
 def _collapse_whitespace(value: str) -> str:

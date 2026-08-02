@@ -66,6 +66,15 @@ from app.services.scraping.maps_website_crawl_service import (
 logger = logging.getLogger(__name__)
 
 
+def _host_of(url: str | None) -> str | None:
+    if not url:
+        return None
+    from urllib.parse import urlsplit
+
+    host = urlsplit(str(url).strip()).hostname
+    return host.lower() if host else None
+
+
 class MapsEnrichmentCascadeService:
     async def enrich_run(self, db: AsyncSession | None, *, run_id: str) -> dict[str, Any]:
         session_factory = maps_place_enrichment_service._session_factory(db)
@@ -687,7 +696,9 @@ class MapsEnrichmentCascadeService:
                     )
                 )
             ).scalars().all()
+            stuck_ids: set[str] = set()
             stuck_running = 0
+            stuck_domains: list[str] = []
             for place in stuck_places:
                 place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                 place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
@@ -696,10 +707,18 @@ class MapsEnrichmentCascadeService:
                 )
                 place.enrichment_extraction_source = "recovery_finalize"
                 place.enrichment_completed_at = datetime.now(UTC)
+                stuck_ids.add(place.id)
                 stuck_running += 1
+                host = _host_of(place.official_website or place.website)
+                if host:
+                    stuck_domains.append(host)
 
             if settings.maps_census_two_phase_pipeline_enabled:
-                two_phase_reset = await self._reset_two_phase_places(session, run_id=run_id)
+                # Do not immediately re-queue the places we just finalized as stuck;
+                # that re-selected clinique-tabet.com every recovery and re-froze the worker.
+                two_phase_reset = await self._reset_two_phase_places(
+                    session, run_id=run_id, exclude_ids=stuck_ids
+                )
                 reset = stuck_running + two_phase_reset
                 hollow_reset = 0
                 missing_addictions_reset = 0
@@ -749,6 +768,14 @@ class MapsEnrichmentCascadeService:
                 limits_reached.pop("sonar_fallback", None)
                 limits_reached.pop("sonar_classify", None)
                 state["limits_reached"] = limits_reached
+                if stuck_domains:
+                    skipped = {
+                        str(item).strip().lower()
+                        for item in (state.get("crawl_skip_domains") or [])
+                        if str(item).strip()
+                    }
+                    skipped.update(stuck_domains)
+                    state["crawl_skip_domains"] = sorted(skipped)
                 run.processing_state = state
                 run.enrichment_refresh_completed_at = None
                 if run.completed_at is not None:
@@ -762,7 +789,13 @@ class MapsEnrichmentCascadeService:
                 "reset_two_phase": two_phase_reset,
             }
 
-    async def _reset_two_phase_places(self, session: AsyncSession, *, run_id: str) -> int:
+    async def _reset_two_phase_places(
+        self,
+        session: AsyncSession,
+        *,
+        run_id: str,
+        exclude_ids: set[str] | None = None,
+    ) -> int:
         """Re-queue all relevant places for a full classify + detail enrichment pass."""
         places = (
             await session.execute(
@@ -773,7 +806,10 @@ class MapsEnrichmentCascadeService:
             )
         ).scalars().all()
         reset = 0
+        skip = exclude_ids or set()
         for place in places:
+            if place.id in skip:
+                continue
             place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
             place.enrichment_error_message = None
             place.enrichment_completed_at = None

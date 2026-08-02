@@ -33,6 +33,19 @@ def test_extract_text_caps_input_and_survives_malformed_markup():
     assert "real content" in text
 
 
+def test_extract_text_redos_bait_finishes_quickly():
+    # Old SCRIPT_STYLE_RE with many unclosed <script...> tags could ReDoS and pin
+    # the GIL even inside asyncio.to_thread, freezing the whole worker.
+    import time
+
+    evil = (("<script" + ("a" * 30) + ">") * 800) + "<p>visible centre</p>"
+    started = time.perf_counter()
+    text = _extract_text(evil, max_chars=200)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, f"parser took {elapsed:.2f}s on ReDoS bait"
+    assert "visible centre" in text
+
+
 def test_extract_title_bounds_input():
     padding = "x" * (MAX_PARSE_INPUT_CHARS + 5000)
     html = f"<html><head><title>Centre</title></head><body>{padding}</body></html>"
