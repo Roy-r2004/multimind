@@ -16,6 +16,7 @@ from app.llm.catalog import get_model
 from app.llm.providers import get_provider_registry
 from app.services.scraping.maps_enrichment_fetch import cap_payload_excerpt
 from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmentPipelineState
+from app.services.scraping.maps_enrichment_progress import persist_enrichment_progress
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_enrichment_selection import is_detail_enrichment_candidate
 from app.services.scraping.maps_place_enrichment_service import (
@@ -64,14 +65,22 @@ class MapsDetailEnrichmentService:
         calls = 0
         enriched = 0
         paused = False
-        cursor: str | None = None
+        # Re-query the live candidate set each batch (no forward-only cursor).
+        await persist_enrichment_progress(
+            session_factory,
+            run_id=run_id,
+            phase="detail_enrichment",
+            enrichment_status="running",
+            detail_enriched_count=0,
+        )
 
         while True:
             async with session_factory() as session:
-                query = build_detail_enrichment_query(run_id)
-                if cursor:
-                    query = query.where(MapsPlace.id > cursor)
-                places = (await session.execute(query.limit(processing_batch_size))).scalars().all()
+                places = (
+                    await session.execute(
+                        build_detail_enrichment_query(run_id).limit(processing_batch_size)
+                    )
+                ).scalars().all()
                 if not places:
                     break
 
@@ -80,15 +89,20 @@ class MapsDetailEnrichmentService:
             if non_candidates:
                 async with session_factory() as session:
                     for place in non_candidates:
-                        row = await session.get(MapsPlace, place.id)
-                        if row is None:
+                        fresh = await session.get(MapsPlace, place.id)
+                        if fresh is None:
                             continue
-                        row.enrichment_status = MapsPlaceEnrichmentStatus.SKIPPED.value
-                        row.enrichment_completed_at = datetime.now(UTC)
+                        fresh.enrichment_pipeline_state = (
+                            MapsEnrichmentPipelineState.DETAIL_NOT_REQUIRED.value
+                        )
+                        fresh.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                        fresh.enrichment_completed_at = datetime.now(UTC)
                     await session.commit()
 
             if not candidates:
-                cursor = places[-1].id
+                # Avoid spinning forever on rows that just became non-candidates.
+                if not non_candidates:
+                    break
                 continue
 
             if calls >= max_calls:
@@ -97,19 +111,46 @@ class MapsDetailEnrichmentService:
 
             for offset in range(0, len(candidates), batch_size):
                 chunk = candidates[offset : offset + batch_size]
-                enriched += await self._enrich_batch(
-                    session_factory,
-                    places=chunk,
-                    country_code=country_code,
-                    country_name=country_name,
-                    parse_stats=parse_stats,
-                    tracker=tracker,
-                )
+                try:
+                    enriched += await self._enrich_batch(
+                        session_factory,
+                        places=chunk,
+                        country_code=country_code,
+                        country_name=country_name,
+                        parse_stats=parse_stats,
+                        tracker=tracker,
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep parent job alive
+                    logger.exception(
+                        "maps_detail_enrichment_batch_failed error=%s",
+                        exc,
+                    )
+                    async with session_factory() as session:
+                        for place in chunk:
+                            fresh = await session.get(MapsPlace, place.id)
+                            if fresh is None:
+                                continue
+                            # Keep Phase 1 classification; only mark detail failed.
+                            fresh.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                            fresh.enrichment_pipeline_state = (
+                                MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_FAILED.value
+                            )
+                            fresh.enrichment_error_message = f"detail_enrichment_error: {exc}"[:500]
+                        await session.commit()
                 calls += len(chunk)
 
-            cursor = places[-1].id
+            await persist_enrichment_progress(
+                session_factory,
+                run_id=run_id,
+                phase="detail_enrichment",
+                enrichment_status="running",
+                last_processed_place_id=candidates[-1].id if candidates else None,
+                detail_enriched_count=enriched,
+                processed_count=enriched,
+                paused=paused,
+            )
 
-        return {"enriched": enriched, "paused": paused, "cursor": cursor}
+        return {"enriched": enriched, "paused": paused, "cursor": None}
 
     async def _enrich_batch(
         self,

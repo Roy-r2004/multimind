@@ -40,6 +40,7 @@ from app.db.models import (
     MapsContactStatus,
     MapsLifecycleStatus,
     MapsPlace,
+    MapsPlaceEnrichmentStatus,
     MapsRegionSaturationStatus,
 )
 from app.llm.catalog import get_model
@@ -2887,23 +2888,65 @@ async def refresh_maps_census_websites_job(ctx: dict, run_id: str) -> None:
 async def run_maps_census_enrichment_job(ctx: dict, run_id: str) -> None:
     """ARQ entrypoint: crawl facility websites and extract export columns."""
     del ctx
+    from app.db.session import AsyncSessionLocal
+    from app.services.scraping.maps_enrichment_progress import (
+        ENRICHMENT_STATUS_FAILED_RETRYABLE,
+        ENRICHMENT_STATUS_RUNNING,
+        persist_enrichment_progress,
+    )
     from app.services.scraping.maps_place_enrichment_service import maps_place_enrichment_service
 
     logger.info("maps_census_enrichment_job_entered", extra={"run_id": run_id})
+    await persist_enrichment_progress(
+        AsyncSessionLocal,
+        run_id=run_id,
+        phase="job_start",
+        enrichment_status=ENRICHMENT_STATUS_RUNNING,
+    )
     try:
-        await maps_place_enrichment_service.enrich_run(None, run_id=run_id)
-    except Exception:  # noqa: BLE001
+        result = await maps_place_enrichment_service.enrich_run(None, run_id=run_id)
+        if isinstance(result, dict) and result.get("failed_retryable"):
+            logger.error(
+                "maps_census_enrichment_job_failed_retryable",
+                extra={"run_id": run_id, "error": result.get("error")},
+            )
+    except Exception as exc:  # noqa: BLE001
         logger.exception("maps_census_enrichment_job_failed", extra={"run_id": run_id})
+        await persist_enrichment_progress(
+            AsyncSessionLocal,
+            run_id=run_id,
+            phase="job_fatal",
+            enrichment_status=ENRICHMENT_STATUS_FAILED_RETRYABLE,
+            error=str(exc),
+            extra={"enrichment_fatal": True},
+        )
 
 
 async def recover_maps_census_runs(ctx: dict) -> None:
-    """Requeue Maps census runs whose worker died mid-flight (stale heartbeat)."""
+    """Requeue Maps census runs whose worker died mid-flight (stale heartbeat).
+
+    Also auto-resumes enrichment on discovery-completed campaigns when:
+    - enrichment_refresh_completed_at is null
+    - pending places remain
+    - running == 0
+    - enrichment heartbeat is stale
+    without requiring a destructive Recover reset.
+    """
     del ctx
     from datetime import timedelta
 
     from app.db.session import AsyncSessionLocal
+    from app.services.scraping.maps_enrichment_progress import (
+        ENRICHMENT_STATUS_STALE_FAILED,
+        MAX_ENRICHMENT_AUTO_RESUMES,
+        count_places_by_enrichment_status,
+        parse_enrichment_heartbeat,
+        persist_enrichment_progress,
+    )
 
     cutoff = datetime.now(UTC) - timedelta(minutes=10)
+    stale_discovery_ids: list[str] = []
+    enrichment_snapshots: list[dict] = []
     async with AsyncSessionLocal() as db:
         stale = (
             await db.execute(
@@ -2913,12 +2956,71 @@ async def recover_maps_census_runs(ctx: dict) -> None:
                 )
             )
         ).scalars().all()
-        run_ids = [run.id for run in stale]
+        stale_discovery_ids = [run.id for run in stale]
+
+        enrichment_candidates = (
+            await db.execute(
+                select(MapsCensusRun).where(
+                    MapsCensusRun.status == MapsCensusStatus.COMPLETED,
+                    MapsCensusRun.enrichment_refresh_completed_at.is_(None),
+                    MapsCensusRun.enrichment_refresh_attempts > 0,
+                )
+            )
+        ).scalars().all()
+        for run in enrichment_candidates:
+            enrichment_snapshots.append(
+                {
+                    "id": run.id,
+                    "heartbeat": parse_enrichment_heartbeat(run),
+                    "updated_at": run.updated_at,
+                    "auto_resumes": int(
+                        (run.processing_state or {}).get("enrichment_auto_resume_count") or 0
+                    ),
+                }
+            )
         await db.commit()
 
-    for run_id in run_ids:
+    for run_id in stale_discovery_ids:
         logger.warning("maps_census_recovering_stale_run", extra={"run_id": run_id})
         asyncio.create_task(run_maps_census_job({}, run_id))
+
+    for snap in enrichment_snapshots:
+        heartbeat = snap["heartbeat"]
+        if heartbeat is not None and heartbeat >= cutoff:
+            continue
+        updated = snap["updated_at"]
+        if heartbeat is None and updated is not None:
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=UTC)
+            if updated >= cutoff:
+                continue
+        auto_resumes = int(snap["auto_resumes"] or 0)
+        if auto_resumes >= MAX_ENRICHMENT_AUTO_RESUMES:
+            continue
+        run_id = snap["id"]
+        counts = await count_places_by_enrichment_status(AsyncSessionLocal, run_id=run_id)
+        pending = int(counts.get(MapsPlaceEnrichmentStatus.PENDING.value, 0))
+        running = int(counts.get(MapsPlaceEnrichmentStatus.RUNNING.value, 0))
+        if pending <= 0 or running != 0:
+            continue
+        logger.warning(
+            "maps_census_auto_resuming_stale_enrichment",
+            extra={"run_id": run_id, "pending": pending, "auto_resumes": auto_resumes},
+        )
+        await persist_enrichment_progress(
+            AsyncSessionLocal,
+            run_id=run_id,
+            phase="stale_watchdog",
+            enrichment_status=ENRICHMENT_STATUS_STALE_FAILED,
+            pending_count=pending,
+            running_count=running,
+            error="enrichment heartbeat stale with pending work; auto-requeue once",
+            extra={
+                "enrichment_auto_resume_count": auto_resumes + 1,
+                "enrichment_stale_watchdog_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        asyncio.create_task(run_maps_census_enrichment_job({}, run_id))
 
 
 async def auto_refresh_maps_census_websites(ctx: dict) -> None:

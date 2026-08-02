@@ -103,6 +103,9 @@ def _campaign_paused(run: MapsCensusRun) -> bool:
 def _derive_current_stage(run: MapsCensusRun) -> str:
     status = run.status.value if hasattr(run.status, "value") else str(run.status)
     state = run.processing_state or {}
+    from app.services.scraping.maps_enrichment_progress import enrichment_status_from_run
+
+    enrichment_status = enrichment_status_from_run(run)
 
     if _campaign_paused(run):
         return "paused"
@@ -112,8 +115,16 @@ def _derive_current_stage(run: MapsCensusRun) -> str:
         return "cancelled"
     if status == MapsCensusStatus.FAILED.value:
         return "failed"
+    # Discovery may be completed while enrichment is still running/failed.
+    if enrichment_status in {"running", "failed_retryable", "stale_failed", "paused"}:
+        return "enrichment"
     if status == MapsCensusStatus.COMPLETED.value:
         if state.get("enrichment_paused"):
+            return "enrichment"
+        if run.enrichment_refresh_completed_at is None and (
+            (run.enrichment_refresh_attempts or 0) > 0
+            or state.get("enrichment_heartbeat_at")
+        ):
             return "enrichment"
         if state.get("website_search_paused"):
             return "website_refresh"
@@ -229,6 +240,11 @@ class MapsAdminService:
             select(func.count()).select_from(MapsCensusRegion).where(MapsCensusRegion.run_id == run_id)
         )
 
+        from app.services.scraping.maps_enrichment_progress import (
+            enrichment_status_from_run,
+            parse_enrichment_heartbeat,
+        )
+
         return MapsCensusRunAdminDetail(
             **summary.model_dump(),
             current_stage=_derive_current_stage(run),
@@ -248,6 +264,11 @@ class MapsAdminService:
             places_excluded=int(place_counts.get(MapsClientEligibility.EXCLUDED.value, 0)),
             website_refresh_attempts=run.website_refresh_attempts,
             enrichment_refresh_attempts=run.enrichment_refresh_attempts,
+            enrichment_status=enrichment_status_from_run(run),
+            enrichment_heartbeat_at=parse_enrichment_heartbeat(run),
+            discovery_status=(
+                run.status.value if hasattr(run.status, "value") else str(run.status)
+            ),
             country_profile=run.country_profile,
         )
 

@@ -849,6 +849,9 @@ class MapsCensusRunAdminDetail(MapsCensusRunSummary):
     places_excluded: int = 0
     website_refresh_attempts: int = 0
     enrichment_refresh_attempts: int = 0
+    enrichment_status: str | None = None
+    enrichment_heartbeat_at: datetime | None = None
+    discovery_status: str | None = None
     country_profile: dict[str, Any] | None = None
 
 

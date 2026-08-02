@@ -229,6 +229,14 @@ class MapsEnrichmentCascadeService:
         """Phase 1 classify all relevant places, then Phase 2 enrich addictions/languages."""
         from app.services.scraping.maps_classification_service import maps_classification_service
         from app.services.scraping.maps_detail_enrichment_service import maps_detail_enrichment_service
+        from app.services.scraping.maps_enrichment_progress import (
+            ENRICHMENT_STATUS_COMPLETED,
+            ENRICHMENT_STATUS_FAILED_RETRYABLE,
+            ENRICHMENT_STATUS_PAUSED,
+            ENRICHMENT_STATUS_RUNNING,
+            assert_enrichment_exit_allowed,
+            persist_enrichment_progress,
+        )
 
         session_factory = maps_place_enrichment_service._session_factory(db)
         settings = get_settings()
@@ -239,119 +247,225 @@ class MapsEnrichmentCascadeService:
                 return {"enriched": 0}
             state = dict(run.processing_state or {})
             if state.get("enrichment_pipeline_paused") or state.get("campaign_paused"):
+                await persist_enrichment_progress(
+                    session_factory,
+                    run_id=run_id,
+                    phase="paused",
+                    enrichment_status=ENRICHMENT_STATUS_PAUSED,
+                    paused=True,
+                )
                 return {"enriched": 0, "paused": True}
             country_code = run.country_code
             country_name = run.country_name
 
-        await self._finalize_stale_running_places(session_factory, run_id=run_id)
+        await persist_enrichment_progress(
+            session_factory,
+            run_id=run_id,
+            phase="two_phase_start",
+            enrichment_status=ENRICHMENT_STATUS_RUNNING,
+        )
 
-        async with session_factory() as session:
-            selection_report = await build_selection_report(session, run_id=run_id)
-            relevant_count = (
-                await session.execute(
-                    select(MapsPlace).where(
-                        MapsPlace.run_id == run_id,
-                        MapsPlace.is_relevant.is_(True),
+        try:
+            await self._finalize_stale_running_places(session_factory, run_id=run_id)
+
+            async with session_factory() as session:
+                selection_report = await build_selection_report(session, run_id=run_id)
+                relevant_count = (
+                    await session.execute(
+                        select(MapsPlace).where(
+                            MapsPlace.run_id == run_id,
+                            MapsPlace.is_relevant.is_(True),
+                        )
                     )
+                ).scalars().all()
+                relevant_total = len(relevant_count)
+
+            tracker = MapsQuotaTracker()
+            parse_stats = EnrichmentParseStats()
+            sonar_stats = SonarFallbackStats()
+            sonar_budget = SonarBudget(
+                enabled=settings.maps_sonar_fallback_enabled,
+                max_percent=settings.maps_sonar_fallback_max_percent,
+                max_per_campaign=settings.maps_sonar_fallback_max_per_campaign,
+                selected_candidates=relevant_total,
+                calls_used=int((state.get("sonar_fallback_stats") or {}).get("sonar_calls") or 0),
+            )
+
+            phase1 = await maps_classification_service.classify_run(
+                session_factory,
+                run_id=run_id,
+                country_code=country_code,
+                country_name=country_name,
+                tracker=tracker,
+                sonar_budget=sonar_budget,
+                sonar_stats=sonar_stats,
+                parse_stats=parse_stats,
+            )
+
+            phase2 = await maps_detail_enrichment_service.enrich_run(
+                session_factory,
+                run_id=run_id,
+                country_code=country_code,
+                country_name=country_name,
+                tracker=tracker,
+                parse_stats=parse_stats,
+            )
+
+            paused = bool(phase1.get("paused") or phase2.get("paused"))
+            exit_check = await assert_enrichment_exit_allowed(
+                session_factory,
+                run_id=run_id,
+                paused=paused,
+                failed=False,
+            )
+            if not exit_check["ok"]:
+                logger.error(
+                    "maps_enrichment_exit_anomaly run_id=%s pending=%s running=%s",
+                    run_id,
+                    exit_check["pending"],
+                    exit_check["running"],
                 )
-            ).scalars().all()
-            relevant_total = len(relevant_count)
-
-        tracker = MapsQuotaTracker()
-        parse_stats = EnrichmentParseStats()
-        sonar_stats = SonarFallbackStats()
-        sonar_budget = SonarBudget(
-            enabled=settings.maps_sonar_fallback_enabled,
-            max_percent=settings.maps_sonar_fallback_max_percent,
-            max_per_campaign=settings.maps_sonar_fallback_max_per_campaign,
-            selected_candidates=relevant_total,
-            calls_used=int((state.get("sonar_fallback_stats") or {}).get("sonar_calls") or 0),
-        )
-
-        phase1 = await maps_classification_service.classify_run(
-            session_factory,
-            run_id=run_id,
-            country_code=country_code,
-            country_name=country_name,
-            tracker=tracker,
-            sonar_budget=sonar_budget,
-            sonar_stats=sonar_stats,
-            parse_stats=parse_stats,
-        )
-
-        phase2 = await maps_detail_enrichment_service.enrich_run(
-            session_factory,
-            run_id=run_id,
-            country_code=country_code,
-            country_name=country_name,
-            tracker=tracker,
-            parse_stats=parse_stats,
-        )
-
-        paused = phase1.get("paused") or phase2.get("paused")
-
-        async with session_factory() as session:
-            run = await session.get(MapsCensusRun, run_id)
-            if run is not None:
-                state = dict(run.processing_state or {})
-                state["enrichment_paused"] = paused
-                state["enrichment_cursor"] = None
-                state["enrichment_pipeline"] = "two_phase_v1"
-                state["classification_stats"] = {
-                    "classified": phase1.get("classified", 0),
-                    "paused": phase1.get("paused", False),
-                }
-                state["detail_enrichment_stats"] = {
+                await persist_enrichment_progress(
+                    session_factory,
+                    run_id=run_id,
+                    phase="exit_anomaly",
+                    enrichment_status=ENRICHMENT_STATUS_FAILED_RETRYABLE,
+                    pending_count=exit_check["pending"],
+                    running_count=exit_check["running"],
+                    classified_count=phase1.get("classified", 0),
+                    detail_enriched_count=phase2.get("enriched", 0),
+                    paused=paused,
+                    error=(
+                        "enrichment exited with selectable work remaining "
+                        f"(pending={exit_check['pending']} running={exit_check['running']})"
+                    ),
+                    extra={"enrichment_exit_anomaly": exit_check},
+                )
+                async with session_factory() as session:
+                    run = await session.get(MapsCensusRun, run_id)
+                    if run is not None:
+                        state = dict(run.processing_state or {})
+                        state["enrichment_paused"] = False
+                        state["enrichment_pipeline"] = "two_phase_v1"
+                        state["classification_stats"] = {
+                            "classified": phase1.get("classified", 0),
+                            "paused": phase1.get("paused", False),
+                        }
+                        state["detail_enrichment_stats"] = {
+                            "enriched": phase2.get("enriched", 0),
+                            "paused": phase2.get("paused", False),
+                        }
+                        state["sonar_classify_stats"] = sonar_stats.as_dict()
+                        state["sonar_fallback_stats"] = sonar_stats.as_dict()
+                        run.processing_state = state
+                        # Do NOT mark enrichment_refresh_completed_at.
+                        await session.commit()
+                await merge_quota_metrics(session_factory, run_id=run_id, tracker=tracker)
+                await self._finalize_stale_running_places(session_factory, run_id=run_id)
+                return {
                     "enriched": phase2.get("enriched", 0),
-                    "paused": phase2.get("paused", False),
+                    "classified": phase1.get("classified", 0),
+                    "pipeline": "two_phase_v1",
+                    "paused": paused,
+                    "failed_retryable": True,
+                    "exit_anomaly": exit_check,
                 }
-                state["enrichment_selection"] = {
-                    "sql": selection_report.selection_sql,
-                    "selected_count": selection_report.selected_count,
-                    "skipped_count": selection_report.skipped_count,
-                    "skip_reasons": selection_report.skip_reasons,
-                    "relevant_total": relevant_total,
-                }
-                # Classification Sonar budget — independent from Phase 2 detail enrichment.
-                state["sonar_classify_stats"] = sonar_stats.as_dict()
-                state["sonar_fallback_stats"] = sonar_stats.as_dict()
-                state["sonar_classify_budget"] = {
-                    "enabled": sonar_budget.enabled,
-                    "max_calls": sonar_budget.max_calls,
-                    "calls_used": sonar_budget.calls_used,
-                    "remaining": sonar_budget.remaining,
-                    "budget_exhausted": sonar_stats.budget_exhausted,
-                }
-                state["sonar_fallback_budget"] = state["sonar_classify_budget"]
-                state["detail_enrichment_budget"] = {
-                    "max_calls_per_run": settings.maps_census_enrichment_max_calls_per_run,
-                    "paused": phase2.get("paused", False),
-                    "note": "Phase 2 continues even when sonar_classify budget is exhausted",
-                }
-                limits_reached = dict(state.get("limits_reached") or {})
-                limits_reached["enrichment"] = paused
-                limits_reached["classification"] = phase1.get("paused", False)
-                limits_reached["detail_enrichment"] = phase2.get("paused", False)
-                limits_reached["sonar_classify"] = sonar_stats.budget_exhausted
-                limits_reached["sonar_fallback"] = sonar_stats.budget_exhausted
-                # Never treat classify-budget exhaustion as a global enrichment abort.
-                if sonar_stats.budget_exhausted and not phase2.get("paused"):
-                    limits_reached["enrichment"] = phase1.get("paused", False)
-                state["limits_reached"] = limits_reached
-                run.processing_state = state
-                await session.commit()
 
-        await merge_quota_metrics(session_factory, run_id=run_id, tracker=tracker)
-        await self._finalize_stale_running_places(session_factory, run_id=run_id)
-        await self._refresh_run_counters(session_factory, run_id=run_id)
-        return {
-            "enriched": phase2.get("enriched", 0),
-            "classified": phase1.get("classified", 0),
-            "pipeline": "two_phase_v1",
-            "selection": selection_report.__dict__,
-            "sonar_fallback_stats": sonar_stats.as_dict(),
-            "paused": paused,
-        }
+            async with session_factory() as session:
+                run = await session.get(MapsCensusRun, run_id)
+                if run is not None:
+                    state = dict(run.processing_state or {})
+                    state["enrichment_paused"] = paused
+                    state["enrichment_cursor"] = None
+                    state["enrichment_pipeline"] = "two_phase_v1"
+                    state["classification_stats"] = {
+                        "classified": phase1.get("classified", 0),
+                        "paused": phase1.get("paused", False),
+                    }
+                    state["detail_enrichment_stats"] = {
+                        "enriched": phase2.get("enriched", 0),
+                        "paused": phase2.get("paused", False),
+                    }
+                    state["enrichment_selection"] = {
+                        "sql": selection_report.selection_sql,
+                        "selected_count": selection_report.selected_count,
+                        "skipped_count": selection_report.skipped_count,
+                        "skip_reasons": selection_report.skip_reasons,
+                        "relevant_total": relevant_total,
+                    }
+                    state["sonar_classify_stats"] = sonar_stats.as_dict()
+                    state["sonar_fallback_stats"] = sonar_stats.as_dict()
+                    state["sonar_classify_budget"] = {
+                        "enabled": sonar_budget.enabled,
+                        "max_calls": sonar_budget.max_calls,
+                        "calls_used": sonar_budget.calls_used,
+                        "remaining": sonar_budget.remaining,
+                        "budget_exhausted": sonar_stats.budget_exhausted,
+                    }
+                    state["sonar_fallback_budget"] = state["sonar_classify_budget"]
+                    state["detail_enrichment_budget"] = {
+                        "max_calls_per_run": settings.maps_census_enrichment_max_calls_per_run,
+                        "paused": phase2.get("paused", False),
+                        "note": "Phase 2 continues even when sonar_classify budget is exhausted",
+                    }
+                    limits_reached = dict(state.get("limits_reached") or {})
+                    limits_reached["enrichment"] = paused
+                    limits_reached["classification"] = phase1.get("paused", False)
+                    limits_reached["detail_enrichment"] = phase2.get("paused", False)
+                    limits_reached["sonar_classify"] = sonar_stats.budget_exhausted
+                    limits_reached["sonar_fallback"] = sonar_stats.budget_exhausted
+                    if sonar_stats.budget_exhausted and not phase2.get("paused"):
+                        limits_reached["enrichment"] = phase1.get("paused", False)
+                    state["limits_reached"] = limits_reached
+                    state["enrichment_status"] = (
+                        ENRICHMENT_STATUS_PAUSED if paused else ENRICHMENT_STATUS_COMPLETED
+                    )
+                    run.processing_state = state
+                    await session.commit()
+
+            await persist_enrichment_progress(
+                session_factory,
+                run_id=run_id,
+                phase="two_phase_complete",
+                enrichment_status=(
+                    ENRICHMENT_STATUS_PAUSED if paused else ENRICHMENT_STATUS_COMPLETED
+                ),
+                classified_count=phase1.get("classified", 0),
+                detail_enriched_count=phase2.get("enriched", 0),
+                pending_count=exit_check["pending"],
+                running_count=exit_check["running"],
+                paused=paused,
+            )
+            await merge_quota_metrics(session_factory, run_id=run_id, tracker=tracker)
+            await self._finalize_stale_running_places(session_factory, run_id=run_id)
+            if not paused:
+                await self._refresh_run_counters(session_factory, run_id=run_id)
+            return {
+                "enriched": phase2.get("enriched", 0),
+                "classified": phase1.get("classified", 0),
+                "pipeline": "two_phase_v1",
+                "selection": selection_report.__dict__,
+                "sonar_fallback_stats": sonar_stats.as_dict(),
+                "paused": paused,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("maps_enrichment_two_phase_fatal run_id=%s error=%s", run_id, exc)
+            await persist_enrichment_progress(
+                session_factory,
+                run_id=run_id,
+                phase="fatal_error",
+                enrichment_status=ENRICHMENT_STATUS_FAILED_RETRYABLE,
+                error=str(exc),
+                extra={"enrichment_fatal": True},
+            )
+            await self._finalize_stale_running_places(session_factory, run_id=run_id)
+            # Preserve completed rows; do not mark remaining pending as skipped/excluded.
+            return {
+                "enriched": 0,
+                "pipeline": "two_phase_v1",
+                "failed_retryable": True,
+                "error": str(exc)[:500],
+            }
 
     async def _process_place(
         self,

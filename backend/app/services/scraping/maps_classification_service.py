@@ -26,6 +26,7 @@ from app.services.scraping.maps_eligibility import (
     derive_legacy_verification_verdict,
 )
 from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmentPipelineState
+from app.services.scraping.maps_enrichment_progress import persist_enrichment_progress
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_enrichment_selection import is_detail_enrichment_candidate
 from app.services.scraping.maps_place_enrichment_service import (
@@ -144,9 +145,9 @@ class MapsClassificationService:
         calls = 0
         classified = 0
         paused = False
-        cursor: str | None = None
-        # Domains that timed out / errored during crawl this run. Attempted once,
-        # then skipped so a single slow site can't stall batch after batch.
+        # Do not use a forward-only id cursor on a mutating selectable set: a place
+        # that remains pending behind the cursor would be silently skipped for the
+        # rest of the job. Re-query the live pending/failed set each batch instead.
         failed_crawl_domains: set[str] = set()
         async with session_factory() as session:
             run = await session.get(MapsCensusRun, run_id)
@@ -156,12 +157,19 @@ class MapsClassificationService:
                     if host:
                         failed_crawl_domains.add(host)
 
+        await persist_enrichment_progress(
+            session_factory,
+            run_id=run_id,
+            phase="classification",
+            enrichment_status="running",
+            processed_count=0,
+        )
+
         while True:
             async with session_factory() as session:
-                query = build_classification_query(run_id)
-                if cursor:
-                    query = query.where(MapsPlace.id > cursor)
-                places = (await session.execute(query.limit(batch_size))).scalars().all()
+                places = (
+                    await session.execute(build_classification_query(run_id).limit(batch_size))
+                ).scalars().all()
                 if not places:
                     break
 
@@ -206,19 +214,65 @@ class MapsClassificationService:
                                 )
                                 await session.commit()
                         return 0
+                    except Exception as exc:  # noqa: BLE001 - never kill the parent job
+                        logger.exception(
+                            "maps_classification_place_failed place=%s error=%s",
+                            place_id,
+                            exc,
+                        )
+                        async with session_factory() as session:
+                            place = await session.get(MapsPlace, place_id)
+                            if place is not None:
+                                place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                                place.enrichment_pipeline_state = (
+                                    MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
+                                )
+                                place.enrichment_error_message = f"classification_error: {exc}"[:500]
+                                await session.commit()
+                        return 0
 
-            results = await asyncio.gather(*(process_one(p.id) for p in places))
-            classified += sum(results)
+            # return_exceptions so one unexpected failure cannot cancel siblings
+            # or abort the entire classification loop.
+            results = await asyncio.gather(
+                *(process_one(p.id) for p in places),
+                return_exceptions=True,
+            )
+            batch_ok = 0
+            for place, result in zip(places, results, strict=False):
+                if isinstance(result, Exception):
+                    logger.exception(
+                        "maps_classification_gather_error place=%s error=%s",
+                        place.id,
+                        result,
+                    )
+                    continue
+                batch_ok += int(result or 0)
+            classified += batch_ok
             calls += len(places)
-            cursor = places[-1].id
 
             async with session_factory() as session:
-                run = await session.get(MapsCensusRun, run_id)
-                if run is not None:
-                    run.heartbeat_at = datetime.now(UTC)
-                    await session.commit()
+                pending_left = (
+                    await session.execute(
+                        select(MapsPlace.id).where(
+                            MapsPlace.run_id == run_id,
+                            MapsPlace.enrichment_status
+                            == MapsPlaceEnrichmentStatus.PENDING.value,
+                        )
+                    )
+                ).scalars().all()
+            await persist_enrichment_progress(
+                session_factory,
+                run_id=run_id,
+                phase="classification",
+                enrichment_status="running",
+                last_processed_place_id=places[-1].id,
+                processed_count=classified,
+                pending_count=len(pending_left),
+                classified_count=classified,
+                paused=paused,
+            )
 
-        return {"classified": classified, "paused": paused, "cursor": cursor}
+        return {"classified": classified, "paused": paused, "cursor": None}
 
     async def _classify_place(
         self,
