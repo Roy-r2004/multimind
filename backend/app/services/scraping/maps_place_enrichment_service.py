@@ -155,6 +155,7 @@ class MapsPlaceEnrichmentResult(TruncatingModel):
     )
     addictions_treated: list[EvidenceField] = Field(default_factory=list)
     languages_spoken: list[EvidenceField] = Field(default_factory=list)
+    treatment_price: str | None = Field(default=None, max_length=512)
 
 
 class MapsPlaceEnrichmentBatch(BaseModel):
@@ -474,6 +475,8 @@ class MapsPlaceEnrichmentService:
                 languages = _normalize_languages(result.languages_spoken)
                 place.addictions_treated = addictions
                 place.languages_spoken = languages
+                if result.treatment_price and result.treatment_price.strip():
+                    place.treatment_price = result.treatment_price.strip()[:512]
                 if place.is_relevant and (addictions or languages):
                     enriched += 1
 

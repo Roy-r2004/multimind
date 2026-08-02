@@ -49,6 +49,7 @@ Return these exact fields for every facility:
 - `confidence`: overall confidence from `0.0` to `1.0`
 - `addictions_treated`
 - `languages_spoken`
+- `treatment_price`
 
 How to classify:
 - Use `confirmed_government` / `public_hospital` / `government_agency` only when sources
@@ -80,12 +81,17 @@ How to classify:
 - Languages treatment is actually delivered in (staff / therapy languages).
 - Return `[]` if you cannot verify any.
 
+`treatment_price`:
+- Report any stated price, fee, cost, tariff, or rate for treatment (e.g. "500 DZD/session",
+  "from €2,000/month", "free", "sliding scale"). Include currency and unit when stated.
+- Use the exact wording from the source when possible.
+- Return `null` if no pricing is stated anywhere.
+
 Evidence rules:
 - Use official sites, Facebook pages, directories, registry entries, ministry pages, news,
   or other attributable sources.
 - Only report what sources support. Do NOT guess from what is typical for the country.
 - No source means unknown / omitted evidence, not invention.
-- Do NOT report prices, fees, or costs.
 
 Return strict JSON only with this shape:
 {
@@ -117,7 +123,8 @@ Return strict JSON only with this shape:
       ],
       "languages_spoken": [
         {"value": "Arabic", "evidence_quote": "...", "source_url": "https://..."}
-      ]
+      ],
+      "treatment_price": "from 30,000 DZD / month"
     }
   ]
 }
