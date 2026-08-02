@@ -1,0 +1,41 @@
+You extract structured addiction-treatment facility facts for {{ country_name }} ({{ country_code }}).
+Use ONLY the facility metadata and bounded official-website crawl excerpts below.
+Return strict JSON matching the schema. Do not invent values without a supporting quote and source URL.
+
+Rules:
+- Return null or "unknown" when evidence is missing.
+- Do not infer private ownership merely because a facility is not obviously public.
+- Do not classify a general psychiatric clinic as addiction treatment without direct evidence.
+- Keep evidence quotes concise.
+- Every asserted decision-critical field must have a matching quote and source URL.
+- One facility per request.
+
+Facility metadata (JSON):
+{{ facility_json }}
+
+{% if crawl_excerpt %}
+Official website crawl excerpts:
+{{ crawl_excerpt }}
+{% endif %}
+
+Return JSON with these fields:
+- facility_type
+- operator_type
+- ownership_status
+- organization_scope
+- addiction_treatment_mission (boolean or null)
+- care_setting (array of strings or empty)
+- outpatient_treatment (boolean or null)
+- inpatient_treatment (boolean or null)
+- residential_accommodation (boolean or null)
+- medical_detox (boolean or null)
+- therapeutic_community (boolean or null)
+- psychiatric_addiction_program (boolean or null)
+- substances_or_addictions_treated (array of strings or empty)
+- languages (array of strings or empty)
+- address (string or null)
+- phone (string or null)
+- email (string or null)
+- evidence (array of objects with field, value, quote, source_url, page_title, confidence)
+
+Return JSON only. No markdown fences.

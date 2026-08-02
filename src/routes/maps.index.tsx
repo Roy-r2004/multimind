@@ -53,7 +53,7 @@ function MapsPage() {
         <DreamHeader
           eyebrow="Maps Census"
           title="Google Places census, country by country"
-          description="A standalone facility count from Google Places — run it for a country, then compare against the Scraping Council's census for the same country."
+          description="Non-government inpatient addiction rehab census from Google Places — compare facility counts against the Scraping Council pipeline."
           action={
             <Link
               to="/maps/new"
@@ -74,8 +74,8 @@ function MapsPage() {
             <DreamPanel tone="amber" className="p-12 text-center">
               <p className="font-display text-2xl text-foreground">No Maps census runs yet</p>
               <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-                Pick a country and Google Places will be searched city by city for rehab, addiction,
-                and psychiatric facilities.
+                Pick a country and Google Places will search major cities for non-government
+                inpatient addiction rehab facilities.
               </p>
               <Link
                 to="/maps/new"

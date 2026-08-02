@@ -697,6 +697,8 @@ class MapsCensusRunSummary(BaseModel):
     places_found: int
     places_classified_relevant: int
     places_with_website: int
+    places_enriched: int = 0
+    enrichment_refresh_completed_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime
@@ -706,6 +708,39 @@ class MapsCensusRunSummary(BaseModel):
 
 class MapsCensusRunDetail(MapsCensusRunSummary):
     pass
+
+
+class MapsCensusCellItem(BaseModel):
+    id: str
+    region_name: str
+    city_name: str | None = None
+    query_text: str
+    query_family: str | None = None
+    query_language: str | None = None
+    status: str
+    places_found: int
+    error_message: str | None = None
+    completed_at: datetime | None = None
+    started_at: datetime | None = None
+    # Pagination diagnostics (Phase 2 gap #1).
+    pages_fetched: int = 0
+    raw_results_found: int = 0
+    unique_results_found: int = 0
+    duplicates_found: int = 0
+    next_page_available: bool = False
+    result_cap_reached: bool = False
+    pagination_error: str | None = None
+    # Capped-cell subdivision diagnostics (Phase 2 gap #2).
+    parent_cell_id: str | None = None
+    expansion_reason: str | None = None
+    expansion_depth: int = 0
+    # Resumable-execution diagnostics (Phase 2 gap #3).
+    attempt_count: int = 0
+    last_error: str | None = None
+    next_retry_at: datetime | None = None
+    # Real-time classification counters (Phase 2 gap #5).
+    new_unique_places: int = 0
+    new_plausible_places: int = 0
 
 
 class MapsPlaceItem(BaseModel):
@@ -722,11 +757,140 @@ class MapsPlaceItem(BaseModel):
     raw_website: str | None = None
     official_website: str | None = None
     website_source: str | None = None
+    lifecycle_status: str = "discovered"
+    client_eligibility: str = "excluded"
+    operator_type: str | None = None
+    ownership_status: str | None = None
+    funding_type: str | None = None
+    facility_type: str | None = None
+    care_setting: str | None = None
+    organization_scope: str | None = None
+    operator_name: str | None = None
+    contact_status: str | None = None
+    addiction_focus_confirmed: bool | None = None
+    medical_detox: bool | None = None
+    residential_accommodation: bool | None = None
+    classification_confidence: float | None = None
+    classification_evidence: dict[str, Any] | None = None
+    discovery_sources: list[str] = Field(default_factory=list)
     is_relevant: bool | None = None
     relevance_reason: str | None = None
     confidence_score: float | None = None
     discovered_via_query: str | None = None
     has_photo: bool = False
+    verification_tier: str = "excluded"
+    export_eligible: bool = False
+    enrichment_status: str = "pending"
+    addictions_treated: list[str] = Field(default_factory=list)
+    languages_spoken: list[str] = Field(default_factory=list)
+    treatment_price: str | None = None
+    verification_verdict: str | None = None
+    verification_reason: str | None = None
+    verification_source_url: str | None = None
+
+
+class MapsPlaceReviewActionItem(BaseModel):
+    id: str
+    place_id: str
+    run_id: str
+    reviewer_user_id: str | None = None
+    action: str
+    field_name: str | None = None
+    previous_value: str | None = None
+    new_value: str | None = None
+    reason: str
+    created_at: datetime
+
+
+class MapsPlaceDetail(MapsPlaceItem):
+    enrichment_pages_crawled: list[str] = Field(default_factory=list)
+    enrichment_error_message: str | None = None
+    operating_status: str | None = None
+    review_actions: list[MapsPlaceReviewActionItem] = Field(default_factory=list)
+
+
+class MapsCensusRegionItem(BaseModel):
+    id: str
+    region_name: str
+    cells_planned: int
+    cells_completed: int
+    unique_places_found: int
+    new_unique_places_last_window: int
+    plausible_providers_found: int
+    new_plausible_providers_last_window: int
+    duplicate_rate: float | None = None
+    query_languages_used: list[str] | None = None
+    provider_terms_used: list[str] | None = None
+    saturation_status: str
+    eligible_candidates_found: int
+    review_candidates_found: int
+    confirmed_public_found: int
+    individuals_found: int
+    unrelated_found: int
+
+
+class MapsCensusRunAdminDetail(MapsCensusRunSummary):
+    current_stage: str
+    campaign_paused: bool = False
+    country_profile_status: str | None = None
+    country_profile_error: str | None = None
+    funnel_metrics: dict[str, Any] | None = None
+    saturation_summary: dict[str, Any] | None = None
+    processing_state: dict[str, Any] | None = None
+    quota_metrics: dict[str, Any] | None = None
+    regions_total: int = 0
+    cells_pending: int = 0
+    cells_failed: int = 0
+    cells_capped: int = 0
+    places_eligible: int = 0
+    places_review: int = 0
+    places_excluded: int = 0
+    website_refresh_attempts: int = 0
+    enrichment_refresh_attempts: int = 0
+    country_profile: dict[str, Any] | None = None
+
+
+class PaginatedMeta(BaseModel):
+    total: int
+    limit: int
+    offset: int
+
+
+class MapsPlaceListResponse(BaseModel):
+    items: list[MapsPlaceItem]
+    meta: PaginatedMeta
+
+
+class MapsCellListResponse(BaseModel):
+    items: list[MapsCensusCellItem]
+    meta: PaginatedMeta
+
+
+class MapsRegionListResponse(BaseModel):
+    items: list[MapsCensusRegionItem]
+    meta: PaginatedMeta
+
+
+class MapsPlaceReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(min_length=1, max_length=64)
+    field_name: str | None = Field(default=None, max_length=64)
+    new_value: str | None = None
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class MapsCampaignActionResponse(BaseModel):
+    run_id: str
+    status: str
+    campaign_paused: bool = False
+    message: str | None = None
+
+
+class MapsExportSummaryResponse(BaseModel):
+    run_id: str
+    sheets: dict[str, int]
+    total_places: int
 
 
 class SourceDiscoveryContext(BaseModel):

@@ -8,6 +8,7 @@ mirroring how ``official_source_seed_planner`` plans registry URLs.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,6 +28,11 @@ class MapsGridCell(BaseModel):
     region_name: str = Field(default="", max_length=160)
     city_name: str | None = Field(default=None, max_length=160)
     query_text: str = Field(default="", max_length=300)
+    # Populated when the LLM attributes a cell to one of the country profile's
+    # query families (generic/residential/outpatient/detox/association/acronym);
+    # left None when unattributable or no profile was available.
+    query_family: str | None = Field(default=None, max_length=64)
+    query_language: str | None = Field(default=None, max_length=32)
 
 
 class MapsGridPlan(BaseModel):
@@ -46,7 +52,13 @@ class MapsGridPlanner:
         country_code: str,
         country_name: str,
         max_cells: int,
+        country_profile: dict[str, Any] | None = None,
+        focus_region_names: list[str] | None = None,
     ) -> list[MapsGridCell]:
+        """Plan a search grid, or — when ``focus_region_names`` is given — an
+        expansion batch of *additional* cells for those already-productive
+        regions only (used by the adaptive census loop instead of re-planning
+        the whole country every time a region wants more coverage)."""
         capped = max(1, int(max_cells or 1))
         model = get_model(DEFAULT_MODEL)
         provider = get_provider_registry().get_provider(model.provider)
@@ -55,25 +67,64 @@ class MapsGridPlanner:
             max_cells=capped,
             country_code=(country_code or "XX")[:2].upper(),
             country_name=(country_name or "Unknown")[:120],
+            country_profile_json=json.dumps(country_profile or {}, ensure_ascii=False),
+            focus_region_names=list(focus_region_names or []),
         )
         try:
             response = await provider.complete(
                 system=(
-                    "You return strict JSON describing a Google Places search grid "
-                    "for a country's rehab/addiction/psychiatric facility census."
+                    "You return strict JSON describing a Google Places search grid for a "
+                    "national addiction-treatment provider discovery census — residential, "
+                    "inpatient, outpatient, detox, association/NGO, and acronym coverage — "
+                    "for later structured classification, not client-export filtering."
                 ),
                 user=prompt,
                 model=model.provider_model,
                 max_tokens=3500,
             )
             raw = LLMProvider.parse_json_response(response.text)
-            plan = MapsGridPlan.model_validate(_normalize_grid_payload(raw))
+            known_families = _known_family_keys(country_profile)
+            plan = MapsGridPlan.model_validate(
+                _normalize_grid_payload(raw, known_families=known_families)
+            )
         except Exception as exc:  # noqa: BLE001
             raise MapsGridPlanningError("Maps census grid planning failed.") from exc
         return _dedupe_cells(plan.cells, max_cells=capped)
 
 
-def _normalize_grid_payload(raw: Any) -> dict[str, Any]:
+def _known_family_keys(country_profile: dict[str, Any] | None) -> set[str] | None:
+    """Normalized (casefold/strip) set of query-family names known to the profile.
+
+    ``provider_terms`` keys are already normalized by the country profile service,
+    but ``query_families`` may retain the LLM's original casing — both sides must
+    be casefolded/stripped before cross-referencing them. Returns ``None`` when the
+    profile is missing or carries no usable families, so callers can skip filtering
+    entirely (e.g. failed-profile fallback).
+    """
+    if not country_profile:
+        return None
+    keys: set[str] = set()
+    provider_terms = country_profile.get("provider_terms")
+    if isinstance(provider_terms, dict):
+        keys.update(str(key).strip().casefold() for key in provider_terms if str(key).strip())
+    query_families = country_profile.get("query_families")
+    if isinstance(query_families, list):
+        keys.update(str(name).strip().casefold() for name in query_families if str(name).strip())
+    return keys or None
+
+
+def _normalize_query_family(raw_family: Any, known_families: set[str] | None) -> str | None:
+    value = str(raw_family or "").strip().casefold()
+    if not value:
+        return None
+    if known_families is not None and value not in known_families:
+        return None
+    return value[:64]
+
+
+def _normalize_grid_payload(
+    raw: Any, *, known_families: set[str] | None = None
+) -> dict[str, Any]:
     if isinstance(raw, list):
         items = raw
     elif isinstance(raw, dict):
@@ -91,6 +142,12 @@ def _normalize_grid_payload(raw: Any) -> dict[str, Any]:
                 "region_name": str(item.get("region_name") or item.get("region") or "").strip()[:160],
                 "city_name": (str(item.get("city_name") or item.get("city") or "").strip()[:160] or None),
                 "query_text": str(item.get("query_text") or item.get("query") or "").strip()[:300],
+                "query_family": _normalize_query_family(
+                    item.get("query_family") or item.get("family"), known_families
+                ),
+                "query_language": (
+                    str(item.get("query_language") or item.get("language") or "").strip()[:32] or None
+                ),
             }
         )
     return {"cells": normalized}

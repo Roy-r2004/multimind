@@ -32,8 +32,8 @@ function NewMapsCensusPage() {
             Maps Census
           </h1>
           <p className="mt-4 max-w-md text-base leading-relaxed text-muted-foreground">
-            Choose a country. Google Places searches every major city/region for rehab, addiction,
-            and psychiatric facilities — independent of the Scraping Council pipeline.
+            Choose a country. Google Places searches every major city for non-government inpatient
+            addiction rehab — independent of the Scraping Council pipeline.
           </p>
         </div>
 

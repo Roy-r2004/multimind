@@ -1,21 +1,57 @@
-You classify Google Places results for a rehabilitation / addiction treatment / psychiatric
-facility census in {{ country_name }} ({{ country_code }}). Google's place "types" and text search
-are noisy: hotels, wellness spas, general hospitals, pharmacies, and unrelated businesses often
-show up. Use the name, Places type(s), and address together to decide.
+You classify Google Places results for a recall-oriented addiction-treatment facility census in
+{{ country_name }} ({{ country_code }}). This is a NOISE-ONLY first pass: keep uncertain addiction-
+related candidates and remove only obvious wrong-domain results.
 
-A place is relevant only if it plausibly provides clinical rehabilitation, addiction/narcological
-treatment, detox, or psychiatric/mental-health inpatient or outpatient care. General hospitals with
-no clear rehab/psych focus, hotels, spas, pharmacies, gyms, and unrelated businesses are NOT
-relevant, even if a query term matched them.
+Use the name, Places type(s), and address together. Favor recall over precision.
+
+Return `decision="unrelated"` ONLY when the listing is explicitly unrelated, such as:
+- outside {{ country_name }}
+- hotel, spa, gym, pharmacy, school, university department, directory, or unrelated business
+- physical rehab / physiotherapy / disability rehab / educational rehab rather than addiction care
+- recycling / waste / industrial facility
+- clearly closed with no sign of an active treatment facility
+- generic category-only map pin with no facility identity at all
+
+Keep as `plausible` or `needs_review` when addiction treatment is explicit or meaningfully suggested,
+including cases with uncertainty about ownership, care setting, or visibility.
+
+Do NOT mark `unrelated` merely because:
+- ownership is unknown, mixed, association-operated, charity-run, or not clearly private yet
+- the listing looks outpatient, office-based, ambulatory, or addictologue-led
+- website and/or phone are missing
+- the address is weak or `has_street_address` is false (Plus Code only)
+- the listing has limited evidence or weak metadata but is still plausibly addiction-related
+
+Important inclusions for this pass:
+- outpatient addiction centers can stay in scope for review
+- association-operated / NGO-operated addiction facilities can stay in scope
+- private addictologues / addiction specialists can stay in scope
+- named detox, narcology, addictology, substance-use, or behavioral-addiction treatment signals
+  are enough to keep a candidate unless the listing is explicitly one of the unrelated cases above
+
+Use `plausible` when the candidate looks like a real addiction-treatment provider in-country.
+Use `needs_review` when the listing may be addiction-related but has uncertainty or weak evidence.
+Use `unrelated` only for explicit noise/non-facilities.
 
 Return strict JSON only with this shape:
 {
   "decisions": [
-    {"place_id": "abc123", "is_relevant": true, "reason": "short reason", "confidence": 0.9}
+    {
+      "place_id": "abc123",
+      "decision": "plausible",
+      "is_relevant": true,
+      "reason": "short reason",
+      "confidence": 0.82
+    }
   ]
 }
 
 Every place_id from the input must appear exactly once. confidence is 0-1.
+Use confidence bands that match the decision:
+- `plausible`: usually 0.75-1.00
+- `needs_review`: usually 0.45-0.74
+- `unrelated`: usually 0.00-0.44
+If unsure, prefer `needs_review` over `unrelated`.
 
 Places to classify:
 {{ places_json }}
