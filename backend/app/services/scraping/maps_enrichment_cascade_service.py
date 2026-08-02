@@ -320,6 +320,8 @@ class MapsEnrichmentCascadeService:
                 if place is None:
                     return 0
                 _apply_structured_fields(place, result)
+                place.addictions_treated = _normalize_addictions(result.addictions_treated)
+                place.languages_spoken = _normalize_languages(result.languages_spoken)
                 place.enrichment_extraction_source = "primary"
                 place.enrichment_pipeline_state = (
                     MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_COMPLETED.value
@@ -584,7 +586,10 @@ class MapsEnrichmentCascadeService:
                 place.enrichment_pipeline_state = default_pipeline_state()
                 reset += 1
             hollow_reset = await self._reset_hollow_completed_places(session, run_id=run_id)
-            reset += hollow_reset
+            missing_addictions_reset = await self._reset_completed_missing_addictions(
+                session, run_id=run_id
+            )
+            reset += hollow_reset + missing_addictions_reset
             run = await session.get(MapsCensusRun, run_id)
             if run is not None:
                 state = dict(run.processing_state or {})
@@ -600,7 +605,46 @@ class MapsEnrichmentCascadeService:
                 "reset_places": reset,
                 "reset_stuck_running": stuck_running,
                 "reset_hollow_completed": hollow_reset,
+                "reset_missing_addictions": missing_addictions_reset,
             }
+
+    async def _reset_completed_missing_addictions(
+        self, session: AsyncSession, *, run_id: str
+    ) -> int:
+        """Re-queue primary-enriched places that never persisted addictions/languages."""
+        places = (
+            await session.execute(
+                select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.is_relevant.is_(True),
+                    MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value,
+                    MapsPlace.enrichment_extraction_source == "primary",
+                )
+            )
+        ).scalars().all()
+        reset = 0
+        for place in places:
+            addictions = place.addictions_treated or []
+            languages = place.languages_spoken or []
+            if any(str(item).strip() for item in addictions) or any(
+                str(item).strip() for item in languages
+            ):
+                continue
+            lifecycle = place.lifecycle_status or ""
+            if lifecycle in CONFIDENT_SKIP_LIFECYCLE:
+                continue
+            if lifecycle not in {
+                MapsLifecycleStatus.NEEDS_REVIEW.value,
+                MapsLifecycleStatus.PLAUSIBLE.value,
+            }:
+                continue
+            place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
+            place.enrichment_error_message = None
+            place.enrichment_completed_at = None
+            place.enrichment_pipeline_state = default_pipeline_state()
+            place.enrichment_extraction_source = None
+            reset += 1
+        return reset
 
     async def _reset_hollow_completed_places(
         self, session: AsyncSession, *, run_id: str
