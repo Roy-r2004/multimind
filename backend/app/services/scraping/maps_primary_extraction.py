@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
+from app.services.scraping.maps_pydantic_utils import TruncatingModel
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ PRIMARY_EXTRACTION_TIMEOUT_SECONDS = 90.0
 MAX_EVIDENCE_ITEMS = 40
 
 
-class PrimaryExtractionEvidence(BaseModel):
+class PrimaryExtractionEvidence(TruncatingModel):
     model_config = ConfigDict(extra="ignore")
 
     field: str = Field(default="", max_length=64)

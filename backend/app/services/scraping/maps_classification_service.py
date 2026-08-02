@@ -8,22 +8,25 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from app.core.config import get_settings
 from app.db.models import (
     MapsCensusRun,
     MapsClientEligibility,
+    MapsLifecycleStatus,
     MapsPlace,
     MapsPlaceEnrichmentStatus,
 )
 from app.services.scraping.maps_classification_rules import (
     apply_deterministic_classification,
 )
+from app.services.scraping.maps_batch_claim import claim_batch_place_ids
 from app.services.scraping.maps_eligibility import (
     compute_client_eligibility,
     derive_is_relevant,
     derive_legacy_verification_verdict,
+    normalize_lifecycle_eligibility_consistency,
 )
 from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmentPipelineState
 from app.services.scraping.maps_enrichment_progress import persist_enrichment_progress
@@ -126,6 +129,162 @@ def build_classification_query(run_id: str):
 
 
 class MapsClassificationService:
+    async def classify_one_batch(
+        self,
+        session_factory,
+        *,
+        run_id: str,
+        country_code: str,
+        country_name: str,
+        tracker: MapsQuotaTracker,
+        sonar_budget: SonarBudget,
+        sonar_stats: SonarFallbackStats,
+        parse_stats: EnrichmentParseStats,
+        provider=None,
+        batch_size: int | None = None,
+        failed_crawl_domains: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically claim and classify exactly one small batch, then return.
+
+        Designed to be called from a short-lived job: it never loops internally,
+        so a worker crash mid-batch loses at most ``batch_size`` in-flight places
+        (already-committed places from earlier batches are untouched).
+        """
+        settings = get_settings()
+        provider = provider or create_structured_classification_provider()
+        size = max(1, batch_size or settings.maps_classification_batch_size)
+
+        if failed_crawl_domains is None:
+            failed_crawl_domains = set()
+            async with session_factory() as session:
+                run = await session.get(MapsCensusRun, run_id)
+                if run is not None:
+                    for item in (run.processing_state or {}).get("crawl_skip_domains") or []:
+                        host = str(item).strip().lower()
+                        if host:
+                            failed_crawl_domains.add(host)
+
+        place_ids = await claim_batch_place_ids(
+            session_factory, build_classification_query(run_id), batch_size=size
+        )
+        if not place_ids:
+            async with session_factory() as session:
+                pending_left = (
+                    await session.execute(
+                        select(func.count()).where(
+                            MapsPlace.run_id == run_id,
+                            MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value,
+                        ).select_from(MapsPlace)
+                    )
+                ).scalar_one()
+            return {"processed": 0, "has_more": False, "pending_count": int(pending_left or 0)}
+
+        semaphore = asyncio.Semaphore(max(1, settings.maps_primary_extraction_concurrency))
+        timeout = max(10.0, settings.maps_classification_place_timeout_seconds)
+
+        async def process_one(place_id: str) -> int:
+            async with semaphore:
+                try:
+                    return await asyncio.wait_for(
+                        self._classify_place(
+                            session_factory,
+                            place_id=place_id,
+                            country_code=country_code,
+                            country_name=country_name,
+                            provider=provider,
+                            sonar_budget=sonar_budget,
+                            sonar_stats=sonar_stats,
+                            parse_stats=parse_stats,
+                            tracker=tracker,
+                            failed_crawl_domains=failed_crawl_domains,
+                        ),
+                        timeout=timeout,
+                    )
+                except TimeoutError:
+                    logger.warning("maps_classification_timeout place=%s", place_id)
+                    await self._finalize_place_failure(
+                        session_factory,
+                        place_id=place_id,
+                        error=f"classification timeout after {int(timeout)}s",
+                    )
+                    return 0
+                except Exception as exc:  # noqa: BLE001 - never kill the parent job
+                    logger.exception(
+                        "maps_classification_place_failed place=%s error=%s",
+                        place_id,
+                        exc,
+                    )
+                    await self._finalize_place_failure(
+                        session_factory,
+                        place_id=place_id,
+                        error=f"classification_error: {exc}",
+                    )
+                    return 0
+
+        # return_exceptions so one unexpected failure cannot cancel siblings
+        # or abort the entire batch.
+        results = await asyncio.gather(
+            *(process_one(pid) for pid in place_ids),
+            return_exceptions=True,
+        )
+        batch_ok = 0
+        for place_id, result in zip(place_ids, results, strict=False):
+            if isinstance(result, Exception):
+                logger.exception(
+                    "maps_classification_gather_error place=%s error=%s",
+                    place_id,
+                    result,
+                )
+                await self._finalize_place_failure(
+                    session_factory, place_id=place_id, error=f"gather_error: {result}"
+                )
+                continue
+            batch_ok += int(result or 0)
+
+        async with session_factory() as session:
+            pending_left = (
+                await session.execute(
+                    select(func.count()).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value,
+                    ).select_from(MapsPlace)
+                )
+            ).scalar_one()
+
+        return {
+            "processed": batch_ok,
+            "claimed": len(place_ids),
+            "has_more": True,
+            "pending_count": int(pending_left or 0),
+            "last_processed_place_id": place_ids[-1],
+        }
+
+    async def _finalize_place_failure(self, session_factory, *, place_id: str, error: str) -> None:
+        """Mark a place failed after an unexpected error, respecting max attempts."""
+        settings = get_settings()
+        max_attempts = max(1, settings.maps_place_max_attempts)
+        async with session_factory() as session:
+            place = await session.get(MapsPlace, place_id)
+            if place is None:
+                return
+            attempts_exhausted = (place.enrichment_attempts or 0) >= max_attempts
+            if attempts_exhausted:
+                # Requirement: every relevant place must end in a valid bucket —
+                # never loop forever on a place that keeps erroring.
+                place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+                place.client_eligibility = MapsClientEligibility.REVIEW.value
+                place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                place.enrichment_completed_at = datetime.now(UTC)
+            else:
+                place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                place.enrichment_pipeline_state = (
+                    MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
+                )
+            place.enrichment_error_message = str(error)[:500]
+            normalize_lifecycle_eligibility_consistency(place)
+            await session.commit()
+
     async def classify_run(
         self,
         session_factory,
@@ -138,16 +297,18 @@ class MapsClassificationService:
         sonar_stats: SonarFallbackStats,
         parse_stats: EnrichmentParseStats,
     ) -> dict[str, Any]:
+        """Run classification to completion in-process (dev/inline/tests only).
+
+        Production traffic uses ``classify_one_batch`` from short-lived, self
+        re-enqueuing ARQ jobs so a worker crash cannot lose hundreds of places.
+        """
         settings = get_settings()
         provider = create_structured_classification_provider()
-        batch_size = max(1, settings.maps_census_enrichment_processing_batch_size)
+        batch_size = max(1, settings.maps_classification_batch_size)
         max_calls = max(1, settings.maps_primary_extraction_max_calls_per_run)
         calls = 0
         classified = 0
         paused = False
-        # Do not use a forward-only id cursor on a mutating selectable set: a place
-        # that remains pending behind the cursor would be silently skipped for the
-        # rest of the job. Re-query the live pending/failed set each batch instead.
         failed_crawl_domains: set[str] = set()
         async with session_factory() as session:
             run = await session.get(MapsCensusRun, run_id)
@@ -166,108 +327,37 @@ class MapsClassificationService:
         )
 
         while True:
-            async with session_factory() as session:
-                places = (
-                    await session.execute(build_classification_query(run_id).limit(batch_size))
-                ).scalars().all()
-                if not places:
-                    break
-
             if calls >= max_calls:
                 paused = True
                 break
 
-            semaphore = asyncio.Semaphore(max(1, settings.maps_primary_extraction_concurrency))
-            timeout = max(30.0, settings.maps_classification_place_timeout_seconds)
-
-            async def process_one(place_id: str) -> int:
-                async with semaphore:
-                    try:
-                        return await asyncio.wait_for(
-                            self._classify_place(
-                                session_factory,
-                                place_id=place_id,
-                                country_code=country_code,
-                                country_name=country_name,
-                                provider=provider,
-                                sonar_budget=sonar_budget,
-                                sonar_stats=sonar_stats,
-                                parse_stats=parse_stats,
-                                tracker=tracker,
-                                failed_crawl_domains=failed_crawl_domains,
-                            ),
-                            timeout=timeout,
-                        )
-                    except TimeoutError:
-                        logger.warning("maps_classification_timeout place=%s", place_id)
-                        async with session_factory() as session:
-                            place = await session.get(MapsPlace, place_id)
-                            if place is not None:
-                                place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
-                                # Terminal for this pass so the same hanging place is
-                                # not re-selected and stalls every later batch.
-                                place.enrichment_pipeline_state = (
-                                    MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
-                                )
-                                place.enrichment_error_message = (
-                                    f"classification timeout after {int(timeout)}s"
-                                )
-                                await session.commit()
-                        return 0
-                    except Exception as exc:  # noqa: BLE001 - never kill the parent job
-                        logger.exception(
-                            "maps_classification_place_failed place=%s error=%s",
-                            place_id,
-                            exc,
-                        )
-                        async with session_factory() as session:
-                            place = await session.get(MapsPlace, place_id)
-                            if place is not None:
-                                place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
-                                place.enrichment_pipeline_state = (
-                                    MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
-                                )
-                                place.enrichment_error_message = f"classification_error: {exc}"[:500]
-                                await session.commit()
-                        return 0
-
-            # return_exceptions so one unexpected failure cannot cancel siblings
-            # or abort the entire classification loop.
-            results = await asyncio.gather(
-                *(process_one(p.id) for p in places),
-                return_exceptions=True,
+            batch = await self.classify_one_batch(
+                session_factory,
+                run_id=run_id,
+                country_code=country_code,
+                country_name=country_name,
+                tracker=tracker,
+                sonar_budget=sonar_budget,
+                sonar_stats=sonar_stats,
+                parse_stats=parse_stats,
+                provider=provider,
+                batch_size=batch_size,
+                failed_crawl_domains=failed_crawl_domains,
             )
-            batch_ok = 0
-            for place, result in zip(places, results, strict=False):
-                if isinstance(result, Exception):
-                    logger.exception(
-                        "maps_classification_gather_error place=%s error=%s",
-                        place.id,
-                        result,
-                    )
-                    continue
-                batch_ok += int(result or 0)
-            classified += batch_ok
-            calls += len(places)
+            if not batch["has_more"]:
+                break
 
-            async with session_factory() as session:
-                pending_left = (
-                    await session.execute(
-                        select(MapsPlace.id).where(
-                            MapsPlace.run_id == run_id,
-                            MapsPlace.enrichment_status
-                            == MapsPlaceEnrichmentStatus.PENDING.value,
-                        )
-                    )
-                ).scalars().all()
+            classified += batch["processed"]
+            calls += batch.get("claimed", 0)
+
             await persist_enrichment_progress(
                 session_factory,
                 run_id=run_id,
                 phase="classification",
                 enrichment_status="running",
-                last_processed_place_id=places[-1].id,
+                last_processed_place_id=batch.get("last_processed_place_id"),
                 processed_count=classified,
-                pending_count=len(pending_left),
+                pending_count=batch["pending_count"],
                 classified_count=classified,
                 paused=paused,
             )
@@ -506,11 +596,24 @@ class MapsClassificationService:
                 return 0
 
             still_unresolved = needs_sonar_classification(place)
+            max_attempts = max(1, get_settings().maps_place_max_attempts)
+            attempts_exhausted = (place.enrichment_attempts or 0) >= max_attempts
             if sonar_failed and still_unresolved:
-                place.enrichment_pipeline_state = (
-                    MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
-                )
-                place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                if attempts_exhausted:
+                    # Delivery requirement: every relevant place must end in a
+                    # valid bucket, never loop forever on a place that keeps
+                    # failing classification. A provider failure must never
+                    # silently become "excluded" — park it as needs_review.
+                    place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+                    place.client_eligibility = MapsClientEligibility.REVIEW.value
+                    place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                    place.enrichment_completed_at = datetime.now(UTC)
+                else:
+                    place.enrichment_pipeline_state = (
+                        MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
+                    )
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
             elif is_detail_enrichment_candidate(place):
                 place.enrichment_pipeline_state = (
                     MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
@@ -526,6 +629,7 @@ class MapsClassificationService:
                 )
                 place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                 place.enrichment_completed_at = datetime.now(UTC)
+            normalize_lifecycle_eligibility_consistency(place)
             await session.commit()
             return 1
 

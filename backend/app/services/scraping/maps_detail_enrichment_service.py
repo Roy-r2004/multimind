@@ -8,12 +8,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import get_settings
 from app.db.models import MapsCensusRun, MapsPlace, MapsPlaceEnrichmentStatus
 from app.llm.catalog import get_model
 from app.llm.providers import get_provider_registry
+from app.services.scraping.maps_batch_claim import claim_batch_place_ids
 from app.services.scraping.maps_enrichment_fetch import cap_payload_excerpt
 from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmentPipelineState
 from app.services.scraping.maps_enrichment_progress import persist_enrichment_progress
@@ -33,21 +34,158 @@ from app.services.scraping.maps_website_crawl_service import (
 logger = logging.getLogger(__name__)
 
 
-def build_detail_enrichment_query(run_id: str):
+def build_detail_enrichment_query(run_id: str, *, max_attempts: int | None = None):
+    settings = get_settings()
+    attempts_cap = max_attempts if max_attempts is not None else settings.maps_place_max_attempts
     return (
         select(MapsPlace)
         .where(
             MapsPlace.run_id == run_id,
             MapsPlace.is_relevant.is_(True),
-            MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value,
-            MapsPlace.enrichment_pipeline_state
-            == MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value,
+            MapsPlace.enrichment_status.in_(
+                [MapsPlaceEnrichmentStatus.PENDING.value, MapsPlaceEnrichmentStatus.FAILED.value]
+            ),
+            MapsPlace.enrichment_pipeline_state.in_(
+                [
+                    MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value,
+                    MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_FAILED.value,
+                ]
+            ),
+            MapsPlace.enrichment_attempts < max(1, attempts_cap),
         )
         .order_by(MapsPlace.id)
     )
 
 
 class MapsDetailEnrichmentService:
+    async def enrich_one_batch(
+        self,
+        session_factory,
+        *,
+        run_id: str,
+        country_code: str,
+        country_name: str,
+        tracker: MapsQuotaTracker,
+        parse_stats: EnrichmentParseStats,
+        batch_size: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically claim and enrich exactly one small batch, then return.
+
+        A Phase 2 failure never changes the Phase 1 classification already
+        committed on the place — only detail-enrichment fields/status change.
+        """
+        settings = get_settings()
+        size = max(1, batch_size or settings.maps_detail_enrichment_batch_size)
+
+        claimed_ids = await claim_batch_place_ids(
+            session_factory, build_detail_enrichment_query(run_id), batch_size=size
+        )
+        if not claimed_ids:
+            async with session_factory() as session:
+                pending_left = (
+                    await session.execute(
+                        select(func.count()).where(
+                            MapsPlace.run_id == run_id,
+                            MapsPlace.enrichment_pipeline_state
+                            == MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value,
+                            MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value,
+                        ).select_from(MapsPlace)
+                    )
+                ).scalar_one()
+            return {"processed": 0, "has_more": False, "pending_count": int(pending_left or 0)}
+
+        async with session_factory() as session:
+            places = (
+                await session.execute(select(MapsPlace).where(MapsPlace.id.in_(claimed_ids)))
+            ).scalars().all()
+
+        candidates = [p for p in places if is_detail_enrichment_candidate(p)]
+        non_candidates = [p for p in places if p not in candidates]
+        if non_candidates:
+            async with session_factory() as session:
+                for place in non_candidates:
+                    fresh = await session.get(MapsPlace, place.id)
+                    if fresh is None:
+                        continue
+                    fresh.enrichment_pipeline_state = (
+                        MapsEnrichmentPipelineState.DETAIL_NOT_REQUIRED.value
+                    )
+                    fresh.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                    fresh.enrichment_completed_at = datetime.now(UTC)
+                await session.commit()
+
+        enriched = 0
+        # Group into small LLM-call chunks (default 1 facility/call) so one
+        # facility's provider failure cannot take the rest of the claimed
+        # batch down with it, and Sonar failures stay bounded per-call.
+        llm_chunk_size = max(1, settings.maps_census_enrichment_batch_size)
+        for offset in range(0, len(candidates), llm_chunk_size):
+            chunk = candidates[offset : offset + llm_chunk_size]
+            timeout = max(10.0, settings.maps_detail_place_timeout_seconds) * len(chunk)
+            try:
+                enriched += await asyncio.wait_for(
+                    self._enrich_batch(
+                        session_factory,
+                        places=chunk,
+                        country_code=country_code,
+                        country_name=country_name,
+                        parse_stats=parse_stats,
+                        tracker=tracker,
+                    ),
+                    timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep parent job alive
+                logger.exception("maps_detail_enrichment_batch_failed error=%s", exc)
+                await self._finalize_detail_failure(session_factory, places=chunk, error=str(exc))
+
+        async with session_factory() as session:
+            pending_left = (
+                await session.execute(
+                    select(func.count()).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.enrichment_pipeline_state
+                        == MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value,
+                        MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value,
+                    ).select_from(MapsPlace)
+                )
+            ).scalar_one()
+
+        return {
+            "processed": enriched,
+            "claimed": len(claimed_ids),
+            "has_more": True,
+            "pending_count": int(pending_left or 0),
+            "last_processed_place_id": claimed_ids[-1],
+        }
+
+    async def _finalize_detail_failure(
+        self, session_factory, *, places: list[MapsPlace] | list[str], error: str
+    ) -> None:
+        """Mark detail enrichment failed without touching Phase 1 classification.
+
+        Preserves lifecycle_status/client_eligibility/addictions already set by
+        classification; the place remains exportable on Phase 1 alone.
+        """
+        settings = get_settings()
+        max_attempts = max(1, settings.maps_place_max_attempts)
+        place_ids = [p.id if isinstance(p, MapsPlace) else p for p in places]
+        async with session_factory() as session:
+            for pid in place_ids:
+                fresh = await session.get(MapsPlace, pid)
+                if fresh is None:
+                    continue
+                attempts_exhausted = (fresh.enrichment_attempts or 0) >= max_attempts
+                fresh.enrichment_pipeline_state = MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_FAILED.value
+                fresh.enrichment_error_message = f"detail_enrichment_error: {error}"[:500]
+                if attempts_exhausted:
+                    # Optional fields must never block delivery — finalize the
+                    # place as exportable-without-details, not stuck retrying.
+                    fresh.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                    fresh.enrichment_completed_at = datetime.now(UTC)
+                else:
+                    fresh.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+            await session.commit()
+
     async def enrich_run(
         self,
         session_factory,
@@ -58,14 +196,17 @@ class MapsDetailEnrichmentService:
         tracker: MapsQuotaTracker,
         parse_stats: EnrichmentParseStats,
     ) -> dict[str, Any]:
+        """Run detail enrichment to completion in-process (dev/inline/tests only).
+
+        Production traffic uses ``enrich_one_batch`` from short-lived, self
+        re-enqueuing ARQ jobs so a worker crash cannot lose hundreds of places.
+        """
         settings = get_settings()
-        batch_size = max(1, settings.maps_census_enrichment_batch_size)
-        processing_batch_size = max(1, settings.maps_census_enrichment_processing_batch_size)
+        batch_size = max(1, settings.maps_detail_enrichment_batch_size)
         max_calls = max(1, settings.maps_census_enrichment_max_calls_per_run)
         calls = 0
         enriched = 0
         paused = False
-        # Re-query the live candidate set each batch (no forward-only cursor).
         await persist_enrichment_progress(
             session_factory,
             run_id=run_id,
@@ -75,76 +216,31 @@ class MapsDetailEnrichmentService:
         )
 
         while True:
-            async with session_factory() as session:
-                places = (
-                    await session.execute(
-                        build_detail_enrichment_query(run_id).limit(processing_batch_size)
-                    )
-                ).scalars().all()
-                if not places:
-                    break
-
-            candidates = [p for p in places if is_detail_enrichment_candidate(p)]
-            non_candidates = [p for p in places if p not in candidates]
-            if non_candidates:
-                async with session_factory() as session:
-                    for place in non_candidates:
-                        fresh = await session.get(MapsPlace, place.id)
-                        if fresh is None:
-                            continue
-                        fresh.enrichment_pipeline_state = (
-                            MapsEnrichmentPipelineState.DETAIL_NOT_REQUIRED.value
-                        )
-                        fresh.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
-                        fresh.enrichment_completed_at = datetime.now(UTC)
-                    await session.commit()
-
-            if not candidates:
-                # Avoid spinning forever on rows that just became non-candidates.
-                if not non_candidates:
-                    break
-                continue
-
             if calls >= max_calls:
                 paused = True
                 break
 
-            for offset in range(0, len(candidates), batch_size):
-                chunk = candidates[offset : offset + batch_size]
-                try:
-                    enriched += await self._enrich_batch(
-                        session_factory,
-                        places=chunk,
-                        country_code=country_code,
-                        country_name=country_name,
-                        parse_stats=parse_stats,
-                        tracker=tracker,
-                    )
-                except Exception as exc:  # noqa: BLE001 - keep parent job alive
-                    logger.exception(
-                        "maps_detail_enrichment_batch_failed error=%s",
-                        exc,
-                    )
-                    async with session_factory() as session:
-                        for place in chunk:
-                            fresh = await session.get(MapsPlace, place.id)
-                            if fresh is None:
-                                continue
-                            # Keep Phase 1 classification; only mark detail failed.
-                            fresh.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
-                            fresh.enrichment_pipeline_state = (
-                                MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_FAILED.value
-                            )
-                            fresh.enrichment_error_message = f"detail_enrichment_error: {exc}"[:500]
-                        await session.commit()
-                calls += len(chunk)
+            batch = await self.enrich_one_batch(
+                session_factory,
+                run_id=run_id,
+                country_code=country_code,
+                country_name=country_name,
+                tracker=tracker,
+                parse_stats=parse_stats,
+                batch_size=batch_size,
+            )
+            if not batch["has_more"]:
+                break
+
+            enriched += batch["processed"]
+            calls += batch.get("claimed", 0)
 
             await persist_enrichment_progress(
                 session_factory,
                 run_id=run_id,
                 phase="detail_enrichment",
                 enrichment_status="running",
-                last_processed_place_id=candidates[-1].id if candidates else None,
+                last_processed_place_id=batch.get("last_processed_place_id"),
                 detail_enriched_count=enriched,
                 processed_count=enriched,
                 paused=paused,
@@ -247,18 +343,7 @@ class MapsDetailEnrichmentService:
                     results_by_id[result.place_id] = result
         except Exception as exc:  # noqa: BLE001
             logger.warning("maps_detail_enrichment_batch_failed error=%s", exc)
-            async with session_factory() as session:
-                for pid in place_ids:
-                    place = await session.get(MapsPlace, pid)
-                    if place is None:
-                        continue
-                    place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
-                    place.enrichment_pipeline_state = (
-                        MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_FAILED.value
-                    )
-                    place.enrichment_error_message = str(exc)[:500]
-                    place.enrichment_completed_at = datetime.now(UTC)
-                await session.commit()
+            await self._finalize_detail_failure(session_factory, places=place_ids, error=str(exc))
             return 0
 
         completed = 0

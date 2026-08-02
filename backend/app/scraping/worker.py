@@ -19,6 +19,7 @@ from app.services.scraping.maps_census_service import (
     refresh_maps_census_websites_job,
     run_maps_census_enrichment_job,
     run_maps_census_job,
+    run_maps_enrichment_batch_job,
 )
 
 
@@ -54,6 +55,7 @@ class WorkerSettings:
         recover_maps_census_runs,
         refresh_maps_census_websites_job,
         run_maps_census_enrichment_job,
+        run_maps_enrichment_batch_job,
     ]
     cron_jobs = [
         # Reclaim zombie "running" executions if the worker/job died mid-flight.

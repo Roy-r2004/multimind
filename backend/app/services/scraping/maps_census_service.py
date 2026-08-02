@@ -413,6 +413,14 @@ class MapsCensusService:
         )
 
     async def _enqueue_enrichment(self, run_id: str) -> None:
+        settings = get_settings()
+        if settings.maps_census_small_batch_enrichment_enabled and settings.maps_census_two_phase_pipeline_enabled:
+            await self._enqueue_job(
+                "run_maps_enrichment_batch_job",
+                run_id,
+                inline_runner=lambda: run_maps_enrichment_batch_job({}, run_id),
+            )
+            return
         await self._enqueue_job(
             "run_maps_census_enrichment_job",
             run_id,
@@ -2372,24 +2380,27 @@ def _export_location(place: MapsPlace, *, country_name: str) -> str:
     return ", ".join(parts)
 
 
-def _has_enriched_addictions(place: MapsPlace) -> bool:
-    addictions = place.addictions_treated or []
-    return bool(addictions and any(str(item).strip() for item in addictions))
-
-
 def _export_eligible(place: MapsPlace) -> bool:
+    """Export readiness: classification-complete facility identity/location.
+
+    Optional detail-enrichment fields (addictions, languages, price) must
+    never gate export — a confirmed eligible/needs-review facility without
+    named addictions still exports with a "not specified" placeholder.
+    Confidence is read from either the legacy discovery ``confidence_score``
+    or the two-phase pipeline's ``classification_confidence`` — a place
+    re-classified by the two-phase pipeline may only have the latter set.
+    """
     if not place.is_relevant:
         return False
     if not (place.canonical_name or place.raw_name or "").strip():
         return False
     if not _has_export_location(place):
         return False
-    confidence = float(place.confidence_score or 0)
-    if confidence < CONFIDENCE_EXPORT_MIN:
-        return False
-    if get_settings().maps_census_enrichment_enabled:
-        return _has_enriched_addictions(place)
-    return True
+    confidence = max(
+        float(place.confidence_score or 0),
+        float(place.classification_confidence or 0),
+    )
+    return confidence >= CONFIDENCE_EXPORT_MIN
 
 
 def _format_addictions(place: MapsPlace) -> str:
@@ -2922,6 +2933,64 @@ async def run_maps_census_enrichment_job(ctx: dict, run_id: str) -> None:
         )
 
 
+async def run_maps_enrichment_batch_job(ctx: dict, run_id: str) -> None:
+    """ARQ entrypoint: process exactly ONE small classification-or-detail batch,
+    then self-enqueue the next batch (or stop cleanly) and exit.
+
+    Deliberately short-lived: a worker crash mid-batch can only lose the small
+    in-flight batch (MAPS_CLASSIFICATION_BATCH_SIZE / MAPS_DETAIL_ENRICHMENT_BATCH_SIZE
+    places), never the hundreds of places a single long-lived job used to hold.
+    The watchdog cron (``recover_maps_census_runs``) re-enqueues this same job
+    if the campaign goes idle with pending work and a stale heartbeat.
+    """
+    del ctx
+    from uuid import uuid4
+
+    from app.db.session import AsyncSessionLocal
+    from app.services.scraping.maps_enrichment_cascade_service import maps_enrichment_cascade_service
+    from app.services.scraping.maps_enrichment_progress import (
+        ENRICHMENT_STATUS_FAILED_RETRYABLE,
+        persist_enrichment_progress,
+    )
+
+    batch_id = uuid4().hex[:12]
+    logger.info(
+        "maps_enrichment_batch_job_entered", extra={"run_id": run_id, "batch_id": batch_id}
+    )
+    try:
+        outcome = await maps_enrichment_cascade_service.run_one_small_batch(
+            None, run_id=run_id, batch_id=batch_id
+        )
+    except Exception as exc:  # noqa: BLE001 - never let one batch kill the chain silently
+        logger.exception(
+            "maps_enrichment_batch_job_failed", extra={"run_id": run_id, "batch_id": batch_id}
+        )
+        await persist_enrichment_progress(
+            AsyncSessionLocal,
+            run_id=run_id,
+            phase="batch_job_fatal",
+            enrichment_status=ENRICHMENT_STATUS_FAILED_RETRYABLE,
+            error=str(exc),
+            extra={"batch_id": batch_id, "enrichment_fatal": True},
+        )
+        # Do not self-requeue on a fatal orchestrator error — the watchdog cron
+        # will pick this run back up (bounded by MAX_ENRICHMENT_AUTO_RESUMES)
+        # once the heartbeat goes stale, avoiding a tight failure loop.
+        return
+
+    if outcome.get("has_more"):
+        await maps_census_service._enqueue_job(
+            "run_maps_enrichment_batch_job",
+            run_id,
+            inline_runner=lambda: run_maps_enrichment_batch_job({}, run_id),
+        )
+    else:
+        logger.info(
+            "maps_enrichment_batch_job_complete",
+            extra={"run_id": run_id, "batch_id": batch_id, "phase": outcome.get("phase")},
+        )
+
+
 async def recover_maps_census_runs(ctx: dict) -> None:
     """Requeue Maps census runs whose worker died mid-flight (stale heartbeat).
 
@@ -2934,6 +3003,7 @@ async def recover_maps_census_runs(ctx: dict) -> None:
     """
     del ctx
     from datetime import timedelta
+    from uuid import uuid4
 
     from app.db.session import AsyncSessionLocal
     from app.services.scraping.maps_enrichment_progress import (
@@ -2942,9 +3012,14 @@ async def recover_maps_census_runs(ctx: dict) -> None:
         count_places_by_enrichment_status,
         parse_enrichment_heartbeat,
         persist_enrichment_progress,
+        try_acquire_batch_lock,
     )
 
+    settings = get_settings()
     cutoff = datetime.now(UTC) - timedelta(minutes=10)
+    enrichment_cutoff = datetime.now(UTC) - timedelta(
+        minutes=max(1, settings.maps_enrichment_watchdog_stale_minutes)
+    )
     stale_discovery_ids: list[str] = []
     enrichment_snapshots: list[dict] = []
     async with AsyncSessionLocal() as db:
@@ -2958,24 +3033,32 @@ async def recover_maps_census_runs(ctx: dict) -> None:
         ).scalars().all()
         stale_discovery_ids = [run.id for run in stale]
 
+        # Broader than "enrichment_refresh_attempts > 0": small-batch enrichment
+        # only increments that counter on full completion, so a campaign that
+        # has run several batches but never finished must still be caught here.
         enrichment_candidates = (
             await db.execute(
                 select(MapsCensusRun).where(
                     MapsCensusRun.status == MapsCensusStatus.COMPLETED,
                     MapsCensusRun.enrichment_refresh_completed_at.is_(None),
-                    MapsCensusRun.enrichment_refresh_attempts > 0,
                 )
             )
         ).scalars().all()
         for run in enrichment_candidates:
+            state = run.processing_state or {}
+            ever_started = (
+                int(run.enrichment_refresh_attempts or 0) > 0
+                or bool(state.get("enrichment_heartbeat_at"))
+                or bool(state.get("enrichment_status"))
+            )
+            if not ever_started:
+                continue
             enrichment_snapshots.append(
                 {
                     "id": run.id,
                     "heartbeat": parse_enrichment_heartbeat(run),
                     "updated_at": run.updated_at,
-                    "auto_resumes": int(
-                        (run.processing_state or {}).get("enrichment_auto_resume_count") or 0
-                    ),
+                    "auto_resumes": int(state.get("enrichment_auto_resume_count") or 0),
                 }
             )
         await db.commit()
@@ -2986,13 +3069,13 @@ async def recover_maps_census_runs(ctx: dict) -> None:
 
     for snap in enrichment_snapshots:
         heartbeat = snap["heartbeat"]
-        if heartbeat is not None and heartbeat >= cutoff:
+        if heartbeat is not None and heartbeat >= enrichment_cutoff:
             continue
         updated = snap["updated_at"]
         if heartbeat is None and updated is not None:
             if updated.tzinfo is None:
                 updated = updated.replace(tzinfo=UTC)
-            if updated >= cutoff:
+            if updated >= enrichment_cutoff:
                 continue
         auto_resumes = int(snap["auto_resumes"] or 0)
         if auto_resumes >= MAX_ENRICHMENT_AUTO_RESUMES:
@@ -3002,6 +3085,17 @@ async def recover_maps_census_runs(ctx: dict) -> None:
         pending = int(counts.get(MapsPlaceEnrichmentStatus.PENDING.value, 0))
         running = int(counts.get(MapsPlaceEnrichmentStatus.RUNNING.value, 0))
         if pending <= 0 or running != 0:
+            continue
+        # Atomic lock: never let two watchdog ticks (or a watchdog tick racing a
+        # still-finishing batch job) both decide to enqueue for the same run.
+        lock_batch_id = f"watchdog:{uuid4().hex[:12]}"
+        acquired = await try_acquire_batch_lock(
+            AsyncSessionLocal,
+            run_id=run_id,
+            batch_id=lock_batch_id,
+            ttl_seconds=settings.maps_enrichment_batch_lock_ttl_seconds,
+        )
+        if not acquired:
             continue
         logger.warning(
             "maps_census_auto_resuming_stale_enrichment",
@@ -3020,7 +3114,14 @@ async def recover_maps_census_runs(ctx: dict) -> None:
                 "enrichment_stale_watchdog_at": datetime.now(UTC).isoformat(),
             },
         )
-        asyncio.create_task(run_maps_census_enrichment_job({}, run_id))
+        if settings.maps_census_small_batch_enrichment_enabled and settings.maps_census_two_phase_pipeline_enabled:
+            await maps_census_service._enqueue_job(
+                "run_maps_enrichment_batch_job",
+                run_id,
+                inline_runner=lambda run_id=run_id: run_maps_enrichment_batch_job({}, run_id),
+            )
+        else:
+            asyncio.create_task(run_maps_census_enrichment_job({}, run_id))
 
 
 async def auto_refresh_maps_census_websites(ctx: dict) -> None:

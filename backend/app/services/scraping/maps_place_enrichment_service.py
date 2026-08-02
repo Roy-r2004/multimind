@@ -38,6 +38,7 @@ from app.services.scraping.maps_eligibility import (
     derive_is_relevant,
     derive_legacy_verification_verdict,
 )
+from app.services.scraping.maps_pydantic_utils import TruncatingModel
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
 from app.services.scraping.maps_website_crawl_service import (
@@ -110,7 +111,7 @@ ADDICTION_ALIASES: dict[str, str] = {
 }
 
 
-class EvidenceField(BaseModel):
+class EvidenceField(TruncatingModel):
     model_config = ConfigDict(extra="ignore")
 
     value: str = Field(default="", max_length=300)
@@ -118,7 +119,7 @@ class EvidenceField(BaseModel):
     source_url: str = Field(default="", max_length=1000)
 
 
-class ClassificationEvidenceField(BaseModel):
+class ClassificationEvidenceField(TruncatingModel):
     model_config = ConfigDict(extra="ignore")
 
     value: str | bool | list[str] | None = None
@@ -128,7 +129,7 @@ class ClassificationEvidenceField(BaseModel):
     source_type: str = Field(default="", max_length=100)
 
 
-class MapsPlaceEnrichmentResult(BaseModel):
+class MapsPlaceEnrichmentResult(TruncatingModel):
     model_config = ConfigDict(extra="ignore")
 
     place_id: str = Field(default="", max_length=64)

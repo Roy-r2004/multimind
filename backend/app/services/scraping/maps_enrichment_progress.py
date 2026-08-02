@@ -8,7 +8,7 @@ resume without a full Recover reset.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -160,6 +160,68 @@ async def assert_enrichment_exit_allowed(
     }
 
 
+async def try_acquire_batch_lock(
+    session_factory, *, run_id: str, batch_id: str, ttl_seconds: int
+) -> bool:
+    """Best-effort compare-and-swap lock so the watchdog cannot double-enqueue a
+    batch job while one is already in flight for this run.
+
+    This is a defense-in-depth optimization, not the correctness guarantee: the
+    actual place rows are claimed with ``SELECT ... FOR UPDATE SKIP LOCKED``
+    (see ``maps_batch_claim.py``), so even a lock race here can at worst cause
+    one redundant empty batch job — never a duplicate place claim.
+    """
+    now = datetime.now(UTC)
+    async with session_factory() as session:
+        run = await session.get(MapsCensusRun, run_id)
+        if run is None:
+            return False
+        state = dict(run.processing_state or {})
+        lock = dict(state.get("active_batch_lock") or {})
+        held = False
+        expires_at = lock.get("expires_at")
+        if expires_at:
+            try:
+                held = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00")) > now
+            except ValueError:
+                held = False
+        if held and lock.get("batch_id") != batch_id:
+            return False
+        state["active_batch_lock"] = {
+            "batch_id": batch_id,
+            "acquired_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=max(1, ttl_seconds))).isoformat(),
+        }
+        run.processing_state = state
+        await session.commit()
+        return True
+
+
+async def release_batch_lock(session_factory, *, run_id: str, batch_id: str) -> None:
+    async with session_factory() as session:
+        run = await session.get(MapsCensusRun, run_id)
+        if run is None:
+            return
+        state = dict(run.processing_state or {})
+        lock = dict(state.get("active_batch_lock") or {})
+        if lock.get("batch_id") == batch_id:
+            state["active_batch_lock"] = None
+            run.processing_state = state
+            await session.commit()
+
+
+def batch_lock_is_active(run: MapsCensusRun) -> bool:
+    state = run.processing_state or {}
+    lock = state.get("active_batch_lock") or {}
+    expires_at = lock.get("expires_at")
+    if not expires_at:
+        return False
+    try:
+        return datetime.fromisoformat(str(expires_at).replace("Z", "+00:00")) > datetime.now(UTC)
+    except ValueError:
+        return False
+
+
 __all__ = [
     "ENRICHMENT_STATUS_COMPLETED",
     "ENRICHMENT_STATUS_FAILED_RETRYABLE",
@@ -169,8 +231,11 @@ __all__ = [
     "ENRICHMENT_STATUS_STALE_FAILED",
     "MAX_ENRICHMENT_AUTO_RESUMES",
     "assert_enrichment_exit_allowed",
+    "batch_lock_is_active",
     "count_places_by_enrichment_status",
     "enrichment_status_from_run",
     "parse_enrichment_heartbeat",
     "persist_enrichment_progress",
+    "release_batch_lock",
+    "try_acquire_batch_lock",
 ]

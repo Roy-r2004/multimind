@@ -125,9 +125,32 @@ def compute_client_eligibility(place: Any) -> str:
     return MapsClientEligibility.EXCLUDED.value
 
 
+def normalize_lifecycle_eligibility_consistency(place: Any) -> bool:
+    """Fix known contradictory (lifecycle_status, client_eligibility) combinations.
+
+    A provider/API failure or unresolved classification must never silently end
+    up ``excluded`` — that hides real candidates from Needs Review. Returns True
+    if the place's client_eligibility was changed.
+    """
+    lifecycle_status = _field(place, "lifecycle_status")
+    client_eligibility = _field(place, "client_eligibility")
+
+    # needs_review facilities are, by definition, still under consideration —
+    # "excluded" here is always a stale/incorrect combination.
+    if (
+        lifecycle_status == MapsLifecycleStatus.NEEDS_REVIEW.value
+        and client_eligibility == MapsClientEligibility.EXCLUDED.value
+    ):
+        if not isinstance(place, Mapping):
+            place.client_eligibility = MapsClientEligibility.REVIEW.value
+        return True
+    return False
+
+
 __all__ = [
     "ELIGIBLE_FACILITY_TYPES",
     "compute_client_eligibility",
     "derive_is_relevant",
     "derive_legacy_verification_verdict",
+    "normalize_lifecycle_eligibility_consistency",
 ]

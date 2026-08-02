@@ -192,21 +192,34 @@ class Settings(BaseSettings):
     # silently truncating at this number.
     maps_census_enrichment_max_places_per_run: int = 250
     # LLM request grouping — how many facilities go into one Sonar prompt.
-    maps_census_enrichment_batch_size: int = 5
+    # Delivery requirement: one facility per Sonar call, so a single bad
+    # response/parse failure never drags down siblings in the same call.
+    maps_census_enrichment_batch_size: int = 1
     # Resumable enrichment batch processing (Phase 2 gap #4): how many pending
     # places the outer loop pulls per iteration before checking call budget.
     maps_census_enrichment_processing_batch_size: int = 25
     maps_cascade_place_timeout_seconds: float = 300.0
     # Phase 1 classification is metadata-first, so a single slow domain must not
-    # consume a 300s place budget and stall its whole batch.
-    maps_classification_place_timeout_seconds: float = 120.0
+    # consume a large place budget and stall its whole batch.
+    maps_classification_place_timeout_seconds: float = 90.0
     maps_classification_crawl_timeout_seconds: float = 45.0
+    maps_detail_place_timeout_seconds: float = 120.0
+    maps_place_max_attempts: int = 2
     maps_census_enrichment_max_calls_per_run: int = 5000
     maps_census_enrichment_model: str = "sonar-pro"
     maps_census_enrichment_max_crawl_excerpt_chars: int = 1200
     maps_census_auto_enrichment_enabled: bool = True
     maps_census_cascade_enrichment_enabled: bool = True
     maps_census_two_phase_pipeline_enabled: bool = True
+    # Delivery reliability: run classification/detail enrichment as many short-lived
+    # ARQ jobs (one small batch each, self-enqueuing) instead of one long-lived job
+    # that holds hundreds of places and loses everything on a worker crash.
+    maps_census_small_batch_enrichment_enabled: bool = True
+    maps_classification_batch_size: int = 20
+    maps_detail_enrichment_batch_size: int = 10
+    # Watchdog: how stale the enrichment heartbeat must be before auto-requeuing.
+    maps_enrichment_watchdog_stale_minutes: int = 5
+    maps_enrichment_batch_lock_ttl_seconds: int = 600
 
     # Cascaded enrichment: bounded crawl context for primary extraction
     maps_crawl_max_relevant_pages: int = 5

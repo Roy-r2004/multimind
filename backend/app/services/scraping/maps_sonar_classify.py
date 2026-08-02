@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ConfigDict, Field, ValidationError
 
 from app.core.config import get_settings
 from app.db.models import (
@@ -32,6 +32,7 @@ from app.services.scraping.maps_place_enrichment_service import (
     ClassificationEvidenceField,
     MapsPlaceEnrichmentResult,
 )
+from app.services.scraping.maps_pydantic_utils import TruncatingModel
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +43,14 @@ VALID_BUCKETS = frozenset(
 VALID_MISSIONS = frozenset({"confirmed", "contradicted", "unknown"})
 
 
-class SonarClassifyEvidence(BaseModel):
+class SonarClassifyEvidence(TruncatingModel):
     model_config = ConfigDict(extra="ignore")
 
     quote: str = Field(default="", max_length=240)
     source_url: str = Field(default="", max_length=1000)
 
 
-class SonarClassifyResult(BaseModel):
+class SonarClassifyResult(TruncatingModel):
     model_config = ConfigDict(extra="ignore")
 
     classification_bucket: str = Field(default="needs_review", max_length=40)

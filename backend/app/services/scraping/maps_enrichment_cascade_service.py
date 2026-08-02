@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -24,6 +24,7 @@ from app.services.scraping.maps_eligibility import (
     compute_client_eligibility,
     derive_is_relevant,
     derive_legacy_verification_verdict,
+    normalize_lifecycle_eligibility_consistency,
 )
 from app.services.scraping.maps_enrichment_processing_state import (
     MapsEnrichmentPipelineState,
@@ -467,6 +468,197 @@ class MapsEnrichmentCascadeService:
                 "error": str(exc)[:500],
             }
 
+    async def run_one_small_batch(
+        self, db: AsyncSession | None, *, run_id: str, batch_id: str
+    ) -> dict[str, Any]:
+        """Claim and process exactly one small classification-or-detail batch.
+
+        Called from a short-lived ARQ job that self-enqueues the next batch
+        when work remains, instead of one long-lived job holding hundreds of
+        places open. A worker crash mid-batch loses at most one small batch —
+        everything committed by earlier batches is untouched, and
+        ``_finalize_stale_running_places`` sweeps any orphaned rows left by the
+        crash on this next invocation.
+        """
+        from app.services.scraping.maps_classification_service import (
+            build_classification_query,
+            maps_classification_service,
+        )
+        from app.services.scraping.maps_detail_enrichment_service import (
+            build_detail_enrichment_query,
+            maps_detail_enrichment_service,
+        )
+        from app.services.scraping.maps_enrichment_progress import (
+            ENRICHMENT_STATUS_COMPLETED,
+            ENRICHMENT_STATUS_PAUSED,
+            ENRICHMENT_STATUS_RUNNING,
+            assert_enrichment_exit_allowed,
+            count_places_by_enrichment_status,
+            persist_enrichment_progress,
+        )
+
+        session_factory = maps_place_enrichment_service._session_factory(db)
+        settings = get_settings()
+
+        # Sweep anything orphaned by a previous crash before claiming new work.
+        await self._finalize_stale_running_places(session_factory, run_id=run_id)
+
+        async with session_factory() as session:
+            run = await session.get(MapsCensusRun, run_id)
+            if run is None:
+                return {"has_more": False, "phase": "missing_run"}
+            state = dict(run.processing_state or {})
+            if state.get("enrichment_pipeline_paused") or state.get("campaign_paused"):
+                await persist_enrichment_progress(
+                    session_factory,
+                    run_id=run_id,
+                    phase="paused",
+                    enrichment_status=ENRICHMENT_STATUS_PAUSED,
+                    paused=True,
+                    extra={"batch_id": batch_id},
+                )
+                return {"has_more": False, "phase": "paused", "paused": True}
+            country_code = run.country_code
+            country_name = run.country_name
+            relevant_total = (
+                await session.execute(
+                    select(func.count())
+                    .where(MapsPlace.run_id == run_id, MapsPlace.is_relevant.is_(True))
+                    .select_from(MapsPlace)
+                )
+            ).scalar_one()
+
+        tracker = MapsQuotaTracker()
+        parse_stats = EnrichmentParseStats()
+        sonar_stats = SonarFallbackStats()
+        sonar_budget = SonarBudget(
+            enabled=settings.maps_sonar_fallback_enabled,
+            max_percent=settings.maps_sonar_fallback_max_percent,
+            max_per_campaign=settings.maps_sonar_fallback_max_per_campaign,
+            selected_candidates=int(relevant_total or 0),
+            calls_used=int((state.get("sonar_classify_budget") or {}).get("calls_used") or 0),
+        )
+
+        await persist_enrichment_progress(
+            session_factory,
+            run_id=run_id,
+            phase="batch_running",
+            enrichment_status=ENRICHMENT_STATUS_RUNNING,
+            extra={"batch_id": batch_id},
+        )
+
+        async def _count(query) -> int:
+            async with session_factory() as session:
+                return (
+                    await session.execute(select(func.count()).select_from(query.subquery()))
+                ).scalar_one()
+
+        classification_pending = await _count(build_classification_query(run_id))
+        batch: dict[str, Any]
+        if classification_pending:
+            phase = "classification"
+            batch = await maps_classification_service.classify_one_batch(
+                session_factory,
+                run_id=run_id,
+                country_code=country_code,
+                country_name=country_name,
+                tracker=tracker,
+                sonar_budget=sonar_budget,
+                sonar_stats=sonar_stats,
+                parse_stats=parse_stats,
+                batch_size=settings.maps_classification_batch_size,
+            )
+        else:
+            detail_pending = await _count(build_detail_enrichment_query(run_id))
+            if detail_pending:
+                phase = "detail_enrichment"
+                batch = await maps_detail_enrichment_service.enrich_one_batch(
+                    session_factory,
+                    run_id=run_id,
+                    country_code=country_code,
+                    country_name=country_name,
+                    tracker=tracker,
+                    parse_stats=parse_stats,
+                    batch_size=settings.maps_detail_enrichment_batch_size,
+                )
+            else:
+                phase = "finalize"
+                batch = {"processed": 0}
+
+        await merge_quota_metrics(session_factory, run_id=run_id, tracker=tracker)
+
+        async with session_factory() as session:
+            run = await session.get(MapsCensusRun, run_id)
+            if run is not None:
+                state = dict(run.processing_state or {})
+                state["sonar_classify_stats"] = sonar_stats.as_dict()
+                state["sonar_classify_budget"] = {
+                    "enabled": sonar_budget.enabled,
+                    "max_calls": sonar_budget.max_calls,
+                    "calls_used": sonar_budget.calls_used,
+                    "remaining": sonar_budget.remaining,
+                    "budget_exhausted": sonar_stats.budget_exhausted,
+                }
+                run.processing_state = state
+                await session.commit()
+
+        remaining_classification = await _count(build_classification_query(run_id))
+        remaining_detail = await _count(build_detail_enrichment_query(run_id))
+        has_more = bool(remaining_classification or remaining_detail)
+        counts = await count_places_by_enrichment_status(session_factory, run_id=run_id)
+
+        if has_more:
+            await persist_enrichment_progress(
+                session_factory,
+                run_id=run_id,
+                phase=phase,
+                enrichment_status=ENRICHMENT_STATUS_RUNNING,
+                last_processed_place_id=batch.get("last_processed_place_id"),
+                pending_count=remaining_classification + remaining_detail,
+                extra={
+                    "batch_id": batch_id,
+                    "completed_count": counts.get(MapsPlaceEnrichmentStatus.COMPLETED.value, 0),
+                    "failed_count": counts.get(MapsPlaceEnrichmentStatus.FAILED.value, 0),
+                    "pending_classification": remaining_classification,
+                    "pending_detail_enrichment": remaining_detail,
+                },
+            )
+            return {
+                "has_more": True,
+                "phase": phase,
+                "pending_classification": remaining_classification,
+                "pending_detail_enrichment": remaining_detail,
+                **batch,
+            }
+
+        exit_check = await assert_enrichment_exit_allowed(
+            session_factory, run_id=run_id, paused=False, failed=False
+        )
+        await self._finalize_stale_running_places(session_factory, run_id=run_id)
+        await self._refresh_run_counters(session_factory, run_id=run_id)
+        final_status = (
+            ENRICHMENT_STATUS_COMPLETED if exit_check["ok"] else ENRICHMENT_STATUS_RUNNING
+        )
+        await persist_enrichment_progress(
+            session_factory,
+            run_id=run_id,
+            phase="two_phase_complete",
+            enrichment_status=final_status,
+            pending_count=exit_check["pending"],
+            running_count=exit_check["running"],
+            extra={
+                "batch_id": batch_id,
+                "completed_count": exit_check.get("completed", 0),
+                "failed_count": exit_check.get("failed", 0),
+            },
+        )
+        return {
+            "has_more": not exit_check["ok"],
+            "phase": "complete",
+            "exit_check": exit_check,
+            **batch,
+        }
+
     async def _process_place(
         self,
         session_factory,
@@ -749,6 +941,14 @@ class MapsEnrichmentCascadeService:
             return finalized
 
     async def _finalize_stale_running_places(self, session_factory, *, run_id: str) -> int:
+        """Sweep places orphaned RUNNING by a crashed worker into a terminal state.
+
+        Preserves any classification already committed on the place. If the
+        place never resolved past discovery (lifecycle_status still unset,
+        "discovered", or "plausible"), backfill needs_review/review so it still
+        satisfies the delivery requirement that every relevant place ends in a
+        valid bucket rather than being silently dropped.
+        """
         async with session_factory() as session:
             places = (
                 await session.execute(
@@ -759,12 +959,23 @@ class MapsEnrichmentCascadeService:
                 )
             ).scalars().all()
             for place in places:
+                unresolved = place.lifecycle_status in {
+                    None,
+                    "",
+                    MapsLifecycleStatus.DISCOVERED.value,
+                    MapsLifecycleStatus.PLAUSIBLE.value,
+                }
+                if unresolved:
+                    place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+                    place.client_eligibility = MapsClientEligibility.REVIEW.value
+                    place.is_relevant = derive_is_relevant(place.lifecycle_status)
                 place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                 place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
                 place.enrichment_error_message = (
                     "stale running place finalized for manual review"
                 )
                 place.enrichment_completed_at = datetime.now(UTC)
+                normalize_lifecycle_eligibility_consistency(place)
             await session.commit()
             return len(places)
 
