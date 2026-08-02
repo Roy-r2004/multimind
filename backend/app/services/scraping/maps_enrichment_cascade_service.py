@@ -420,13 +420,26 @@ class MapsEnrichmentCascadeService:
             if place is None:
                 return 0
             if place.enrichment_status != MapsPlaceEnrichmentStatus.FAILED.value:
-                if place.client_eligibility == MapsClientEligibility.REVIEW.value:
-                    place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                primary_failed_without_output = (
+                    place.enrichment_pipeline_state
+                    == MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_FAILED.value
+                    and not place.enrichment_extraction_source
+                )
+                if primary_failed_without_output:
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.FAILED.value
+                    place.enrichment_completed_at = datetime.now(UTC)
                 else:
-                    place.enrichment_pipeline_state = MapsEnrichmentPipelineState.FINALIZED.value
-                place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
-                place.enrichment_completed_at = datetime.now(UTC)
-                place.enrichment_error_message = None
+                    if place.client_eligibility == MapsClientEligibility.REVIEW.value:
+                        place.enrichment_pipeline_state = (
+                            MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+                        )
+                    else:
+                        place.enrichment_pipeline_state = (
+                            MapsEnrichmentPipelineState.FINALIZED.value
+                        )
+                    place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+                    place.enrichment_completed_at = datetime.now(UTC)
+                    place.enrichment_error_message = None
             await session.commit()
 
         async with session_factory() as session:
