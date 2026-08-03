@@ -6,6 +6,7 @@ import { AppShell } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
 import { GlassCard } from "@/components/cinematic/PageChrome";
 import { MessageContent } from "@/components/chat/MessageContent";
+import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
 import { api } from "@/lib/api";
 import type { ApiContentLabel, ApiSavedPrompt } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
@@ -284,9 +285,18 @@ function SavedPromptsPage() {
                       </div>
                       {prompt.verdict_text?.trim() ? (
                         <div className="space-y-1.5 rounded-lg border border-primary/15 bg-primary/[0.03] px-3 py-2.5">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
-                            Verdict
-                          </p>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
+                              Verdict
+                            </p>
+                            <VerdictCopyButton
+                              text={prompt.verdict_text}
+                              label="Copy Verdict"
+                              copiedLabel="Copied"
+                              successMessage="Verdict copied to clipboard"
+                              errorMessage="Could not copy the verdict"
+                            />
+                          </div>
                           <MessageContent muted>{prompt.verdict_text}</MessageContent>
                         </div>
                       ) : null}
