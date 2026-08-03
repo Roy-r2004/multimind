@@ -173,6 +173,29 @@ class Settings(BaseSettings):
     maps_census_website_search_batch_size: int = 25
     maps_census_website_search_max_calls_per_run: int = 5000
     maps_census_website_llm_enabled: bool = True
+
+    # === PHASE 0: SAFETY GUARDS (Production Stability) ===
+    # Circuit breaker: prevent cascading failures from external APIs
+    maps_circuit_breaker_enabled: bool = True
+    maps_circuit_breaker_failure_threshold: int = 5
+    maps_circuit_breaker_recovery_timeout_seconds: int = 60
+
+    # LLM call budget per cell (prevent cost spiral)
+    maps_cell_llm_budget_max_calls: int = 10
+    maps_cell_llm_budget_classification_cost: int = 1
+    maps_cell_llm_budget_enrichment_cost: int = 2
+
+    # LLM call budget per run (hard ceiling)
+    maps_run_llm_budget_max_calls: int = 5000
+    maps_run_llm_budget_check_enabled: bool = True
+
+    # Global campaign timeout (prevent runaway jobs)
+    maps_census_campaign_timeout_seconds: int = 28800  # 8 hours
+    maps_census_timeout_check_interval_cells: int = 10  # Check every N cells
+
+    # Observability: structured logging
+    maps_observability_enabled: bool = True
+    maps_observability_log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
     maps_census_website_llm_model: str = "sonar-pro"
     maps_census_website_llm_batch_size: int = 3
     maps_census_website_llm_min_confidence: float = 0.75
