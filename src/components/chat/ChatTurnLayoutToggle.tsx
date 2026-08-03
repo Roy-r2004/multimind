@@ -42,7 +42,7 @@ export function ChatTurnLayoutToggle({
         className="gap-1.5 px-2.5 text-xs data-[state=on]:bg-primary/10 data-[state=on]:text-primary data-[state=on]:shadow-sm"
       >
         <Rows3 className="size-3.5" aria-hidden />
-        <span className="hidden sm:inline">Vertical</span>
+        <span className="hidden sm:inline">Horizontal</span>
       </ToggleGroupItem>
       <ToggleGroupItem
         value="horizontal"
@@ -51,7 +51,7 @@ export function ChatTurnLayoutToggle({
         className="gap-1.5 px-2.5 text-xs data-[state=on]:bg-primary/10 data-[state=on]:text-primary data-[state=on]:shadow-sm"
       >
         <Columns2 className="size-3.5" aria-hidden />
-        <span className="hidden sm:inline">Horizontal</span>
+        <span className="hidden sm:inline">Vertical</span>
       </ToggleGroupItem>
     </ToggleGroup>
   );
