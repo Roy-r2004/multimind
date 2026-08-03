@@ -16,6 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
+from app.services.scraping.maps_keyword_strategy import (
+    generate_search_queries,
+    CORE_FACILITY_TYPES,
+    MODIFIERS,
+    SUBSTANCE_ADDICTIONS,
+    BEHAVIORAL_ADDICTIONS,
+)
 
 DEFAULT_MODEL = "gpt-4.1"
 
@@ -73,10 +80,20 @@ class MapsGridPlanner:
         try:
             response = await provider.complete(
                 system=(
-                    "You return strict JSON describing a Google Places search grid for a "
-                    "national addiction-treatment provider discovery census — residential, "
-                    "inpatient, outpatient, detox, association/NGO, and acronym coverage — "
-                    "for later structured classification, not client-export filtering."
+                    "You generate Google Places search queries using EXACT keyword combinations. "
+                    "Rules:\n"
+                    "1. Use ONLY these exact facility keywords (word-for-word, no rewording):\n"
+                    f"   {', '.join(CORE_FACILITY_TYPES)}\n"
+                    "2. Use ONLY these exact modifiers:\n"
+                    f"   {', '.join(MODIFIERS)}\n"
+                    "3. Use ONLY these exact substance keywords:\n"
+                    f"   {', '.join(SUBSTANCE_ADDICTIONS[:8])}\n"
+                    "4. Use ONLY these exact behavioral keywords:\n"
+                    f"   {', '.join(BEHAVIORAL_ADDICTIONS[:8])}\n"
+                    "5. Translate ONLY the keywords to the country language (keep facility/substance/modifier words exact in target language).\n"
+                    "6. Combine: [facility] + [modifier OR addiction] + [city name]\n"
+                    "7. Do NOT rephrase, do NOT add words, do NOT combine keywords differently.\n"
+                    "8. Hidden from users—only results displayed. Generate 15-20 queries max."
                 ),
                 user=prompt,
                 model=model.provider_model,
@@ -167,6 +184,40 @@ def _dedupe_cells(cells: list[MapsGridCell], *, max_cells: int) -> list[MapsGrid
         if len(result) >= max_cells:
             break
     return result
+
+
+def _fallback_keyword_grid(
+    country_code: str, focus_cities: list[str] | None = None, max_cells: int = 120
+) -> list[MapsGridCell]:
+    """Fallback grid using targeted keyword strategy when LLM fails.
+
+    Uses predefined core facility types + addiction-specific terms to generate
+    high-quality search queries. Hidden from users—only results are displayed.
+    """
+    cells: list[MapsGridCell] = []
+
+    # Use focus cities if provided, else use placeholder cities
+    cities = focus_cities or ["City 1", "City 2", "City 3"]
+
+    for city in cities[:10]:  # Use up to 10 cities
+        # Generate keyword-based queries for this city
+        queries = generate_search_queries(city, country_code=country_code)
+        for query_text in queries:
+            if len(cells) >= max_cells:
+                break
+            cells.append(
+                MapsGridCell(
+                    region_name=city,
+                    city_name=city,
+                    query_text=query_text,
+                    query_family="targeted-keyword",
+                    query_language=None,
+                )
+            )
+        if len(cells) >= max_cells:
+            break
+
+    return _dedupe_cells(cells, max_cells=max_cells)
 
 
 maps_grid_planner = MapsGridPlanner()

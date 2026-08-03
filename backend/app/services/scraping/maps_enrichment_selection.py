@@ -69,7 +69,10 @@ def skip_reason_for_place(place: Any) -> str | None:
     elif lifecycle == MapsLifecycleStatus.PLAUSIBLE.value:
         pass
     elif lifecycle == MapsLifecycleStatus.DISCOVERED.value:
-        return "discovered_not_classified"
+        # Safety fallback: Places stuck in DISCOVERED should NOT skip enrichment —
+        # they never got classified. Route to NEEDS_REVIEW for manual review but allow enrichment.
+        # This handles edge cases where classification phase failed silently or was never run.
+        return None
 
     enrichment_status = getattr(place, "enrichment_status", None) or ""
     if enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value:
@@ -87,6 +90,9 @@ def is_detail_enrichment_candidate(place: Any) -> bool:
 
     Accepts eligible / review / needs_review candidates. Excludes public,
     individual, unrelated, cessation-only, and other confident skip buckets.
+
+    Safety fallback: If lifecycle_status is DISCOVERED (classification never ran),
+    still allow enrichment for relevant places so they get a chance at detail enrichment.
     """
     if not getattr(place, "is_relevant", None):
         return False
@@ -94,6 +100,10 @@ def is_detail_enrichment_candidate(place: Any) -> bool:
     lifecycle = getattr(place, "lifecycle_status", None) or ""
     if lifecycle in CONFIDENT_SKIP_LIFECYCLE:
         return False
+
+    # Safety fallback for places stuck in DISCOVERED (classification failed)
+    if lifecycle == MapsLifecycleStatus.DISCOVERED.value:
+        return True
 
     if lifecycle not in {
         MapsLifecycleStatus.NEEDS_REVIEW.value,
