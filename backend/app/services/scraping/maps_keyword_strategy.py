@@ -20,34 +20,47 @@ CORE_FACILITY_TYPES = [
     "charity-funded rehab",
 ]
 
-# Modifiers to refine searches
+# Modifiers to refine searches (includes funding sources & care settings)
 MODIFIERS = [
     "inpatient",
     "residential",
+    "24 hour care",
+    "dedicated beds",
+    "private pay",
+    "insurance-covered",
+    "employer-sponsored",
     "private",
     "NGO",
     "charity-funded",
     "non-government",
-    "24 hour care",
-    "dedicated beds",
 ]
 
-# Substance-specific addictions
+# Substance-specific addictions (with specific drug names for targeted searches)
 SUBSTANCE_ADDICTIONS = [
     "alcohol",
     "cocaine",
+    "crack cocaine",
     "heroin",
     "methamphetamine",
     "prescription opioids",
+    "oxycodone",
+    "vicodin",
+    "fentanyl",
     "benzodiazepines",
     "cannabis dependency",
     "synthetic cannabinoids",
+    "spice",
+    "K2",
     "synthetic stimulants",
+    "bath salts",
     "inhalants",
     "stimulant medications",
+    "adderall",
+    "ritalin",
     "ketamine",
     "kratom",
     "MDMA",
+    "ecstasy",
     "GHB",
     "anabolic steroids",
     "novel psychoactive substances",
@@ -61,38 +74,77 @@ BEHAVIORAL_ADDICTIONS = [
     "gaming addiction",
     "internet addiction",
     "food addiction",
+    "binge eating disorder",
     "shopping addiction",
     "spending/buying addiction",
     "exercise addiction",
+    "body dysmorphia",
     "workaholism",
     "social media addiction",
     "cryptocurrency trading addiction",
+    "love addiction",
+    "relationship addiction",
 ]
 
-# Exclusion keywords - used to filter OUT bad results
+# Exclusion keywords - used to filter OUT bad results (not primary addiction treatment)
 EXCLUSION_KEYWORDS = [
     "outpatient",
     "telehealth",
     "virtual",
+    "online only",
     "general psychiatric",
     "mental health clinic",
     "wellness retreat",
     "sober living",
     "coaching center",
     "solo practitioner",
+    "individual practitioner",
     "government-funded",
     "public health",
+    "state-funded",
+    "referral only",
+    "referral-only",
+    "PO box",
+    "post office box",
 ]
 
-# Language translations for multilingual support
+# Language translations for multilingual support (core facility types & target addictions)
 TRANSLATIONS = {
     "FR": {  # French
-        "facility": ["clinique de désintoxication privée", "centre de réadaptation résidentiel", "centre de traitement des dépendances"],
-        "substance": ["alcool", "cocaïne", "héroïne", "méthédrine", "opioïdes", "benzodiazépines", "cannabis", "MDMA"],
+        "facility": [
+            "clinique de désintoxication privée",
+            "centre de réadaptation résidentiel",
+            "centre de traitement des dépendances",
+            "centre d'accueil en internat",
+            "programme de cure 24h"
+        ],
+        "substance": [
+            "alcool", "cocaïne", "héroïne", "méthamphétamine", "opioïdes",
+            "oxycodone", "fentanyl", "benzodiazépines", "cannabis", "MDMA",
+            "ecstasy", "kétamine", "GHB", "sels de bain"
+        ],
+        "behavioral": [
+            "jeu pathologique", "addiction au sexe", "addiction à Internet",
+            "addiction alimentaire", "cyberdépendance", "dépendance affective"
+        ],
     },
     "ES": {  # Spanish
-        "facility": ["clínica de desintoxicación privada", "centro de rehabilitación residencial", "centro de tratamiento de adicciones"],
-        "substance": ["alcohol", "cocaína", "heroína", "metanfetamina", "opioides", "benzodiazepinas", "cannabis", "MDMA"],
+        "facility": [
+            "clínica de desintoxicación privada",
+            "centro de rehabilitación residencial",
+            "centro de tratamiento de adicciones",
+            "centro de internamiento",
+            "programa de rehabilitación 24 horas"
+        ],
+        "substance": [
+            "alcohol", "cocaína", "heroína", "metanfetamina", "opioides",
+            "oxicodona", "fentanilo", "benzodiazepinas", "cannabis", "MDMA",
+            "éxtasis", "ketamina", "GHB", "sales de baño"
+        ],
+        "behavioral": [
+            "ludopatía", "adicción al sexo", "adicción a Internet",
+            "adicción a la comida", "ciberadicción", "adicción emocional"
+        ],
     },
 }
 
