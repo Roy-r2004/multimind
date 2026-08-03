@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -71,9 +71,25 @@ from app.services.scraping.maps_cell_runner import (
     recover_stale_running_cells,
 )
 from app.services.scraping.maps_cell_subdivision import ChildCellSpec, subdivide_cell
+from app.services.scraping.maps_circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerOpenError,
+    LLMBudgetExhaustedError,
+    LLMCallBudget,
+)
 from app.services.scraping.maps_country_profile_service import maps_country_profile_service
 from app.services.scraping.maps_eligibility import derive_is_relevant, derive_legacy_verification_verdict
 from app.services.scraping.maps_external_discovery import maps_external_discovery_coordinator
+from app.services.scraping.maps_observability import (
+    log_budget_exceeded,
+    log_cell_processing,
+    log_circuit_breaker_event,
+    log_llm_call,
+    log_stage_end,
+    log_stage_start,
+    timed_operation,
+)
 from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
 from app.services.scraping.maps_places_client import PlacesProviderError, create_places_client
 from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
@@ -572,6 +588,32 @@ class MapsCensusService:
         session_factory = self._session_factory(db)
         settings = get_settings()
 
+        # === PHASE 0: Initialize safety guards ===
+        # Circuit breaker: prevent cascading failures from external APIs
+        openrouter_breaker: CircuitBreaker | None = None
+        google_breaker: CircuitBreaker | None = None
+        sonar_breaker: CircuitBreaker | None = None
+        if settings.maps_circuit_breaker_enabled:
+            breaker_config = CircuitBreakerConfig(
+                failure_threshold=settings.maps_circuit_breaker_failure_threshold,
+                recovery_timeout_seconds=settings.maps_circuit_breaker_recovery_timeout_seconds,
+            )
+            openrouter_breaker = CircuitBreaker("openrouter", breaker_config)
+            google_breaker = CircuitBreaker("google_places", breaker_config)
+            sonar_breaker = CircuitBreaker("sonar", breaker_config)
+
+        # LLM call budget per-run (hard ceiling to prevent cost spirals)
+        run_llm_budget = LLMCallBudget(
+            run_id=run_id,
+            cell_id=None,
+            max_calls=settings.maps_run_llm_budget_max_calls,
+        )
+
+        # Campaign timeout tracking
+        campaign_start_time = datetime.now(UTC)
+        campaign_timeout_seconds = settings.maps_census_campaign_timeout_seconds
+        timeout_warning_issued = False
+
         async with session_factory() as start_db:
             run = await start_db.get(MapsCensusRun, run_id)
             if run is None:
@@ -581,10 +623,10 @@ class MapsCensusService:
                 MapsCensusStatus.COMPLETED_WITH_WARNINGS,
                 MapsCensusStatus.CANCELLED,
             }:
+                status_str = run.status.value if hasattr(run.status, "value") else str(run.status)
                 logger.info(
-                    "maps_census_skip_terminal_run run_id=%s status=%s",
-                    run_id,
-                    run.status.value if hasattr(run.status, "value") else run.status,
+                    f"maps_census_skip_terminal_run run_id={run_id} status={status_str}",
+                    extra={"run_id": run_id, "status": status_str, "event": "skip_terminal"},
                 )
                 return {"skipped": 1}
 
@@ -644,17 +686,18 @@ class MapsCensusService:
                 )
                 if undecided == 0 and pending_enrichment == 0:
                     logger.info(
-                        "maps_census_skip_discovery_already_complete run_id=%s cells=%s",
-                        run_id,
-                        existing_cells,
+                        f"maps_census_skip_discovery_already_complete run_id={run_id} cells={existing_cells}",
+                        extra={"run_id": run_id, "existing_cells": existing_cells, "event": "skip_complete"},
                     )
                     return {"skipped": 1, "cells": existing_cells}
                 logger.info(
-                    "maps_census_resume_post_discovery run_id=%s undecided=%s "
-                    "pending_enrichment=%s",
-                    run_id,
-                    undecided,
-                    pending_enrichment,
+                    f"maps_census_resume_post_discovery run_id={run_id} undecided={undecided} pending_enrichment={pending_enrichment}",
+                    extra={
+                        "run_id": run_id,
+                        "undecided": undecided,
+                        "pending_enrichment": pending_enrichment,
+                        "event": "resume_post_discovery",
+                    },
                 )
 
             run.status = MapsCensusStatus.RUNNING
@@ -820,6 +863,36 @@ class MapsCensusService:
             )
             campaign_cells_used = campaign_budget["used"]
 
+            # === PHASE 0: Check campaign timeout ===
+            if settings.maps_census_campaign_timeout_seconds:
+                elapsed = (datetime.now(UTC) - campaign_start_time).total_seconds()
+                if elapsed > campaign_timeout_seconds:
+                    logger.error(
+                        f"maps_census_campaign_timeout run_id={run_id} elapsed_seconds={int(elapsed)} "
+                        f"timeout_seconds={campaign_timeout_seconds} cells_used={campaign_cells_used}",
+                        extra={
+                            "run_id": run_id,
+                            "elapsed_seconds": int(elapsed),
+                            "timeout_seconds": campaign_timeout_seconds,
+                            "cells_used": campaign_cells_used,
+                            "event": "campaign_timeout",
+                        },
+                    )
+                    stopped_reason = "campaign_timeout"
+                    break
+                elif elapsed > campaign_timeout_seconds * 0.75 and not timeout_warning_issued:
+                    remaining_seconds = int(campaign_timeout_seconds - elapsed)
+                    logger.warning(
+                        f"maps_census_campaign_timeout_approaching run_id={run_id} "
+                        f"remaining_seconds={remaining_seconds}",
+                        extra={
+                            "run_id": run_id,
+                            "remaining_seconds": remaining_seconds,
+                            "event": "timeout_approaching",
+                        },
+                    )
+                    timeout_warning_issued = True
+
             all_terminal, expanding_names = await self._refresh_region_saturation(
                 session_factory,
                 run_id=run_id,
@@ -859,11 +932,15 @@ class MapsCensusService:
                     country_profile=country_profile,
                     focus_region_names=expanding_names,
                 )
-            except MapsGridPlanningError:
+            except MapsGridPlanningError as exc:
                 logger.warning(
-                    "maps_census_expansion_planning_failed run_id=%s regions=%s",
-                    run_id,
-                    expanding_names,
+                    f"maps_census_expansion_planning_failed run_id={run_id} regions={expanding_names}",
+                    extra={
+                        "run_id": run_id,
+                        "regions": expanding_names,
+                        "error": str(exc),
+                        "event": "expansion_planning_failed",
+                    },
                     exc_info=True,
                 )
                 stopped_reason = "no_expanding_regions"
@@ -1571,6 +1648,8 @@ class MapsCensusService:
         country_code: str,
         country_name: str,
         tracker: MapsQuotaTracker | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
+        run_llm_budget: LLMCallBudget | None = None,
     ) -> dict[str, int]:
         settings = get_settings()
         async with session_factory() as scan_db:
@@ -1619,6 +1698,9 @@ class MapsCensusService:
                 country_code=country_code,
                 country_name=country_name,
                 payloads=payloads,
+                circuit_breaker=circuit_breaker,
+                run_llm_budget=run_llm_budget,
+                run_id=run_id,
             )
             if tracker is not None:
                 tracker.add_classifier_call()
@@ -1655,6 +1737,9 @@ class MapsCensusService:
         country_code: str,
         country_name: str,
         payloads: list[dict[str, Any]],
+        circuit_breaker: CircuitBreaker | None = None,
+        run_llm_budget: LLMCallBudget | None = None,
+        run_id: str | None = None,
     ) -> list[MapsRelevanceDecision]:
         prompt = get_prompt_engine().render(
             "scraping/maps_relevance_classifier.j2",
@@ -1662,26 +1747,85 @@ class MapsCensusService:
             country_name=(country_name or "Unknown")[:120],
             places_json=json.dumps(payloads, ensure_ascii=True),
         )
+
+        # === PHASE 0: Check budget before calling LLM ===
+        if run_llm_budget and run_id:
+            if not run_llm_budget.try_spend(1):
+                log_budget_exceeded(run_id, "run_llm_classification", run_llm_budget.spent, run_llm_budget.max_calls)
+                return [
+                    MapsRelevanceDecision(
+                        place_id=item["place_id"],
+                        is_relevant=False,
+                        reason="budget_exhausted",
+                        confidence=0.0,
+                    )
+                    for item in payloads
+                ]
+
         try:
-            response = await asyncio.wait_for(
-                provider.complete(
-                    system=(
-                        "You return strict JSON relevance decisions for candidate addiction-"
-                        "treatment provider places found via Google Places search."
+            # === PHASE 0: Wrap LLM call with circuit breaker ===
+            if circuit_breaker:
+                response = await circuit_breaker.call(
+                    asyncio.wait_for,
+                    provider.complete(
+                        system=(
+                            "You return strict JSON relevance decisions for candidate addiction-"
+                            "treatment provider places found via Google Places search."
+                        ),
+                        user=prompt,
+                        model=model_slug,
+                        max_tokens=3000,
                     ),
-                    user=prompt,
-                    model=model_slug,
-                    max_tokens=3000,
-                ),
-                timeout=CLASSIFICATION_BATCH_TIMEOUT_SECONDS,
-            )
+                    timeout=CLASSIFICATION_BATCH_TIMEOUT_SECONDS,
+                )
+            else:
+                response = await asyncio.wait_for(
+                    provider.complete(
+                        system=(
+                            "You return strict JSON relevance decisions for candidate addiction-"
+                            "treatment provider places found via Google Places search."
+                        ),
+                        user=prompt,
+                        model=model_slug,
+                        max_tokens=3000,
+                    ),
+                    timeout=CLASSIFICATION_BATCH_TIMEOUT_SECONDS,
+                )
+
             raw = LLMProvider.parse_json_response(response.text)
             plan = MapsRelevancePlan.model_validate(_normalize_relevance_payload(raw))
+
+            if run_id:
+                log_llm_call(
+                    run_id=run_id,
+                    model=model_slug,
+                    provider="openrouter",
+                    purpose="classification",
+                    tokens_in=len(prompt),
+                    tokens_out=len(response.text),
+                    error=None,
+                )
+
+        except CircuitBreakerOpenError as exc:
+            if run_id:
+                log_circuit_breaker_event(run_id, "openrouter", "open", "open", failures=5)
+            logger.warning(
+                f"maps_census_classification_circuit_open count={len(payloads)} error={exc}",
+                extra={"count": len(payloads), "error": str(exc), "event": "circuit_open"},
+            )
+            return [
+                MapsRelevanceDecision(
+                    place_id=item["place_id"],
+                    is_relevant=False,
+                    reason="circuit_breaker_open",
+                    confidence=0.0,
+                )
+                for item in payloads
+            ]
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "maps_census_classification_batch_failed count=%s error=%s",
-                len(payloads),
-                exc,
+                f"maps_census_classification_batch_failed count={len(payloads)} error={exc}",
+                extra={"count": len(payloads), "error": str(exc), "event": "classification_failed"},
             )
             return [
                 MapsRelevanceDecision(
