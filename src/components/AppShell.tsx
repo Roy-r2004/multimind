@@ -28,7 +28,7 @@ const NAV = [
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/brain", label: "Brain", icon: Brain },
   { to: "/lessons", label: "Lessons", icon: BookOpen },
-  { to: "/saved-documents", label: "Saved Documents", icon: FileText },
+  { to: "/saved-documents", label: "Saved Prompts", icon: FileText },
   { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
 ];
 

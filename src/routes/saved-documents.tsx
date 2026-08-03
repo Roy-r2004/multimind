@@ -11,7 +11,7 @@ import { useChatStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/saved-documents")({
-  head: () => ({ meta: [{ title: "Saved Documents — MultiAI" }] }),
+  head: () => ({ meta: [{ title: "Saved Prompts — MultiAI" }] }),
   component: SavedDocumentsPage,
 });
 
@@ -115,7 +115,7 @@ function SavedDocumentsPage() {
               Library
             </p>
             <h1 className="mt-1.5 font-display text-3xl font-semibold tracking-tight sm:text-[2.75rem] sm:leading-[1.1]">
-              Saved documents
+              Saved Prompts
             </h1>
             <p className="mt-2.5 max-w-xl text-sm text-muted-foreground sm:text-[15px]">
               Full chat turns you saved under labels. Separate from bookmark Saved Verdicts and from
@@ -212,7 +212,7 @@ function SavedDocumentsPage() {
               </div>
             ) : docs.length === 0 ? (
               <GlassCard className="p-10 text-center text-sm text-muted-foreground">
-                No saved documents yet. In chat, open a turn menu and choose{" "}
+                No saved prompts yet. In chat, open a turn menu and choose{" "}
                 <strong className="text-foreground">Save as document</strong>.
               </GlassCard>
             ) : (
