@@ -178,6 +178,7 @@ class ModelSetService:
         )
         db.add(model_set)
         await db.flush()
+        await db.commit()
         return self._response(model_set)
 
     async def update(
@@ -201,6 +202,7 @@ class ModelSetService:
         if data.custom_instructions is not None:
             model_set.custom_instructions = data.custom_instructions
         await db.flush()
+        await db.commit()
         return self._response(model_set)
 
     async def delete(self, db: AsyncSession, auth: AuthContext, slug: str) -> None:
@@ -265,6 +267,7 @@ class TemplateService:
         )
         db.add(template)
         await db.flush()
+        await db.commit()
         return TemplateResponse.model_validate(template)
 
 
