@@ -49,6 +49,7 @@ import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
 import { SaveTurnDialog } from "@/components/chat/SaveTurnDialog";
+import { SavePromptDialog } from "@/components/chat/SavePromptDialog";
 import { ChatTurnLayoutToggle } from "@/components/chat/ChatTurnLayoutToggle";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
@@ -254,6 +255,11 @@ export function ChatPage() {
   const [deletingTurn, setDeletingTurn] = useState(false);
   const [deleteTurnError, setDeleteTurnError] = useState<string | null>(null);
   const [saveTurnId, setSaveTurnId] = useState<string | null>(null);
+  const [savePromptTarget, setSavePromptTarget] = useState<{
+    turnId: string;
+    promptText: string;
+    verdictText: string;
+  } | null>(null);
   const [deletedTurns, setDeletedTurns] = useState<ApiTurn[]>([]);
   const [restoringTurnId, setRestoringTurnId] = useState<string | null>(null);
   const [regeneratingTurnId, setRegeneratingTurnId] = useState<string | null>(null);
@@ -934,6 +940,18 @@ export function ChatPage() {
                         }
                         submitting={regeneratingTurnId === turn.id}
                         onSubmit={(prompt) => requestPromptEdit(turn, prompt)}
+                        onSavePrompt={() =>
+                          setSavePromptTarget({
+                            turnId: turn.id,
+                            promptText: turn.user_message,
+                            verdictText: turn.verdict?.text ?? "",
+                          })
+                        }
+                        savePromptDisabledReason={
+                          turn.verdict?.text?.trim()
+                            ? undefined
+                            : "The verdict must finish before this prompt can be saved."
+                        }
                       />
                     </div>
                     <AiTurn
@@ -1365,6 +1383,14 @@ export function ChatPage() {
         open={Boolean(saveTurnId)}
         turnId={saveTurnId}
         onClose={() => setSaveTurnId(null)}
+      />
+
+      <SavePromptDialog
+        open={Boolean(savePromptTarget)}
+        turnId={savePromptTarget?.turnId ?? null}
+        initialPromptText={savePromptTarget?.promptText ?? ""}
+        verdictPreview={savePromptTarget?.verdictText ?? ""}
+        onClose={() => setSavePromptTarget(null)}
       />
 
       <Modal

@@ -11,6 +11,7 @@ import {
   Map as MapIcon,
   Menu,
   MessageSquare,
+  MessageSquareText,
   Search,
   Settings,
   X,
@@ -29,6 +30,7 @@ const NAV = [
   { to: "/brain", label: "Brain", icon: Brain },
   { to: "/lessons", label: "Lessons", icon: BookOpen },
   { to: "/saved-documents", label: "Saved Documents", icon: FileText },
+  { to: "/saved-prompts", label: "Saved Prompts", icon: MessageSquareText },
   { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
 ];
 

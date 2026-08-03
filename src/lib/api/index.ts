@@ -24,6 +24,7 @@ import type {
   ApiDiscussResponse,
   ApiSavedDocument,
   ApiSavedDocumentSuggest,
+  ApiSavedPrompt,
   ApiLessonDetail,
   ApiLessonListItem,
   ApiModel,
@@ -388,6 +389,54 @@ export const api = {
 
     delete: (auth: Auth, documentId: string) =>
       apiRequest<{ message: string }>(`/saved-documents/${documentId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  savedPrompts: {
+    list: (auth: Auth, params?: { q?: string; label_id?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.q) search.set("q", params.q);
+      if (params?.label_id) search.set("label_id", params.label_id);
+      const qs = search.toString();
+      return apiRequest<ApiSavedPrompt[]>(`/saved-prompts${qs ? `?${qs}` : ""}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
+
+    create: (
+      auth: Auth,
+      data: {
+        turn_id: string;
+        prompt_text?: string | null;
+        title?: string | null;
+        label_ids?: string[];
+        label_names?: string[];
+      },
+    ) =>
+      apiRequest<ApiSavedPrompt>("/saved-prompts", {
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    update: (
+      auth: Auth,
+      promptId: string,
+      data: { title?: string | null; prompt_text?: string; label_ids?: string[] },
+    ) =>
+      apiRequest<ApiSavedPrompt>(`/saved-prompts/${promptId}`, {
+        method: "PATCH",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    delete: (auth: Auth, promptId: string) =>
+      apiRequest<{ message: string }>(`/saved-prompts/${promptId}`, {
         method: "DELETE",
         token: auth.token,
         orgId: auth.orgId,

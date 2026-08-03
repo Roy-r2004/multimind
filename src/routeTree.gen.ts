@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TemplatesRouteImport } from './routes/templates'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SavedVerdictsRouteImport } from './routes/saved-verdicts'
+import { Route as SavedPromptsRouteImport } from './routes/saved-prompts'
 import { Route as SavedDocumentsRouteImport } from './routes/saved-documents'
 import { Route as ModelSetsRouteImport } from './routes/model-sets'
 import { Route as LoginRouteImport } from './routes/login'
@@ -69,6 +70,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const SavedVerdictsRoute = SavedVerdictsRouteImport.update({
   id: '/saved-verdicts',
   path: '/saved-verdicts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SavedPromptsRoute = SavedPromptsRouteImport.update({
+  id: '/saved-prompts',
+  path: '/saved-prompts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SavedDocumentsRoute = SavedDocumentsRouteImport.update({
@@ -304,6 +310,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
+  '/saved-prompts': typeof SavedPromptsRoute
   '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
@@ -347,6 +354,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
+  '/saved-prompts': typeof SavedPromptsRoute
   '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
@@ -394,6 +402,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
+  '/saved-prompts': typeof SavedPromptsRoute
   '/saved-verdicts': typeof SavedVerdictsRoute
   '/settings': typeof SettingsRoute
   '/templates': typeof TemplatesRoute
@@ -444,6 +453,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/model-sets'
     | '/saved-documents'
+    | '/saved-prompts'
     | '/saved-verdicts'
     | '/settings'
     | '/templates'
@@ -487,6 +497,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/model-sets'
     | '/saved-documents'
+    | '/saved-prompts'
     | '/saved-verdicts'
     | '/settings'
     | '/templates'
@@ -533,6 +544,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/model-sets'
     | '/saved-documents'
+    | '/saved-prompts'
     | '/saved-verdicts'
     | '/settings'
     | '/templates'
@@ -582,6 +594,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   ModelSetsRoute: typeof ModelSetsRoute
   SavedDocumentsRoute: typeof SavedDocumentsRoute
+  SavedPromptsRoute: typeof SavedPromptsRoute
   SavedVerdictsRoute: typeof SavedVerdictsRoute
   SettingsRoute: typeof SettingsRoute
   TemplatesRoute: typeof TemplatesRoute
@@ -609,6 +622,13 @@ declare module '@tanstack/react-router' {
       path: '/saved-verdicts'
       fullPath: '/saved-verdicts'
       preLoaderRoute: typeof SavedVerdictsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/saved-prompts': {
+      id: '/saved-prompts'
+      path: '/saved-prompts'
+      fullPath: '/saved-prompts'
+      preLoaderRoute: typeof SavedPromptsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/saved-documents': {
@@ -1085,6 +1105,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   ModelSetsRoute: ModelSetsRoute,
   SavedDocumentsRoute: SavedDocumentsRoute,
+  SavedPromptsRoute: SavedPromptsRoute,
   SavedVerdictsRoute: SavedVerdictsRoute,
   SettingsRoute: SettingsRoute,
   TemplatesRoute: TemplatesRoute,
