@@ -360,6 +360,16 @@ async def recompute_maps_census_eligibility(
     return await maps_admin_service.recompute_eligibility(db, auth, run_id)
 
 
+@router.post("/runs/{run_id}/revalidate-keeps", response_model=MapsCampaignActionResponse)
+async def revalidate_maps_census_keeps(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-judge already-'keep' places against the current keep/drop prompt (no rediscovery)."""
+    return await maps_admin_service.revalidate_keeps(db, auth, run_id)
+
+
 @router.post("/runs/{run_id}/re-enrich-keeps", response_model=MapsCampaignActionResponse)
 async def re_enrich_maps_census_keeps(
     run_id: str,

@@ -808,6 +808,68 @@ class MapsAdminService:
             ),
         )
 
+    async def revalidate_keeps(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        """Re-judge already-"keep" places against the current keep/drop prompt.
+
+        The keep/drop pass is resumable and skips any place with a persisted
+        ``keep_drop_decision`` — correct for normal resume, but it also means a
+        prompt change (e.g. adding a new exclusion rule) never touches places
+        that were already decided under the old prompt. This clears the
+        decision on current keeps only (drops stay decided — a stricter rule
+        can't turn a drop back into a keep) so the next keep-drop pass re-judges
+        them with one fresh LLM call each, still using only already-stored
+        Maps fields and already-crawled website content — no rediscovery.
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        from app.services.scraping.maps_keep_drop_service import (
+            KEEP,
+            run_maps_keep_drop_job,
+        )
+
+        rows = (
+            (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.keep_drop_decision == KEEP,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for place in rows:
+            place.keep_drop_decision = None
+            place.keep_drop_reason = None
+            place.keep_drop_confidence = None
+            place.keep_drop_source = None
+            place.keep_drop_evidence = None
+        await db.commit()
+
+        reset_count = len(rows)
+        if reset_count == 0:
+            return MapsCampaignActionResponse(
+                run_id=run.id,
+                status=run.status.value if hasattr(run.status, "value") else str(run.status),
+                campaign_paused=_campaign_paused(run),
+                message="No kept places to revalidate",
+            )
+
+        await maps_census_service._enqueue_job(
+            "run_maps_keep_drop_job",
+            run_id,
+            inline_runner=lambda: run_maps_keep_drop_job({}, run_id),
+        )
+        return MapsCampaignActionResponse(
+            run_id=run.id,
+            status=run.status.value if hasattr(run.status, "value") else str(run.status),
+            campaign_paused=_campaign_paused(run),
+            message=f"Revalidating {reset_count} previously-kept places against the current prompt",
+        )
+
     async def re_enrich_keeps(
         self, db: AsyncSession, auth: AuthContext, run_id: str
     ) -> MapsCampaignActionResponse:
