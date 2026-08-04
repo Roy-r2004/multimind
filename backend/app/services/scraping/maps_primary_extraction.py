@@ -192,6 +192,7 @@ def map_primary_to_enrichment_fields(result: MapsPrimaryExtractionResult) -> dic
             for value in result.languages
         ],
         "contact_phone": result.phone,
+        "contact_email": result.email,
     }
 
 

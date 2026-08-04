@@ -164,6 +164,11 @@ class MapsPlaceEnrichmentResult(TruncatingModel):
     contact_phone: str | None = Field(
         default=None, max_length=64, validation_alias=AliasChoices("contact_phone", "phone")
     )
+    # Email extracted from the facility's own official-website crawl excerpt.
+    # Google Places has no email field at all — this is the only source.
+    contact_email: str | None = Field(
+        default=None, max_length=320, validation_alias=AliasChoices("contact_email", "email")
+    )
 
 
 class MapsPlaceEnrichmentBatch(BaseModel):
@@ -662,6 +667,8 @@ def _apply_structured_fields(place: MapsPlace, result: MapsPlaceEnrichmentResult
         place.treatment_price = result.treatment_price.strip()[:512]
     if result.contact_phone and result.contact_phone.strip():
         place.international_phone_number = result.contact_phone.strip()[:64]
+    if result.contact_email and result.contact_email.strip():
+        place.contact_email = result.contact_email.strip()[:320]
 
 
 def _derive_lifecycle_status(place: MapsPlace) -> str:

@@ -40,6 +40,7 @@ EXPORT_HEADERS = [
     "Location",
     "Languages Spoken",
     "Website",
+    "Email",
     "Phone Number",
     "Treatment Price",
 ]
@@ -49,6 +50,8 @@ _CONTACT_PRICING = "Contact for pricing"
 
 # Headers whose string cells should render as clickable links.
 _URL_HEADERS = {"Website"}
+# Headers whose string cells should render as clickable mailto links.
+_EMAIL_HEADERS = {"Email"}
 # Headers whose values must stay textual so "+" and leading zeroes survive.
 _TEXT_HEADERS = {"Phone Number"}
 # Short, scannable columns that read best centered in both axes.
@@ -60,6 +63,7 @@ _WIDE_COLUMNS = {
     "Location": 42,
     "Languages Spoken": 22,
     "Website": 40,
+    "Email": 30,
     "Phone Number": 20,
     "Treatment Price": 20,
 }
@@ -137,6 +141,7 @@ class MapsExportService:
             _ui_location(place, country_name),
             _ui_list(place.languages_spoken),
             _ui_website(place),
+            _ui_text(place.contact_email),
             _ui_text(place.international_phone_number),
             _ui_price(place.treatment_price),
         ]
@@ -171,6 +176,9 @@ class MapsExportService:
         url_columns = {
             index for index, header in enumerate(headers, start=1) if header in _URL_HEADERS
         }
+        email_columns = {
+            index for index, header in enumerate(headers, start=1) if header in _EMAIL_HEADERS
+        }
         centered_columns = {
             index for index, header in enumerate(headers, start=1) if header in _CENTERED_HEADERS
         }
@@ -200,6 +208,16 @@ class MapsExportService:
                         cell.hyperlink = cell.value
                         cell.font = link_font
                     except Exception:  # noqa: BLE001 - keep export alive on bad URLs
+                        pass
+                if (
+                    cell.column in email_columns
+                    and isinstance(cell.value, str)
+                    and _is_email(cell.value)
+                ):
+                    try:
+                        cell.hyperlink = f"mailto:{cell.value}"
+                        cell.font = link_font
+                    except Exception:  # noqa: BLE001 - keep export alive on bad emails
                         pass
             ws.row_dimensions[row[0].row].height = _estimate_row_height(row, widths)
 
@@ -278,6 +296,13 @@ def _safe_cell(value: Any) -> Any:
 def _is_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _is_email(value: str) -> bool:
+    return bool(_EMAIL_RE.match(value.strip()))
 
 
 def _display_text(value: Any) -> str:

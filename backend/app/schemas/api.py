@@ -776,6 +776,7 @@ class MapsPlaceItem(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     international_phone_number: str | None = None
+    contact_email: str | None = None
     raw_website: str | None = None
     official_website: str | None = None
     website_source: str | None = None

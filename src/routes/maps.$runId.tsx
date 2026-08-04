@@ -385,11 +385,12 @@ function ExportTableCell({
   value: string;
 }) {
   const isPlaceholder = value === "Not Specified" || value === "Contact for pricing";
-  const isLink = column === "Website" && !isPlaceholder;
+  const isWebsiteLink = column === "Website" && !isPlaceholder;
+  const isEmailLink = column === "Email" && !isPlaceholder;
 
   return (
     <td className="min-w-[8rem] max-w-[18rem] px-3 py-2.5 align-top text-foreground">
-      {isLink ? (
+      {isWebsiteLink ? (
         <a
           href={value}
           target="_blank"
@@ -398,6 +399,10 @@ function ExportTableCell({
         >
           <span className="break-all">{value}</span>
           <ExternalLink className="mt-0.5 size-3 shrink-0" />
+        </a>
+      ) : isEmailLink ? (
+        <a href={`mailto:${value}`} className="break-all text-primary hover:underline">
+          {value}
         </a>
       ) : (
         <span

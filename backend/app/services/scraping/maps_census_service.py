@@ -2903,6 +2903,7 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         latitude=place.latitude,
         longitude=place.longitude,
         international_phone_number=place.international_phone_number,
+        contact_email=place.contact_email,
         raw_website=place.raw_website,
         official_website=place.official_website,
         website_source=place.website_source,

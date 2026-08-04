@@ -6,6 +6,7 @@ export const EXPORT_COLUMNS = [
   "Location",
   "Languages Spoken",
   "Website",
+  "Email",
   "Phone Number",
   "Treatment Price",
 ] as const;
@@ -53,6 +54,7 @@ export function placeToExportRow(place: MapsPlaceItem, countryName?: string): Ex
       Location: formatLocation(place, countryName),
       "Languages Spoken": languages || NOT_SPECIFIED,
       Website: formatWebsite(place),
+      Email: (place.contact_email || "").trim() || NOT_SPECIFIED,
       "Phone Number": (place.international_phone_number || "").trim() || NOT_SPECIFIED,
       "Treatment Price": (place.treatment_price || "").trim() || CONTACT_PRICING,
     },

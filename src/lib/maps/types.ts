@@ -71,6 +71,7 @@ export type MapsPlaceItem = {
   latitude: number | null;
   longitude: number | null;
   international_phone_number: string | null;
+  contact_email: string | null;
   raw_website: string | null;
   official_website: string | null;
   website_source: "places" | "search" | "llm" | null;

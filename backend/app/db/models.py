@@ -2660,6 +2660,7 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     international_phone_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     raw_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
     official_website: Mapped[str | None] = mapped_column(String(512), nullable=True)
     website_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
