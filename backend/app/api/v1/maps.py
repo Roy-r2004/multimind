@@ -20,6 +20,7 @@ from app.schemas.api import (
     MapsPlaceListResponse,
     MapsPlaceReviewRequest,
     MapsRegionListResponse,
+    MapsRunLiveStats,
 )
 from app.services.scraping.maps_admin_service import maps_admin_service
 from app.services.scraping.maps_census_service import maps_census_service
@@ -52,6 +53,23 @@ async def get_maps_census_run(
     db: AsyncSession = Depends(get_db),
 ):
     return await maps_census_service.get_run(db, auth, run_id)
+
+
+@router.get("/runs/{run_id}/live-stats")
+async def get_maps_census_run_live_stats(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get real-time stats from current database state (live counts, not cached).
+
+    Returns: places_found_live, places_relevant_live (eligible), places_enriched_live,
+    progress percentages, elapsed time.
+
+    Use this endpoint to update stat tiles in real-time as run progresses.
+    Poll every 2-5 seconds for smooth updates.
+    """
+    return await maps_census_service.get_run_live_stats(db, auth, run_id)
 
 
 @router.get("/runs/{run_id}/places", response_model=list[MapsPlaceItem])

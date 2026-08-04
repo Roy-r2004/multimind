@@ -296,6 +296,84 @@ class MapsCensusService:
         summary = _run_summary(run)
         return MapsCensusRunDetail(**summary.model_dump())
 
+    async def get_run_live_stats(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> dict[str, any]:
+        """Compute real-time stats from current database state (not cached)."""
+        from datetime import UTC, datetime
+
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+
+        # Compute live counts from database
+        places_found = (
+            await db.execute(
+                select(func.count()).where(
+                    MapsPlace.run_id == run_id,
+                ).select_from(MapsPlace)
+            )
+        ).scalar_one() or 0
+
+        places_relevant = (
+            await db.execute(
+                select(func.count()).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.is_relevant.is_(True),
+                ).select_from(MapsPlace)
+            )
+        ).scalar_one() or 0
+
+        places_classified = (
+            await db.execute(
+                select(func.count()).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.lifecycle_status.isnot(None),
+                ).select_from(MapsPlace)
+            )
+        ).scalar_one() or 0
+
+        places_enriched = (
+            await db.execute(
+                select(func.count()).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value,
+                ).select_from(MapsPlace)
+            )
+        ).scalar_one() or 0
+
+        places_dropped = places_found - places_relevant
+        cells_completed = run.cells_completed or 0
+        cells_total = run.cells_total or 1
+
+        # Calculate progress percentages
+        discovery_pct = (cells_completed / cells_total * 100) if cells_total > 0 else 0
+        classification_pct = (places_classified / places_found * 100) if places_found > 0 else 0
+        enrichment_pct = (places_enriched / places_relevant * 100) if places_relevant > 0 else 0
+
+        # Calculate elapsed time
+        elapsed_seconds = None
+        if run.started_at:
+            elapsed = datetime.now(UTC) - run.started_at
+            elapsed_seconds = int(elapsed.total_seconds())
+
+        return {
+            "run_id": run_id,
+            "status": run.status.value if hasattr(run.status, "value") else str(run.status),
+            "places_found_live": int(places_found),
+            "places_classified_live": int(places_classified),
+            "places_relevant_live": int(places_relevant),
+            "places_dropped_live": int(places_dropped),
+            "places_enriched_live": int(places_enriched),
+            "cells_completed_live": cells_completed,
+            "cells_total": cells_total,
+            "discovery_progress_pct": float(round(discovery_pct, 1)),
+            "classification_progress_pct": float(round(classification_pct, 1)),
+            "enrichment_progress_pct": float(round(enrichment_pct, 1)),
+            "elapsed_seconds": elapsed_seconds,
+            "started_at": run.started_at,
+        }
+
     async def list_places(
         self,
         db: AsyncSession,

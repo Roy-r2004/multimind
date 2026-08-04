@@ -710,6 +710,28 @@ class MapsCensusRunDetail(MapsCensusRunSummary):
     pass
 
 
+class MapsRunLiveStats(BaseModel):
+    """Real-time stats computed from current database state (not cached)."""
+
+    run_id: str
+    status: str
+    # Live counts from database
+    places_found_live: int
+    places_classified_live: int
+    places_relevant_live: int  # Eligible centers
+    places_dropped_live: int
+    places_enriched_live: int
+    cells_completed_live: int
+    cells_total: int
+    # Progress percentages
+    discovery_progress_pct: float
+    classification_progress_pct: float
+    enrichment_progress_pct: float
+    # Timing
+    elapsed_seconds: int | None = None
+    started_at: datetime | None = None
+
+
 class MapsCensusCellItem(BaseModel):
     id: str
     region_name: str
