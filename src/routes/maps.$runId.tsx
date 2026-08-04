@@ -14,6 +14,7 @@ import { AppShell } from "@/components/AppShell";
 import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { CountryOutline } from "@/components/maps/CountryOutline";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
+import { FacilityNetworkView } from "@/components/maps/FacilityNetworkView";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
 import {
   EXPORT_COLUMNS,
@@ -257,6 +258,22 @@ function MapsRunDetailPage() {
             </div>
 
             <SearchKeywordsTable cells={searchCells} isRunning={ACTIVE_STATUSES.has(run.status)} />
+
+            {/* Facility Network View (Main + Branches) */}
+            {places.length > 0 && (
+              <DreamPanel className="mt-8">
+                <div className="mb-4">
+                  <h2 className="font-display text-base font-semibold text-foreground">
+                    Rehabilitation facilities
+                  </h2>
+                  <p className="mt-0.5 text-sm text-muted-foreground">
+                    {places.length} relevant facilities grouped by organization. Main inpatient programs shown
+                    prominently, branch locations collapsible below.
+                  </p>
+                </div>
+                <FacilityNetworkView places={places} />
+              </DreamPanel>
+            )}
 
             <FacilitiesExportTable
               rows={exportRows}
