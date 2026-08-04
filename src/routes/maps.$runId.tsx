@@ -14,10 +14,10 @@ import { AppShell } from "@/components/AppShell";
 import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { CountryOutline } from "@/components/maps/CountryOutline";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
-import { FacilityNetworkView } from "@/components/maps/FacilityNetworkView";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
 import {
   EXPORT_COLUMNS,
+  groupExportRowsByOrganization,
   placeToExportRow,
   sortPlacesForExport,
 } from "@/lib/maps/exportDisplay";
@@ -184,10 +184,11 @@ function MapsRunDetailPage() {
     }
   }
 
-  const exportRows = useMemo(() => {
+  const exportGroups = useMemo(() => {
     if (!run) return [];
     const filtered = showExportOnly ? places.filter((place) => place.export_eligible) : places;
-    return sortPlacesForExport(filtered).map((place) => placeToExportRow(place, run.country_name));
+    const rows = sortPlacesForExport(filtered).map((place) => placeToExportRow(place, run.country_name));
+    return groupExportRowsByOrganization(rows);
   }, [places, run, showExportOnly]);
 
   const exportEligibleCount = places.filter((place) => place.export_eligible).length;
@@ -259,24 +260,8 @@ function MapsRunDetailPage() {
 
             <SearchKeywordsTable cells={searchCells} isRunning={ACTIVE_STATUSES.has(run.status)} />
 
-            {/* Facility Network View (Main + Branches) */}
-            {places.length > 0 && (
-              <DreamPanel className="mt-8">
-                <div className="mb-4">
-                  <h2 className="font-display text-base font-semibold text-foreground">
-                    Rehabilitation facilities
-                  </h2>
-                  <p className="mt-0.5 text-sm text-muted-foreground">
-                    {places.length} relevant facilities grouped by organization. Main inpatient programs shown
-                    prominently, branch locations collapsible below.
-                  </p>
-                </div>
-                <FacilityNetworkView places={places} />
-              </DreamPanel>
-            )}
-
             <FacilitiesExportTable
-              rows={exportRows}
+              groups={exportGroups}
               isRunning={ACTIVE_STATUSES.has(run.status)}
               showExportOnly={showExportOnly}
               onToggleExportOnly={() => setShowExportOnly((value) => !value)}
@@ -364,20 +349,22 @@ function SearchKeywordsTable({
 }
 
 function FacilitiesExportTable({
-  rows,
+  groups,
   isRunning,
   showExportOnly,
   onToggleExportOnly,
   exportEligibleCount,
   totalCount,
 }: {
-  rows: ReturnType<typeof placeToExportRow>[];
+  groups: ReturnType<typeof groupExportRowsByOrganization>;
   isRunning: boolean;
   showExportOnly: boolean;
   onToggleExportOnly: () => void;
   exportEligibleCount: number;
   totalCount: number;
 }) {
+  const hasRows = groups.some((group) => group.rows.length > 0);
+
   return (
     <DreamPanel className="mt-8 p-0 overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 px-5 py-4">
@@ -413,7 +400,7 @@ function FacilitiesExportTable({
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
+            {!hasRows ? (
               <tr>
                 <td
                   colSpan={EXPORT_COLUMNS.length}
@@ -427,24 +414,39 @@ function FacilitiesExportTable({
                 </td>
               </tr>
             ) : (
-              rows.map(({ place, cells }) => (
-                <tr
-                  key={place.id}
-                  className={cn(
-                    "border-b border-border/60 align-top",
-                    "odd:bg-background even:bg-muted/15",
-                    !place.export_eligible && "opacity-75",
-                  )}
-                >
-                  {EXPORT_COLUMNS.map((column) => (
-                    <ExportTableCell
-                      key={`${place.id}-${column}`}
-                      column={column}
-                      value={cells[column]}
-                    />
-                  ))}
-                </tr>
-              ))
+              groups.map((group) =>
+                group.rows.map(({ place, cells }, index) => {
+                  const isBranchGroup = group.rows.length > 1;
+                  const isMain = isBranchGroup && index === 0;
+                  const isBranch = isBranchGroup && index > 0;
+                  return (
+                    <tr
+                      key={place.id}
+                      className={cn(
+                        "align-top",
+                        isBranch
+                          ? "border-b border-border/40 bg-muted/25"
+                          : "border-b border-border/60 odd:bg-background even:bg-muted/15",
+                        !place.export_eligible && "opacity-75",
+                      )}
+                    >
+                      {EXPORT_COLUMNS.map((column) => (
+                        <ExportTableCell
+                          key={`${place.id}-${column}`}
+                          column={column}
+                          value={cells[column]}
+                          organizationLabel={
+                            column === "Facility Name" && isMain
+                              ? `${group.organizationName} · ${group.rows.length} locations`
+                              : undefined
+                          }
+                          isBranch={column === "Facility Name" && isBranch}
+                        />
+                      ))}
+                    </tr>
+                  );
+                }),
+              )
             )}
           </tbody>
         </table>
@@ -453,12 +455,27 @@ function FacilitiesExportTable({
   );
 }
 
-function ExportTableCell({ column, value }: { column: string; value: string }) {
+function ExportTableCell({
+  column,
+  value,
+  organizationLabel,
+  isBranch,
+}: {
+  column: string;
+  value: string;
+  organizationLabel?: string;
+  isBranch?: boolean;
+}) {
   const isPlaceholder = value === "Not Specified" || value === "Contact for pricing";
   const isLink = column === "Website" && !isPlaceholder;
 
   return (
     <td className="min-w-[8rem] max-w-[18rem] px-3 py-2.5 align-top text-foreground">
+      {organizationLabel && (
+        <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+          {organizationLabel}
+        </span>
+      )}
       {isLink ? (
         <a
           href={value}
@@ -476,6 +493,7 @@ function ExportTableCell({ column, value }: { column: string; value: string }) {
             isPlaceholder && "italic text-muted-foreground",
           )}
         >
+          {isBranch && <span className="mr-1 text-muted-foreground">↳</span>}
           {value}
         </span>
       )}

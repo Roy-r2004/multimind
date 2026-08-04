@@ -64,3 +64,34 @@ export function sortPlacesForExport(places: MapsPlaceItem[]): MapsPlaceItem[] {
     a.canonical_name.localeCompare(b.canonical_name, undefined, { sensitivity: "base" }),
   );
 }
+
+export type ExportRowGroup = {
+  organizationName: string;
+  rows: ExportRow[];
+};
+
+/** Facilities sharing a name prefix before " - " (e.g. "Anton Proksch Institut - Baden")
+ * are branches of the same organization. Groups rows so branches render together in
+ * the same table instead of scattered across it. */
+function organizationNameForPlace(place: MapsPlaceItem): string {
+  return place.canonical_name.split(" - ")[0]?.trim() || place.canonical_name;
+}
+
+export function groupExportRowsByOrganization(rows: ExportRow[]): ExportRowGroup[] {
+  const order: string[] = [];
+  const groups = new Map<string, ExportRow[]>();
+
+  rows.forEach((row) => {
+    const orgName = organizationNameForPlace(row.place);
+    if (!groups.has(orgName)) {
+      groups.set(orgName, []);
+      order.push(orgName);
+    }
+    groups.get(orgName)!.push(row);
+  });
+
+  return order.map((organizationName) => ({
+    organizationName,
+    rows: groups.get(organizationName)!,
+  }));
+}
