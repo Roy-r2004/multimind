@@ -741,6 +741,73 @@ class MapsAdminService:
             message=f"Keep/drop queued for {undecided} undecided places",
         )
 
+    async def recompute_eligibility(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        """Reapply the current eligibility rules to already-classified places.
+
+        Pure recompute over fields already stored on each place (facility_type,
+        ownership_status, operator_type, organization_scope,
+        addiction_focus_confirmed) — no LLM calls, no rediscovery. Use this
+        after an eligibility rule change (e.g. a newly excluded facility_type)
+        to apply the new rule to an already-completed campaign instead of
+        rerunning discovery/classification from scratch.
+
+        Places already gated by the strict keep/drop pass
+        (``keep_drop_decision`` set) are left untouched — that verdict is a
+        deliberate per-place AI judgment, not something this bulk pass should
+        overwrite.
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        from app.services.scraping.maps_place_enrichment_service import (
+            _derive_lifecycle_status,
+        )
+
+        rows = (
+            (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.keep_drop_decision.is_(None),
+                        MapsPlace.facility_type.isnot(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        changed = 0
+        for place in rows:
+            was_relevant = place.is_relevant
+            place.lifecycle_status = _derive_lifecycle_status(place)
+            place.client_eligibility = compute_client_eligibility(place)
+            place.is_relevant = derive_is_relevant(place.lifecycle_status)
+            place.verification_verdict = derive_legacy_verification_verdict(place.lifecycle_status)
+            if place.is_relevant != was_relevant:
+                changed += 1
+
+        relevant_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(MapsPlace)
+                .where(MapsPlace.run_id == run_id, MapsPlace.is_relevant.is_(True))
+            )
+        ).scalar_one() or 0
+        run.places_classified_relevant = relevant_count
+
+        await db.commit()
+        return MapsCampaignActionResponse(
+            run_id=run.id,
+            status=run.status.value if hasattr(run.status, "value") else str(run.status),
+            campaign_paused=_campaign_paused(run),
+            message=(
+                f"Recomputed eligibility for {len(rows)} places — "
+                f"{changed} changed relevance, {relevant_count} now relevant"
+            ),
+        )
+
     async def re_enrich_keeps(
         self, db: AsyncSession, auth: AuthContext, run_id: str
     ) -> MapsCampaignActionResponse:

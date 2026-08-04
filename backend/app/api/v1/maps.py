@@ -350,6 +350,16 @@ async def run_maps_census_keep_drop(
     return await maps_admin_service.run_keep_drop(db, auth, run_id)
 
 
+@router.post("/runs/{run_id}/recompute-eligibility", response_model=MapsCampaignActionResponse)
+async def recompute_maps_census_eligibility(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reapply current eligibility rules to already-classified places (no LLM calls, no rediscovery)."""
+    return await maps_admin_service.recompute_eligibility(db, auth, run_id)
+
+
 @router.post("/runs/{run_id}/re-enrich-keeps", response_model=MapsCampaignActionResponse)
 async def re_enrich_maps_census_keeps(
     run_id: str,
