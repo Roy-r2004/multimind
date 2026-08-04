@@ -15,8 +15,6 @@ from app.db.models import (
 ELIGIBLE_FACILITY_TYPES = {
     MapsFacilityType.RESIDENTIAL_ADDICTION_REHAB.value,
     MapsFacilityType.INPATIENT_DETOX_CENTER.value,
-    MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
-    MapsFacilityType.PSYCHIATRIC_CLINIC_WITH_ADDICTION_PROGRAM.value,
     MapsFacilityType.THERAPEUTIC_COMMUNITY.value,
 }
 
