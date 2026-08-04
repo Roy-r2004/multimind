@@ -1088,7 +1088,7 @@ export function ChatPage() {
                     ? "Ask your model council anything… (Enter for new line; ⌘↵ / Ctrl+Enter to send)"
                     : "Log in to chat"
                 }
-                className="block max-h-[280px] min-h-[3.5rem] w-full resize-none overflow-y-auto rounded-[1.35rem] bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                className="block max-h-[280px] min-h-[3.5rem] w-full resize-none overflow-y-auto rounded-[1.35rem] bg-transparent px-4 pt-3 pb-2 text-lg outline-none placeholder:text-muted-foreground disabled:opacity-50"
               />
               <input
                 ref={fileInputRef}
