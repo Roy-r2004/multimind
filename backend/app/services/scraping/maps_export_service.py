@@ -86,11 +86,13 @@ class MapsExportService:
         workbook.properties.creator = "MultiAI Verdict"
         workbook.remove(workbook.active)
 
-        # Client workbook = only the strict keep/drop "keep" rows.
+        # Client workbook = only the strict keep/drop "keep" rows that are
+        # actually deliverable — no phone and no website means the client has
+        # no way to contact the facility, so it is dropped from the export.
         eligible_places = [
             place
             for place in places
-            if place.keep_drop_decision == "keep"
+            if place.keep_drop_decision == "keep" and _has_contact_info(place)
         ]
 
         self._write_sheet(
@@ -330,6 +332,12 @@ def _ui_price(value: Any) -> str:
 
 def _is_eligible_center(place: MapsPlace) -> bool:
     return place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+
+
+def _has_contact_info(place: MapsPlace) -> bool:
+    has_phone = bool((place.international_phone_number or "").strip())
+    has_website = bool((place.official_website or place.raw_website or "").strip())
+    return has_phone and has_website
 
 
 maps_export_service = MapsExportService()

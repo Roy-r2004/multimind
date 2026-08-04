@@ -39,6 +39,13 @@ const SUCCESS_STATUSES = new Set(["completed", "completed_with_warnings"]);
 const POLL_INTERVAL_MS = 5000;
 const ENRICHMENT_BUSY = new Set(["pending", "running"]);
 
+/** A row with no phone and no website is undeliverable to the client — drop it. */
+function hasPhoneAndWebsite(place: MapsPlaceItem): boolean {
+  const hasPhone = Boolean((place.international_phone_number || "").trim());
+  const hasWebsite = Boolean((place.official_website || place.raw_website || "").trim());
+  return hasPhone && hasWebsite;
+}
+
 function enrichmentStillRunning(
   run: {
     status: string;
@@ -183,13 +190,20 @@ function MapsRunDetailPage() {
     }
   }
 
+  const contactablePlaces = useMemo(
+    () => places.filter((place) => hasPhoneAndWebsite(place)),
+    [places],
+  );
+
   const exportRows = useMemo(() => {
     if (!run) return [];
-    const filtered = showExportOnly ? places.filter((place) => place.export_eligible) : places;
+    const filtered = showExportOnly
+      ? contactablePlaces.filter((place) => place.export_eligible)
+      : contactablePlaces;
     return sortPlacesForExport(filtered).map((place) => placeToExportRow(place, run.country_name));
-  }, [places, run, showExportOnly]);
+  }, [contactablePlaces, run, showExportOnly]);
 
-  const exportEligibleCount = places.filter((place) => place.export_eligible).length;
+  const exportEligibleCount = contactablePlaces.filter((place) => place.export_eligible).length;
 
   return (
     <AppShell>
@@ -264,7 +278,7 @@ function MapsRunDetailPage() {
               showExportOnly={showExportOnly}
               onToggleExportOnly={() => setShowExportOnly((value) => !value)}
               exportEligibleCount={exportEligibleCount}
-              totalCount={places.length}
+              totalCount={contactablePlaces.length}
             />
           </>
         )}
