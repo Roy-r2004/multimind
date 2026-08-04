@@ -270,8 +270,6 @@ function MapsRunDetailPage() {
               />
             </div>
 
-            <SearchKeywordsTable cells={searchCells} isRunning={ACTIVE_STATUSES.has(run.status)} />
-
             <FacilitiesExportTable
               rows={exportRows}
               isRunning={ACTIVE_STATUSES.has(run.status)}
@@ -284,79 +282,6 @@ function MapsRunDetailPage() {
         )}
       </DreamPageShell>
     </AppShell>
-  );
-}
-
-function SearchKeywordsTable({
-  cells,
-  isRunning,
-}: {
-  cells: MapsCensusCellItem[];
-  isRunning: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <DreamPanel className="mt-8 p-0 overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition hover:bg-muted/30"
-      >
-        <div>
-          <h2 className="font-display text-base font-semibold text-foreground">Search keywords</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {cells.length} Google Places queries used for this run
-          </p>
-        </div>
-        <span className="text-sm text-muted-foreground">{open ? "Hide" : "Show"}</span>
-      </button>
-
-      {open && (
-        <div className="max-h-72 overflow-auto border-t border-border/80">
-          <table className="w-full min-w-[640px] border-collapse text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
-              <tr className="border-b border-border/80 text-left text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
-                <th className="px-4 py-2.5 font-semibold w-12">#</th>
-                <th className="px-4 py-2.5 font-semibold w-36">City</th>
-                <th className="px-4 py-2.5 font-semibold w-40">Region</th>
-                <th className="px-4 py-2.5 font-semibold">Keyword</th>
-                <th className="px-4 py-2.5 font-semibold w-24 text-right">Found</th>
-              </tr>
-            </thead>
-            <tbody>
-              {cells.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={5}
-                    className="px-4 py-4 text-sm text-muted-foreground"
-                  >
-                    {isRunning
-                      ? "Planning search grid… keyword rows will appear here once the run starts."
-                      : "No search keywords recorded."}
-                  </td>
-                </tr>
-              ) : (
-                cells.map((cell, index) => (
-                  <tr
-                    key={cell.id}
-                    className="border-b border-border/50 odd:bg-background even:bg-muted/20"
-                  >
-                    <td className="px-4 py-2 text-muted-foreground tabular-nums">{index + 1}</td>
-                    <td className="px-4 py-2 text-foreground">{cell.city_name || "—"}</td>
-                    <td className="px-4 py-2 text-foreground">{cell.region_name}</td>
-                    <td className="px-4 py-2 font-mono text-[13px] text-foreground">{cell.query_text}</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                      {cell.places_found}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </DreamPanel>
   );
 }
 
