@@ -1,14 +1,28 @@
 """Project, model set, template, and cost services."""
 
+from __future__ import annotations
+
 from datetime import UTC, datetime, timedelta
+from re import sub as re_sub
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import (
+    AppError,
+    ConflictError,
+    ForbiddenError,
+    InternalServerError,
+    NotFoundError,
+    ValidationError,
+)
+from app.core.logging import get_logger
 from app.db.models import Chat, CostRecord, ModelSet, Project, ScrapingMission, Strategy, Template
+from app.llm.catalog import is_builtin_model_id
 from app.schemas.api import (
     CostSummaryResponse,
     ChatResponse,
@@ -23,6 +37,13 @@ from app.schemas.api import (
     TemplateCreateRequest,
     TemplateResponse,
 )
+
+logger = get_logger(__name__)
+
+# Keep aligned with model_sets / org_models column widths (see migration 040).
+MODEL_ID_MAX_LEN = 128
+BEST_FOR_MAX_LEN = 512
+TEMPLATE_NAME_MAX_LEN = 255
 
 
 class ProjectService:
@@ -163,47 +184,109 @@ class ModelSetService:
         self, db: AsyncSession, auth: AuthContext, data: ModelSetCreateRequest
     ) -> ModelSetResponse:
         slug = f"set-{uuid4().hex[:8]}"
-        model_set = ModelSet(
-            org_id=auth.org_id,
-            slug=slug,
-            name=data.name,
-            description=data.description,
-            models=data.models,
-            verdict_model=data.verdict_model,
-            strategy=Strategy(data.strategy.value),
-            best_for=data.best_for or data.description,
-            template_name=data.template_name,
-            custom_instructions=data.custom_instructions,
-            is_system=False,
-        )
-        db.add(model_set)
-        await db.flush()
-        await db.commit()
-        return self._response(model_set)
+        fields = self._submitted_field_names(data)
+        try:
+            if not auth.org_id:
+                raise ForbiddenError("Organization context required to create a model set")
+            self._validate_model_ids(data.models, data.verdict_model)
+            best_for = self._resolve_best_for(data.best_for, data.description)
+            if data.template_name is not None and len(data.template_name) > TEMPLATE_NAME_MAX_LEN:
+                raise ValidationError(
+                    f"template_name must be at most {TEMPLATE_NAME_MAX_LEN} characters"
+                )
+            model_set = ModelSet(
+                org_id=auth.org_id,
+                slug=slug,
+                name=data.name,
+                description=data.description,
+                models=list(data.models),
+                verdict_model=data.verdict_model,
+                strategy=Strategy(data.strategy.value),
+                best_for=best_for,
+                template_name=data.template_name,
+                custom_instructions=data.custom_instructions,
+                is_system=False,
+            )
+            db.add(model_set)
+            await db.flush()
+            await db.commit()
+            return self._response(model_set)
+        except AppError as exc:
+            self._log_failure(
+                operation="create",
+                auth=auth,
+                slug=slug,
+                field_names=fields,
+                exc=exc,
+            )
+            raise
+        except Exception as exc:
+            self._log_failure(
+                operation="create",
+                auth=auth,
+                slug=slug,
+                field_names=fields,
+                exc=exc,
+                include_traceback=True,
+            )
+            raise self._map_db_exception(exc) from exc
 
     async def update(
         self, db: AsyncSession, auth: AuthContext, slug: str, data: ModelSetUpdateRequest
     ) -> ModelSetResponse:
-        model_set = await self._get_editable(db, auth, slug)
-        if data.name is not None:
-            model_set.name = data.name
-        if data.description is not None:
-            model_set.description = data.description
-        if data.models is not None:
-            model_set.models = data.models
-        if data.verdict_model is not None:
-            model_set.verdict_model = data.verdict_model
-        if data.strategy is not None:
-            model_set.strategy = Strategy(data.strategy.value)
-        if data.best_for is not None:
-            model_set.best_for = data.best_for
-        if data.template_name is not None:
-            model_set.template_name = data.template_name
-        if data.custom_instructions is not None:
-            model_set.custom_instructions = data.custom_instructions
-        await db.flush()
-        await db.commit()
-        return self._response(model_set)
+        fields = self._submitted_field_names(data, exclude_unset=True)
+        try:
+            model_set = await self._get_editable(db, auth, slug)
+            if data.name is not None:
+                model_set.name = data.name
+            if data.description is not None:
+                model_set.description = data.description
+            if data.models is not None or data.verdict_model is not None:
+                models = data.models if data.models is not None else list(model_set.models)
+                verdict = (
+                    data.verdict_model
+                    if data.verdict_model is not None
+                    else model_set.verdict_model
+                )
+                self._validate_model_ids(models, verdict)
+            if data.models is not None:
+                model_set.models = list(data.models)
+            if data.verdict_model is not None:
+                model_set.verdict_model = data.verdict_model
+            if data.strategy is not None:
+                model_set.strategy = Strategy(data.strategy.value)
+            if data.best_for is not None:
+                model_set.best_for = self._resolve_best_for(data.best_for, None)
+            if data.template_name is not None:
+                if len(data.template_name) > TEMPLATE_NAME_MAX_LEN:
+                    raise ValidationError(
+                        f"template_name must be at most {TEMPLATE_NAME_MAX_LEN} characters"
+                    )
+                model_set.template_name = data.template_name
+            if data.custom_instructions is not None:
+                model_set.custom_instructions = data.custom_instructions
+            await db.flush()
+            await db.commit()
+            return self._response(model_set)
+        except AppError as exc:
+            self._log_failure(
+                operation="update",
+                auth=auth,
+                slug=slug,
+                field_names=fields,
+                exc=exc,
+            )
+            raise
+        except Exception as exc:
+            self._log_failure(
+                operation="update",
+                auth=auth,
+                slug=slug,
+                field_names=fields,
+                exc=exc,
+                include_traceback=True,
+            )
+            raise self._map_db_exception(exc) from exc
 
     async def delete(self, db: AsyncSession, auth: AuthContext, slug: str) -> None:
         model_set = await self._get_editable(db, auth, slug)
@@ -218,16 +301,14 @@ class ModelSetService:
         await db.delete(model_set)
 
     async def _get_editable(self, db: AsyncSession, auth: AuthContext, slug: str) -> ModelSet:
-        result = await db.execute(
-            select(ModelSet).where(
-                ModelSet.slug == slug,
-                ModelSet.org_id == auth.org_id,
-                ModelSet.is_system.is_(False),
-            )
-        )
+        result = await db.execute(select(ModelSet).where(ModelSet.slug == slug))
         model_set = result.scalar_one_or_none()
         if model_set is None:
             raise NotFoundError("ModelSet", slug)
+        if model_set.is_system:
+            raise ForbiddenError("System model sets cannot be modified")
+        if model_set.org_id != auth.org_id:
+            raise ForbiddenError("Model set belongs to another organization")
         return model_set
 
     def _response(self, s: ModelSet) -> ModelSetResponse:
@@ -243,6 +324,103 @@ class ModelSetService:
             custom_instructions=s.custom_instructions,
             is_system=s.is_system,
         )
+
+    @staticmethod
+    def _submitted_field_names(data: Any, *, exclude_unset: bool = False) -> list[str]:
+        payload = data.model_dump(exclude_unset=exclude_unset)
+        return sorted(str(key) for key, value in payload.items() if value is not None or not exclude_unset)
+
+    @staticmethod
+    def _validate_one_model_id(model_id: str, *, field: str) -> None:
+        if not isinstance(model_id, str) or not model_id.strip():
+            raise ValidationError(f"Invalid {field}: model id cannot be empty")
+        if len(model_id) > MODEL_ID_MAX_LEN:
+            raise ValidationError(
+                f"Invalid {field}: model id exceeds {MODEL_ID_MAX_LEN} characters"
+            )
+        if is_builtin_model_id(model_id):
+            return
+        if model_id.startswith("or:") and len(model_id) > 3:
+            return
+        raise ValidationError(
+            f"Invalid {field}: unknown model id '{model_id}'. "
+            "Use a built-in shortcut or an or:<openrouter-slug> id."
+        )
+
+    def _validate_model_ids(self, models: list[str], verdict_model: str) -> None:
+        if len(models) < 1 or len(models) > 5:
+            raise ValidationError("models must contain between 1 and 5 model ids")
+        for model_id in models:
+            self._validate_one_model_id(model_id, field="models")
+        self._validate_one_model_id(verdict_model, field="verdict_model")
+
+    @staticmethod
+    def _resolve_best_for(best_for: str | None, description: str | None) -> str:
+        """Map UI blurb into VARCHAR(512) best_for without overflowing Postgres."""
+        raw = (best_for if best_for is not None and best_for != "" else None) or description or ""
+        if len(raw) > BEST_FOR_MAX_LEN:
+            # Description is Text; best_for is a short label. Truncate rather than 500.
+            return raw[:BEST_FOR_MAX_LEN]
+        return raw
+
+    @staticmethod
+    def _sanitize_exc_message(exc: BaseException) -> str:
+        message = str(exc)
+        message = re_sub(r"(?i)(password|passwd|pwd|secret|token|api[_-]?key)=[^\s]+", r"\1=[REDACTED]", message)
+        message = re_sub(
+            r"(?i)(postgres(?:ql)?|mysql|mongodb)://[^\s]+",
+            "[REDACTED_DB_URL]",
+            message,
+        )
+        message = re_sub(r"(?i)\bauthorization\s*:\s*\S+(?:\s+\S+)*", "authorization: [REDACTED]", message)
+        message = re_sub(r"(?i)\bbearer\s+[A-Za-z0-9._\-]+", "Bearer [REDACTED]", message)
+        return message[:800]
+
+    def _log_failure(
+        self,
+        *,
+        operation: str,
+        auth: AuthContext,
+        slug: str | None,
+        field_names: list[str],
+        exc: BaseException,
+        include_traceback: bool = False,
+    ) -> None:
+        # Never log custom_instructions / prompt bodies — only field names.
+        payload = {
+            "operation": operation,
+            "user_id": getattr(auth.user, "id", None),
+            "org_id": auth.org_id,
+            "model_set_slug": slug,
+            "submitted_fields": field_names,
+            "exception_class": type(exc).__name__,
+            "exception_message": self._sanitize_exc_message(exc),
+        }
+        if include_traceback:
+            logger.exception("model_set_write_failed", **payload)
+        else:
+            logger.warning("model_set_write_failed", **payload)
+
+    def _map_db_exception(self, exc: BaseException) -> AppError:
+        message = self._sanitize_exc_message(exc).lower()
+        if isinstance(exc, DBAPIError) and (
+            "permission denied" in message or "insufficient privilege" in message
+        ):
+            return InternalServerError(
+                "Database rejected the write — check role INSERT/UPDATE privileges on model_sets"
+            )
+        if isinstance(exc, IntegrityError) or "foreign key" in message:
+            return ConflictError(
+                "Model set could not be saved due to an organization or reference conflict"
+            )
+        if "unique" in message and "constraint" in message:
+            return ConflictError("Model set conflicts with an existing record")
+        if isinstance(exc, DataError) or "value too long" in message or "right truncation" in message:
+            return ValidationError(
+                "One or more fields exceed the database column length "
+                f"(verdict_model ≤ {MODEL_ID_MAX_LEN}, best_for ≤ {BEST_FOR_MAX_LEN})"
+            )
+        return InternalServerError("Unexpected error while saving model set")
 
 
 class TemplateService:

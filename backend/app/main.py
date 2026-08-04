@@ -101,7 +101,9 @@ def create_app() -> FastAPI:
             "NOT_FOUND": 404,
             "UNAUTHORIZED": 401,
             "FORBIDDEN": 403,
-            "VALIDATION_ERROR": 422,
+            # Client input problems (invalid model ids, oversize fields).
+            "VALIDATION_ERROR": 400,
+            "BAD_REQUEST": 400,
             "CONFLICT": 409,
             "INTERNAL_ERROR": 500,
             "LLM_NOT_CONFIGURED": 503,

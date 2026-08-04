@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    TypeDecorator,
     UniqueConstraint,
     func,
     text,
@@ -62,6 +63,45 @@ class Strategy(str, enum.Enum):
     PICK_BEST = "Pick Best"
     DEBATE = "Debate"
     REFEREE = "Referee"
+
+
+class StrategyColumn(TypeDecorator):
+    """Persist Strategy as enum *names* (REFEREE), matching production VARCHAR rows.
+
+    SQLAlchemy's default ``Enum(Strategy)`` with ``values_callable`` on display
+    values (Referee) cannot load existing production data stored as names.
+    Reads accept either name or display value; writes always store the name.
+    """
+
+    impl = String(32)
+    cache_ok = True
+
+    def process_bind_param(self, value: Any, dialect: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, Strategy):
+            return value.name
+        if isinstance(value, str):
+            try:
+                return Strategy[value].name
+            except KeyError:
+                return Strategy(value).name
+        raise TypeError(f"Expected Strategy or str, got {type(value)!r}")
+
+    def process_result_value(self, value: Any, dialect: Any) -> Strategy | None:
+        if value is None:
+            return None
+        if isinstance(value, Strategy):
+            return value
+        text = str(value)
+        try:
+            return Strategy[text]
+        except KeyError:
+            return Strategy(text)
+
+
+# Shared column type — native_enum=False equivalent (plain VARCHAR via String).
+STRATEGY_COLUMN = StrategyColumn()
 
 
 class UsageKind(str, enum.Enum):
@@ -360,8 +400,9 @@ class ModelSet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     models: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    verdict_model: Mapped[str] = mapped_column(String(64), nullable=False)
-    strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
+    # OpenRouter ids are or:<slug>; align with org_models.model_id (128).
+    verdict_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    strategy: Mapped[Strategy] = mapped_column(STRATEGY_COLUMN, nullable=False)
     best_for: Mapped[str] = mapped_column(String(512), default="", nullable=False)
     template_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     custom_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1965,8 +2006,8 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     chat_id: Mapped[str] = UuidFK("chats")
     user_message: Mapped[str] = mapped_column(Text, nullable=False)
     model_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
-    verdict_model: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy: Mapped[Strategy] = mapped_column(STRATEGY_COLUMN, nullable=False)
+    verdict_model: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[TurnStatus] = mapped_column(
         Enum(
             TurnStatus,
@@ -2011,7 +2052,7 @@ class Verdict(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     turn_id: Mapped[str] = mapped_column(String(36), ForeignKey("turns.id"), unique=True)
     model_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
+    strategy: Mapped[Strategy] = mapped_column(STRATEGY_COLUMN, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     tokens_input: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -2040,7 +2081,7 @@ class SavedVerdict(Base, UUIDPrimaryKeyMixin):
     verdict_text: Mapped[str] = mapped_column(Text, nullable=False)
     verdict_reason: Mapped[str] = mapped_column(Text, nullable=False)
     verdict_model_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
+    strategy: Mapped[Strategy] = mapped_column(STRATEGY_COLUMN, nullable=False)
     saved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2205,7 +2246,7 @@ class VerdictLesson(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     verdict_model_name: Mapped[str] = mapped_column(String(255), nullable=False)
     verdict_text: Mapped[str] = mapped_column(Text, nullable=False)
     verdict_reason: Mapped[str] = mapped_column(Text, nullable=False)
-    strategy: Mapped[Strategy] = mapped_column(Enum(Strategy), nullable=False)
+    strategy: Mapped[Strategy] = mapped_column(STRATEGY_COLUMN, nullable=False)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     comparison: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
