@@ -191,6 +191,7 @@ def map_primary_to_enrichment_fields(result: MapsPrimaryExtractionResult) -> dic
             {"value": value, "evidence_quote": "", "source_url": ""}
             for value in result.languages
         ],
+        "contact_phone": result.phone,
     }
 
 

@@ -156,6 +156,14 @@ class MapsPlaceEnrichmentResult(TruncatingModel):
     addictions_treated: list[EvidenceField] = Field(default_factory=list)
     languages_spoken: list[EvidenceField] = Field(default_factory=list)
     treatment_price: str | None = Field(default=None, max_length=512)
+    # Phone extracted from the facility's own official-website crawl excerpt.
+    # Preferred over Google Places' internationalPhoneNumber when present —
+    # Google Business Profile phone numbers are frequently stale for the
+    # small NGOs/clinics this census targets, while the facility's own site
+    # is first-party and more likely current.
+    contact_phone: str | None = Field(
+        default=None, max_length=64, validation_alias=AliasChoices("contact_phone", "phone")
+    )
 
 
 class MapsPlaceEnrichmentBatch(BaseModel):
@@ -475,8 +483,6 @@ class MapsPlaceEnrichmentService:
                 languages = _normalize_languages(result.languages_spoken)
                 place.addictions_treated = addictions
                 place.languages_spoken = languages
-                if result.treatment_price and result.treatment_price.strip():
-                    place.treatment_price = result.treatment_price.strip()[:512]
                 if place.is_relevant and (addictions or languages):
                     enriched += 1
 
@@ -652,6 +658,10 @@ def _apply_structured_fields(place: MapsPlace, result: MapsPlaceEnrichmentResult
     place.operating_status = _normalize_choice(result.operating_status, OPERATING_STATUS_VALUES)
     place.classification_evidence = _dump_classification_evidence(result.classification_evidence)
     place.classification_confidence = result.classification_confidence
+    if result.treatment_price and result.treatment_price.strip():
+        place.treatment_price = result.treatment_price.strip()[:512]
+    if result.contact_phone and result.contact_phone.strip():
+        place.international_phone_number = result.contact_phone.strip()[:64]
 
 
 def _derive_lifecycle_status(place: MapsPlace) -> str:
