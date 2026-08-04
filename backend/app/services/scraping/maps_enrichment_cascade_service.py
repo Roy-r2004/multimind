@@ -813,17 +813,21 @@ class MapsEnrichmentCascadeService:
                 facility_type=place.facility_type,
                 ownership_status=place.ownership_status,
                 addiction_focus_confirmed=place.addiction_focus_confirmed,
+                has_contact_email=bool((place.contact_email or "").strip()),
             )
             current_eligibility = place.client_eligibility
             await session.commit()
 
-        use_sonar = (
-            reason is not None
-            and sonar_budget.can_call()
-            and current_eligibility == MapsClientEligibility.REVIEW.value
+        use_sonar = reason is not None and sonar_budget.can_call() and (
+            current_eligibility == MapsClientEligibility.REVIEW.value
+            # Missing-email is worth a live-search lookup even on an
+            # already-confirmed-eligible facility — classification and
+            # contact-info completeness are independent concerns.
+            or reason == "missing_contact_email"
         )
         if use_sonar:
             sonar_budget.calls_used += 1
+            contact_lookup_only = reason == "missing_contact_email" and current_eligibility != MapsClientEligibility.REVIEW.value
             try:
                 sonar_result = await fetch_sonar_fallback_one(
                     country_code=country_code,
@@ -839,24 +843,37 @@ class MapsEnrichmentCascadeService:
                     place = await session.get(MapsPlace, place_id)
                     if place is None:
                         return 0
-                    _apply_structured_fields(place, sonar_result)
-                    addictions = _normalize_addictions(sonar_result.addictions_treated)
-                    languages = _normalize_languages(sonar_result.languages_spoken)
-                    place.addictions_treated = addictions
-                    place.languages_spoken = languages
-                    place.enrichment_extraction_source = "sonar"
-                    place.enrichment_pipeline_state = (
-                        MapsEnrichmentPipelineState.SONAR_FALLBACK_COMPLETED.value
-                    )
-                    place.lifecycle_status = _derive_lifecycle_status(place)
-                    place.client_eligibility = compute_client_eligibility(place)
-                    place.is_relevant = derive_is_relevant(place.lifecycle_status)
-                    place.verification_verdict = derive_legacy_verification_verdict(
-                        place.lifecycle_status
-                    )
-                    place.verification_reason = _derive_verification_reason(place)
-                    place.verification_source_url = _derive_verification_source_url(sonar_result)
-                    place.relevance_reason = _derive_relevance_reason(place)
+                    if contact_lookup_only:
+                        # Sonar ran only because this already-keep/drop-confirmed
+                        # facility is missing an email — apply just the contact
+                        # field, never the structured classification. Letting a
+                        # single fresh web-search pass re-derive lifecycle_status/
+                        # client_eligibility here could silently reverse an
+                        # authoritative keep/drop decision over a side lookup.
+                        if sonar_result.contact_email and sonar_result.contact_email.strip():
+                            place.contact_email = sonar_result.contact_email.strip()[:320]
+                        place.enrichment_pipeline_state = (
+                            MapsEnrichmentPipelineState.SONAR_FALLBACK_COMPLETED.value
+                        )
+                    else:
+                        _apply_structured_fields(place, sonar_result)
+                        addictions = _normalize_addictions(sonar_result.addictions_treated)
+                        languages = _normalize_languages(sonar_result.languages_spoken)
+                        place.addictions_treated = addictions
+                        place.languages_spoken = languages
+                        place.enrichment_extraction_source = "sonar"
+                        place.enrichment_pipeline_state = (
+                            MapsEnrichmentPipelineState.SONAR_FALLBACK_COMPLETED.value
+                        )
+                        place.lifecycle_status = _derive_lifecycle_status(place)
+                        place.client_eligibility = compute_client_eligibility(place)
+                        place.is_relevant = derive_is_relevant(place.lifecycle_status)
+                        place.verification_verdict = derive_legacy_verification_verdict(
+                            place.lifecycle_status
+                        )
+                        place.verification_reason = _derive_verification_reason(place)
+                        place.verification_source_url = _derive_verification_source_url(sonar_result)
+                        place.relevance_reason = _derive_relevance_reason(place)
                     await session.commit()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("maps_sonar_fallback_failed place=%s error=%s", place_id, exc)

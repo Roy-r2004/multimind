@@ -50,6 +50,8 @@ Return these exact fields for every facility:
 - `addictions_treated`
 - `languages_spoken`
 - `treatment_price`
+- `email`: a contact email address for this specific facility, found on its official
+  website, an Impressum/contact page, or another attributable source. `null` if none found.
 
 How to classify:
 - Use `confirmed_government` / `public_hospital` / `government_agency` only when sources
@@ -124,7 +126,8 @@ Return strict JSON only with this shape:
       "languages_spoken": [
         {"value": "Arabic", "evidence_quote": "...", "source_url": "https://..."}
       ],
-      "treatment_price": "from 30,000 DZD / month"
+      "treatment_price": "from 30,000 DZD / month",
+      "email": "kontakt@example.org"
     }
   ]
 }

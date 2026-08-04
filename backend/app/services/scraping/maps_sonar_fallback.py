@@ -25,6 +25,7 @@ SONAR_FALLBACK_REASONS = frozenset(
         "conflicting_sources",
         "primary_confidence_low",
         "needs_review_unresolved",
+        "missing_contact_email",
     }
 )
 
@@ -100,6 +101,7 @@ def sonar_fallback_reason(
     facility_type: str | None,
     ownership_status: str | None,
     addiction_focus_confirmed: bool | None,
+    has_contact_email: bool = True,
 ) -> str | None:
     if not has_website:
         return "no_official_website"
@@ -113,6 +115,11 @@ def sonar_fallback_reason(
         return "primary_confidence_low"
     if lifecycle_status == "needs_review" and client_eligibility == "review":
         return "needs_review_unresolved"
+    # Runs even for an already-eligible facility (bypasses the eligibility gate
+    # in the caller) — classification can be fully resolved while contact info
+    # is still missing, and finding an email is valuable independent of that.
+    if not has_contact_email:
+        return "missing_contact_email"
     return None
 
 
