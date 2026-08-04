@@ -5,6 +5,7 @@ import type {
   MapsCensusRunDetail,
   MapsCensusRunSummary,
   MapsPlaceItem,
+  MapsRunLiveStats,
 } from "@/lib/maps/types";
 
 type Auth = { token: string; orgId: string };
@@ -27,6 +28,13 @@ export function listMapsCensusRuns(auth: Auth) {
 
 export function getMapsCensusRun(auth: Auth, runId: string) {
   return apiRequest<MapsCensusRunDetail>(`/maps/runs/${runId}`, {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function getMapsCensusRunLiveStats(auth: Auth, runId: string) {
+  return apiRequest<MapsRunLiveStats>(`/maps/runs/${runId}/live-stats`, {
     token: auth.token,
     orgId: auth.orgId,
   });

@@ -26,11 +26,12 @@ import {
   downloadMapsCensusExport,
   enrichMapsCensusRun,
   getMapsCensusRun,
+  getMapsCensusRunLiveStats,
   listMapsCensusCells,
   listMapsCensusPlaces,
   refreshMapsCensusWebsites,
 } from "@/lib/maps/api";
-import type { MapsCensusCellItem, MapsCensusRunDetail, MapsPlaceItem } from "@/lib/maps/types";
+import type { MapsCensusCellItem, MapsCensusRunDetail, MapsPlaceItem, MapsRunLiveStats } from "@/lib/maps/types";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 /** Terminal success — includes campaigns finished with optional-stage warnings. */
@@ -70,6 +71,7 @@ function MapsRunDetailPage() {
   const [run, setRun] = useState<MapsCensusRunDetail | null>(null);
   const [places, setPlaces] = useState<MapsPlaceItem[]>([]);
   const [searchCells, setSearchCells] = useState<MapsCensusCellItem[]>([]);
+  const [liveStats, setLiveStats] = useState<MapsRunLiveStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -100,6 +102,17 @@ function MapsRunDetailPage() {
         setPlaces(placeItems);
         setSearchCells(cellItems);
         setError(null);
+
+        // Fetch live stats if run is active (for real-time stat tile updates)
+        if (ACTIVE_STATUSES.has(runDetail.status)) {
+          try {
+            const stats = await getMapsCensusRunLiveStats(auth!, runId);
+            if (!cancelled) setLiveStats(stats);
+          } catch {
+            // Live stats fetch failed, but don't block the main load
+          }
+        }
+
         if (
           ACTIVE_STATUSES.has(runDetail.status) ||
           enrichmentStillRunning(runDetail, placeItems, enrichmentPollUntil)
@@ -215,9 +228,14 @@ function MapsRunDetailPage() {
               <MapsStatCard
                 icon={<Building2 className="size-4" />}
                 label="Relevant facilities"
-                value={places.length}
+                value={
+                  liveStats && ACTIVE_STATUSES.has(run.status)
+                    ? liveStats.places_relevant_live
+                    : places.length
+                }
                 tone="teal"
                 emphasize
+                isLive={liveStats !== null && ACTIVE_STATUSES.has(run.status)}
               />
               <MapsStatCard
                 icon={<Download className="size-4" />}
@@ -228,8 +246,13 @@ function MapsRunDetailPage() {
               <MapsStatCard
                 icon={<Search className="size-4" />}
                 label="Places scanned"
-                value={run.places_found}
+                value={
+                  liveStats && ACTIVE_STATUSES.has(run.status)
+                    ? liveStats.places_found_live
+                    : run.places_found
+                }
                 tone="amber"
+                isLive={liveStats !== null && ACTIVE_STATUSES.has(run.status)}
               />
               <MapsStatCard
                 icon={<Grid2x2 className="size-4" />}
@@ -591,12 +614,14 @@ function MapsStatCard({
   value,
   tone,
   emphasize,
+  isLive,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string | number;
   tone: "teal" | "sky" | "amber" | "violet";
   emphasize?: boolean;
+  isLive?: boolean;
 }) {
   const tones: Record<typeof tone, string> = {
     teal: "bg-teal-100 text-teal-700",
@@ -611,11 +636,19 @@ function MapsStatCard({
         emphasize
           ? "border-primary/25 bg-gradient-to-br from-teal-50/90 via-card to-sky-50 shadow-[0_12px_32px_oklch(0.55_0.1_240/0.1)]"
           : "border-border/90 bg-card/95 shadow-[0_8px_24px_oklch(0.45_0.04_240/0.06)]",
+        isLive && "animate-pulse",
       )}
     >
-      <span className={cn("grid size-9 place-items-center rounded-full", tones[tone])}>
-        {icon}
-      </span>
+      <div className="flex items-start justify-between">
+        <span className={cn("grid size-9 place-items-center rounded-full", tones[tone])}>
+          {icon}
+        </span>
+        {isLive && (
+          <span className="text-[10px] font-semibold text-green-600 uppercase tracking-wider">
+            LIVE
+          </span>
+        )}
+      </div>
       <div className="mt-3 font-display text-2xl font-semibold tracking-tight text-foreground">
         {value}
       </div>

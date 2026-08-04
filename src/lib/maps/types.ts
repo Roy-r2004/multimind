@@ -28,6 +28,23 @@ export type MapsCensusRunSummary = {
 
 export type MapsCensusRunDetail = MapsCensusRunSummary;
 
+export type MapsRunLiveStats = {
+  run_id: string;
+  status: string;
+  places_found_live: number;
+  places_classified_live: number;
+  places_relevant_live: number;
+  places_dropped_live: number;
+  places_enriched_live: number;
+  cells_completed_live: number;
+  cells_total: number;
+  discovery_progress_pct: number;
+  classification_progress_pct: number;
+  enrichment_progress_pct: number;
+  elapsed_seconds: number | null;
+  started_at: string | null;
+};
+
 export type MapsCensusCellItem = {
   id: string;
   region_name: string;
