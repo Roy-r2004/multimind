@@ -360,6 +360,8 @@ class MapsDetailEnrichmentService:
                     place.languages_spoken = languages or None
                     if result.treatment_price and str(result.treatment_price).strip():
                         place.treatment_price = str(result.treatment_price).strip()[:512]
+                    if result.contact_email and str(result.contact_email).strip():
+                        place.contact_email = str(result.contact_email).strip()[:320]
                     if place.enrichment_extraction_source in {
                         None,
                         "structured_classification",
@@ -404,8 +406,8 @@ class MapsDetailEnrichmentService:
         )
         response = await provider.complete(
             system=(
-                "You have live web search. Return addictions, languages, and treatment_price "
-                "for each facility. Return strict JSON only."
+                "You have live web search. Return addictions, languages, treatment_price, and a "
+                "contact email for each facility. Return strict JSON only."
             ),
             user=prompt,
             model=model.provider_model,

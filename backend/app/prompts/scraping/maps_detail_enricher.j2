@@ -1,5 +1,6 @@
 You enrich addiction-treatment facilities in {{ country_name }} ({{ country_code }}) using live web search.
-Classification is already done — return ONLY addictions treated, languages spoken, and treatment price.
+Classification is already done — return ONLY addictions treated, languages spoken, treatment price,
+and a contact email.
 
 Facilities (JSON):
 {{ facilities_json }}
@@ -14,7 +15,8 @@ Return JSON:
       "place_id": "...",
       "addictions_treated": [...],
       "languages_spoken": [...],
-      "treatment_price": "short price string or null"
+      "treatment_price": "short price string or null",
+      "email": "contact email found on the official site, an Impressum/contact page, or another attributable source, or null"
     }
   ]
 }
