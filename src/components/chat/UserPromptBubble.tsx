@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Loader2, Pencil } from "lucide-react";
+import { BookmarkPlus, Loader2, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { canSubmitEditedPrompt } from "@/lib/promptEdit";
 
@@ -10,6 +10,8 @@ type Props = {
   disabledReason?: string;
   submitting: boolean;
   onSubmit: (prompt: string) => void | Promise<void>;
+  onSavePrompt?: () => void;
+  savePromptDisabledReason?: string;
 };
 
 export function UserPromptBubble({
@@ -19,6 +21,8 @@ export function UserPromptBubble({
   disabledReason,
   submitting,
   onSubmit,
+  onSavePrompt,
+  savePromptDisabledReason,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message);
@@ -109,24 +113,41 @@ export function UserPromptBubble({
 
   return (
     <div className="flex items-start justify-end gap-2">
-      {editable ? (
-        <button
-          type="button"
-          aria-label="Edit prompt"
-          title={disabledReason ?? "Edit prompt"}
-          disabled={Boolean(disabledReason)}
-          onClick={() => {
-            setDraft(message);
-            setEditing(true);
-          }}
-          className={cn(
-            "mt-1 rounded-lg border border-border bg-card/70 p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground",
-            disabledReason && "cursor-not-allowed opacity-50",
-          )}
-        >
-          <Pencil className="size-3.5" />
-        </button>
-      ) : null}
+      <div className="mt-1 flex shrink-0 flex-col gap-1">
+        {onSavePrompt ? (
+          <button
+            type="button"
+            aria-label="Save Prompt"
+            title={savePromptDisabledReason ?? "Save Prompt"}
+            disabled={Boolean(savePromptDisabledReason)}
+            onClick={onSavePrompt}
+            className={cn(
+              "rounded-lg border border-border bg-card/70 p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground",
+              savePromptDisabledReason && "cursor-not-allowed opacity-50",
+            )}
+          >
+            <BookmarkPlus className="size-3.5" />
+          </button>
+        ) : null}
+        {editable ? (
+          <button
+            type="button"
+            aria-label="Edit prompt"
+            title={disabledReason ?? "Edit prompt"}
+            disabled={Boolean(disabledReason)}
+            onClick={() => {
+              setDraft(message);
+              setEditing(true);
+            }}
+            className={cn(
+              "rounded-lg border border-border bg-card/70 p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground",
+              disabledReason && "cursor-not-allowed opacity-50",
+            )}
+          >
+            <Pencil className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
       <div
         data-turn-prompt={turnId}
         className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20"

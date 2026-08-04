@@ -2061,6 +2061,10 @@ class ContentLabel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         secondary="saved_document_labels",
         back_populates="labels",
     )
+    prompts: Mapped[list["SavedPrompt"]] = relationship(
+        secondary="saved_prompt_labels",
+        back_populates="labels",
+    )
 
 
 class SavedDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -2102,6 +2106,47 @@ class SavedDocumentLabel(Base):
 
     document_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("saved_documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    label_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("content_labels.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class SavedPrompt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """User-managed saved question + final verdict from the same turn."""
+
+    __tablename__ = "saved_prompts"
+    __table_args__ = (
+        Index("ix_saved_prompts_org_user_updated", "org_id", "user_id", "updated_at"),
+        Index("ix_saved_prompts_turn_id", "turn_id"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="SET NULL"), nullable=True
+    )
+    turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+
+    labels: Mapped[list["ContentLabel"]] = relationship(
+        secondary="saved_prompt_labels",
+        back_populates="prompts",
+    )
+
+
+class SavedPromptLabel(Base):
+    __tablename__ = "saved_prompt_labels"
+    __table_args__ = (
+        UniqueConstraint("prompt_id", "label_id", name="uq_saved_prompt_label"),
+    )
+
+    prompt_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("saved_prompts.id", ondelete="CASCADE"), primary_key=True
     )
     label_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("content_labels.id", ondelete="CASCADE"), primary_key=True

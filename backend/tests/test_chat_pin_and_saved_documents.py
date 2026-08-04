@@ -233,3 +233,74 @@ async def test_brain_retrieval_is_permissioned(db_setup):
         )
         assert any(item.source_type == SOURCE_CHAT_TURN for item in items)
         await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_saved_prompt_stores_question_and_verdict(db_setup):
+    from app.core.exceptions import ValidationError
+    from app.services.saved_prompt_service import saved_prompt_service
+
+    async with db_setup.Session() as db:
+        auth = await auth_for(db, db_setup)
+        label = await saved_document_service.create_label(db, auth, "Sleep")
+        prompt = await saved_prompt_service.create_from_turn(
+            db,
+            auth,
+            turn_id=db_setup.turn_id,
+            prompt_text="How does alcohol affect sleep?",
+            title="Sleep question",
+            label_ids=[label.id],
+            label_names=[],
+        )
+        assert prompt.title == "Sleep question"
+        assert prompt.prompt_text == "How does alcohol affect sleep?"
+        assert prompt.verdict_text == "Alcohol disrupts REM sleep."
+        assert prompt.chat_id == db_setup.chat_id
+        assert prompt.turn_id == db_setup.turn_id
+        assert [item.name for item in prompt.labels] == ["Sleep"]
+        assert not hasattr(prompt, "snapshot_json")
+
+        found = await saved_prompt_service.search(db, auth, q="REM")
+        assert len(found) == 1
+        by_label = await saved_prompt_service.search(db, auth, label_id=label.id)
+        assert len(by_label) == 1
+
+        updated = await saved_prompt_service.update_prompt(
+            db,
+            auth,
+            prompt.id,
+            title="Updated",
+            prompt_text="Edited prompt text",
+            label_ids=[label.id],
+        )
+        assert updated.title == "Updated"
+        assert updated.prompt_text == "Edited prompt text"
+        assert updated.verdict_text == "Alcohol disrupts REM sleep."
+
+        other_auth = await auth_for(db, db_setup, other=True)
+        assert await saved_prompt_service.search(db, other_auth, q="alcohol") == []
+
+        await saved_prompt_service.delete_prompt(db, auth, prompt.id)
+        assert await saved_prompt_service.search(db, auth, q="Edited") == []
+
+        incomplete = Turn(
+            chat_id=db_setup.chat_id,
+            user_message="No verdict yet",
+            model_set_id="balanced",
+            strategy=Strategy.SYNTHESIZE,
+            verdict_model="gpt-4.1",
+            status=TurnStatus.RUNNING,
+        )
+        db.add(incomplete)
+        await db.flush()
+        with pytest.raises(ValidationError, match="verdict must finish"):
+            await saved_prompt_service.create_from_turn(
+                db,
+                auth,
+                turn_id=incomplete.id,
+                prompt_text="No verdict yet",
+                title=None,
+                label_ids=[],
+                label_names=[],
+            )
+        await db.commit()
