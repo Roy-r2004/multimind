@@ -40,7 +40,7 @@ from app.schemas.api import (
 
 logger = get_logger(__name__)
 
-# Keep aligned with model_sets / org_models column widths (see migration 039).
+# Keep aligned with model_sets / org_models column widths (see migration 040).
 MODEL_ID_MAX_LEN = 128
 BEST_FOR_MAX_LEN = 512
 TEMPLATE_NAME_MAX_LEN = 255

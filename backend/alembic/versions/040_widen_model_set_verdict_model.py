@@ -5,16 +5,16 @@ model ids (`or:provider--model-name`) and the UI's habit of copying long
 descriptions into best_for caused production INSERT/UPDATE 500s while
 local creates succeeded.
 
-Revision ID: 039
-Revises: 038
+Revision ID: 040
+Revises: 039
 Create Date: 2026-08-04
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "039"
-down_revision = "038"
+revision = "040"
+down_revision = "039"
 branch_labels = None
 depends_on = None
 
