@@ -238,12 +238,6 @@ function MapsRunDetailPage() {
                 isLive={liveStats !== null && ACTIVE_STATUSES.has(run.status)}
               />
               <MapsStatCard
-                icon={<Download className="size-4" />}
-                label="Export-ready rows"
-                value={exportEligibleCount}
-                tone="sky"
-              />
-              <MapsStatCard
                 icon={<Search className="size-4" />}
                 label="Places scanned"
                 value={
