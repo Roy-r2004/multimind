@@ -105,6 +105,15 @@ def sonar_fallback_reason(
 ) -> str | None:
     if not has_website:
         return "no_official_website"
+    # Checked before the classification-completeness reasons below: those all
+    # require client_eligibility == "review" to actually trigger Sonar in the
+    # caller, so if this facility is already keep/drop-confirmed "eligible"
+    # (structured fields never populated because it skipped primary extraction
+    # entirely), facility_type/ownership_status will always look "unclear" and
+    # would shadow this check forever if it came last. Contact-info lookup is
+    # an independent concern from classification and must not get shadowed.
+    if not has_contact_email:
+        return "missing_contact_email"
     if addiction_focus_confirmed is None:
         return "addiction_mission_unclear"
     if not facility_type or facility_type == "unknown":
@@ -115,11 +124,6 @@ def sonar_fallback_reason(
         return "primary_confidence_low"
     if lifecycle_status == "needs_review" and client_eligibility == "review":
         return "needs_review_unresolved"
-    # Runs even for an already-eligible facility (bypasses the eligibility gate
-    # in the caller) — classification can be fully resolved while contact info
-    # is still missing, and finding an email is valuable independent of that.
-    if not has_contact_email:
-        return "missing_contact_email"
     return None
 
 
