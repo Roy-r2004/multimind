@@ -119,21 +119,22 @@ class ModelSetCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str = ""
     models: list[str] = Field(min_length=1, max_length=5)
-    verdict_model: str
+    verdict_model: str = Field(min_length=1, max_length=128)
     strategy: StrategyEnum = StrategyEnum.SYNTHESIZE
+    # UI often copies description here; service truncates to DB VARCHAR(512).
     best_for: str = ""
-    template_name: str | None = None
+    template_name: str | None = Field(default=None, max_length=255)
     custom_instructions: str | None = None
 
 
 class ModelSetUpdateRequest(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     models: list[str] | None = Field(default=None, min_length=1, max_length=5)
-    verdict_model: str | None = None
+    verdict_model: str | None = Field(default=None, min_length=1, max_length=128)
     strategy: StrategyEnum | None = None
     best_for: str | None = None
-    template_name: str | None = None
+    template_name: str | None = Field(default=None, max_length=255)
     custom_instructions: str | None = None
 
 
