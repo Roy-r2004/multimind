@@ -1883,3 +1883,37 @@ class SavedDocumentSuggestRequest(BaseModel):
 class SavedDocumentSuggestResponse(BaseModel):
     name: str
     label_suggestions: list[str] = []
+
+
+# --- Saved prompts (user question text only) ---
+
+
+class SavedPromptLabelBrief(BaseModel):
+    id: str
+    name: str
+
+
+class SavedPromptResponse(BaseModel):
+    id: str
+    title: str | None = None
+    prompt_text: str
+    verdict_text: str | None = None
+    chat_id: str | None = None
+    turn_id: str | None = None
+    labels: list[SavedPromptLabelBrief] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedPromptCreateRequest(BaseModel):
+    turn_id: str
+    prompt_text: str | None = None
+    title: str | None = None
+    label_ids: list[str] = []
+    label_names: list[str] = []
+
+
+class SavedPromptUpdateRequest(BaseModel):
+    title: str | None = None
+    prompt_text: str | None = None
+    label_ids: list[str] | None = None

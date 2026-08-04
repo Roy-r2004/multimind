@@ -18,6 +18,7 @@ from app.api.v1 import (
     projects,
     prompt_builder,
     saved_documents,
+    saved_prompts,
     saved_verdicts,
     scraping,
     share,
@@ -38,6 +39,7 @@ api_router.include_router(verdicts.router, prefix="/verdicts", tags=["verdicts"]
 api_router.include_router(saved_verdicts.router, prefix="/saved-verdicts", tags=["saved-verdicts"])
 api_router.include_router(content_labels.router, prefix="/content-labels", tags=["content-labels"])
 api_router.include_router(saved_documents.router, prefix="/saved-documents", tags=["saved-documents"])
+api_router.include_router(saved_prompts.router, prefix="/saved-prompts", tags=["saved-prompts"])
 api_router.include_router(share.router, prefix="/share", tags=["share"])
 api_router.include_router(model_sets.router, prefix="/model-sets", tags=["model-sets"])
 api_router.include_router(templates.router, prefix="/templates", tags=["templates"])

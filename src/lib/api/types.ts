@@ -553,6 +553,18 @@ export type ApiSavedDocumentSuggest = {
   label_suggestions: string[];
 };
 
+export type ApiSavedPrompt = {
+  id: string;
+  title?: string | null;
+  prompt_text: string;
+  verdict_text?: string | null;
+  chat_id?: string | null;
+  turn_id?: string | null;
+  labels: { id: string; name: string }[];
+  created_at: string;
+  updated_at: string;
+};
+
 export class ApiClientError extends Error {
   constructor(
     message: string,
