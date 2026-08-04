@@ -80,6 +80,11 @@ def compute_client_eligibility(place: Any) -> str:
         MapsFacilityType.UNRELATED.value,
         MapsFacilityType.CESSATION_SERVICE.value,
         MapsFacilityType.HARM_REDUCTION_ONLY.value,
+        MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
+        MapsFacilityType.TELEHEALTH_ONLY.value,
+        MapsFacilityType.SOBER_LIVING.value,
+        MapsFacilityType.WELLNESS_COACHING_CENTER.value,
+        MapsFacilityType.MENTAL_HEALTH_CLINIC.value,
     }:
         return MapsClientEligibility.EXCLUDED.value
 
