@@ -871,6 +871,70 @@ class MapsAdminService:
             message=f"Revalidating {reset_count} previously-kept places against the current prompt",
         )
 
+    async def retry_failed_keep_drop(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        """Re-judge places that were auto-dropped because the classifier failed.
+
+        When every classifier attempt errors, the pass records
+        ``drop`` / ``classifier_unavailable`` (or ``keep_drop_error: …``) with
+        confidence 0.0 so the sweep can finish — but those places were never
+        actually judged, and the resumable pass will never revisit a persisted
+        decision. This clears only those failure-decisions (genuine model drops
+        keep their verdicts) and re-enqueues the keep/drop pass.
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        from app.services.scraping.maps_keep_drop_service import (
+            DROP,
+            run_maps_keep_drop_job,
+        )
+
+        rows = (
+            (
+                await db.execute(
+                    select(MapsPlace).where(
+                        MapsPlace.run_id == run_id,
+                        MapsPlace.keep_drop_decision == DROP,
+                        or_(
+                            MapsPlace.keep_drop_reason == "classifier_unavailable",
+                            MapsPlace.keep_drop_reason.like("keep_drop_error%"),
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for place in rows:
+            place.keep_drop_decision = None
+            place.keep_drop_reason = None
+            place.keep_drop_confidence = None
+            place.keep_drop_source = None
+            place.keep_drop_evidence = None
+        await db.commit()
+
+        reset_count = len(rows)
+        if reset_count == 0:
+            return MapsCampaignActionResponse(
+                run_id=run.id,
+                status=run.status.value if hasattr(run.status, "value") else str(run.status),
+                campaign_paused=_campaign_paused(run),
+                message="No failure-dropped places to retry",
+            )
+
+        await maps_census_service._enqueue_job(
+            "run_maps_keep_drop_job",
+            run_id,
+            inline_runner=lambda: run_maps_keep_drop_job({}, run_id),
+        )
+        return MapsCampaignActionResponse(
+            run_id=run.id,
+            status=run.status.value if hasattr(run.status, "value") else str(run.status),
+            campaign_paused=_campaign_paused(run),
+            message=f"Re-judging {reset_count} places whose keep/drop classification previously failed",
+        )
+
     async def re_enrich_keeps(
         self, db: AsyncSession, auth: AuthContext, run_id: str
     ) -> MapsCampaignActionResponse:

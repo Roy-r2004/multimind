@@ -401,6 +401,16 @@ async def revalidate_maps_census_keeps(
     return await maps_admin_service.revalidate_keeps(db, auth, run_id)
 
 
+@router.post("/runs/{run_id}/retry-failed-keep-drop", response_model=MapsCampaignActionResponse)
+async def retry_maps_census_failed_keep_drop(
+    run_id: str,
+    auth: AuthContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-judge places auto-dropped by classifier failures (classifier_unavailable / keep_drop_error)."""
+    return await maps_admin_service.retry_failed_keep_drop(db, auth, run_id)
+
+
 @router.post("/runs/{run_id}/re-enrich-keeps", response_model=MapsCampaignActionResponse)
 async def re_enrich_maps_census_keeps(
     run_id: str,

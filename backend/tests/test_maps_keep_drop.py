@@ -372,3 +372,75 @@ async def test_run_pass_is_resumable_and_gates_export(db, auth, monkeypatch):
             await fresh.execute(build_keep_drop_query(run.id))
         ).scalars().all()
     assert remaining == []
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_keep_drop_clears_only_failure_decisions(db, auth, monkeypatch):
+    """Places auto-dropped on classifier errors get their decision cleared and
+    re-enqueued; genuine model drops and keeps stay decided."""
+    from app.services.scraping.maps_admin_service import maps_admin_service
+    from app.services.scraping.maps_census_service import maps_census_service
+
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    unavailable = _place(
+        run.id,
+        "g1",
+        "Comunita Il Cenacolo",
+        keep_drop_decision="drop",
+        keep_drop_reason="classifier_unavailable",
+        keep_drop_confidence=0.0,
+    )
+    errored = _place(
+        run.id,
+        "g2",
+        "Zajednica Emanuel",
+        keep_drop_decision="drop",
+        keep_drop_reason="keep_drop_error: RuntimeError: boom",
+        keep_drop_confidence=0.0,
+    )
+    genuine_drop = _place(
+        run.id,
+        "g3",
+        "CHU Public Hospital",
+        keep_drop_decision="drop",
+        keep_drop_reason="Public hospital (government)",
+        keep_drop_confidence=0.97,
+    )
+    kept = _place(
+        run.id,
+        "g4",
+        "Centre Rehab Prive",
+        keep_drop_decision="keep",
+        keep_drop_reason="Private NGO addiction treatment center",
+        keep_drop_confidence=0.95,
+    )
+    db.add_all([unavailable, errored, genuine_drop, kept])
+    await db.commit()
+
+    enqueued: list[str] = []
+
+    async def fake_enqueue(job_name, run_id, **_kwargs):
+        enqueued.append(job_name)
+
+    monkeypatch.setattr(maps_census_service, "_enqueue_job", fake_enqueue)
+
+    result = await maps_admin_service.retry_failed_keep_drop(db, auth, run.id)
+    assert "2 places" in result.message
+    assert enqueued == ["run_maps_keep_drop_job"]
+
+    for place in (unavailable, errored, genuine_drop, kept):
+        await db.refresh(place)
+    assert unavailable.keep_drop_decision is None
+    assert unavailable.keep_drop_reason is None
+    assert errored.keep_drop_decision is None
+    assert genuine_drop.keep_drop_decision == "drop"
+    assert genuine_drop.keep_drop_reason == "Public hospital (government)"
+    assert kept.keep_drop_decision == "keep"
+
+    # Nothing to retry the second time — no job enqueued.
+    enqueued.clear()
+    again = await maps_admin_service.retry_failed_keep_drop(db, auth, run.id)
+    assert "No failure-dropped places" in again.message
+    assert enqueued == []
