@@ -1,7 +1,6 @@
 import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
   ArrowLeft,
-  ArrowRight,
   Building2,
   ChevronLeft,
   ChevronRight,
@@ -28,7 +27,6 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import {
-  advanceMapsCensusToPhase2,
   downloadMapsCensusExport,
   enrichMapsCensusRun,
   excludeMapsCensusPlace,
@@ -109,7 +107,6 @@ function MapsRunDetailPage() {
   const [phase2Meta, setPhase2Meta] = useState<MapsPaginatedMeta>(EMPTY_META);
   const [phase2Offset, setPhase2Offset] = useState(0);
   const [phase2Triggered, setPhase2Triggered] = useState(false);
-  const [advancing, setAdvancing] = useState(false);
   const [removingPlaceId, setRemovingPlaceId] = useState<string | null>(null);
   const [exportingPhase, setExportingPhase] = useState<"phase1" | "phase2" | null>(null);
 
@@ -221,24 +218,6 @@ function MapsRunDetailPage() {
       setError(err instanceof Error ? err.message : "Failed to remove facility");
     } finally {
       setRemovingPlaceId(null);
-    }
-  }
-
-  async function handleAdvanceToPhase2() {
-    const auth = authHeaders();
-    if (!auth) return;
-    setAdvancing(true);
-    setError(null);
-    setEnrichmentPollUntil(Date.now() + 15 * 60 * 1000);
-    try {
-      await advanceMapsCensusToPhase2(auth, runId);
-      setPhase2Triggered(true);
-      setActiveTab("phase2");
-      setPollTick((tick) => tick + 1);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start Phase 2");
-    } finally {
-      setAdvancing(false);
     }
   }
 
@@ -368,51 +347,25 @@ function MapsRunDetailPage() {
                     liveStats && ACTIVE_STATUSES.has(run.status)
                       ? liveStats.places_relevant_live
                       : phase1Meta.total
-                  } facilities returned from Google Maps. Remove anything that doesn't belong, then proceed to Phase 2 when ready.`}
+                  } facilities returned from Google Maps. Remove anything that doesn't belong — Phase 2 runs automatically once discovery completes.`}
                   onRemove={(placeId) => void handleRemovePlace(placeId)}
                   removingPlaceId={removingPlaceId}
                   headerExtra={
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleDownloadExport("phase1")}
-                        disabled={exportingPhase === "phase1" || phase1Meta.total === 0}
-                        className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-xs font-semibold text-foreground transition hover:bg-muted/50 disabled:opacity-50"
-                      >
-                        {exportingPhase === "phase1" ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <Download className="size-3.5" />
-                        )}
-                        Export Excel
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleAdvanceToPhase2()}
-                        disabled={advancing || phase1Meta.total === 0 || ACTIVE_STATUSES.has(run.status)}
-                        title={
-                          ACTIVE_STATUSES.has(run.status)
-                            ? "Wait for Phase 1 discovery to finish before proceeding"
-                            : undefined
-                        }
-                        className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
-                      >
-                        {advancing ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <ArrowRight className="size-3.5" />
-                        )}
-                        Proceed to Phase 2
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadExport("phase1")}
+                      disabled={exportingPhase === "phase1" || phase1Meta.total === 0}
+                      className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-xs font-semibold text-foreground transition hover:bg-muted/50 disabled:opacity-50"
+                    >
+                      {exportingPhase === "phase1" ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Download className="size-3.5" />
+                      )}
+                      Export Excel
+                    </button>
                   }
                 />
-                {ACTIVE_STATUSES.has(run.status) && (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Phase 1 discovery is still running — "Proceed to Phase 2" will be enabled once it
-                    completes.
-                  </p>
-                )}
                 <PaginationControls
                   meta={phase1Meta}
                   onPrev={() => setPhase1Offset((offset) => Math.max(0, offset - PHASE_PAGE_SIZE))}
@@ -423,17 +376,17 @@ function MapsRunDetailPage() {
               <TabsContent value="phase2" className="mt-4">
                 {!phase2Triggered && phase2Meta.total === 0 ? (
                   <DreamPanel className="p-6 text-sm text-muted-foreground">
-                    Phase 2 hasn't run yet. Review Phase 1's discovery results, remove anything
-                    that doesn't belong, then click "Proceed to Phase 2" to run the strict
-                    eligibility gate.
+                    Phase 2 hasn't run yet. It starts automatically once Phase 1 discovery
+                    completes — eligible facilities will appear here after the strict
+                    eligibility gate runs.
                   </DreamPanel>
                 ) : (
                   <>
                     <FacilitiesExportTable
                       rows={phase2Rows}
-                      isRunning={advancing}
+                      isRunning={ACTIVE_STATUSES.has(run.status)}
                       emptyMessage={
-                        advancing
+                        ACTIVE_STATUSES.has(run.status)
                           ? "Running the eligibility gate — this can take a few minutes."
                           : "No facilities passed the eligibility gate for this country."
                       }
