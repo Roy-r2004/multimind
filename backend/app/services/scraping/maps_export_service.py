@@ -32,6 +32,7 @@ from app.db.models import (
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 ELIGIBLE_CENTERS_SHEET = "Eligible Centers"
+PHASE_1_SHEET = "Phase 1 Results"
 
 # Mirrors the UI table (src/lib/maps/exportDisplay.ts EXPORT_COLUMNS) exactly.
 EXPORT_HEADERS = [
@@ -71,7 +72,7 @@ _WIDE_COLUMNS = {
 
 class MapsExportService:
     async def build_workbook(
-        self, db: AsyncSession, auth: AuthContext, run_id: str
+        self, db: AsyncSession, auth: AuthContext, run_id: str, *, scope: str = "phase2"
     ) -> tuple[bytes, str]:
         run = await db.get(MapsCensusRun, run_id)
         if run is None or run.organization_id != auth.org_id:
@@ -90,25 +91,35 @@ class MapsExportService:
         workbook.properties.creator = "MultiAI Verdict"
         workbook.remove(workbook.active)
 
-        # Client workbook = only the strict keep/drop "keep" rows that are
-        # actually deliverable — no phone and no website means the client has
-        # no way to contact the facility, so it is dropped from the export.
-        eligible_places = [
-            place
-            for place in places
-            if place.keep_drop_decision == "keep" and _has_contact_info(place)
-        ]
+        if scope == "phase1":
+            # Phase 1 = every discovered place the user hasn't manually
+            # removed — same set the Phase 1 tab shows on screen.
+            sheet_name = PHASE_1_SHEET
+            table_name = "Phase1Results"
+            scoped_places = [place for place in places if place.manually_excluded_at is None]
+        else:
+            # Client workbook = only the strict keep/drop "keep" rows that
+            # are actually deliverable — no phone and no website means the
+            # client has no way to contact the facility, so it is dropped.
+            sheet_name = ELIGIBLE_CENTERS_SHEET
+            table_name = "EligibleCenters"
+            scoped_places = [
+                place
+                for place in places
+                if place.keep_drop_decision == "keep" and _has_contact_info(place)
+            ]
 
         self._write_sheet(
-            workbook.create_sheet(ELIGIBLE_CENTERS_SHEET),
+            workbook.create_sheet(sheet_name),
             EXPORT_HEADERS,
-            [self._export_place_row(place, run.country_name) for place in eligible_places],
-            table_name="EligibleCenters",
+            [self._export_place_row(place, run.country_name) for place in scoped_places],
+            table_name=table_name,
         )
 
         buffer = BytesIO()
         workbook.save(buffer)
-        filename = f"{run.country_code.lower()}-maps-census-export.xlsx"
+        suffix = "phase1-results" if scope == "phase1" else "eligible-centers"
+        filename = f"{run.country_code.lower()}-maps-census-{suffix}.xlsx"
         return buffer.getvalue(), filename
 
     async def get_export_summary(

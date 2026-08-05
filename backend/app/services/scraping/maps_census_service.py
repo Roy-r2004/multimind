@@ -47,10 +47,13 @@ from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
 from app.schemas.api import (
+    MapsCampaignActionResponse,
     MapsCensusCellItem,
     MapsCensusRunDetail,
     MapsCensusRunSummary,
     MapsPlaceItem,
+    MapsPlaceListResponse,
+    PaginatedMeta,
 )
 from app.services.scraping.countries import resolve_country
 from app.services.scraping.facility_website_enrichment_service import (
@@ -384,21 +387,92 @@ class MapsCensusService:
         with_website_only: bool = False,
         client_eligibility: str | None = None,
         lifecycle_status: str | None = None,
-    ) -> list[MapsPlaceItem]:
+        keep_drop_decision: str | None = None,
+        include_removed: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> MapsPlaceListResponse:
         run = await db.get(MapsCensusRun, run_id)
         if run is None or run.organization_id != auth.org_id:
             raise NotFoundError("Maps census run", run_id)
+        limit = max(1, min(limit, 1000))
+        offset = max(0, offset)
+
         query = select(MapsPlace).where(MapsPlace.run_id == run_id)
+        count_query = select(func.count()).select_from(MapsPlace).where(MapsPlace.run_id == run_id)
         if relevant_only:
             query = query.where(MapsPlace.is_relevant.is_(True))
+            count_query = count_query.where(MapsPlace.is_relevant.is_(True))
         if with_website_only:
             query = query.where(MapsPlace.official_website.is_not(None))
+            count_query = count_query.where(MapsPlace.official_website.is_not(None))
         if client_eligibility is not None:
-            query = query.where(MapsPlace.client_eligibility == client_eligibility.strip().lower())
+            eligibility_filter = MapsPlace.client_eligibility == client_eligibility.strip().lower()
+            query = query.where(eligibility_filter)
+            count_query = count_query.where(eligibility_filter)
         if lifecycle_status is not None:
-            query = query.where(MapsPlace.lifecycle_status == lifecycle_status.strip().lower())
-        rows = (await db.execute(query.order_by(MapsPlace.canonical_name))).scalars().all()
-        return [_place_item(place) for place in rows]
+            lifecycle_filter = MapsPlace.lifecycle_status == lifecycle_status.strip().lower()
+            query = query.where(lifecycle_filter)
+            count_query = count_query.where(lifecycle_filter)
+        if keep_drop_decision is not None:
+            keep_drop_filter = MapsPlace.keep_drop_decision == keep_drop_decision.strip().lower()
+            query = query.where(keep_drop_filter)
+            count_query = count_query.where(keep_drop_filter)
+        if not include_removed:
+            query = query.where(MapsPlace.manually_excluded_at.is_(None))
+            count_query = count_query.where(MapsPlace.manually_excluded_at.is_(None))
+
+        total = await db.scalar(count_query)
+        rows = (
+            await db.execute(query.order_by(MapsPlace.canonical_name).limit(limit).offset(offset))
+        ).scalars().all()
+        return MapsPlaceListResponse(
+            items=[_place_item(place) for place in rows],
+            meta=PaginatedMeta(total=int(total or 0), limit=limit, offset=offset),
+        )
+
+    async def exclude_place(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        run_id: str,
+        place_id: str,
+        *,
+        reason: str | None = None,
+    ) -> MapsPlaceItem:
+        """Customer-facing Phase 1 'remove row' action.
+
+        Delegates to the same review-action logic the admin dashboard uses
+        (``mark_excluded``) — no duplicated business logic — but is reachable
+        by any user who can view this run, not just org admins.
+        """
+        from app.schemas.api import MapsPlaceReviewRequest
+        from app.services.scraping.maps_admin_service import maps_admin_service
+
+        detail = await maps_admin_service.apply_review_action(
+            db,
+            auth,
+            run_id,
+            place_id,
+            MapsPlaceReviewRequest(
+                action="mark_excluded",
+                reason=(reason or "Removed during Phase 1 review").strip() or "Removed during Phase 1 review",
+            ),
+        )
+        return detail
+
+    async def advance_to_phase_2(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        """Customer-facing 'Proceed to Phase 2' action — triggers the strict
+        keep/drop gate over the current (post-manual-removal) Phase 1 set.
+
+        Delegates to the same logic the admin dashboard uses — no duplicated
+        business logic — but is reachable by any user who can view this run.
+        """
+        from app.services.scraping.maps_admin_service import maps_admin_service
+
+        return await maps_admin_service.run_keep_drop(db, auth, run_id)
 
     async def list_cells(
         self, db: AsyncSession, auth: AuthContext, run_id: str
@@ -2939,6 +3013,8 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         verification_verdict=verification_verdict,
         verification_reason=place.verification_reason,
         verification_source_url=place.verification_source_url,
+        keep_drop_decision=place.keep_drop_decision,
+        manually_excluded=place.manually_excluded_at is not None,
     )
 
 

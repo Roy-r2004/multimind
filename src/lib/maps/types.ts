@@ -89,4 +89,24 @@ export type MapsPlaceItem = {
   verification_verdict: "confirmed" | "contradicted" | "unknown" | null;
   verification_reason: string | null;
   verification_source_url: string | null;
+  keep_drop_decision: "keep" | "drop" | null;
+  manually_excluded: boolean;
+};
+
+export type MapsPaginatedMeta = {
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type MapsPlaceListResponse = {
+  items: MapsPlaceItem[];
+  meta: MapsPaginatedMeta;
+};
+
+export type MapsCampaignActionResponse = {
+  run_id: string;
+  status: string;
+  campaign_paused: boolean;
+  message: string | null;
 };

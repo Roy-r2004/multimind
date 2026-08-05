@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
 
@@ -32,6 +33,66 @@ from app.services.scraping.maps_website_crawl_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Free/public webmail providers a small NGO's contact email may legitimately
+# use without matching its own website's domain.
+_PUBLIC_WEBMAIL_DOMAINS = frozenset(
+    {
+        "gmail.com",
+        "googlemail.com",
+        "outlook.com",
+        "hotmail.com",
+        "live.com",
+        "yahoo.com",
+        "icloud.com",
+        "protonmail.com",
+        "gmx.at",
+        "gmx.net",
+        "gmx.de",
+        "web.de",
+        "t-online.de",
+        "aon.at",
+        "chello.at",
+    }
+)
+
+
+def _domain_of(value: str) -> str:
+    host = urlsplit(value if "//" in value else f"//{value}").hostname or ""
+    host = host.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _email_belongs_to_facility(email: str, place: MapsPlace) -> bool:
+    """Guard against a live-search result attributing another facility's email.
+
+    The live-search model can occasionally return an email from a different
+    (unrelated) organization's page it found while researching this facility.
+    Only trust an email whose domain matches the facility's own official
+    website (allowing a subdomain relationship either way) or a well-known
+    public webmail provider — otherwise discard it rather than risk
+    misattributing contact info.
+    """
+    at_index = email.rfind("@")
+    if at_index <= 0:
+        return False
+    email_domain = email[at_index + 1 :].strip().lower()
+    if not email_domain:
+        return False
+    if email_domain in _PUBLIC_WEBMAIL_DOMAINS:
+        return True
+    website = (place.official_website or place.raw_website or "").strip()
+    if not website:
+        return False
+    site_domain = _domain_of(website)
+    if not site_domain:
+        return False
+    return (
+        email_domain == site_domain
+        or email_domain.endswith(f".{site_domain}")
+        or site_domain.endswith(f".{email_domain}")
+    )
 
 
 def build_detail_enrichment_query(run_id: str, *, max_attempts: int | None = None):
@@ -360,8 +421,9 @@ class MapsDetailEnrichmentService:
                     place.languages_spoken = languages or None
                     if result.treatment_price and str(result.treatment_price).strip():
                         place.treatment_price = str(result.treatment_price).strip()[:512]
-                    if result.contact_email and str(result.contact_email).strip():
-                        place.contact_email = str(result.contact_email).strip()[:320]
+                    candidate_email = str(result.contact_email or "").strip()
+                    if candidate_email and _email_belongs_to_facility(candidate_email, place):
+                        place.contact_email = candidate_email[:320]
                     if place.enrichment_extraction_source in {
                         None,
                         "structured_classification",

@@ -811,6 +811,8 @@ class MapsPlaceItem(BaseModel):
     verification_verdict: str | None = None
     verification_reason: str | None = None
     verification_source_url: str | None = None
+    keep_drop_decision: str | None = None
+    manually_excluded: bool = False
 
 
 class MapsPlaceReviewActionItem(BaseModel):

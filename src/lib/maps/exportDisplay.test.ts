@@ -13,6 +13,7 @@ const basePlace: MapsPlaceItem = {
   latitude: null,
   longitude: null,
   international_phone_number: "+358 123",
+  contact_email: null,
   raw_website: null,
   official_website: "example.com",
   website_source: "search",
@@ -30,6 +31,8 @@ const basePlace: MapsPlaceItem = {
   verification_verdict: null,
   verification_reason: null,
   verification_source_url: null,
+  keep_drop_decision: null,
+  manually_excluded: false,
 };
 
 describe("placeToExportRow", () => {

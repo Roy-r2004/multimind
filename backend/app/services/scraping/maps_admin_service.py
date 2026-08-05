@@ -21,6 +21,7 @@ from app.db.models import (
     MapsCountryProfileStatus,
     MapsLifecycleStatus,
     MapsPlace,
+    MapsPlaceEnrichmentStatus,
     MapsPlaceReviewAction,
 )
 from app.schemas.api import (
@@ -1025,6 +1026,23 @@ class MapsAdminService:
                 place.client_eligibility = eligibility_target
             stored_new_value = f"lifecycle={place.lifecycle_status};client_eligibility={place.client_eligibility}"
             _sync_place_legacy_fields(place)
+            if action == "mark_excluded":
+                place.manually_excluded_at = datetime.now(UTC)
+                # A place already judged "keep" by the strict gate must drop
+                # out of the Phase 2 eligible list immediately — otherwise a
+                # user-removed row would still show up there until the next
+                # keep/drop pass (which never re-judges an already-decided
+                # place).
+                if place.keep_drop_decision == "keep":
+                    place.keep_drop_decision = "drop"
+                    place.keep_drop_reason = "manually excluded after keep/drop"
+                    place.keep_drop_source = "manual_override"
+                    if place.enrichment_status in {
+                        MapsPlaceEnrichmentStatus.PENDING.value,
+                        MapsPlaceEnrichmentStatus.RUNNING.value,
+                        MapsPlaceEnrichmentStatus.FAILED.value,
+                    }:
+                        place.enrichment_status = MapsPlaceEnrichmentStatus.SKIPPED.value
         elif action == "override_lifecycle":
             if not new_value:
                 raise ValidationError("new_value is required for override_lifecycle")

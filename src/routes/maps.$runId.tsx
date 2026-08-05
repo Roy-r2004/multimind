@@ -1,19 +1,24 @@
 import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
   ArrowLeft,
+  ArrowRight,
   Building2,
+  ChevronLeft,
+  ChevronRight,
   Download,
   ExternalLink,
   Grid2x2,
   Loader2,
   Search,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { CountryOutline } from "@/components/maps/CountryOutline";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
 import {
   EXPORT_COLUMNS,
@@ -23,23 +28,34 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import {
+  advanceMapsCensusToPhase2,
   downloadMapsCensusExport,
   enrichMapsCensusRun,
+  excludeMapsCensusPlace,
   getMapsCensusRun,
   getMapsCensusRunLiveStats,
   listMapsCensusCells,
   listMapsCensusPlaces,
   refreshMapsCensusWebsites,
 } from "@/lib/maps/api";
-import type { MapsCensusCellItem, MapsCensusRunDetail, MapsPlaceItem, MapsRunLiveStats } from "@/lib/maps/types";
+import type {
+  MapsCensusCellItem,
+  MapsCensusRunDetail,
+  MapsPaginatedMeta,
+  MapsPlaceItem,
+  MapsRunLiveStats,
+} from "@/lib/maps/types";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 /** Terminal success — includes campaigns finished with optional-stage warnings. */
 const SUCCESS_STATUSES = new Set(["completed", "completed_with_warnings"]);
 const POLL_INTERVAL_MS = 5000;
 const ENRICHMENT_BUSY = new Set(["pending", "running"]);
+const PHASE_PAGE_SIZE = 50;
+const EMPTY_META: MapsPaginatedMeta = { total: 0, limit: PHASE_PAGE_SIZE, offset: 0 };
 
-/** A row with no phone and no website is undeliverable to the client — drop it. */
+/** A Phase 2 row with no phone and no website is undeliverable to the client
+ * — matches the same requirement the Phase 2 Excel export enforces server-side. */
 function hasPhoneAndWebsite(place: MapsPlaceItem): boolean {
   const hasPhone = Boolean((place.international_phone_number || "").trim());
   const hasWebsite = Boolean((place.official_website || place.raw_website || "").trim());
@@ -76,17 +92,26 @@ function MapsRunDetailPage() {
   const { authHeaders } = useAuth();
   const navigate = useNavigate();
   const [run, setRun] = useState<MapsCensusRunDetail | null>(null);
-  const [places, setPlaces] = useState<MapsPlaceItem[]>([]);
   const [searchCells, setSearchCells] = useState<MapsCensusCellItem[]>([]);
   const [liveStats, setLiveStats] = useState<MapsRunLiveStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [exporting, setExporting] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [pollTick, setPollTick] = useState(0);
-  const [showExportOnly, setShowExportOnly] = useState(false);
   const [enrichmentPollUntil, setEnrichmentPollUntil] = useState<number | null>(null);
+
+  const [activeTab, setActiveTab] = useState<"phase1" | "phase2">("phase1");
+  const [phase1Places, setPhase1Places] = useState<MapsPlaceItem[]>([]);
+  const [phase1Meta, setPhase1Meta] = useState<MapsPaginatedMeta>(EMPTY_META);
+  const [phase1Offset, setPhase1Offset] = useState(0);
+  const [phase2Places, setPhase2Places] = useState<MapsPlaceItem[]>([]);
+  const [phase2Meta, setPhase2Meta] = useState<MapsPaginatedMeta>(EMPTY_META);
+  const [phase2Offset, setPhase2Offset] = useState(0);
+  const [phase2Triggered, setPhase2Triggered] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
+  const [removingPlaceId, setRemovingPlaceId] = useState<string | null>(null);
+  const [exportingPhase, setExportingPhase] = useState<"phase1" | "phase2" | null>(null);
 
   useEffect(() => {
     const auth = authHeaders();
@@ -99,15 +124,24 @@ function MapsRunDetailPage() {
 
     async function load() {
       try {
-        const [runDetail, placeItems, cellItems] = await Promise.all([
+        const [runDetail, cellItems, phase1Resp, phase2Resp] = await Promise.all([
           getMapsCensusRun(auth!, runId),
-          listMapsCensusPlaces(auth!, runId, { relevantOnly: true }),
           listMapsCensusCells(auth!, runId),
+          listMapsCensusPlaces(auth!, runId, { limit: PHASE_PAGE_SIZE, offset: phase1Offset }),
+          listMapsCensusPlaces(auth!, runId, {
+            keepDropDecision: "keep",
+            limit: PHASE_PAGE_SIZE,
+            offset: phase2Offset,
+          }),
         ]);
         if (cancelled) return;
         setRun(runDetail);
-        setPlaces(placeItems);
         setSearchCells(cellItems);
+        setPhase1Places(phase1Resp.items);
+        setPhase1Meta(phase1Resp.meta);
+        setPhase2Places(phase2Resp.items);
+        setPhase2Meta(phase2Resp.meta);
+        if (phase2Resp.meta.total > 0) setPhase2Triggered(true);
         setError(null);
 
         // Fetch live stats if run is active (for real-time stat tile updates)
@@ -122,7 +156,7 @@ function MapsRunDetailPage() {
 
         if (
           ACTIVE_STATUSES.has(runDetail.status) ||
-          enrichmentStillRunning(runDetail, placeItems, enrichmentPollUntil)
+          enrichmentStillRunning(runDetail, phase2Resp.items, enrichmentPollUntil)
         ) {
           timer = setTimeout(load, POLL_INTERVAL_MS);
         }
@@ -141,7 +175,7 @@ function MapsRunDetailPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [authHeaders, navigate, runId, pollTick, enrichmentPollUntil]);
+  }, [authHeaders, navigate, runId, pollTick, enrichmentPollUntil, phase1Offset, phase2Offset]);
 
   async function handleFindMissingWebsites() {
     const auth = authHeaders();
@@ -159,17 +193,52 @@ function MapsRunDetailPage() {
     }
   }
 
-  async function handleDownloadExport() {
+  async function handleDownloadExport(scope: "phase1" | "phase2") {
     const auth = authHeaders();
-    if (!auth || !run || !SUCCESS_STATUSES.has(run.status)) return;
-    setExporting(true);
+    if (!auth || !run) return;
+    setExportingPhase(scope);
     setError(null);
     try {
-      await downloadMapsCensusExport(auth, runId);
+      await downloadMapsCensusExport(auth, runId, scope);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to download Excel export");
     } finally {
-      setExporting(false);
+      setExportingPhase(null);
+    }
+  }
+
+  async function handleRemovePlace(placeId: string) {
+    const auth = authHeaders();
+    if (!auth) return;
+    setRemovingPlaceId(placeId);
+    setError(null);
+    try {
+      await excludeMapsCensusPlace(auth, runId, placeId);
+      setPhase1Places((prev) => prev.filter((place) => place.id !== placeId));
+      setPhase2Places((prev) => prev.filter((place) => place.id !== placeId));
+      setPollTick((tick) => tick + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to remove facility");
+    } finally {
+      setRemovingPlaceId(null);
+    }
+  }
+
+  async function handleAdvanceToPhase2() {
+    const auth = authHeaders();
+    if (!auth) return;
+    setAdvancing(true);
+    setError(null);
+    setEnrichmentPollUntil(Date.now() + 15 * 60 * 1000);
+    try {
+      await advanceMapsCensusToPhase2(auth, runId);
+      setPhase2Triggered(true);
+      setActiveTab("phase2");
+      setPollTick((tick) => tick + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start Phase 2");
+    } finally {
+      setAdvancing(false);
     }
   }
 
@@ -190,20 +259,21 @@ function MapsRunDetailPage() {
     }
   }
 
-  const contactablePlaces = useMemo(
-    () => places.filter((place) => hasPhoneAndWebsite(place)),
-    [places],
-  );
-
-  const exportRows = useMemo(() => {
+  const phase1Rows = useMemo(() => {
     if (!run) return [];
-    const filtered = showExportOnly
-      ? contactablePlaces.filter((place) => place.export_eligible)
-      : contactablePlaces;
-    return sortPlacesForExport(filtered).map((place) => placeToExportRow(place, run.country_name));
-  }, [contactablePlaces, run, showExportOnly]);
+    return sortPlacesForExport(phase1Places).map((place) => placeToExportRow(place, run.country_name));
+  }, [phase1Places, run]);
 
-  const exportEligibleCount = contactablePlaces.filter((place) => place.export_eligible).length;
+  const phase2ContactablePlaces = useMemo(
+    () => phase2Places.filter((place) => hasPhoneAndWebsite(place)),
+    [phase2Places],
+  );
+  const phase2Rows = useMemo(() => {
+    if (!run) return [];
+    return sortPlacesForExport(phase2ContactablePlaces).map((place) =>
+      placeToExportRow(place, run.country_name),
+    );
+  }, [phase2ContactablePlaces, run]);
 
   return (
     <AppShell>
@@ -228,10 +298,8 @@ function MapsRunDetailPage() {
             <MapsRunHero
               run={run}
               refreshing={refreshing}
-              exporting={exporting}
               enriching={enriching}
               onFindMissingWebsites={() => void handleFindMissingWebsites()}
-              onDownloadExport={() => void handleDownloadExport()}
               onEnrichWebsites={() => void handleEnrichWebsites()}
             />
             {run.error_message && (
@@ -245,7 +313,7 @@ function MapsRunDetailPage() {
                 value={
                   liveStats && ACTIVE_STATUSES.has(run.status)
                     ? liveStats.places_relevant_live
-                    : places.length
+                    : run.places_classified_relevant
                 }
                 tone="teal"
                 emphasize
@@ -270,14 +338,111 @@ function MapsRunDetailPage() {
               />
             </div>
 
-            <FacilitiesExportTable
-              rows={exportRows}
-              isRunning={ACTIVE_STATUSES.has(run.status)}
-              showExportOnly={showExportOnly}
-              onToggleExportOnly={() => setShowExportOnly((value) => !value)}
-              exportEligibleCount={exportEligibleCount}
-              totalCount={contactablePlaces.length}
-            />
+            <Tabs
+              value={activeTab}
+              onValueChange={(value) => setActiveTab(value as "phase1" | "phase2")}
+              className="mt-8"
+            >
+              <TabsList>
+                <TabsTrigger value="phase1">Phase 1 · Discovery ({phase1Meta.total})</TabsTrigger>
+                <TabsTrigger value="phase2">Phase 2 · Eligible ({phase2Meta.total})</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="phase1" className="mt-4">
+                <FacilitiesExportTable
+                  rows={phase1Rows}
+                  isRunning={ACTIVE_STATUSES.has(run.status)}
+                  emptyMessage={
+                    ACTIVE_STATUSES.has(run.status)
+                      ? "Census still running — facility rows will appear here as they are found."
+                      : "No facilities were discovered for this country."
+                  }
+                  title="Phase 1 · Discovery results"
+                  description="Every facility found via the Google Maps keyword search. Remove anything that doesn't belong, then proceed to Phase 2 when ready."
+                  onRemove={(placeId) => void handleRemovePlace(placeId)}
+                  removingPlaceId={removingPlaceId}
+                  headerExtra={
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleDownloadExport("phase1")}
+                        disabled={exportingPhase === "phase1" || phase1Meta.total === 0}
+                        className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-xs font-semibold text-foreground transition hover:bg-muted/50 disabled:opacity-50"
+                      >
+                        {exportingPhase === "phase1" ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <Download className="size-3.5" />
+                        )}
+                        Export Excel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleAdvanceToPhase2()}
+                        disabled={advancing || phase1Meta.total === 0}
+                        className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+                      >
+                        {advancing ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <ArrowRight className="size-3.5" />
+                        )}
+                        Proceed to Phase 2
+                      </button>
+                    </div>
+                  }
+                />
+                <PaginationControls
+                  meta={phase1Meta}
+                  onPrev={() => setPhase1Offset((offset) => Math.max(0, offset - PHASE_PAGE_SIZE))}
+                  onNext={() => setPhase1Offset((offset) => offset + PHASE_PAGE_SIZE)}
+                />
+              </TabsContent>
+
+              <TabsContent value="phase2" className="mt-4">
+                {!phase2Triggered && phase2Meta.total === 0 ? (
+                  <DreamPanel className="p-6 text-sm text-muted-foreground">
+                    Phase 2 hasn't run yet. Review Phase 1's discovery results, remove anything
+                    that doesn't belong, then click "Proceed to Phase 2" to run the strict
+                    eligibility gate.
+                  </DreamPanel>
+                ) : (
+                  <>
+                    <FacilitiesExportTable
+                      rows={phase2Rows}
+                      isRunning={advancing}
+                      emptyMessage={
+                        advancing
+                          ? "Running the eligibility gate — this can take a few minutes."
+                          : "No facilities passed the eligibility gate for this country."
+                      }
+                      title="Phase 2 · Eligible facilities"
+                      description="The final client-ready list, after the strict keep/drop gate and AI enrichment."
+                      headerExtra={
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadExport("phase2")}
+                          disabled={exportingPhase === "phase2" || phase2Meta.total === 0}
+                          className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-xs font-semibold text-foreground transition hover:bg-muted/50 disabled:opacity-50"
+                        >
+                          {exportingPhase === "phase2" ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Download className="size-3.5" />
+                          )}
+                          Export Excel
+                        </button>
+                      }
+                    />
+                    <PaginationControls
+                      meta={phase2Meta}
+                      onPrev={() => setPhase2Offset((offset) => Math.max(0, offset - PHASE_PAGE_SIZE))}
+                      onNext={() => setPhase2Offset((offset) => offset + PHASE_PAGE_SIZE)}
+                    />
+                  </>
+                )}
+              </TabsContent>
+            </Tabs>
           </>
         )}
       </DreamPageShell>
@@ -285,44 +450,77 @@ function MapsRunDetailPage() {
   );
 }
 
+function PaginationControls({
+  meta,
+  onPrev,
+  onNext,
+}: {
+  meta: MapsPaginatedMeta;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (meta.total <= meta.limit) return null;
+  const from = meta.total === 0 ? 0 : meta.offset + 1;
+  const to = Math.min(meta.total, meta.offset + meta.limit);
+  return (
+    <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
+      <span>
+        Showing {from}–{to} of {meta.total}
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onPrev}
+          disabled={meta.offset === 0}
+          className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/50 disabled:opacity-40"
+        >
+          <ChevronLeft className="size-3.5" />
+          Prev
+        </button>
+        <button
+          type="button"
+          onClick={onNext}
+          disabled={meta.offset + meta.limit >= meta.total}
+          className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/50 disabled:opacity-40"
+        >
+          Next
+          <ChevronRight className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function FacilitiesExportTable({
   rows,
   isRunning,
-  showExportOnly,
-  onToggleExportOnly,
-  exportEligibleCount,
-  totalCount,
+  emptyMessage,
+  title,
+  description,
+  headerExtra,
+  onRemove,
+  removingPlaceId,
 }: {
   rows: ReturnType<typeof placeToExportRow>[];
   isRunning: boolean;
-  showExportOnly: boolean;
-  onToggleExportOnly: () => void;
-  exportEligibleCount: number;
-  totalCount: number;
+  emptyMessage: string;
+  title: string;
+  description: string;
+  headerExtra?: React.ReactNode;
+  onRemove?: (placeId: string) => void;
+  removingPlaceId?: string | null;
 }) {
   const hasRows = rows.length > 0;
+  const columnCount = EXPORT_COLUMNS.length + (onRemove ? 1 : 0);
 
   return (
-    <DreamPanel className="mt-8 p-0 overflow-hidden">
+    <DreamPanel className="p-0 overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 px-5 py-4">
         <div>
-          <h2 className="font-display text-base font-semibold text-foreground">
-            Rehabilitation facilities
-          </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            All 7 export columns are always shown. Addictions, languages, and price use placeholders
-            until AI enrichment fills them in. Download Excel exports every relevant row.
-          </p>
+          <h2 className="font-display text-base font-semibold text-foreground">{title}</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
         </div>
-        <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={showExportOnly}
-            onChange={onToggleExportOnly}
-            className="size-4 rounded border-border"
-          />
-          Show export-ready only ({exportEligibleCount}/{totalCount})
-        </label>
+        {headerExtra}
       </div>
 
       <div className="overflow-x-auto">
@@ -334,20 +532,21 @@ function FacilitiesExportTable({
                   {column}
                 </th>
               ))}
+              {onRemove && <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Remove</th>}
             </tr>
           </thead>
           <tbody>
             {!hasRows ? (
               <tr>
-                <td
-                  colSpan={EXPORT_COLUMNS.length}
-                  className="px-5 py-8 text-sm text-muted-foreground"
-                >
-                  {isRunning
-                    ? "Census still running — facility rows will appear here as they are classified."
-                    : showExportOnly
-                      ? "No export-ready rows yet. Turn off the filter or run AI enrichment."
-                      : "No relevant rehabilitation facilities were confirmed for this country."}
+                <td colSpan={columnCount} className="px-5 py-8 text-sm text-muted-foreground">
+                  {isRunning ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="size-3.5 animate-spin" />
+                      {emptyMessage}
+                    </span>
+                  ) : (
+                    emptyMessage
+                  )}
                 </td>
               </tr>
             ) : (
@@ -367,6 +566,23 @@ function FacilitiesExportTable({
                       value={cells[column]}
                     />
                   ))}
+                  {onRemove && (
+                    <td className="px-3 py-2.5 align-top">
+                      <button
+                        type="button"
+                        onClick={() => onRemove(place.id)}
+                        disabled={removingPlaceId === place.id}
+                        aria-label={`Remove ${place.canonical_name}`}
+                        className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted-foreground transition hover:border-rose-300 hover:text-rose-600 disabled:opacity-50"
+                      >
+                        {removingPlaceId === place.id ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-3.5" />
+                        )}
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))
             )}
@@ -421,18 +637,14 @@ function ExportTableCell({
 function MapsRunHero({
   run,
   refreshing,
-  exporting,
   enriching,
   onFindMissingWebsites,
-  onDownloadExport,
   onEnrichWebsites,
 }: {
   run: MapsCensusRunDetail;
   refreshing: boolean;
-  exporting: boolean;
   enriching: boolean;
   onFindMissingWebsites: () => void;
-  onDownloadExport: () => void;
   onEnrichWebsites: () => void;
 }) {
   const [primary, secondary] = getFlagColors(run.country_code);
@@ -501,21 +713,6 @@ function MapsRunHero({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {isSuccess && (
-              <button
-                type="button"
-                onClick={onDownloadExport}
-                disabled={exporting}
-                className="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-semibold text-white backdrop-blur-sm transition hover:bg-white/20 disabled:opacity-50"
-              >
-                {exporting ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Download className="size-3.5" />
-                )}
-                {exporting ? "Preparing Excel…" : "Download Excel"}
-              </button>
-            )}
             {showEnrichWebsites && (
               <button
                 type="button"

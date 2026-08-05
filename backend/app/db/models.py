@@ -2763,6 +2763,10 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     website_relationship_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     website_resolution_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     enrichment_extraction_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Distinct from AI classification (lifecycle_status/client_eligibility) —
+    # set only by a user-initiated Phase 1 "remove" action, so a place the AI
+    # itself classified "unrelated" can still appear in the raw Phase 1 view.
+    manually_excluded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="places")
 

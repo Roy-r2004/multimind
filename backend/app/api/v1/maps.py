@@ -72,13 +72,17 @@ async def get_maps_census_run_live_stats(
     return await maps_census_service.get_run_live_stats(db, auth, run_id)
 
 
-@router.get("/runs/{run_id}/places", response_model=list[MapsPlaceItem])
+@router.get("/runs/{run_id}/places", response_model=MapsPlaceListResponse)
 async def list_maps_census_places(
     run_id: str,
     relevant_only: bool = Query(default=False),
     with_website_only: bool = Query(default=False),
     client_eligibility: str | None = Query(default=None),
     lifecycle_status: str | None = Query(default=None),
+    keep_drop_decision: str | None = Query(default=None),
+    include_removed: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -90,7 +94,33 @@ async def list_maps_census_places(
         with_website_only=with_website_only,
         client_eligibility=client_eligibility,
         lifecycle_status=lifecycle_status,
+        keep_drop_decision=keep_drop_decision,
+        include_removed=include_removed,
+        limit=limit,
+        offset=offset,
     )
+
+
+@router.post("/runs/{run_id}/places/{place_id}/exclude", response_model=MapsPlaceItem)
+async def exclude_maps_census_place(
+    run_id: str,
+    place_id: str,
+    reason: str | None = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Phase 1 'remove row' — available to any user who can view this run."""
+    return await maps_census_service.exclude_place(db, auth, run_id, place_id, reason=reason)
+
+
+@router.post("/runs/{run_id}/advance-to-phase-2", response_model=MapsCampaignActionResponse)
+async def advance_maps_census_to_phase_2(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Triggers the strict keep/drop gate — available to any user who can view this run."""
+    return await maps_census_service.advance_to_phase_2(db, auth, run_id)
 
 
 @router.get("/runs/{run_id}/cells", response_model=list[MapsCensusCellItem])
@@ -122,10 +152,11 @@ async def export_maps_census_run_csv(
 @router.get("/runs/{run_id}/export.xlsx")
 async def export_maps_census_run_xlsx(
     run_id: str,
+    scope: str = Query(default="phase2", pattern="^(phase1|phase2)$"),
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    content, filename = await maps_export_service.build_workbook(db, auth, run_id)
+    content, filename = await maps_export_service.build_workbook(db, auth, run_id, scope=scope)
     return Response(
         content=content,
         media_type=MIME_XLSX,
