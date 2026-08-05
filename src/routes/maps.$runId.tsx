@@ -348,7 +348,7 @@ function MapsRunDetailPage() {
                   Phase 1 · Discovery (
                   {liveStats && ACTIVE_STATUSES.has(run.status)
                     ? liveStats.places_relevant_live
-                    : run.places_classified_relevant}
+                    : phase1Meta.total}
                   )
                 </TabsTrigger>
                 <TabsTrigger value="phase2">Phase 2 · Eligible ({phase2Meta.total})</TabsTrigger>
@@ -367,7 +367,7 @@ function MapsRunDetailPage() {
                   description={`${
                     liveStats && ACTIVE_STATUSES.has(run.status)
                       ? liveStats.places_relevant_live
-                      : run.places_classified_relevant
+                      : phase1Meta.total
                   } facilities returned from Google Maps. Remove anything that doesn't belong, then proceed to Phase 2 when ready.`}
                   onRemove={(placeId) => void handleRemovePlace(placeId)}
                   removingPlaceId={removingPlaceId}
