@@ -309,9 +309,9 @@ class Settings(BaseSettings):
     transcription_cpu_model: str = "medium"
     transcription_cpu_compute_type: str = "int8"
     transcription_strict_device: bool = False
-    transcription_max_duration_seconds: int = Field(default=600, gt=0)
-    transcription_max_upload_bytes: int = Field(default=26_214_400, gt=0)
-    transcription_timeout_seconds: float = Field(default=300.0, gt=0)
+    transcription_max_duration_seconds: int = Field(default=1800, gt=0)
+    transcription_max_upload_bytes: int = Field(default=78_643_200, gt=0)
+    transcription_timeout_seconds: float = Field(default=900.0, gt=0)
     transcription_tmp_dir: str = "/tmp/multimind-transcriptions"
     transcription_concurrency: int = Field(default=1, ge=1)
     transcription_model_cache_dir: str = "/models/whisper"

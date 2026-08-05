@@ -162,7 +162,7 @@ function IconButton({
 export function VoiceRecorderButton({
   auth,
   disabled = false,
-  maxDurationSeconds = 600,
+  maxDurationSeconds = 1800,
   onTranscript,
   onRecordingStateChange,
 }: VoiceRecorderButtonProps) {
