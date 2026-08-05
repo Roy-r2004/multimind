@@ -358,11 +358,11 @@ function MapsRunDetailPage() {
                       : "No facilities were discovered for this country."
                   }
                   title="Phase 1 · Discovery results"
-                  description={`${phase1Meta.total} facilities found via the Google Maps keyword search — ${
+                  description={`${
                     liveStats && ACTIVE_STATUSES.has(run.status)
                       ? liveStats.places_relevant_live
                       : run.places_classified_relevant
-                  } classified relevant by AI. Remove anything that doesn't belong, then proceed to Phase 2 when ready.`}
+                  } facilities returned from Google Maps. Remove anything that doesn't belong, then proceed to Phase 2 when ready.`}
                   onRemove={(placeId) => void handleRemovePlace(placeId)}
                   removingPlaceId={removingPlaceId}
                   headerExtra={
