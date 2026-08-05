@@ -344,7 +344,13 @@ function MapsRunDetailPage() {
               className="mt-8"
             >
               <TabsList>
-                <TabsTrigger value="phase1">Phase 1 · Discovery ({phase1Meta.total})</TabsTrigger>
+                <TabsTrigger value="phase1">
+                  Phase 1 · Discovery (
+                  {liveStats && ACTIVE_STATUSES.has(run.status)
+                    ? liveStats.places_relevant_live
+                    : run.places_classified_relevant}
+                  )
+                </TabsTrigger>
                 <TabsTrigger value="phase2">Phase 2 · Eligible ({phase2Meta.total})</TabsTrigger>
               </TabsList>
 
