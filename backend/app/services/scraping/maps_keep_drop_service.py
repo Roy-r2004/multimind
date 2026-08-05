@@ -496,6 +496,29 @@ async def run_keep_drop_pass(
     }
 
 
+async def count_keeps_awaiting_enrichment(session: AsyncSession, *, run_id: str) -> int:
+    """Keep places still queued for detail enrichment (any pass, not just this one)."""
+    return int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(MapsPlace)
+                .where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.keep_drop_decision == KEEP,
+                    MapsPlace.enrichment_status.in_(
+                        [
+                            MapsPlaceEnrichmentStatus.PENDING.value,
+                            MapsPlaceEnrichmentStatus.RUNNING.value,
+                        ]
+                    ),
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
 async def count_undecided(session: AsyncSession, *, run_id: str) -> int:
     """Count places that still need an AI keep/drop judgment (relevant set only)."""
     return int(
@@ -539,7 +562,12 @@ async def run_maps_keep_drop_job(ctx: dict, run_id: str) -> None:
     summary = await run_keep_drop_pass(AsyncSessionLocal, run_id=run_id)
     if summary.get("error"):
         return
-    if summary.get("kept", 0) > 0:
+    # Gate on every keep still awaiting enrichment, not just this pass's count:
+    # a keep decided by an earlier pass that crashed would otherwise never be
+    # enriched, leaving the run stuck at running forever (Bosnia).
+    async with AsyncSessionLocal() as session:
+        pending_keeps = await count_keeps_awaiting_enrichment(session, run_id=run_id)
+    if pending_keeps > 0:
         from app.services.scraping.maps_census_service import maps_census_service
 
         await maps_census_service._enqueue_job(

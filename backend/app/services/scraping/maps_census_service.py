@@ -3292,10 +3292,23 @@ def _discovery_finished(run: MapsCensusRun | Any) -> bool:
         return True
     status = getattr(run, "status", None)
     status_value = status.value if hasattr(status, "value") else status
-    return status_value in {
+    if status_value in {
         MapsCensusStatus.COMPLETED.value,
         MapsCensusStatus.COMPLETED_WITH_WARNINGS.value,
-    } and (getattr(run, "places_found", 0) or 0) > 0
+    } and (getattr(run, "places_found", 0) or 0) > 0:
+        return True
+    # A crash in a post-discovery stage leaves status=running with no
+    # completed_at, which used to deadlock enrichment: the run could not be
+    # terminalized while enrichment was pending, and enrichment could not be
+    # requested until the run was terminal. A fully drained grid is proof
+    # discovery itself is done, so treat it as finished.
+    cells_total = int(getattr(run, "cells_total", 0) or 0)
+    cells_completed = int(getattr(run, "cells_completed", 0) or 0)
+    return (
+        cells_total > 0
+        and cells_completed >= cells_total
+        and (getattr(run, "places_found", 0) or 0) > 0
+    )
 
 
 def _set_place_lifecycle(
