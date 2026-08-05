@@ -1150,6 +1150,33 @@ class MapsAdminService:
                 place.client_eligibility = compute_client_eligibility(place)
                 _sync_place_legacy_fields(place)
             stored_new_value = str(getattr(place, field_name, None))
+        elif action == "reopen_for_keep_drop":
+            # Manual escape hatch: forces one place back into the keep/drop
+            # candidate pool regardless of its current keep_drop_reason text.
+            # Needed because a place's failure reason can itself get
+            # overwritten (e.g. by stamp_non_candidate_drops re-stamping it
+            # as "preexisting_exclusion" once is_relevant/lifecycle_status
+            # already reflect a drop) — at that point no reason-text filter
+            # can find it again, but the operator still knows which place_id
+            # needs re-judging.
+            previous_value = (
+                f"keep_drop_decision={place.keep_drop_decision};"
+                f"lifecycle={place.lifecycle_status};"
+                f"client_eligibility={place.client_eligibility}"
+            )
+            place.keep_drop_decision = None
+            place.keep_drop_reason = None
+            place.keep_drop_confidence = None
+            place.keep_drop_source = None
+            place.keep_drop_evidence = None
+            place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+            place.client_eligibility = MapsClientEligibility.REVIEW.value
+            place.is_relevant = True
+            stored_new_value = (
+                f"keep_drop_decision=None;"
+                f"lifecycle={place.lifecycle_status};"
+                f"client_eligibility={place.client_eligibility}"
+            )
         else:
             raise ValidationError(f"Unsupported review action: {action}")
 

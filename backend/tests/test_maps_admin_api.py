@@ -215,6 +215,65 @@ async def test_admin_review_action_persists_override(db: AsyncSession, auth: Aut
 
 
 @pytest.mark.asyncio
+async def test_admin_reopen_for_keep_drop_reopens_regardless_of_current_reason(
+    db: AsyncSession, auth: AuthContext
+):
+    """A place dropped for any reason — including one whose keep_drop_reason
+    text has since been overwritten by a later bulk re-stamp — can be forced
+    back into the keep/drop candidate pool by place_id."""
+    from app.services.scraping.maps_keep_drop_service import (
+        build_keep_drop_query,
+    )
+
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="BA",
+        country_name="Bosnia and Herzegovina",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="cenacolo",
+        raw_name='Comunita Il Cenacolo "Campo Della Vita"',
+        canonical_name='Comunita Il Cenacolo "Campo Della Vita"',
+        lifecycle_status=MapsLifecycleStatus.UNRELATED.value,
+        client_eligibility=MapsClientEligibility.EXCLUDED.value,
+        is_relevant=False,
+        keep_drop_decision="drop",
+        keep_drop_reason="preexisting_exclusion: already out of relevant set",
+        keep_drop_confidence=1.0,
+    )
+    db.add(place)
+    await db.commit()
+
+    app = _admin_client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/maps/runs/{run.id}/places/{place.id}/review",
+            json={
+                "action": "reopen_for_keep_drop",
+                "reason": "Likely-legitimate NGO therapeutic community, force re-judgment",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["keep_drop_decision"] is None
+    assert body["lifecycle_status"] == MapsLifecycleStatus.NEEDS_REVIEW.value
+    assert body["client_eligibility"] == MapsClientEligibility.REVIEW.value
+    assert body["review_actions"][-1]["action"] == "reopen_for_keep_drop"
+
+    await db.refresh(place)
+    assert place.is_relevant is True
+    candidates = (await db.execute(build_keep_drop_query(run.id))).scalars().all()
+    assert place.id in {p.id for p in candidates}
+
+
+@pytest.mark.asyncio
 async def test_admin_pause_and_cancel_campaign(db: AsyncSession, auth: AuthContext):
     run = MapsCensusRun(
         organization_id=auth.org_id,
