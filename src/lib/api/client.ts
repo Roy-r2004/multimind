@@ -1,8 +1,7 @@
-/** HTTP client for MultiAI Python backend */
-
-import type { ApiError } from "@/lib/api/types";
+import { normalizeApiErrorBody, resolveFailedResponseMessage } from "@/lib/api/errorMessage";
 
 export { ApiClientError } from "@/lib/api/types";
+export { resolveFailedResponseMessage } from "@/lib/api/errorMessage";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -94,19 +93,22 @@ function mergedAbortSignal(timeoutMs: number, callerSignal?: AbortSignal) {
 
 async function parseResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    let body: ApiError | undefined;
-    try {
-      body = (await res.json()) as ApiError;
-    } catch {
-      /* empty */
+    const rawText = await res.text();
+    let parsed: unknown;
+    if (rawText) {
+      try {
+        parsed = JSON.parse(rawText) as unknown;
+      } catch {
+        parsed = rawText;
+      }
     }
-    const { ApiClientError } = await import("@/lib/api/types");
-    throw new ApiClientError(
-      body?.message ?? res.statusText,
-      res.status,
-      body,
-      res.headers.get("Retry-After"),
+    const message = resolveFailedResponseMessage(
+      parsed,
+      res.statusText || "Request failed",
     );
+    const body = normalizeApiErrorBody(parsed, message);
+    const { ApiClientError } = await import("@/lib/api/types");
+    throw new ApiClientError(message, res.status, body, res.headers.get("Retry-After"));
   }
 
   if (res.status === 204) {

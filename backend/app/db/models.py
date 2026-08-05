@@ -2027,6 +2027,39 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     decision_insurance: Mapped["DecisionInsurance | None"] = relationship(back_populates="turn")
     cost_records: Mapped[list["CostRecord"]] = relationship(back_populates="turn")
     lesson: Mapped["VerdictLesson | None"] = relationship(back_populates="turn")
+    attachments: Mapped[list["ChatAttachment"]] = relationship(back_populates="turn")
+
+
+class ChatAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Uploaded composer file for a chat.
+
+    Pending composer chips are rows with ``turn_id IS NULL``. Soft-deleting a turn
+    leaves ``turn_id`` set, so linked attachments do not reappear as pending.
+    """
+
+    __tablename__ = "chat_attachments"
+    __table_args__ = (
+        Index("ix_chat_attachments_org_chat", "org_id", "chat_id"),
+        Index("ix_chat_attachments_turn_id", "turn_id"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    chat_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False
+    )
+    uploaded_by_user_id: Mapped[str] = UuidFK("users")
+    turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    relative_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    text_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    excerpt_status: Mapped[str] = mapped_column(String(32), nullable=False, default="failed")
+
+    turn: Mapped["Turn | None"] = relationship(back_populates="attachments")
 
 
 class ModelAnswer(Base, UUIDPrimaryKeyMixin, TimestampMixin):

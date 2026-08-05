@@ -1,0 +1,89 @@
+﻿2026-08-05 07:11:04 [info     ] prompt_engine_initialized      prompts_dir=/app/app/prompts
+2026-08-05 07:11:04 [debug    ] prompt_rendered                chars=21817 template=system/model_answer.j2
+{
+  "attempts": 8,
+  "null_or_error_count": 0,
+  "summaries": [
+    {
+      "attempt": 1,
+      "finish_reason": "stop",
+      "content_is_null": false,
+      "usage_cost": 0.02875375,
+      "completion_tokens": 2386,
+      "reasoning_tokens": 1570,
+      "choice_error": null,
+      "top_error": null
+    },
+    {
+      "attempt": 2,
+      "finish_reason": "stop",
+      "content_is_null": false,
+      "usage_cost": 0.021626625,
+      "completion_tokens": 1902,
+      "reasoning_tokens": 1301,
+      "choice_error": null,
+      "top_error": null
+    },
+    {
+      "attempt": 3,
+      "finish_reason": "stop",
+      "content_is_null": false,
+      "usage_cost": 0.02871375,
+      "completion_tokens": 2382,
+      "reasoning_tokens": 1675,
+      "choice_error": null,
+      "top_error": null
+    },
+    {
+      "attempt": 4,
+      "finish_reason": "stop",
+      "content_is_null": false,
+      "usage_cost": 0.025386625,
+      "completion_tokens": 2278,
+      "reasoning_tokens": 1511,
+      "choice_error": null,
+      "top_error": null
+    },
+    {
+      "attempt": 5,
+      "finish_reason": "stop",
+      "content_is_null": false,
+      "usage_cost": 0.021926625,
+      "completion_tokens": 1932,
+      "reasoning_tokens": 1256,
+      "choice_error": null,
+      "top_error": null
+    },
+    {
+      "attempt": 6,
+      "finish_reason": "stop",
+      "content_is_null": false,
+      "usage_cost": 0.025916625,
+      "completion_tokens": 2331,
+      "reasoning_tokens": 1565,
+      "choice_error": null,
+      "top_error": null
+    },
+    {
+      "attempt": 7,
+      "finish_reason": "stop",
+      "content_is_null": false,
+      "usage_cost": 0.02875375,
+      "completion_tokens": 2386,
+      "reasoning_tokens": 1675,
+      "choice_error": null,
+      "top_error": null
+    },
+    {
+      "attempt": 8,
+      "finish_reason": "stop",
+      "content_is_null": false,
+      "usage_cost": 0.027576625,
+      "completion_tokens": 2497,
+      "reasoning_tokens": 1781,
+      "choice_error": null,
+      "top_error": null
+    }
+  ],
+  "null_hits_full": []
+}

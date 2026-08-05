@@ -90,3 +90,24 @@ class SilentAudioError(ValidationError):
     def __init__(self, message: str = "Audio contains no meaningful speech") -> None:
         super().__init__(message)
         self.code = "SILENT_AUDIO"
+
+
+class UnsupportedAttachmentTypeError(AppError):
+    def __init__(
+        self,
+        message: str = (
+            "Unsupported file type. Upload a text-based file such as .txt, .md, .csv, or .json."
+        ),
+    ) -> None:
+        super().__init__(message, code="UNSUPPORTED_ATTACHMENT_TYPE")
+
+
+class AttachmentTooLargeError(AppError):
+    def __init__(self, message: str = "File exceeds the maximum attachment size") -> None:
+        super().__init__(message, code="ATTACHMENT_TOO_LARGE")
+
+
+class InvalidAttachmentError(ValidationError):
+    def __init__(self, message: str = "Invalid attachment", details: Any = None) -> None:
+        super().__init__(message, details=details)
+        self.code = "INVALID_ATTACHMENT"

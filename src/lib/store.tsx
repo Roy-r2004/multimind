@@ -36,7 +36,10 @@ type ChatStore = {
   assignChatToProject: (chatId: string, projectId: string) => Promise<void>;
   createProject: (input: CreateProjectInput) => Promise<Project>;
   deleteProject: (projectId: string) => Promise<void>;
-  createChat: () => Promise<string | null>;
+  createChat: (options?: {
+    activate?: boolean;
+    onChatCreated?: (chatId: string) => void;
+  }) => Promise<string | null>;
   refreshAll: () => Promise<void>;
   applyChatUpdate: (chat: ApiChat) => void;
   projectChatCount: (projectId: string) => number;
@@ -302,15 +305,25 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     [authHeaders],
   );
 
-  const createChat = useCallback(async (): Promise<string | null> => {
-    const auth = authHeaders();
-    if (!auth) return null;
-    const chat = await api.chats.create(auth, { title: "New chat" });
-    const mapped = mapChat(chat);
-    setChats((prev) => [mapped, ...prev]);
-    setActiveChatId(chat.id);
-    return chat.id;
-  }, [authHeaders, setActiveChatId]);
+  const createChat = useCallback(
+    async (options?: {
+      activate?: boolean;
+      onChatCreated?: (chatId: string) => void;
+    }): Promise<string | null> => {
+      const auth = authHeaders();
+      if (!auth) return null;
+      const chat = await api.chats.create(auth, { title: "New chat" });
+      const mapped = mapChat(chat);
+      setChats((prev) => [mapped, ...prev]);
+      // Allow callers (composer upload) to retain chips / delay activation.
+      options?.onChatCreated?.(chat.id);
+      if (options?.activate !== false) {
+        setActiveChatId(chat.id);
+      }
+      return chat.id;
+    },
+    [authHeaders, setActiveChatId],
+  );
 
   const applyChatUpdate = useCallback((chat: ApiChat) => {
     const mapped = mapChat(chat);

@@ -116,6 +116,9 @@ def create_app() -> FastAPI:
             "INVALID_AUDIO": 422,
             "AUDIO_TOO_LONG": 422,
             "SILENT_AUDIO": 422,
+            "UNSUPPORTED_ATTACHMENT_TYPE": 415,
+            "ATTACHMENT_TOO_LARGE": 413,
+            "INVALID_ATTACHMENT": 422,
         }
         headers = {"Retry-After": "5"} if exc.code == "TRANSCRIPTION_BUSY" else None
         return ORJSONResponse(

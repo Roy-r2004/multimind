@@ -201,6 +201,7 @@ export const api = {
         model_set_id: string;
         decision_insurance_enabled?: boolean;
         custom_instructions?: string | null;
+        attachment_ids?: string[];
       },
     ) =>
       apiRequest<ApiTurn>(`/chats/${chatId}/turns`, {
@@ -250,6 +251,7 @@ export const api = {
         content_type: string | null;
         size_bytes: number;
         text_excerpt: string | null;
+        excerpt_status: string;
       }>(`/chats/${chatId}/attachments`, {
         formData,
         token: auth.token,
@@ -257,6 +259,28 @@ export const api = {
         timeoutMs: 120_000,
       });
     },
+
+    listAttachments: (auth: Auth, chatId: string) =>
+      apiRequest<{
+        items: Array<{
+          id: string;
+          filename: string;
+          content_type: string | null;
+          size_bytes: number;
+          text_excerpt: string | null;
+          excerpt_status: string;
+        }>;
+      }>(`/chats/${chatId}/attachments`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    deleteAttachment: (auth: Auth, chatId: string, attachmentId: string) =>
+      apiRequest<{ message: string }>(`/chats/${chatId}/attachments/${attachmentId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
 
     createShareLink: (auth: Auth, chatId: string) =>
       apiRequest<ApiShareLink>(`/chats/${chatId}/share`, {
