@@ -379,7 +379,12 @@ function MapsRunDetailPage() {
                       <button
                         type="button"
                         onClick={() => void handleAdvanceToPhase2()}
-                        disabled={advancing || phase1Meta.total === 0}
+                        disabled={advancing || phase1Meta.total === 0 || ACTIVE_STATUSES.has(run.status)}
+                        title={
+                          ACTIVE_STATUSES.has(run.status)
+                            ? "Wait for Phase 1 discovery to finish before proceeding"
+                            : undefined
+                        }
                         className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
                       >
                         {advancing ? (
@@ -392,6 +397,12 @@ function MapsRunDetailPage() {
                     </div>
                   }
                 />
+                {ACTIVE_STATUSES.has(run.status) && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Phase 1 discovery is still running — "Proceed to Phase 2" will be enabled once it
+                    completes.
+                  </p>
+                )}
                 <PaginationControls
                   meta={phase1Meta}
                   onPrev={() => setPhase1Offset((offset) => Math.max(0, offset - PHASE_PAGE_SIZE))}
