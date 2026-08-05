@@ -376,45 +376,49 @@ async def test_run_pass_is_resumable_and_gates_export(db, auth, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retry_failed_keep_drop_clears_only_failure_decisions(db, auth, monkeypatch):
-    """Places auto-dropped on classifier errors get their decision cleared and
-    re-enqueued; genuine model drops and keeps stay decided."""
+    """Places auto-dropped on classifier errors get their decision cleared,
+    restored to a re-judgeable candidate state, and re-enqueued; genuine model
+    drops and keeps stay decided untouched."""
     from app.services.scraping.maps_admin_service import maps_admin_service
     from app.services.scraping.maps_census_service import maps_census_service
+    from app.services.scraping.maps_keep_drop_service import (
+        KeepDropDecision,
+        apply_keep_drop,
+        build_keep_drop_query,
+    )
 
     run = _run(auth)
     db.add(run)
     await db.flush()
-    unavailable = _place(
-        run.id,
-        "g1",
-        "Comunita Il Cenacolo",
-        keep_drop_decision="drop",
-        keep_drop_reason="classifier_unavailable",
-        keep_drop_confidence=0.0,
+    # Model the real post-apply_keep_drop state: the DROP branch stamps
+    # lifecycle_status=unrelated / client_eligibility=excluded /
+    # is_relevant=False regardless of *why* it dropped — reproduce that via
+    # apply_keep_drop itself rather than hand-setting fields, so the test
+    # actually exercises the bug (candidate-filter exclusion) this endpoint
+    # must undo.
+    unavailable = _place(run.id, "g1", "Comunita Il Cenacolo")
+    apply_keep_drop(
+        unavailable,
+        KeepDropDecision(decision="drop", reason="classifier_unavailable", confidence=0.0, evidence=[]),
+        source="nano",
     )
-    errored = _place(
-        run.id,
-        "g2",
-        "Zajednica Emanuel",
-        keep_drop_decision="drop",
-        keep_drop_reason="keep_drop_error: RuntimeError: boom",
-        keep_drop_confidence=0.0,
+    errored = _place(run.id, "g2", "Zajednica Emanuel")
+    apply_keep_drop(
+        errored,
+        KeepDropDecision(decision="drop", reason="keep_drop_error: RuntimeError: boom", confidence=0.0, evidence=[]),
+        source="nano",
     )
-    genuine_drop = _place(
-        run.id,
-        "g3",
-        "CHU Public Hospital",
-        keep_drop_decision="drop",
-        keep_drop_reason="Public hospital (government)",
-        keep_drop_confidence=0.97,
+    genuine_drop = _place(run.id, "g3", "CHU Public Hospital")
+    apply_keep_drop(
+        genuine_drop,
+        KeepDropDecision(decision="drop", reason="Public hospital (government)", confidence=0.97, evidence=[]),
+        source="nano",
     )
-    kept = _place(
-        run.id,
-        "g4",
-        "Centre Rehab Prive",
-        keep_drop_decision="keep",
-        keep_drop_reason="Private NGO addiction treatment center",
-        keep_drop_confidence=0.95,
+    kept = _place(run.id, "g4", "Centre Rehab Prive")
+    apply_keep_drop(
+        kept,
+        KeepDropDecision(decision="keep", reason="Private NGO addiction treatment center", confidence=0.95, evidence=[]),
+        source="nano",
     )
     db.add_all([unavailable, errored, genuine_drop, kept])
     await db.commit()
@@ -432,12 +436,31 @@ async def test_retry_failed_keep_drop_clears_only_failure_decisions(db, auth, mo
 
     for place in (unavailable, errored, genuine_drop, kept):
         await db.refresh(place)
-    assert unavailable.keep_drop_decision is None
-    assert unavailable.keep_drop_reason is None
-    assert errored.keep_drop_decision is None
+
+    # The failure-decisions are cleared AND restored to the candidate state
+    # build_keep_drop_query looks for — this is the part the first version of
+    # this endpoint got wrong (it only cleared keep_drop_decision, leaving
+    # is_relevant=False / lifecycle_status=unrelated, so the next pass
+    # bulk-stamped them right back to drop via stamp_non_candidate_drops
+    # without ever calling the classifier).
+    for place in (unavailable, errored):
+        assert place.keep_drop_decision is None
+        assert place.keep_drop_reason is None
+        assert place.is_relevant is True
+        assert place.lifecycle_status == MapsLifecycleStatus.NEEDS_REVIEW.value
+        assert place.client_eligibility == MapsClientEligibility.REVIEW.value
+
     assert genuine_drop.keep_drop_decision == "drop"
     assert genuine_drop.keep_drop_reason == "Public hospital (government)"
+    assert genuine_drop.is_relevant is False
     assert kept.keep_drop_decision == "keep"
+
+    # The next keep/drop pass must actually pick the restored places back up.
+    candidates = (await db.execute(build_keep_drop_query(run.id))).scalars().all()
+    candidate_ids = {p.id for p in candidates}
+    assert unavailable.id in candidate_ids
+    assert errored.id in candidate_ids
+    assert genuine_drop.id not in candidate_ids
 
     # Nothing to retry the second time — no job enqueued.
     enqueued.clear()

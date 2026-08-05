@@ -880,8 +880,16 @@ class MapsAdminService:
         ``drop`` / ``classifier_unavailable`` (or ``keep_drop_error: …``) with
         confidence 0.0 so the sweep can finish — but those places were never
         actually judged, and the resumable pass will never revisit a persisted
-        decision. This clears only those failure-decisions (genuine model drops
-        keep their verdicts) and re-enqueues the keep/drop pass.
+        decision. ``apply_keep_drop``'s DROP branch also stamps
+        ``lifecycle_status=unrelated`` / ``client_eligibility=excluded`` /
+        ``is_relevant=False``, which makes ``build_keep_drop_query``'s
+        candidate filter skip them and ``stamp_non_candidate_drops`` silently
+        re-drop them as ``preexisting_exclusion`` without ever calling the
+        classifier — so clearing the keep_drop_* fields alone is not enough.
+        This also restores lifecycle_status/client_eligibility/is_relevant to
+        the same "needs review" candidate state a freshly-classified relevant
+        place is in before its first keep/drop judgment, then re-enqueues the
+        pass. Genuine model drops keep their verdicts untouched.
         """
         _require_admin_enabled()
         run = await _get_run_for_org(db, auth, run_id)
@@ -912,6 +920,9 @@ class MapsAdminService:
             place.keep_drop_confidence = None
             place.keep_drop_source = None
             place.keep_drop_evidence = None
+            place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+            place.client_eligibility = MapsClientEligibility.REVIEW.value
+            place.is_relevant = True
         await db.commit()
 
         reset_count = len(rows)
