@@ -324,6 +324,8 @@ class Settings(BaseSettings):
 
     # Chat attachments
     chat_attachment_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
+    chat_attachment_dir: str = "data/chat_attachments"
+    chat_attachment_context_max_chars: int = Field(default=50_000)
 
     # Rate limiting
     rate_limit_per_minute: int = 60

@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import {
   Send,
   Gavel,
@@ -18,7 +18,6 @@ import {
   Link2,
   FileSpreadsheet,
   Upload,
-  Image as ImageIcon,
   Swords,
   BookOpen,
   Trophy,
@@ -56,6 +55,24 @@ import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
 import { api } from "@/lib/api";
 import type { ApiTranscriptionResponse, ApiTurn } from "@/lib/api/types";
+import {
+  COMPOSER_FILE_ACCEPT,
+  apiErrorMessage,
+  canStartComposerAttachmentDelete,
+  captureComposerFileInputFiles,
+  hasUploadingComposerFiles,
+  markComposerFileDeleting,
+  mergePendingAttachments,
+  removeComposerFileByLocalId,
+  removeSubmittedComposerFiles,
+  runComposerUploads,
+  setComposerFileDeleteError,
+  shouldApplyPendingAttachmentRestore,
+  shouldClearComposerFilesOnChatChange,
+  shouldDeleteComposerAttachmentRemotely,
+  submittedAttachmentIds,
+  triggerComposerUploadFromMenu,
+} from "@/lib/composerAttachments";
 import {
   mergeWithCachedTurns,
   removeTurn,
@@ -115,6 +132,7 @@ type ComposerFile = {
   attachmentId?: string;
   textExcerpt?: string | null;
   errorMessage?: string;
+  deleting?: boolean;
 };
 
 const TEXTAREA_MAX_HEIGHT_PX = 280;
@@ -160,7 +178,6 @@ function transcriptInsertion(
 async function buildComposerInstructions(
   auth: { token: string; orgId: string },
   ref: ChatReferencePick | null,
-  files: ComposerFile[],
 ): Promise<string | undefined> {
   const parts: string[] = [];
   if (ref) {
@@ -183,19 +200,6 @@ async function buildComposerInstructions(
       parts.push(
         `The user is continuing from a previous chat titled "${ref.title}". Keep that thread in mind.`,
       );
-    }
-  }
-  const uploaded = files.filter((f) => f.state === "uploaded");
-  if (uploaded.length > 0) {
-    parts.push(
-      `Attached files (reference by name): ${uploaded.map((f) => f.name).join(", ")}`,
-    );
-    for (const file of uploaded) {
-      if (file.textExcerpt?.trim()) {
-        parts.push(
-          `--- Begin attached file: ${file.name} ---\n${file.textExcerpt.trim()}\n--- End attached file: ${file.name} ---`,
-        );
-      }
     }
   }
   const text = parts.join("\n\n").trim();
@@ -267,8 +271,17 @@ export function ChatPage() {
     null,
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const filesRef = useRef<ComposerFile[]>([]);
+  const activeChatIdRef = useRef<string | null>(activeChatId);
+  /** Keeps first-upload chips alive across null→newChatId activation. */
+  const retainComposerFilesForChatRef = useRef<string | null>(null);
+  /** Monotonic generation so stale pending-list GETs cannot clobber newer local chips. */
+  const pendingRestoreGenerationRef = useRef(0);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
+
+  filesRef.current = files;
+  activeChatIdRef.current = activeChatId;
   const threadEndRef = useRef<HTMLDivElement | null>(null);
   const shouldPinToBottomRef = useRef(true);
   const showScrollToLatestRef = useRef(false);
@@ -427,6 +440,14 @@ export function ChatPage() {
     if (!isApiMode || !activeChatId) {
       setApiTurns([]);
       setLoading(false);
+      if (
+        shouldClearComposerFilesOnChatChange({
+          nextChatId: null,
+          retainForChatId: retainComposerFilesForChatRef.current,
+        })
+      ) {
+        setFiles([]);
+      }
       modelSetRestoredForChatRef.current = null;
       return;
     }
@@ -435,6 +456,16 @@ export function ChatPage() {
 
     let cancelled = false;
     const chatId = activeChatId;
+    if (
+      shouldClearComposerFilesOnChatChange({
+        nextChatId: chatId,
+        retainForChatId: retainComposerFilesForChatRef.current,
+      })
+    ) {
+      setFiles([]);
+    }
+
+    const restoreGeneration = ++pendingRestoreGenerationRef.current;
 
     const unsubTurns = subscribeChatTurns(chatId, setApiTurns);
     const unsubRunning = subscribeChatRunning(chatId, setLoading);
@@ -460,6 +491,31 @@ export function ChatPage() {
 
       void resumeRunningTurns(auth, chatId, turns);
     });
+
+    void api.chats
+      .listAttachments(auth, chatId)
+      .then((response) => {
+        if (cancelled) return;
+        if (
+          !shouldApplyPendingAttachmentRestore({
+            requestedChatId: chatId,
+            activeChatId: activeChatIdRef.current,
+            requestGeneration: restoreGeneration,
+            latestGeneration: pendingRestoreGenerationRef.current,
+          })
+        ) {
+          return;
+        }
+        setFiles((prev) =>
+          mergePendingAttachments({
+            current: prev,
+            serverPending: response.items,
+          }),
+        );
+      })
+      .catch(() => {
+        /* Keep local chips; do not wipe on list failure. */
+      });
 
     return () => {
       cancelled = true;
@@ -539,36 +595,64 @@ export function ChatPage() {
 
   async function send() {
     if (isVoiceActive || !input.trim() || !set) return;
+    if (hasUploadingComposerFiles(filesRef.current)) {
+      toast.error("Wait for file uploads to finish before sending.");
+      return;
+    }
     const question = input.trim();
-    setInput("");
     const auth = authHeaders();
     if (!auth) {
       void navigate({ to: "/login" });
       return;
     }
+    const uploadedIds = submittedAttachmentIds(filesRef.current);
+    setInput("");
     setSending(true);
     try {
       let chatId = activeChatId;
       if (!chatId) chatId = await createChat();
-      if (!chatId) return;
-      const customInstructions = await buildComposerInstructions(auth, refChat, files);
+      if (!chatId) {
+        setInput(question);
+        return;
+      }
+      const customInstructions = await buildComposerInstructions(auth, refChat);
       const pending = await api.chats.createTurn(auth, chatId, {
         user_message: question,
         model_set_id: set.id,
         custom_instructions: customInstructions,
+        attachment_ids: uploadedIds,
       });
       scrollThreadToLatest("smooth");
       setRefChat(null);
-      setFiles([]);
+      setFiles((prev) => removeSubmittedComposerFiles(prev, uploadedIds));
       void runTurnInBackground(auth, chatId, pending).catch((error) => {
         console.error(error);
         alert(error instanceof Error ? error.message : "Failed to run turn");
       });
     } catch (error) {
       console.error(error);
+      setInput(question);
       alert(error instanceof Error ? error.message : "Failed to run turn");
     } finally {
       setSending(false);
+    }
+  }
+
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      if (
+        !input.trim() ||
+        sending ||
+        loading ||
+        !isAuthenticated ||
+        !set ||
+        isVoiceActive ||
+        hasUploadingComposerFiles(filesRef.current)
+      ) {
+        return;
+      }
+      void send();
     }
   }
 
@@ -686,46 +770,60 @@ export function ChatPage() {
     }
   }
 
-  async function uploadComposerFiles(fileList: FileList | null) {
-    if (!fileList?.length) return;
+  async function uploadComposerFiles(selectedFiles: File[]) {
     const auth = authHeaders();
     if (!auth) {
       void navigate({ to: "/login" });
       return;
     }
-    let chatId = activeChatId;
-    if (!chatId) {
-      chatId = await createChat();
-      if (!chatId) return;
+    await runComposerUploads(selectedFiles, {
+      activeChatId,
+      createChat,
+      activateChat: setActiveChatId,
+      retainRef: retainComposerFilesForChatRef,
+      getActiveChatId: () => activeChatIdRef.current,
+      getFiles: () => filesRef.current,
+      setFiles: (updater) => setFiles(updater),
+      uploadAttachment: (chatId, file) => api.chats.uploadAttachment(auth, chatId, file),
+      onValidationError: (fileName, message) => toast.error(`${fileName}: ${message}`),
+      onUploadError: (fileName, message) => toast.error(`${fileName}: ${message}`),
+      onTooMany: (message) => toast.error(message),
+    });
+  }
+
+  async function removeComposerFile(file: ComposerFile) {
+    if (file.deleting) return;
+
+    if (!shouldDeleteComposerAttachmentRemotely(file) || !file.attachmentId) {
+      setFiles((prev) => removeComposerFileByLocalId(prev, file.localId));
+      return;
     }
-    for (const file of Array.from(fileList)) {
-      const localId = `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2, 8)}`;
-      setFiles((prev) => [...prev, { localId, name: file.name, state: "uploading" }]);
-      try {
-        const uploaded = await api.chats.uploadAttachment(auth, chatId, file);
-        setFiles((prev) =>
-          prev.map((item) =>
-            item.localId === localId
-              ? {
-                  ...item,
-                  state: "uploaded" as const,
-                  attachmentId: uploaded.id,
-                  textExcerpt: uploaded.text_excerpt,
-                }
-              : item,
-          ),
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Upload failed";
-        setFiles((prev) =>
-          prev.map((item) =>
-            item.localId === localId
-              ? { ...item, state: "error" as const, errorMessage: message }
-              : item,
-          ),
-        );
-        toast.error(`${file.name}: ${message}`);
-      }
+
+    const auth = authHeaders();
+    if (!auth) {
+      void navigate({ to: "/login" });
+      return;
+    }
+    if (!activeChatId) {
+      toast.error("Open a chat before removing an uploaded file.");
+      return;
+    }
+
+    if (!canStartComposerAttachmentDelete(file)) return;
+
+    const chatId = activeChatId;
+    const attachmentId = file.attachmentId;
+    const localId = file.localId;
+    setFiles((prev) => markComposerFileDeleting(prev, localId, true));
+    try {
+      await api.chats.deleteAttachment(auth, chatId, attachmentId);
+      if (activeChatIdRef.current !== chatId) return;
+      setFiles((prev) => removeComposerFileByLocalId(prev, localId));
+    } catch (error) {
+      const message = apiErrorMessage(error, "Failed to remove attachment");
+      if (activeChatIdRef.current !== chatId) return;
+      setFiles((prev) => setComposerFileDeleteError(prev, localId, message));
+      toast.error(`${file.name}: ${message}`);
     }
   }
 
@@ -742,6 +840,7 @@ export function ChatPage() {
   const voiceDisabled = !voiceAuth || !set || sending || loading;
   const anyTurnGenerating = isAnyTurnGenerating(apiTurns) || loading;
   const turnDeleteDisabled = isHistoricalTurnDeleteDisabled(anyTurnGenerating);
+  const uploadsInProgress = hasUploadingComposerFiles(files);
   const [turnLayout, setTurnLayout] = useChatTurnLayout();
 
   return (
@@ -1031,19 +1130,42 @@ export function ChatPage() {
                 {files.map((f) => (
                   <div
                     key={f.localId}
-                    className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs"
-                    title={f.errorMessage}
+                    className={cn(
+                      "flex max-w-full flex-col gap-0.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs",
+                      f.state === "error" ? "border-destructive/40" : "border-border",
+                    )}
                   >
-                    {f.state === "uploading" && <Loader2 className="size-3 animate-spin" />}
-                    {f.state === "error" && <AlertCircle className="size-3 text-destructive" />}
-                    <span className={cn(f.state === "error" && "text-destructive")}>{f.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => setFiles((arr) => arr.filter((item) => item.localId !== f.localId))}
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      <X className="size-3" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {f.state === "uploading" && <Loader2 className="size-3 shrink-0 animate-spin" />}
+                      {f.deleting && <Loader2 className="size-3 shrink-0 animate-spin" />}
+                      {f.state === "error" && !f.deleting && (
+                        <AlertCircle className="size-3 shrink-0 text-destructive" />
+                      )}
+                      <span
+                        className={cn(
+                          "min-w-0 truncate",
+                          f.state === "error" && "text-destructive",
+                          f.errorMessage && f.state === "uploaded" && "text-destructive",
+                        )}
+                      >
+                        {f.name}
+                        {f.deleting ? "…" : ""}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${f.name}`}
+                        disabled={Boolean(f.deleting) || f.state === "uploading"}
+                        onClick={() => void removeComposerFile(f)}
+                        className="shrink-0 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </div>
+                    {(f.state === "error" || f.errorMessage) && f.errorMessage ? (
+                      <span className="max-w-[16rem] truncate text-[11px] text-destructive">
+                        {f.errorMessage}
+                      </span>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -1081,6 +1203,7 @@ export function ChatPage() {
                 ref={textareaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onComposerKeyDown}
                 rows={2}
                 disabled={!isAuthenticated || !set}
                 placeholder={
@@ -1094,10 +1217,11 @@ export function ChatPage() {
                 ref={fileInputRef}
                 type="file"
                 multiple
+                accept={COMPOSER_FILE_ACCEPT}
                 className="hidden"
                 onChange={(e) => {
-                  void uploadComposerFiles(e.target.files);
-                  e.target.value = "";
+                  const selected = captureComposerFileInputFiles(e.currentTarget);
+                  void uploadComposerFiles(selected);
                 }}
               />
               <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
@@ -1117,20 +1241,9 @@ export function ChatPage() {
                         icon={Upload}
                         label="Upload file"
                         onClick={() => {
-                          setShowPlus(false);
-                          fileInputRef.current?.click();
-                        }}
-                      />
-                      <ComposerMenuItem
-                        icon={ImageIcon}
-                        label="Upload image"
-                        onClick={() => {
-                          setShowPlus(false);
-                          if (fileInputRef.current) {
-                            fileInputRef.current.accept = "image/*";
-                            fileInputRef.current.click();
-                            fileInputRef.current.accept = "";
-                          }
+                          triggerComposerUploadFromMenu(fileInputRef.current, () =>
+                            setShowPlus(false),
+                          );
                         }}
                       />
                       <ComposerMenuItem
@@ -1200,7 +1313,8 @@ export function ChatPage() {
                         loading ||
                         !isAuthenticated ||
                         !set ||
-                        isVoiceActive
+                        isVoiceActive ||
+                        uploadsInProgress
                       }
                       className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
                     >
@@ -1293,17 +1407,11 @@ export function ChatPage() {
       <ExcelPreviewModal
         open={showExcel}
         onClose={() => setShowExcel(false)}
-        onAddToChat={() =>
-          setFiles((f) => [
-            ...f,
-            {
-              localId: `excel-${Date.now()}`,
-              name: "comparison.xlsx",
-              state: "uploaded",
-              textExcerpt: "Excel comparison attached from Generate Excel.",
-            },
-          ])
-        }
+        onAddToChat={() => {
+          toast.error(
+            "Use Upload file to attach a .xlsx workbook. Generate Excel does not auto-attach.",
+          );
+        }}
       />
 
       <Modal

@@ -1353,6 +1353,7 @@ class TurnCreateRequest(BaseModel):
     model_set_id: str
     decision_insurance_enabled: bool = False
     custom_instructions: str | None = None
+    attachment_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 class TurnRegenerateRequest(BaseModel):
@@ -1402,6 +1403,11 @@ class AttachmentResponse(BaseModel):
     content_type: str
     size_bytes: int
     text_excerpt: str | None = None
+    excerpt_status: str
+
+
+class AttachmentListResponse(BaseModel):
+    items: list[AttachmentResponse]
 
 
 class VerdictDisagreeRequest(BaseModel):

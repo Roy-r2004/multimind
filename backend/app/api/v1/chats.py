@@ -1,19 +1,28 @@
 import json
 import mimetypes
-import re
 import uuid
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context, get_streaming_auth_context
+from app.core.exceptions import (
+    ConflictError,
+    InvalidAttachmentError,
+    NotFoundError,
+    UnsupportedAttachmentTypeError,
+    ValidationError,
+)
 from app.core.logging import get_logger
+from app.db.models import ChatAttachment
 from app.db.session import AsyncSessionLocal, get_db
 from app.schemas.api import (
+    AttachmentListResponse,
     AttachmentResponse,
     ChatCreateRequest,
     ChatResponse,
@@ -27,23 +36,139 @@ from app.schemas.api import (
     TurnRegenerateResponse,
     TurnResponse,
 )
+from app.services.chat_attachment_storage import (
+    UnsafeAttachmentPathError,
+    cleanup_path,
+    promote_temp_attachment_file,
+    resolve_attachment_path,
+    safe_delete_attachment_file,
+    stream_upload_to_temp_file,
+)
+from app.services.chat_attachment_text import extract_attachment_text_from_path
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
 from app.services.share_service import share_service
 
-_TEXT_CONTENT_TYPES = frozenset({
-    "text/plain",
-    "text/markdown",
-    "text/csv",
-    "text/html",
-    "text/xml",
-    "application/json",
-    "application/xml",
-})
-_TEXT_EXTENSIONS = frozenset({".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".yaml", ".yml"})
-_ATTACHMENT_TEXT_EXCERPT_MAX = 20_000
+_TEXT_EXTENSIONS = frozenset(
+    {
+        ".txt",
+        ".md",
+        ".markdown",
+        ".csv",
+        ".json",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".html",
+        ".htm",
+    }
+)
+_OFFICE_EXTENSIONS = frozenset({".docx", ".xlsx"})
+_PDF_EXTENSIONS = frozenset({".pdf"})
+_ALLOWED_EXTENSIONS = _TEXT_EXTENSIONS | _OFFICE_EXTENSIONS | _PDF_EXTENSIONS
+_LEGACY_OFFICE_EXTENSIONS = frozenset({".doc", ".xls", ".docm", ".xlsm"})
+
+_TEXT_CONTENT_TYPES = frozenset(
+    {
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "text/html",
+        "text/xml",
+        "text/yaml",
+        "text/x-yaml",
+        "application/json",
+        "application/xml",
+        "application/yaml",
+        "application/x-yaml",
+    }
+)
+_DOCX_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+_XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_PDF_CONTENT_TYPE = "application/pdf"
+_GENERIC_BINARY_TYPE = "application/octet-stream"
+
+_UNSUPPORTED_TYPE_MESSAGE = (
+    "Unsupported file type. Upload a text file, .docx, .xlsx, or .pdf."
+)
+_MAX_PENDING_ATTACHMENTS = 10
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def _normalize_media_type(content_type: str | None) -> str:
+    if not content_type:
+        return ""
+    return content_type.split(";", 1)[0].strip().lower()
+
+
+def _attachment_response(row: ChatAttachment) -> AttachmentResponse:
+    return AttachmentResponse(
+        id=row.id,
+        filename=row.filename,
+        content_type=row.content_type,
+        size_bytes=row.size_bytes,
+        text_excerpt=row.text_excerpt,
+        excerpt_status=row.excerpt_status,
+    )
+
+
+def _validate_attachment_filename(filename: str | None) -> tuple[str, str]:
+    if filename is None:
+        raise InvalidAttachmentError("A valid filename is required")
+    if "\x00" in filename:
+        raise InvalidAttachmentError("A valid filename is required")
+    original = filename.strip()
+    if not original or original in {".", ".."}:
+        raise InvalidAttachmentError("A valid filename is required")
+    basename = Path(original).name.strip()
+    if not basename or basename in {".", ".."}:
+        raise InvalidAttachmentError("A valid filename is required")
+    if "\x00" in basename or "/" in basename or "\\" in basename:
+        raise InvalidAttachmentError("A valid filename is required")
+    ext = Path(basename).suffix.lower()
+    if not ext:
+        raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
+    if ext in _LEGACY_OFFICE_EXTENSIONS:
+        raise UnsupportedAttachmentTypeError(
+            "Legacy Word/Excel formats (.doc, .xls) are not supported. "
+            "Upload .docx or .xlsx instead."
+        )
+    if ext not in _ALLOWED_EXTENSIONS:
+        raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
+    return basename, ext
+
+
+def _validate_attachment_content_type(content_type: str | None, filename: str, ext: str) -> str:
+    normalized = _normalize_media_type(content_type)
+    if not normalized:
+        # Browsers sometimes omit MIME; fall back to extension-based guess or generic.
+        guessed = mimetypes.guess_type(filename)[0]
+        normalized = (guessed or _GENERIC_BINARY_TYPE).lower()
+
+    if ext in _TEXT_EXTENSIONS:
+        if normalized in _TEXT_CONTENT_TYPES or normalized == _GENERIC_BINARY_TYPE:
+            return normalized
+        raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
+
+    if ext == ".docx":
+        if normalized in {_DOCX_CONTENT_TYPE, _GENERIC_BINARY_TYPE}:
+            return normalized
+        raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
+
+    if ext == ".xlsx":
+        if normalized in {_XLSX_CONTENT_TYPE, _GENERIC_BINARY_TYPE}:
+            return normalized
+        raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
+
+    if ext == ".pdf":
+        if normalized in {_PDF_CONTENT_TYPE, _GENERIC_BINARY_TYPE}:
+            return normalized
+        raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
+
+    raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
 
 
 @router.get("", response_model=list[ChatResponse])
@@ -102,15 +227,6 @@ async def unpin_verdict(
     return await chat_service.unpin_verdict(db, auth, str(chat_id))
 
 
-@router.post("/{chat_id}/share", response_model=ShareLinkResponse)
-async def create_share_link(
-    chat_id: UUID,
-    auth: AuthContext = Depends(get_auth_context),
-    db: AsyncSession = Depends(get_db),
-):
-    return await share_service.create_link(db, auth, str(chat_id))
-
-
 @router.get("/{chat_id}/turns", response_model=list[TurnResponse])
 async def list_turns(
     chat_id: UUID,
@@ -162,9 +278,7 @@ async def regenerate_turn(
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    return await chat_service.regenerate_turn(
-        db, auth, str(chat_id), str(turn_id), data
-    )
+    return await chat_service.regenerate_turn(db, auth, str(chat_id), str(turn_id), data)
 
 
 @router.get("/turns/{turn_id}", response_model=TurnResponse)
@@ -174,6 +288,26 @@ async def get_turn(
     db: AsyncSession = Depends(get_db),
 ):
     return await chat_service.get_turn(db, auth, str(turn_id))
+
+
+@router.get("/{chat_id}/attachments", response_model=AttachmentListResponse)
+async def list_pending_attachments(
+    chat_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    await chat_service.get_chat(db, auth, str(chat_id))
+    result = await db.execute(
+        select(ChatAttachment)
+        .where(
+            ChatAttachment.org_id == auth.org_id,
+            ChatAttachment.chat_id == str(chat_id),
+            ChatAttachment.turn_id.is_(None),
+        )
+        .order_by(ChatAttachment.created_at.asc(), ChatAttachment.id.asc())
+    )
+    rows = result.scalars().all()
+    return AttachmentListResponse(items=[_attachment_response(row) for row in rows])
 
 
 @router.post(
@@ -190,41 +324,131 @@ async def upload_attachment(
     settings = get_settings()
     await chat_service.get_chat(db, auth, str(chat_id))
 
-    content = await file.read()
-    if len(content) > settings.chat_attachment_max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds maximum size of {settings.chat_attachment_max_bytes // (1024 * 1024)} MB.",
+    pending_count = (
+        await db.execute(
+            select(ChatAttachment.id).where(
+                ChatAttachment.org_id == auth.org_id,
+                ChatAttachment.chat_id == str(chat_id),
+                ChatAttachment.turn_id.is_(None),
+            )
+        )
+    ).scalars().all()
+    if len(pending_count) >= _MAX_PENDING_ATTACHMENTS:
+        raise ValidationError(
+            f"A chat can have at most {_MAX_PENDING_ATTACHMENTS} pending attachments."
         )
 
-    original_filename = file.filename or "upload"
-    safe_filename = re.sub(r"[^\w.\-]", "_", original_filename)[:200]
-    attachment_id = str(uuid.uuid4())
-    content_type = file.content_type or (mimetypes.guess_type(original_filename)[0] or "application/octet-stream")
-
-    dest_dir = Path.cwd() / "data" / "chat_attachments" / auth.org_id / str(chat_id)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = dest_dir / f"{attachment_id}_{safe_filename}"
-    dest_path.write_bytes(content)
-
-    text_excerpt: str | None = None
-    ext = Path(original_filename).suffix.lower()
-    base_ct = content_type.split(";")[0].strip().lower()
-    is_text = base_ct in _TEXT_CONTENT_TYPES or ext in _TEXT_EXTENSIONS
-    if is_text:
-        try:
-            raw_text = content.decode("utf-8", errors="replace")
-            text_excerpt = raw_text[:_ATTACHMENT_TEXT_EXCERPT_MAX]
-        except Exception:
-            text_excerpt = None
-
-    return AttachmentResponse(
-        id=attachment_id,
-        filename=original_filename,
-        content_type=content_type,
-        size_bytes=len(content),
-        text_excerpt=text_excerpt,
+    # Extension/MIME checks happen before streaming so unsupported types never hit disk.
+    original_filename, ext = _validate_attachment_filename(file.filename)
+    content_type = _validate_attachment_content_type(
+        file.content_type, original_filename, ext
     )
+
+    tmp_path = None
+    dest_path = None
+    try:
+        tmp_path, size_bytes = await stream_upload_to_temp_file(
+            file,
+            max_bytes=settings.chat_attachment_max_bytes,
+            extension=ext,
+        )
+
+        try:
+            text_excerpt, excerpt_status = extract_attachment_text_from_path(tmp_path, ext)
+        except InvalidAttachmentError:
+            cleanup_path(tmp_path)
+            tmp_path = None
+            raise
+
+        attachment_id = str(uuid.uuid4())
+        stored_name = f"{attachment_id}{ext}"
+        relative_path = f"{auth.org_id}/{chat_id}/{stored_name}"
+        try:
+            dest_path = resolve_attachment_path(relative_path)
+        except UnsafeAttachmentPathError as exc:
+            logger.error("chat_attachment_unsafe_final_path")
+            cleanup_path(tmp_path)
+            tmp_path = None
+            raise InvalidAttachmentError("Invalid attachment storage path") from exc
+
+        promote_temp_attachment_file(tmp_path, dest_path)
+        tmp_path = None  # ownership transferred
+
+        row = ChatAttachment(
+            id=attachment_id,
+            org_id=auth.org_id,
+            chat_id=str(chat_id),
+            uploaded_by_user_id=auth.user.id,
+            turn_id=None,
+            filename=original_filename[:255],
+            stored_name=stored_name,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            relative_path=relative_path,
+            text_excerpt=text_excerpt,
+            excerpt_status=excerpt_status,
+        )
+        try:
+            db.add(row)
+            await db.flush()
+        except Exception:
+            cleanup_path(dest_path)
+            raise
+
+        return _attachment_response(row)
+    finally:
+        cleanup_path(tmp_path)
+
+
+@router.delete("/{chat_id}/attachments/{attachment_id}", response_model=MessageResponse)
+async def delete_attachment(
+    chat_id: UUID,
+    attachment_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    await chat_service.get_chat(db, auth, str(chat_id))
+
+    result = await db.execute(
+        select(ChatAttachment).where(
+            ChatAttachment.id == str(attachment_id),
+            ChatAttachment.org_id == auth.org_id,
+            ChatAttachment.chat_id == str(chat_id),
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise NotFoundError("Attachment", str(attachment_id))
+
+    if row.turn_id is not None:
+        raise ConflictError(
+            "Attachment is linked to a turn and cannot be removed from the composer."
+        )
+
+    relative_path = row.relative_path
+    await db.delete(row)
+    await db.flush()
+
+    # Prefer DB removal first to avoid orphaned references; missing files are OK.
+    try:
+        safe_delete_attachment_file(relative_path)
+    except UnsafeAttachmentPathError:
+        logger.error(
+            "chat_attachment_delete_unsafe_path",
+            attachment_id=str(attachment_id),
+            relative_path=relative_path,
+        )
+
+    return MessageResponse(message="Attachment deleted")
+
+
+@router.post("/{chat_id}/share", response_model=ShareLinkResponse)
+async def create_share_link(
+    chat_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await share_service.create_link(db, auth, str(chat_id))
 
 
 @router.get("/turns/{turn_id}/stream")

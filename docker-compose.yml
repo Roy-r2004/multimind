@@ -99,8 +99,12 @@ services:
       TRANSCRIPTION_BEAM_SIZE: ${TRANSCRIPTION_BEAM_SIZE:-1}
       TRANSCRIPTION_VAD_FILTER: ${TRANSCRIPTION_VAD_FILTER:-true}
       TRANSCRIPTION_INITIAL_PROMPT: ${TRANSCRIPTION_INITIAL_PROMPT:-MultiMind, OpenRouter, Ollama, Claude, Gemini, GPT, RAG, orchestrator, scraper, blueprint, verdict, model set}
+
+      CHAT_ATTACHMENT_DIR: ${CHAT_ATTACHMENT_DIR:-/app/data/chat_attachments}
+      CHAT_ATTACHMENT_MAX_BYTES: ${CHAT_ATTACHMENT_MAX_BYTES:-10485760}
     volumes:
       - whisper_models:/models/whisper
+      - chat_attachments:/app/data/chat_attachments
     depends_on:
       postgres:
         condition: service_healthy
@@ -211,3 +215,4 @@ services:
 volumes:
   postgres_data:
   whisper_models:
+  chat_attachments:

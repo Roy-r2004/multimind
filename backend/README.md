@@ -72,8 +72,13 @@ Copy `.env.example` to `.env`:
 | `TRANSCRIPTION_CPU_MODEL`              | Faster-Whisper CPU fallback; default `medium`         |
 | `TRANSCRIPTION_CPU_COMPUTE_TYPE`       | CPU compute type; default `int8`                      |
 | `TRANSCRIPTION_BEAM_SIZE`              | Whisper beam size; default `1`                        |
+| `CHAT_ATTACHMENT_DIR`                  | Absolute or relative directory for chat uploads; Docker default `/app/data/chat_attachments` |
+| `CHAT_ATTACHMENT_MAX_BYTES`            | Max upload size in bytes (default `10485760` = 10 MB); enforced while streaming |
+| `CHAT_ATTACHMENT_CONTEXT_MAX_CHARS`    | Max total attachment context characters injected into a turn (default `50000`) |
 
 Voice transcription is local/free via Faster-Whisper. The supported transcription languages are English and French. `auto` language detection is accepted, but detected output outside English/French is rejected. Docker Compose mounts `/models/whisper` as a persistent model cache so container recreation does not redownload the model when the volume is retained.
+
+Chat composer uploads (`.txt`, `.md`, `.csv`, `.json`, `.xml`, `.yaml`, `.html`, `.docx`, `.xlsx`, `.pdf`, …) are streamed into `CHAT_ATTACHMENT_DIR` with a hard size limit during upload. DOCX/XLSX/PDF are parsed server-side for text excerpts (no OCR); images remain unsupported. Docker Compose mounts a named `chat_attachments` volume at `/app/data/chat_attachments` on the API service only so container recreation keeps files. Production deployments must persist that directory; reverse proxies must allow request bodies at least as large as `CHAT_ATTACHMENT_MAX_BYTES`.
 
 CPU servers should use `TRANSCRIPTION_DEVICE=cpu`, `TRANSCRIPTION_CPU_MODEL=medium`, `TRANSCRIPTION_CPU_COMPUTE_TYPE=int8`, `TRANSCRIPTION_BEAM_SIZE=1`, and `TRANSCRIPTION_CONCURRENCY=1`. GPU servers can opt in with `TRANSCRIPTION_DEVICE=cuda`, `TRANSCRIPTION_MODEL=large-v3-turbo`, and `TRANSCRIPTION_COMPUTE_TYPE=float16`.
 

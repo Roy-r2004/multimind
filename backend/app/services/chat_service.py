@@ -10,11 +10,13 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
+    ChatAttachment,
     CostRecord,
     DecisionInsurance,
     ModelAnswer,
@@ -48,6 +50,7 @@ from app.schemas.api import (
     VerdictResponse,
 )
 from app.services.brain_service import brain_service
+from app.services.chat_attachment_storage import safe_delete_attachment_files
 from app.services.saved_verdict_service import saved_verdict_service
 
 logger = get_logger(__name__)
@@ -254,6 +257,17 @@ class ChatService:
             if row.status in ACTIVE_TURN_STATUSES
         }
 
+        attachment_paths = list(
+            (
+                await db.execute(
+                    select(ChatAttachment.relative_path).where(
+                        ChatAttachment.org_id == auth.org_id,
+                        ChatAttachment.chat_id == chat_id,
+                    )
+                )
+            ).scalars().all()
+        )
+
         try:
             locked_chat = (
                 await db.execute(
@@ -274,6 +288,14 @@ class ChatService:
             await db.execute(delete(Verdict).where(Verdict.turn_id.in_(turn_ids)))
             await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id.in_(turn_ids)))
             await db.execute(delete(ShareLink).where(ShareLink.chat_id == chat_id))
+            # Explicit delete so rows are removed even when SQLite FK cascades are off.
+            # Production Postgres also CASCADE-deletes via chat_id; this is idempotent.
+            await db.execute(
+                delete(ChatAttachment).where(
+                    ChatAttachment.org_id == auth.org_id,
+                    ChatAttachment.chat_id == chat_id,
+                )
+            )
             await db.execute(delete(Turn).where(Turn.chat_id == chat_id))
             await db.delete(locked_chat)
             await db.flush()
@@ -281,6 +303,9 @@ class ChatService:
         except Exception:
             await db.rollback()
             raise
+
+        # Files after DB commit: orphan files are preferable to orphaned DB refs.
+        safe_delete_attachment_files(attachment_paths)
 
         for turn_id, task in captured_tasks.items():
             await _cancel_orchestration_task_after_commit(turn_id, task)
@@ -550,10 +575,21 @@ class ChatService:
         """Create a pending turn — orchestration runs via SSE stream."""
         chat = await self.get_chat(db, auth, chat_id)
         model_set = await self._resolve_model_set(db, auth, data.model_set_id)
+        attachments = await self._resolve_attachments_for_turn(
+            db,
+            auth,
+            chat_id=chat.id,
+            attachment_ids=data.attachment_ids,
+        )
+        attachment_instructions = self._build_attachment_instructions(attachments)
 
         instruction_parts = [
             part.strip()
-            for part in (model_set.custom_instructions, data.custom_instructions)
+            for part in (
+                model_set.custom_instructions,
+                data.custom_instructions,
+                attachment_instructions,
+            )
             if part and part.strip()
         ]
         turn = Turn(
@@ -572,6 +608,20 @@ class ChatService:
             chat.title = data.user_message.strip()[:80] or "New chat"
 
         await db.flush()
+
+        if attachments:
+            link_result = await db.execute(
+                update(ChatAttachment)
+                .where(
+                    ChatAttachment.id.in_([item.id for item in attachments]),
+                    ChatAttachment.org_id == auth.org_id,
+                    ChatAttachment.chat_id == chat.id,
+                    ChatAttachment.turn_id.is_(None),
+                )
+                .values(turn_id=turn.id)
+            )
+            if link_result.rowcount != len(attachments):
+                raise ConflictError("Attachment is already linked to a turn")
 
         for model_id in model_set.models:
             db.add(
@@ -594,6 +644,119 @@ class ChatService:
         )
         turn = loaded.scalar_one()
         return self._pending_turn_response(turn)
+
+    async def _resolve_attachments_for_turn(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        *,
+        chat_id: str,
+        attachment_ids: list[str],
+    ) -> list[ChatAttachment]:
+        if not attachment_ids:
+            return []
+        if len(attachment_ids) != len(set(attachment_ids)):
+            raise ValidationError("Duplicate attachment IDs are not allowed")
+
+        result = await db.execute(
+            select(ChatAttachment)
+            .where(
+                ChatAttachment.org_id == auth.org_id,
+                ChatAttachment.chat_id == chat_id,
+                ChatAttachment.id.in_(attachment_ids),
+            )
+            .with_for_update()
+        )
+        found = {row.id: row for row in result.scalars().all()}
+        ordered: list[ChatAttachment] = []
+        for attachment_id in attachment_ids:
+            row = found.get(attachment_id)
+            if row is None:
+                raise NotFoundError("ChatAttachment", attachment_id)
+            if row.turn_id is not None:
+                raise ConflictError(
+                    "Attachment is already linked to a turn",
+                    details={"attachment_id": attachment_id, "turn_id": row.turn_id},
+                )
+            ordered.append(row)
+        return ordered
+
+    def _build_attachment_instructions(self, attachments: list[ChatAttachment]) -> str | None:
+        if not attachments:
+            return None
+
+        budget = get_settings().chat_attachment_context_max_chars
+        truncation_marker = "[Attachment context truncated]"
+        omitted_marker = "[Content omitted due to attachment context budget]"
+        parts: list[str] = []
+        used = 0
+
+        def filename_reserve(from_index: int) -> int:
+            """Reserve space so later attachments keep at least a filename mention."""
+            if from_index >= len(attachments):
+                return 0
+            total = 0
+            for item in attachments[from_index:]:
+                total += len(f"\n\nAttached file: {item.filename}\n{omitted_marker}")
+            return total
+
+        def try_append(text: str) -> bool:
+            nonlocal used
+            separator = "\n\n" if parts else ""
+            candidate = f"{separator}{text}"
+            if used + len(candidate) > budget:
+                return False
+            parts.append(candidate)
+            used += len(candidate)
+            return True
+
+        for index, attachment in enumerate(attachments):
+            filename = attachment.filename
+            if attachment.excerpt_status == "ready" and attachment.text_excerpt:
+                prefix = f"Attached file: {filename}\nContent:\n```text\n"
+                suffix = "\n```"
+                excerpt = attachment.text_excerpt
+                full = f"{prefix}{excerpt}{suffix}"
+                if try_append(full):
+                    continue
+
+                # Fit truncated excerpt while reserving room for later filenames.
+                separator_len = 2 if parts else 0
+                marker = f"\n{truncation_marker}"
+                reserve = filename_reserve(index + 1)
+                available = (
+                    budget
+                    - used
+                    - separator_len
+                    - len(prefix)
+                    - len(suffix)
+                    - len(marker)
+                    - reserve
+                )
+                if available > 0:
+                    truncated = excerpt[:available].rstrip() + marker
+                    if try_append(f"{prefix}{truncated}{suffix}"):
+                        continue
+                if not try_append(f"Attached file: {filename}\n{omitted_marker}"):
+                    try_append(f"Attached file: {filename}")
+            elif attachment.excerpt_status == "empty":
+                if filename.lower().endswith(".pdf"):
+                    note = (
+                        "(No readable text found. This PDF may be scanned or image-based.)"
+                    )
+                else:
+                    note = "(No readable content)"
+                if not try_append(f"Attached file: {filename}\n{note}"):
+                    try_append(f"Attached file: {filename}")
+            else:
+                block = (
+                    f"Attached file: {filename}\n"
+                    f"(Content unavailable; excerpt status: {attachment.excerpt_status})"
+                )
+                if not try_append(block):
+                    try_append(f"Attached file: {filename}")
+
+        return "".join(parts) or None
 
     def _pending_turn_response(self, turn: Turn) -> TurnResponse:
         answers = []
