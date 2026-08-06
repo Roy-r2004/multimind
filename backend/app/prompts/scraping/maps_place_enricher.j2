@@ -22,6 +22,12 @@ official website. Prefer crawl excerpts over generic web search snippets for str
 classification fields. Still require `classification_evidence` with `source_url` and
 `evidence_quote` for every non-unknown structured field you set.
 
+When a facility has NO `website_crawl_excerpt` (missing, empty, or the crawl failed), you have
+no first-party text to lean on — do not treat that as "no information available." You still
+have live web search: actively search for the facility by name, city, and address to find its
+official site, a directory listing, a registry entry, or its social media page, and extract
+contact details and classification evidence from those sources instead.
+
 Return these exact fields for every facility:
 - `operator_type`: one of
   `private_company`, `nonprofit`, `association`, `faith_based_org`, `public_hospital`,
@@ -52,6 +58,9 @@ Return these exact fields for every facility:
 - `treatment_price`
 - `email`: a contact email address for this specific facility, found on its official
   website, an Impressum/contact page, or another attributable source. `null` if none found.
+- `phone`: a contact phone number for this specific facility (prefer the number listed on
+  its own official website/contact page over a stale Google Business Profile number), in
+  the format it appears in the source. `null` if none found.
 
 How to classify:
 - Use `confirmed_government` / `public_hospital` / `government_agency` only when sources
@@ -127,7 +136,8 @@ Return strict JSON only with this shape:
         {"value": "Arabic", "evidence_quote": "...", "source_url": "https://..."}
       ],
       "treatment_price": "from 30,000 DZD / month",
-      "email": "kontakt@example.org"
+      "email": "kontakt@example.org",
+      "phone": "+213 555 123 456"
     }
   ]
 }

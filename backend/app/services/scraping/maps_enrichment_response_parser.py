@@ -167,7 +167,10 @@ Return a JSON object with this shape only:
       "classification_evidence": {},
       "classification_confidence": 0.0,
       "addictions_treated": [],
-      "languages_spoken": []
+      "languages_spoken": [],
+      "treatment_price": "string or null",
+      "email": "string or null",
+      "phone": "string or null"
     }
   ]
 }

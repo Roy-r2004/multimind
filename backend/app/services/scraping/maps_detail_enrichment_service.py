@@ -424,6 +424,9 @@ class MapsDetailEnrichmentService:
                     candidate_email = str(result.contact_email or "").strip()
                     if candidate_email and _email_belongs_to_facility(candidate_email, place):
                         place.contact_email = candidate_email[:320]
+                    candidate_phone = str(result.contact_phone or "").strip()
+                    if candidate_phone:
+                        place.international_phone_number = candidate_phone[:64]
                     if place.enrichment_extraction_source in {
                         None,
                         "structured_classification",
@@ -468,8 +471,9 @@ class MapsDetailEnrichmentService:
         )
         response = await provider.complete(
             system=(
-                "You have live web search. Return addictions, languages, treatment_price, and a "
-                "contact email for each facility. Return strict JSON only."
+                "You have live web search. Return addictions, languages, treatment_price, a "
+                "contact email, and a contact phone number for each facility. Return strict "
+                "JSON only."
             ),
             user=prompt,
             model=model.provider_model,

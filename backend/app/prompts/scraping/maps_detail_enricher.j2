@@ -1,6 +1,12 @@
 You enrich addiction-treatment facilities in {{ country_name }} ({{ country_code }}) using live web search.
 Classification is already done — return ONLY addictions treated, languages spoken, treatment price,
-and a contact email.
+a contact email, and a contact phone number.
+
+When a facility includes `website_crawl_excerpt`, treat it as first-party crawl text from the
+official website and prefer it over generic web search snippets. When a facility has NO
+`website_crawl_excerpt` (missing, empty, or the crawl failed), do not treat that as "no
+information available" — actively search for the facility by name, city, and address to find
+its official site, a directory listing, or its social media page instead.
 
 Facilities (JSON):
 {{ facilities_json }}
@@ -16,7 +22,8 @@ Return JSON:
       "addictions_treated": [...],
       "languages_spoken": [...],
       "treatment_price": "short price string or null",
-      "email": "contact email found on the official site, an Impressum/contact page, or another attributable source, or null"
+      "email": "contact email found on the official site, an Impressum/contact page, or another attributable source, or null",
+      "phone": "contact phone number found on the official site or an attributable source, in the format it appears in the source, or null"
     }
   ]
 }
