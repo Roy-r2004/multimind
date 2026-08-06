@@ -612,6 +612,20 @@ class MapsCensusService:
             raise NotFoundError("Maps census run", run_id)
         if not _discovery_finished(run):
             raise ValidationError("Only a completed Maps census run can enrich facility websites.")
+        # Defense in depth alongside the keep_drop_decision gate now enforced
+        # in build_classification_query/build_expensive_pipeline_query: a
+        # request right as discovery finishes (the same instant run_census is
+        # about to call run_keep_drop_pass itself) used to silently start
+        # cascading over undecided candidates. The query gate already makes
+        # that harmless (zero rows selected), but this also gives a clear
+        # error instead of a false "enrichment started" response.
+        from app.services.scraping.maps_keep_drop_service import count_undecided
+
+        if await count_undecided(db, run_id=run_id) > 0:
+            raise ValidationError(
+                "Keep/drop gate has not finished judging every candidate yet — "
+                "enrichment cannot be requested until it completes."
+            )
         if run.status not in {
             MapsCensusStatus.COMPLETED,
             MapsCensusStatus.COMPLETED_WITH_WARNINGS,
@@ -3518,6 +3532,20 @@ async def recover_maps_census_runs(ctx: dict) -> None:
     - running == 0
     - enrichment heartbeat is stale
     without requiring a destructive Recover reset.
+
+    KNOWN FOLLOW-UP (not fixed here): this can re-enqueue a second, concurrent
+    run_census() execution for a run whose status is still RUNNING with a
+    stale heartbeat — run_census's own top-of-function guard only rejects
+    terminal statuses (COMPLETED/COMPLETED_WITH_WARNINGS/CANCELLED), not
+    RUNNING. Combined with _execute_cells's non-atomic read-then-write cell
+    claim (an atomic SELECT...FOR UPDATE SKIP LOCKED claim already exists,
+    unused, in maps_cell_runner.claim_cells), two concurrent executions could
+    double-claim and double-process cells. This did not cause the Andorra
+    keep/drop-bypass incident (that's fixed by the keep_drop_decision gate in
+    build_classification_query/build_expensive_pipeline_query), but is a
+    related concurrency gap worth closing separately — route _execute_cells's
+    claiming through claim_cells, and/or reject RUNNING-with-fresh-heartbeat
+    here too.
     """
     del ctx
     from datetime import timedelta

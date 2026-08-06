@@ -372,6 +372,10 @@ async def test_selection_report_counts(db, auth):
                 is_relevant=True,
                 lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
                 client_eligibility=MapsClientEligibility.REVIEW.value,
+                # Only a place the strict keep/drop gate has confirmed may
+                # enter the expensive pipeline (the Andorra keep/drop-bypass
+                # fix) — this row represents one that already passed it.
+                keep_drop_decision="keep",
             ),
             MapsPlace(
                 run_id=run.id,

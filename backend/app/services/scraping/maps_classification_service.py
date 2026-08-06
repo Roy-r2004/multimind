@@ -32,6 +32,7 @@ from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmen
 from app.services.scraping.maps_enrichment_progress import persist_enrichment_progress
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_enrichment_selection import is_detail_enrichment_candidate
+from app.services.scraping.maps_keep_drop_service import KEEP
 from app.services.scraping.maps_place_enrichment_service import (
     MapsPlaceEnrichmentResult,
     maps_place_enrichment_service,
@@ -100,6 +101,22 @@ def build_classification_query(run_id: str):
         .where(
             MapsPlace.run_id == run_id,
             MapsPlace.is_relevant.is_(True),
+            # Phase 2 must never touch a place the strict keep/drop gate hasn't
+            # confirmed yet — without this, a place discovered as needs_review
+            # could get reclassified (and potentially demoted) before
+            # run_keep_drop_pass ever judges it, then get silently swept into
+            # stamp_non_candidate_drops's bulk-exclude as if it had never been
+            # a candidate at all. client_eligibility == ELIGIBLE is included
+            # alongside keep_drop_decision == KEEP so a manual admin
+            # mark_eligible override (which never touches keep_drop_decision)
+            # still reaches Phase 2 — compute_client_eligibility only ever
+            # returns ELIGIBLE from a positive structured determination, never
+            # as a default for an undecided place, so this can't reopen the
+            # premature-processing gap.
+            or_(
+                MapsPlace.keep_drop_decision == KEEP,
+                MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
+            ),
             MapsPlace.enrichment_status.in_(
                 [
                     MapsPlaceEnrichmentStatus.PENDING.value,

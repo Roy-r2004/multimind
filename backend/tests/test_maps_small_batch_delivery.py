@@ -60,12 +60,19 @@ def _run(auth):
 
 
 def _pending_place(run_id: str, key: str, **kwargs) -> MapsPlace:
+    # A place ready for Phase 2 classification/detail enrichment must already
+    # be a confirmed keep — build_classification_query/build_expensive_
+    # pipeline_query both gate on this (the Andorra keep/drop-bypass fix), so
+    # every place these small-batch-delivery tests hand to that pipeline
+    # needs to look like a genuine post-keep-drop row.
     base = dict(
         run_id=run_id,
         google_place_id=key,
         raw_name=key,
         canonical_name=key,
         is_relevant=True,
+        keep_drop_decision="keep",
+        client_eligibility=MapsClientEligibility.ELIGIBLE.value,
         enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
     )
     base.update(kwargs)

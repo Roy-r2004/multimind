@@ -13,6 +13,7 @@ from app.db.models import (
     MapsPlace,
     MapsPlaceEnrichmentStatus,
 )
+from app.services.scraping.maps_keep_drop_service import KEEP
 
 CONFIDENT_SKIP_LIFECYCLE = frozenset(
     {
@@ -45,9 +46,27 @@ class EnrichmentSelectionReport:
     selection_sql: str = ""
 
 
+def _keep_drop_gate_passed(place: Any) -> bool:
+    """True once the place is safe for Phase 2: either the strict keep/drop
+    gate confirmed it (keep_drop_decision == KEEP), or an admin manually
+    marked it eligible (client_eligibility == ELIGIBLE, which never happens
+    as a default for an undecided place — see compute_client_eligibility).
+    Never let the expensive cascade touch a place still sitting in
+    needs_review/plausible limbo — a premature cascade run can silently
+    corrupt lifecycle_status/is_relevant before run_keep_drop_pass ever sees
+    the place, and it gets swept into stamp_non_candidate_drops's
+    bulk-exclude as if it had never been a candidate at all."""
+    if getattr(place, "keep_drop_decision", None) == KEEP:
+        return True
+    return getattr(place, "client_eligibility", None) == MapsClientEligibility.ELIGIBLE.value
+
+
 def skip_reason_for_place(place: Any) -> str | None:
     if not getattr(place, "is_relevant", None):
         return "not_relevant"
+
+    if not _keep_drop_gate_passed(place):
+        return "keep_drop_not_decided"
 
     lifecycle = getattr(place, "lifecycle_status", None) or ""
     if lifecycle in CONFIDENT_SKIP_LIFECYCLE:
@@ -138,16 +157,30 @@ def is_detail_enrichment_candidate(place: Any) -> bool:
 
 
 def build_expensive_pipeline_query(run_id: str):
-    """SQLAlchemy query for places that should enter the expensive cascade."""
+    """SQLAlchemy query for places that should enter the expensive cascade.
+
+    Gated on _keep_drop_gate_passed: the strict keep/drop gate is the only
+    thing allowed to move a place out of needs_review, and a real KEEP sets
+    lifecycle_status to CONFIRMED_ELIGIBLE (see apply_keep_drop) — so
+    confirmed_eligible must be included alongside needs_review/plausible here,
+    or nothing would ever match post-gate. Without this filter, this query
+    could select (and let the cascade reclassify) a place the keep/drop pass
+    hasn't judged yet.
+    """
     return (
         select(MapsPlace)
         .where(
             MapsPlace.run_id == run_id,
             MapsPlace.is_relevant.is_(True),
+            or_(
+                MapsPlace.keep_drop_decision == KEEP,
+                MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
+            ),
             MapsPlace.lifecycle_status.notin_(tuple(CONFIDENT_SKIP_LIFECYCLE)),
             or_(
                 MapsPlace.lifecycle_status == MapsLifecycleStatus.NEEDS_REVIEW.value,
                 MapsPlace.lifecycle_status == MapsLifecycleStatus.PLAUSIBLE.value,
+                MapsPlace.lifecycle_status == MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value,
             ),
             MapsPlace.enrichment_status.in_(
                 [
