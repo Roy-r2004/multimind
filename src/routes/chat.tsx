@@ -1206,6 +1206,9 @@ export function ChatPage() {
                 onKeyDown={onComposerKeyDown}
                 rows={2}
                 disabled={!isAuthenticated || !set}
+                spellCheck={true}
+                autoCorrect="on"
+                autoCapitalize="sentences"
                 placeholder={
                   isAuthenticated
                     ? "Ask your model council anything… (Enter for new line; ⌘↵ / Ctrl+Enter to send)"
