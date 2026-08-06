@@ -167,7 +167,7 @@ export function VoiceRecorderButton({
   onRecordingStateChange,
 }: VoiceRecorderButtonProps) {
   const [state, setState] = useState<RecorderState>({ status: "idle", elapsedSeconds: 0 });
-  const [language, setLanguage] = useState<TranscriptionLanguage>("auto");
+  const [language, setLanguage] = useState<TranscriptionLanguage>("en");
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);

@@ -74,11 +74,11 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-border bg-sidebar/95 shadow-sm backdrop-blur-md transition-transform md:sticky md:top-0 md:h-screen md:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 flex h-full min-h-0 w-72 flex-col border-r border-border bg-sidebar/95 shadow-sm backdrop-blur-md transition-transform md:sticky md:top-0 md:h-screen md:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <div className="flex h-14 items-center justify-between border-b border-border px-4">
+        <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
           <Link
             to={isScraping ? "/scraping" : "/chat"}
             onClick={closeSidebar}
@@ -92,7 +92,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </button>
         </div>
 
-        <nav className="space-y-1 px-3 py-3">
+        <nav className="shrink-0 space-y-1 px-3 py-3">
           {WORKSPACES.map((n) => {
             const active =
               n.to === "/scraping"
@@ -118,7 +118,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           })}
         </nav>
 
-        <nav className="space-y-0.5 px-3">
+        <nav className="shrink-0 space-y-0.5 px-3 pb-1">
           {NAV.map((n) => (
             <Link
               key={n.to}
@@ -142,16 +142,16 @@ export function AppShell({ children }: { children: ReactNode }) {
           <ChatSidebarContent onNavigate={closeSidebar} />
         )}
 
-        <div className="border-t border-border p-3">
+        <div className="shrink-0 border-t border-border px-3 py-2">
           <Link
             to="/settings"
             onClick={closeSidebar}
-            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-accent"
+            className="flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm hover:bg-accent"
           >
             <Settings className="size-4" /> Settings
           </Link>
-          <div className="mt-2 flex items-center gap-3 rounded-lg px-2 py-2">
-            <div className="grid size-9 place-items-center rounded-full bg-primary/15 text-sm font-semibold text-primary">
+          <div className="mt-1 flex items-center gap-2.5 rounded-lg px-2 py-1.5">
+            <div className="grid size-8 place-items-center rounded-full bg-primary/15 text-sm font-semibold text-primary">
               {initials}
             </div>
             <div className="min-w-0 flex-1">
