@@ -70,9 +70,9 @@ SYSTEM_MODEL_SETS = [
         "description": "Custom model set.",
         "models": [
             "gemini",
-            "or:openai--gpt-5.5-pro",
+            "gpt-4.1",
             "or:anthropic--claude-opus-4",
-            "or:~moonshotai--kimi-latest",
+            "or:moonshotai--kimi-k2",
         ],
         "verdict_model": "or:openai--gpt-5.5",
         "strategy": Strategy.REFEREE,
