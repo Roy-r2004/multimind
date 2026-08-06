@@ -1,23 +1,30 @@
 import { useState } from "react";
 import { Loader2, Wand2 } from "lucide-react";
 import { Modal } from "@/components/Modal";
+import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
 import { api } from "@/lib/api";
+import type { ApiTranscriptionResponse } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 
 export function PromptBuilderModal({
   open,
   onClose,
   onUse,
+  voiceDisabled = false,
+  onVoiceRecordingStateChange,
 }: {
   open: boolean;
   onClose: () => void;
   onUse: (text: string) => void;
+  voiceDisabled?: boolean;
+  onVoiceRecordingStateChange?: (active: boolean) => void;
 }) {
   const [raw, setRaw] = useState("");
   const [improved, setImproved] = useState("");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { authHeaders } = useAuth();
+  const voiceAuth = authHeaders();
 
   function close() {
     setRaw("");
@@ -25,6 +32,17 @@ export function PromptBuilderModal({
     setGenerating(false);
     setError(null);
     onClose();
+  }
+
+  function handleVoiceTranscript(result: ApiTranscriptionResponse) {
+    const text = result.text.trim();
+    if (!text) return;
+
+    setRaw((current) => {
+      const existing = current.trimEnd();
+      return existing ? `${existing}\n${text}` : text;
+    });
+    setError(null);
   }
 
   async function generatePrompt() {
@@ -66,6 +84,14 @@ export function PromptBuilderModal({
             placeholder="Write me a landing page for my AI startup"
             className="w-full rounded-xl border border-border bg-background px-3 py-3 text-sm outline-none focus:border-primary/50"
           />
+          <div className="mt-2 flex min-w-0 items-center">
+            <VoiceRecorderButton
+              auth={voiceAuth}
+              disabled={voiceDisabled || generating}
+              onTranscript={handleVoiceTranscript}
+              onRecordingStateChange={onVoiceRecordingStateChange}
+            />
+          </div>
         </div>
         <button
           type="button"

@@ -237,7 +237,9 @@ export function ChatPage() {
   const [apiTurns, setApiTurns] = useState<ApiTurn[]>([]);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [isComposerVoiceActive, setIsComposerVoiceActive] = useState(false);
+  const [isPromptVoiceActive, setIsPromptVoiceActive] = useState(false);
+  const isVoiceActive = isComposerVoiceActive || isPromptVoiceActive;
   const [files, setFiles] = useState<ComposerFile[]>([]);
   const [refChat, setRefChat] = useState<ChatReferencePick | null>(null);
   const [showSet, setShowSet] = useState(false);
@@ -1287,9 +1289,9 @@ export function ChatPage() {
                 <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
                   <VoiceRecorderButton
                     auth={voiceAuth}
-                    disabled={voiceDisabled}
+                    disabled={voiceDisabled || isPromptVoiceActive}
                     onTranscript={handleVoiceTranscript}
-                    onRecordingStateChange={setIsVoiceActive}
+                    onRecordingStateChange={setIsComposerVoiceActive}
                   />
                   {loading && activeTurnId ? (
                     <button
@@ -1399,6 +1401,8 @@ export function ChatPage() {
         open={showPrompt}
         onClose={() => setShowPrompt(false)}
         onUse={(text) => setInput(text)}
+        voiceDisabled={isComposerVoiceActive}
+        onVoiceRecordingStateChange={setIsPromptVoiceActive}
       />
       <ChatReferenceModal
         open={showRef}
