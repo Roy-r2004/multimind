@@ -7,6 +7,7 @@ totals instead of resetting them.
 from __future__ import annotations
 
 import time
+from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
 
 from app.db.models import MapsCensusRun
@@ -24,6 +25,7 @@ COUNTER_FIELDS: tuple[str, ...] = (
     "sonar_repair_calls",
     "crawl_requests",
     "estimated_tokens",
+    "total_cost_usd",
 )
 
 
@@ -41,6 +43,7 @@ class MapsQuotaMetrics:
     sonar_repair_calls: int = 0
     crawl_requests: int = 0
     estimated_tokens: int = 0
+    total_cost_usd: float = 0.0
     runtime_seconds: float = 0.0
 
     def as_dict(self) -> dict[str, float]:
@@ -89,6 +92,16 @@ class MapsQuotaTracker:
     def add_tokens(self, tokens: int) -> None:
         self.metrics.estimated_tokens += max(0, int(tokens))
 
+    def add_cost(self, cost_usd: float | None) -> None:
+        if cost_usd is None:
+            return
+        try:
+            amount = float(cost_usd)
+        except (TypeError, ValueError):
+            return
+        if amount > 0:
+            self.metrics.total_cost_usd += amount
+
     def snapshot(self) -> dict[str, float]:
         self.metrics.runtime_seconds = round(time.monotonic() - self._start, 3)
         return self.metrics.as_dict()
@@ -96,6 +109,34 @@ class MapsQuotaTracker:
 
 def empty_quota_metrics() -> dict[str, float]:
     return MapsQuotaMetrics().as_dict()
+
+
+# Every LLM call in the app funnels through OpenRouterProvider._complete_once,
+# which reports OpenRouter's real per-call usage.cost. Rather than threading a
+# tracker through every classifier/planner/profile/enrichment call site (many
+# of which go through intermediate result DTOs that don't carry cost_usd back
+# to their caller), the currently-active tracker for the running Maps job is
+# published here via a ContextVar, and the provider layer records into it
+# directly. Each Maps ARQ job runs in its own asyncio Task, so this cannot
+# leak cost between concurrent runs or into unrelated (chat/brain/lessons)
+# LLM calls, which simply see no active tracker and no-op.
+_active_tracker: ContextVar["MapsQuotaTracker | None"] = ContextVar(
+    "maps_active_quota_tracker", default=None
+)
+
+
+def set_active_tracker(tracker: "MapsQuotaTracker | None") -> Token:
+    return _active_tracker.set(tracker)
+
+
+def reset_active_tracker(token: Token) -> None:
+    _active_tracker.reset(token)
+
+
+def record_llm_cost(cost_usd: float | None) -> None:
+    tracker = _active_tracker.get()
+    if tracker is not None:
+        tracker.add_cost(cost_usd)
 
 
 async def merge_quota_metrics(

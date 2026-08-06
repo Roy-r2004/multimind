@@ -4,6 +4,7 @@ import {
   Building2,
   ChevronLeft,
   ChevronRight,
+  DollarSign,
   Download,
   ExternalLink,
   Grid2x2,
@@ -18,6 +19,7 @@ import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell
 import { CountryOutline } from "@/components/maps/CountryOutline";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatCost } from "@/lib/cost";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
 import {
   EXPORT_COLUMNS,
@@ -314,6 +316,12 @@ function MapsRunDetailPage() {
                 label="Search queries"
                 value={searchCells.length}
                 tone="violet"
+              />
+              <MapsStatCard
+                icon={<DollarSign className="size-4" />}
+                label="Cost so far"
+                value={formatCost(run.total_cost_usd)}
+                tone="sky"
               />
             </div>
 

@@ -705,6 +705,7 @@ class MapsCensusRunSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     hero_image_url: str | None = None
+    total_cost_usd: float = 0.0
 
 
 class MapsCensusRunDetail(MapsCensusRunSummary):

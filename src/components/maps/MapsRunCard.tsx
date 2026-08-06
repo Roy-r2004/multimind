@@ -1,7 +1,8 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, Building2, Grid2x2, MapPin, Search, Trash2 } from "lucide-react";
+import { ArrowRight, Building2, DollarSign, Grid2x2, MapPin, Search, Trash2 } from "lucide-react";
 import { CountryOutline } from "@/components/maps/CountryOutline";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
+import { formatCost } from "@/lib/cost";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
 import type { MapsCensusRunSummary } from "@/lib/maps/types";
 
@@ -99,6 +100,9 @@ export function MapsRunCard({
             </StatPill>
             <StatPill icon={<Building2 className="size-3.5" />}>
               {run.places_with_website} verified locations
+            </StatPill>
+            <StatPill icon={<DollarSign className="size-3.5" />}>
+              {formatCost(run.total_cost_usd)} spent
             </StatPill>
             <span className="text-white/55">
               Updated {new Date(run.updated_at).toLocaleString()}

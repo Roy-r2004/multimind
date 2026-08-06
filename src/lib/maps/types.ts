@@ -24,6 +24,7 @@ export type MapsCensusRunSummary = {
   created_at: string;
   updated_at: string;
   hero_image_url: string | null;
+  total_cost_usd: number;
 };
 
 export type MapsCensusRunDetail = MapsCensusRunSummary;

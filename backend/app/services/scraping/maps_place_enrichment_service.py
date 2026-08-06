@@ -40,7 +40,11 @@ from app.services.scraping.maps_eligibility import (
 )
 from app.services.scraping.maps_pydantic_utils import TruncatingModel
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
-from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
+from app.services.scraping.maps_quota_tracker import (
+    MapsQuotaTracker,
+    merge_quota_metrics,
+    set_active_tracker,
+)
 from app.services.scraping.maps_website_crawl_service import (
     MapsWebsiteCrawlError,
     maps_website_crawl_service,
@@ -243,6 +247,7 @@ class MapsPlaceEnrichmentService:
         processing_batch_size = max(1, settings.maps_census_enrichment_processing_batch_size)
         max_calls = max(1, settings.maps_census_enrichment_max_calls_per_run)
         tracker = MapsQuotaTracker()
+        set_active_tracker(tracker)
         parse_stats = EnrichmentParseStats()
         enriched = 0
         calls_made = 0

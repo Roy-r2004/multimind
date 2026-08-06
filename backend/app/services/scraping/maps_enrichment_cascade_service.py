@@ -51,7 +51,11 @@ from app.services.scraping.maps_primary_extraction import (
     create_primary_extraction_provider,
     map_primary_to_enrichment_fields,
 )
-from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
+from app.services.scraping.maps_quota_tracker import (
+    MapsQuotaTracker,
+    merge_quota_metrics,
+    set_active_tracker,
+)
 from app.services.scraping.maps_sonar_fallback import (
     SonarBudget,
     SonarFallbackStats,
@@ -110,6 +114,7 @@ class MapsEnrichmentCascadeService:
             selection_report = await build_selection_report(session, run_id=run_id)
 
         tracker = MapsQuotaTracker()
+        set_active_tracker(tracker)
         parse_stats = EnrichmentParseStats()
         sonar_stats = SonarFallbackStats()
         primary_provider = create_primary_extraction_provider()
@@ -282,6 +287,7 @@ class MapsEnrichmentCascadeService:
                 relevant_total = len(relevant_count)
 
             tracker = MapsQuotaTracker()
+            set_active_tracker(tracker)
             parse_stats = EnrichmentParseStats()
             sonar_stats = SonarFallbackStats()
             sonar_budget = SonarBudget(
@@ -532,6 +538,7 @@ class MapsEnrichmentCascadeService:
             ).scalar_one()
 
         tracker = MapsQuotaTracker()
+        set_active_tracker(tracker)
         parse_stats = EnrichmentParseStats()
         sonar_stats = SonarFallbackStats()
         sonar_budget = SonarBudget(

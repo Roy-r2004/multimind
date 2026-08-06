@@ -12,7 +12,6 @@ import {
   Menu,
   MessageSquare,
   MessageSquareText,
-  Search,
   Settings,
   X,
 } from "lucide-react";
@@ -36,7 +35,6 @@ const NAV = [
 
 const WORKSPACES = [
   { to: "/chat", label: "Chat Council", icon: MessageSquare },
-  { to: "/scraping", label: "Scraping Council", icon: Search },
   { to: "/maps", label: "Maps Census", icon: MapIcon },
 ];
 

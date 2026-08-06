@@ -554,12 +554,26 @@ async def count_undecided(session: AsyncSession, *, run_id: str) -> int:
 
 
 async def run_maps_keep_drop_job(ctx: dict, run_id: str) -> None:
-    """ARQ entrypoint: keep/drop sweep, then detail-enrich the keeps."""
+    """ARQ entrypoint: keep/drop sweep, then detail-enrich the keeps.
+
+    Standalone entrypoint (admin-triggered /keep-drop, /retry-failed-keep-drop,
+    /revalidate-keeps) — unlike the keep/drop pass run inline inside
+    run_census (which already has its own active quota tracker), nothing
+    else tracks this call's cost, so a tracker is created and merged here.
+    """
     del ctx
     from app.db.session import AsyncSessionLocal
+    from app.services.scraping.maps_quota_tracker import (
+        MapsQuotaTracker,
+        merge_quota_metrics,
+        set_active_tracker,
+    )
 
     logger.info("maps_keep_drop_job_entered", extra={"run_id": run_id})
+    tracker = MapsQuotaTracker()
+    set_active_tracker(tracker)
     summary = await run_keep_drop_pass(AsyncSessionLocal, run_id=run_id)
+    await merge_quota_metrics(AsyncSessionLocal, run_id=run_id, tracker=tracker)
     if summary.get("error"):
         return
     # Gate on every keep still awaiting enrichment, not just this pass's count:

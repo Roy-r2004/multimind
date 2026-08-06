@@ -95,7 +95,11 @@ from app.services.scraping.maps_observability import (
 )
 from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
 from app.services.scraping.maps_places_client import PlacesProviderError, create_places_client
-from app.services.scraping.maps_quota_tracker import MapsQuotaTracker, merge_quota_metrics
+from app.services.scraping.maps_quota_tracker import (
+    MapsQuotaTracker,
+    merge_quota_metrics,
+    set_active_tracker,
+)
 from app.services.scraping.maps_saturation import (
     CellWindowResult,
     compute_window_metrics,
@@ -691,6 +695,7 @@ class MapsCensusService:
     async def run_website_refresh(self, db: AsyncSession | None, *, run_id: str) -> dict[str, int]:
         session_factory = self._session_factory(db)
         tracker = MapsQuotaTracker()
+        set_active_tracker(tracker)
         await self._search_missing_websites(session_factory, run_id=run_id, tracker=tracker)
         await self._propagate_shared_websites(session_factory, run_id=run_id)
         await self._apply_missing_contact_filter(session_factory, run_id=run_id)
@@ -989,6 +994,7 @@ class MapsCensusService:
         classification_model = get_model(settings.maps_census_model)
         classification_provider = get_provider_registry().get_provider(classification_model.provider)
         tracker = MapsQuotaTracker()
+        set_active_tracker(tracker)
         campaign_budget = {"used": campaign_cells_used, "max": max_cells_per_campaign}
 
         await recover_stale_running_cells(
@@ -2959,6 +2965,7 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
         created_at=run.created_at,
         updated_at=run.updated_at,
         hero_image_url=run.hero_image_url,
+        total_cost_usd=float((run.quota_metrics or {}).get("total_cost_usd") or 0.0),
     )
 
 

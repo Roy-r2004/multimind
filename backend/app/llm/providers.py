@@ -157,6 +157,7 @@ class OpenRouterProvider(LLMProvider):
         content = _content_to_text(data["choices"][0]["message"].get("content", ""))
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         cost_usd = _parse_reported_cost(usage.get("cost"))
+        _record_maps_quota_cost(cost_usd)
         text, confidence = self.parse_confidence(content)
         return LLMResponse(
             text=text,
@@ -166,6 +167,18 @@ class OpenRouterProvider(LLMProvider):
             confidence=confidence,
             raw=data,
         )
+
+
+def _record_maps_quota_cost(cost_usd: float | None) -> None:
+    """Feed real per-call OpenRouter cost to a Maps census run's quota tracker,
+    if one is currently active for this task (see maps_quota_tracker.py).
+    No-ops for chat/brain/lessons calls, which never set a tracker."""
+    try:
+        from app.services.scraping.maps_quota_tracker import record_llm_cost
+
+        record_llm_cost(cost_usd)
+    except Exception:  # noqa: BLE001 - cost bookkeeping must never break an LLM call
+        logger.warning("maps_quota_cost_record_failed", exc_info=True)
 
 
 def _parse_reported_cost(value: Any) -> float | None:
