@@ -19,9 +19,9 @@ ULTIMATE_SLUG = "set-7edaefc8"
 ULTIMATE_NAME = "Chafic ultimate model set"
 ULTIMATE_MODELS = [
     "gemini",
-    "or:openai--gpt-5.5-pro",
+    "gpt-4.1",
     "or:anthropic--claude-opus-4",
-    "or:~moonshotai--kimi-latest",
+    "or:moonshotai--kimi-k2",
 ]
 ULTIMATE_VERDICT = "or:openai--gpt-5.5"
 
@@ -75,9 +75,9 @@ async def test_seed_creates_exact_models_order_and_verdict(db: AsyncSession) -> 
     assert row.best_for == "Custom model set."
 
     # Stable OpenRouter-derived ids (not environment UUIDs).
-    assert model_id_to_slug("or:openai--gpt-5.5-pro") == "openai/gpt-5.5-pro"
+    assert model_id_to_slug("gpt-4.1") == "openai/gpt-4.1"
     assert model_id_to_slug("or:anthropic--claude-opus-4") == "anthropic/claude-opus-4"
-    assert model_id_to_slug("or:~moonshotai--kimi-latest") == "~moonshotai/kimi-latest"
+    assert model_id_to_slug("or:moonshotai--kimi-k2") == "moonshotai/kimi-k2"
     assert model_id_to_slug("or:openai--gpt-5.5") == "openai/gpt-5.5"
     assert model_id_to_slug("gemini") == "google/gemini-2.5-pro"
 

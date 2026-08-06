@@ -85,6 +85,9 @@ export function UserPromptBubble({
             node.style.height = `${Math.min(node.scrollHeight, 240)}px`;
           }}
           onKeyDown={onKeyDown}
+          spellCheck={true}
+          autoCorrect="on"
+          autoCapitalize="sentences"
           aria-label="Edit prompt"
           className="min-h-[5.5rem] w-full resize-y rounded-2xl rounded-br-sm border border-primary/40 bg-primary/90 px-4 py-3 text-sm leading-relaxed text-primary-foreground outline-none ring-offset-background placeholder:text-primary-foreground/60 focus:ring-2 focus:ring-ring disabled:opacity-70"
         />

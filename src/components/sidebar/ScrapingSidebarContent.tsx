@@ -58,8 +58,8 @@ export function ScrapingSidebarContent({ onNavigate }: { onNavigate: () => void 
   }
 
   return (
-    <>
-      <div className="p-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 px-3 pt-2 pb-1">
         <Link
           to="/scraping/new"
           onClick={onNavigate}
@@ -68,13 +68,13 @@ export function ScrapingSidebarContent({ onNavigate }: { onNavigate: () => void 
           <Plus className="size-4" /> New mission
         </Link>
       </div>
-      <div className="mt-4 flex-1 overflow-hidden px-3">
-        <div className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-primary/80">
+      <div className="mt-2 flex min-h-0 flex-1 flex-col px-3">
+        <div className="flex shrink-0 items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-primary/80">
           <History className="size-3.5" /> Recent missions
         </div>
-        {message && <p className="mt-2 px-2 text-xs text-teal-700">{message}</p>}
-        {error && <p className="mt-2 px-2 text-xs text-destructive">{error}</p>}
-        <div className="mt-2 max-h-[38vh] space-y-0.5 overflow-y-auto">
+        {message && <p className="mt-2 shrink-0 px-2 text-xs text-teal-700">{message}</p>}
+        {error && <p className="mt-2 shrink-0 px-2 text-xs text-destructive">{error}</p>}
+        <div className="mt-2 min-h-0 flex-1 space-y-0.5 overflow-y-auto">
           {missions.length === 0 ? (
             <p className="px-2 py-3 text-xs text-muted-foreground">No missions yet</p>
           ) : (
@@ -191,7 +191,7 @@ export function ScrapingSidebarContent({ onNavigate }: { onNavigate: () => void 
         }}
         onError={setError}
       />
-    </>
+    </div>
   );
 }
 
