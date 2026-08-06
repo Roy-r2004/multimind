@@ -42,8 +42,8 @@ export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
   }
 
   return (
-    <>
-      <div className="p-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 px-3 pt-2 pb-1">
         <Link
           to="/chat"
           onClick={() => {
@@ -55,11 +55,11 @@ export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
           <MessageSquarePlus className="size-4" /> New chat
         </Link>
       </div>
-      <div className="mt-4 flex-1 overflow-hidden px-3">
-        <div className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+      <div className="mt-2 flex min-h-0 flex-1 flex-col px-3">
+        <div className="flex shrink-0 items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
           <History className="size-3.5" /> Recent
         </div>
-        <div className="mt-2 max-h-[38vh] space-y-0.5 overflow-y-auto">
+        <div className="mt-2 min-h-0 flex-1 space-y-0.5 overflow-y-auto">
           {chats.length === 0 ? (
             <p className="px-2 py-3 text-xs text-muted-foreground">No chats yet</p>
           ) : (
@@ -150,7 +150,7 @@ export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
           setShowCreateProject(false);
         }}
       />
-    </>
+    </div>
   );
 }
 
