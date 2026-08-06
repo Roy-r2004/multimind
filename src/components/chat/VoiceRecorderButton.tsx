@@ -134,6 +134,37 @@ function transcriptionErrorMessage(error: unknown): string | null {
   return "Voice transcription failed. You can retry.";
 }
 
+const extensionByMimeType: Record<string, string> = {
+  "audio/webm": "webm",
+  "audio/ogg": "ogg",
+  "audio/mp4": "m4a",
+};
+
+function downloadRecording(blob: Blob) {
+  const mimeType = blob.type.split(";")[0];
+  const extension = extensionByMimeType[mimeType] ?? "webm";
+
+  const now = new Date();
+  const timestamp = now
+    .toISOString()
+    .replace(/T/, "-")
+    .replace(/:/g, "-")
+    .replace(/\..+/, "");
+
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = `multimind-recording-${timestamp}.${extension}`;
+  anchor.style.display = "none";
+
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function IconButton({
   label,
   children,
@@ -436,6 +467,7 @@ export function VoiceRecorderButton({
       }
 
       retainedBlobRef.current = blob;
+      downloadRecording(blob);
       await transcribeBlob(blob, finalElapsedSeconds);
     } catch {
       cleanupRecorderAndStream();
