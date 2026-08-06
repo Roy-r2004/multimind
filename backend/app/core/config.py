@@ -239,7 +239,17 @@ class Settings(BaseSettings):
     maps_place_max_attempts: int = 2
     maps_census_enrichment_max_calls_per_run: int = 5000
     maps_census_enrichment_model: str = "sonar-pro"
-    maps_census_enrichment_max_crawl_excerpt_chars: int = 1200
+    # Combined budget across ALL crawled pages for one place (see
+    # combined_excerpt in maps_website_crawl_service.py, which appends pages
+    # in order and truncates once this is exceeded). 1200 was too small for
+    # multi-page crawls — a facility's contact page alone (multiple
+    # locations, phone/email/hours/form) easily exceeds it, and whatever
+    # appears later in the combined text (often the phone number) silently
+    # gets truncated away before the LLM ever sees it, even though earlier
+    # content (e.g. an email link) survives. Raised to align with the other
+    # crawl-excerpt budgets in this file (keep-drop uses 4000, structured
+    # classification uses 20000) — 1200 was a clear outlier.
+    maps_census_enrichment_max_crawl_excerpt_chars: int = 4000
     maps_census_auto_enrichment_enabled: bool = True
     maps_census_cascade_enrichment_enabled: bool = True
     maps_census_two_phase_pipeline_enabled: bool = True
