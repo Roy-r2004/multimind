@@ -15,6 +15,7 @@ from app.core.exceptions import (
     ConflictError,
     InvalidAttachmentError,
     NotFoundError,
+    SilentAudioError,
     UnsupportedAttachmentTypeError,
     ValidationError,
 )
@@ -44,9 +45,13 @@ from app.services.chat_attachment_storage import (
     safe_delete_attachment_file,
     stream_upload_to_temp_file,
 )
-from app.services.chat_attachment_text import extract_attachment_text_from_path
+from app.services.chat_attachment_text import (
+    excerpt_from_transcript,
+    extract_attachment_text_from_path,
+)
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
 from app.services.share_service import share_service
+from app.services.transcription_service import transcription_service
 
 _TEXT_EXTENSIONS = frozenset(
     {
@@ -64,7 +69,8 @@ _TEXT_EXTENSIONS = frozenset(
 )
 _OFFICE_EXTENSIONS = frozenset({".docx", ".xlsx"})
 _PDF_EXTENSIONS = frozenset({".pdf"})
-_ALLOWED_EXTENSIONS = _TEXT_EXTENSIONS | _OFFICE_EXTENSIONS | _PDF_EXTENSIONS
+_AUDIO_EXTENSIONS = frozenset({".webm"})
+_ALLOWED_EXTENSIONS = _TEXT_EXTENSIONS | _OFFICE_EXTENSIONS | _PDF_EXTENSIONS | _AUDIO_EXTENSIONS
 _LEGACY_OFFICE_EXTENSIONS = frozenset({".doc", ".xls", ".docm", ".xlsm"})
 
 _TEXT_CONTENT_TYPES = frozenset(
@@ -88,9 +94,19 @@ _DOCX_CONTENT_TYPE = (
 _XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _PDF_CONTENT_TYPE = "application/pdf"
 _GENERIC_BINARY_TYPE = "application/octet-stream"
+_WEBM_CONTENT_TYPE = "audio/webm"
+# Browsers/OS (and Python mimetypes.guess_type) often label .webm as video/webm
+# even for audio-only MediaRecorder output.
+_WEBM_CONTENT_TYPES = frozenset(
+    {
+        _WEBM_CONTENT_TYPE,
+        "video/webm",
+        _GENERIC_BINARY_TYPE,
+    }
+)
 
 _UNSUPPORTED_TYPE_MESSAGE = (
-    "Unsupported file type. Upload a text file, .docx, .xlsx, or .pdf."
+    "Unsupported file type. Upload a text file, .docx, .xlsx, .pdf, or .webm."
 )
 _MAX_PENDING_ATTACHMENTS = 10
 
@@ -142,11 +158,16 @@ def _validate_attachment_filename(filename: str | None) -> tuple[str, str]:
 
 
 def _validate_attachment_content_type(content_type: str | None, filename: str, ext: str) -> str:
+    # Strip optional MIME parameters (e.g. audio/webm;codecs=opus → audio/webm).
     normalized = _normalize_media_type(content_type)
     if not normalized:
         # Browsers sometimes omit MIME; fall back to extension-based guess or generic.
-        guessed = mimetypes.guess_type(filename)[0]
-        normalized = (guessed or _GENERIC_BINARY_TYPE).lower()
+        # For .webm, prefer audio/webm: mimetypes.guess_type(".webm") returns video/webm.
+        if ext == ".webm":
+            normalized = _WEBM_CONTENT_TYPE
+        else:
+            guessed = mimetypes.guess_type(filename)[0]
+            normalized = (guessed or _GENERIC_BINARY_TYPE).lower()
 
     if ext in _TEXT_EXTENSIONS:
         if normalized in _TEXT_CONTENT_TYPES or normalized == _GENERIC_BINARY_TYPE:
@@ -165,6 +186,11 @@ def _validate_attachment_content_type(content_type: str | None, filename: str, e
 
     if ext == ".pdf":
         if normalized in {_PDF_CONTENT_TYPE, _GENERIC_BINARY_TYPE}:
+            return normalized
+        raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
+
+    if ext == ".webm":
+        if normalized in _WEBM_CONTENT_TYPES:
             return normalized
         raise UnsupportedAttachmentTypeError(_UNSUPPORTED_TYPE_MESSAGE)
 
@@ -360,7 +386,15 @@ async def upload_attachment(
         )
 
         try:
-            text_excerpt, excerpt_status = extract_attachment_text_from_path(tmp_path, ext)
+            if ext in _AUDIO_EXTENSIONS:
+                try:
+                    result = await transcription_service.transcribe(tmp_path, language="en")
+                    text_excerpt, excerpt_status = excerpt_from_transcript(result.text)
+                except SilentAudioError:
+                    # Match empty document extraction: keep the file, mark excerpt empty.
+                    text_excerpt, excerpt_status = None, "empty"
+            else:
+                text_excerpt, excerpt_status = extract_attachment_text_from_path(tmp_path, ext)
         except InvalidAttachmentError:
             cleanup_path(tmp_path)
             tmp_path = None
