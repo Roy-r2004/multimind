@@ -35,6 +35,7 @@ import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
 import { Route as MapsNewRouteImport } from './routes/maps.new'
 import { Route as MapsRunIdRouteImport } from './routes/maps.$runId'
 import { Route as LessonsIdRouteImport } from './routes/lessons.$id'
+import { Route as ChatHistoryRouteImport } from './routes/chat.history'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
 import { Route as AdminUsageRouteImport } from './routes/admin/usage'
 import { Route as AdminSecurityRouteImport } from './routes/admin/security'
@@ -187,6 +188,11 @@ const LessonsIdRoute = LessonsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => LessonsRouteRoute,
 } as any)
+const ChatHistoryRoute = ChatHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => ChatRoute,
+} as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
   id: '/users',
   path: '/users',
@@ -306,7 +312,7 @@ export interface FileRoutesByFullPath {
   '/projects': typeof ProjectsRouteRouteWithChildren
   '/scraping': typeof ScrapingRouteRouteWithChildren
   '/brain': typeof BrainRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
@@ -325,6 +331,7 @@ export interface FileRoutesByFullPath {
   '/admin/security': typeof AdminSecurityRoute
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
+  '/chat/history': typeof ChatHistoryRoute
   '/lessons/$id': typeof LessonsIdRoute
   '/maps/$runId': typeof MapsRunIdRoute
   '/maps/new': typeof MapsNewRoute
@@ -350,7 +357,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/brain': typeof BrainRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
@@ -368,6 +375,7 @@ export interface FileRoutesByTo {
   '/admin/security': typeof AdminSecurityRoute
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
+  '/chat/history': typeof ChatHistoryRoute
   '/lessons/$id': typeof LessonsIdRoute
   '/maps/$runId': typeof MapsRunIdRoute
   '/maps/new': typeof MapsNewRoute
@@ -398,7 +406,7 @@ export interface FileRoutesById {
   '/projects': typeof ProjectsRouteRouteWithChildren
   '/scraping': typeof ScrapingRouteRouteWithChildren
   '/brain': typeof BrainRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
@@ -417,6 +425,7 @@ export interface FileRoutesById {
   '/admin/security': typeof AdminSecurityRoute
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
+  '/chat/history': typeof ChatHistoryRoute
   '/lessons/$id': typeof LessonsIdRoute
   '/maps/$runId': typeof MapsRunIdRoute
   '/maps/new': typeof MapsNewRoute
@@ -468,6 +477,7 @@ export interface FileRouteTypes {
     | '/admin/security'
     | '/admin/usage'
     | '/admin/users'
+    | '/chat/history'
     | '/lessons/$id'
     | '/maps/$runId'
     | '/maps/new'
@@ -511,6 +521,7 @@ export interface FileRouteTypes {
     | '/admin/security'
     | '/admin/usage'
     | '/admin/users'
+    | '/chat/history'
     | '/lessons/$id'
     | '/maps/$runId'
     | '/maps/new'
@@ -559,6 +570,7 @@ export interface FileRouteTypes {
     | '/admin/security'
     | '/admin/usage'
     | '/admin/users'
+    | '/chat/history'
     | '/lessons/$id'
     | '/maps/$runId'
     | '/maps/new'
@@ -590,7 +602,7 @@ export interface RootRouteChildren {
   ProjectsRouteRoute: typeof ProjectsRouteRouteWithChildren
   ScrapingRouteRoute: typeof ScrapingRouteRouteWithChildren
   BrainRoute: typeof BrainRoute
-  ChatRoute: typeof ChatRoute
+  ChatRoute: typeof ChatRouteWithChildren
   LoginRoute: typeof LoginRoute
   ModelSetsRoute: typeof ModelSetsRoute
   SavedDocumentsRoute: typeof SavedDocumentsRoute
@@ -784,6 +796,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/lessons/$id'
       preLoaderRoute: typeof LessonsIdRouteImport
       parentRoute: typeof LessonsRouteRoute
+    }
+    '/chat/history': {
+      id: '/chat/history'
+      path: '/history'
+      fullPath: '/chat/history'
+      preLoaderRoute: typeof ChatHistoryRouteImport
+      parentRoute: typeof ChatRoute
     }
     '/admin/users': {
       id: '/admin/users'
@@ -1093,6 +1112,16 @@ const ScrapingRouteRouteWithChildren = ScrapingRouteRoute._addFileChildren(
   ScrapingRouteRouteChildren,
 )
 
+interface ChatRouteChildren {
+  ChatHistoryRoute: typeof ChatHistoryRoute
+}
+
+const ChatRouteChildren: ChatRouteChildren = {
+  ChatHistoryRoute: ChatHistoryRoute,
+}
+
+const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRouteRoute: AdminRouteRouteWithChildren,
@@ -1101,7 +1130,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsRouteRoute: ProjectsRouteRouteWithChildren,
   ScrapingRouteRoute: ScrapingRouteRouteWithChildren,
   BrainRoute: BrainRoute,
-  ChatRoute: ChatRoute,
+  ChatRoute: ChatRouteWithChildren,
   LoginRoute: LoginRoute,
   ModelSetsRoute: ModelSetsRoute,
   SavedDocumentsRoute: SavedDocumentsRoute,

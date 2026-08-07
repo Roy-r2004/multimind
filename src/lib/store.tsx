@@ -11,12 +11,26 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "@/lib/api";
-import type { ApiChat, ApiModelSet, ApiProject } from "@/lib/api/types";
+import type { ApiChat, ApiModelSet, ApiProject, ApiTurn } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
+import {
+  chatFromTurnActivity,
+  formatRelativeTime,
+  mapApiChat,
+  upsertChatToTop,
+} from "@/lib/chatHistory";
+import { shouldApplyRefreshResult } from "@/lib/chatStoreRefresh";
 import type { Chat, ModelSet, Project } from "@/lib/mock";
 import { selectExistingModelSetId } from "@/lib/modelSetSelection";
 
 type CreateProjectInput = { name: string; description?: string };
+
+type CreateChatOptions = {
+  activate?: boolean;
+  onChatCreated?: (chatId: string) => void;
+  /** Optional project association for create (e.g. project page). */
+  projectId?: string | null;
+};
 
 type ChatStore = {
   chats: Chat[];
@@ -32,43 +46,22 @@ type ChatStore = {
   updateModelSet: (set: ModelSet) => Promise<void>;
   deleteModelSet: (id: string) => Promise<void>;
   renameChat: (id: string, title: string) => Promise<void>;
-  deleteChat: (id: string) => Promise<void>;
+  deleteChat: (id: string, options?: { onlyIfUnused?: boolean }) => Promise<void>;
   assignChatToProject: (chatId: string, projectId: string) => Promise<void>;
   createProject: (input: CreateProjectInput) => Promise<Project>;
   deleteProject: (projectId: string) => Promise<void>;
-  createChat: (options?: {
-    activate?: boolean;
-    onChatCreated?: (chatId: string) => void;
-  }) => Promise<string | null>;
+  createChat: (options?: CreateChatOptions) => Promise<string | null>;
   refreshAll: () => Promise<void>;
   applyChatUpdate: (chat: ApiChat) => void;
+  /** Move/update sidebar chat from turn create/regenerate metadata. */
+  applyChatActivityFromTurn: (turn: ApiTurn) => void;
+  /** Discard a chat created by the current op if still unused (turns/attachments empty). */
+  discardUnusedChat: (chatId: string) => Promise<boolean>;
   projectChatCount: (projectId: string) => number;
   projectById: (projectId: string | null | undefined) => Project | undefined;
 };
 
 const ChatStoreContext = createContext<ChatStore | null>(null);
-
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `${mins || 1}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
-function mapChat(c: ApiChat): Chat {
-  return {
-    id: c.id,
-    title: c.title,
-    updated: formatRelativeTime(c.updated_at),
-    projectId: c.project_id,
-    pinnedVerdictId: c.pinned_verdict_id ?? null,
-    pinnedTurnId: c.pinned_turn_id ?? null,
-  };
-}
 
 function mapModelSet(s: ApiModelSet): ModelSet {
   return {
@@ -107,10 +100,27 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
   const activeChatIdRef = useRef<string | null>(null);
   activeChatIdRef.current = activeChatId;
+  const createChatInflightRef = useRef<Promise<string | null> | null>(null);
+  const refreshGenerationRef = useRef(0);
+
+  const clearChatScopedState = useCallback(() => {
+    // Invalidate any in-flight refreshAll so it cannot repopulate after logout.
+    refreshGenerationRef.current += 1;
+    setChats([]);
+    setProjects([]);
+    setModelSets([]);
+    setActiveChatIdState(null);
+    setActiveModelSetIdState("");
+    createChatInflightRef.current = null;
+    setIsLoading(false);
+  }, []);
 
   const refreshAll = useCallback(async () => {
     const auth = authHeaders();
     if (!auth) return;
+
+    const requestGeneration = ++refreshGenerationRef.current;
+    const requestAuth = { token: auth.token, orgId: auth.orgId };
     setIsLoading(true);
     try {
       const [chatList, projectList, setList] = await Promise.all([
@@ -118,21 +128,40 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         api.projects.list(auth),
         api.modelSets.list(auth),
       ]);
-      setChats(chatList.map(mapChat));
+
+      const currentAuth = authHeaders();
+      if (
+        !shouldApplyRefreshResult({
+          requestGeneration,
+          currentGeneration: refreshGenerationRef.current,
+          requestAuth,
+          currentAuth,
+        })
+      ) {
+        return;
+      }
+
+      setChats(chatList.map(mapApiChat));
       setProjects(projectList.map(mapProject));
       const mappedModelSets = setList.map(mapModelSet);
       setModelSets(mappedModelSets);
       setActiveModelSetIdState((activeId) => selectExistingModelSetId(mappedModelSets, activeId));
     } finally {
-      setIsLoading(false);
+      if (requestGeneration === refreshGenerationRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [authHeaders]);
 
   useEffect(() => {
     if (isApiMode && !authLoading) {
       void refreshAll();
+      return;
     }
-  }, [isApiMode, authLoading, refreshAll]);
+    if (!authLoading && !isAuthenticated) {
+      clearChatScopedState();
+    }
+  }, [isApiMode, authLoading, isAuthenticated, refreshAll, clearChatScopedState]);
 
   const setActiveModelSetId = useCallback((id: string) => {
     setActiveModelSetIdState(id);
@@ -143,7 +172,6 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       const previousId = activeChatIdRef.current;
       setActiveChatIdState(id);
       if (id === null && previousId !== null) {
-        // New chat / cleared selection: re-apply org default (ignore prior manual pick).
         setActiveModelSetIdState(() => selectExistingModelSetId(modelSets, ""));
       }
     },
@@ -224,38 +252,62 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       if (!next) return;
       const auth = authHeaders();
       if (!auth) {
-        setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title: next } : c)));
+        setChats((prev) => {
+          const current = prev.find((c) => c.id === id);
+          if (!current) return prev;
+          return upsertChatToTop(prev, { ...current, title: next });
+        });
         return;
       }
-      await api.chats.update(auth, id, { title: next });
-      setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title: next } : c)));
+      const updated = await api.chats.update(auth, id, { title: next });
+      setChats((prev) => upsertChatToTop(prev, mapApiChat(updated)));
     },
     [authHeaders],
   );
 
   const deleteChat = useCallback(
-    async (id: string) => {
+    async (id: string, options?: { onlyIfUnused?: boolean }) => {
       const auth = authHeaders();
       if (!auth) {
         setChats((prev) => prev.filter((c) => c.id !== id));
         return;
       }
-      await api.chats.delete(auth, id);
+      await api.chats.delete(auth, id, { onlyIfUnused: options?.onlyIfUnused });
       setChats((prev) => prev.filter((c) => c.id !== id));
-      if (activeChatId === id) setActiveChatId(null);
+      if (activeChatIdRef.current === id) setActiveChatId(null);
     },
-    [authHeaders, activeChatId, setActiveChatId],
+    [authHeaders, setActiveChatId],
+  );
+
+  const discardUnusedChat = useCallback(
+    async (chatId: string): Promise<boolean> => {
+      const auth = authHeaders();
+      if (!auth) return false;
+      try {
+        await api.chats.delete(auth, chatId, { onlyIfUnused: true });
+        setChats((prev) => prev.filter((c) => c.id !== chatId));
+        if (activeChatIdRef.current === chatId) setActiveChatId(null);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [authHeaders, setActiveChatId],
   );
 
   const assignChatToProject = useCallback(
     async (chatId: string, projectId: string) => {
       const auth = authHeaders();
       if (!auth) {
-        setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, projectId } : c)));
+        setChats((prev) => {
+          const current = prev.find((c) => c.id === chatId);
+          if (!current) return prev;
+          return upsertChatToTop(prev, { ...current, projectId });
+        });
         return;
       }
-      await api.chats.update(auth, chatId, { project_id: projectId });
-      setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, projectId } : c)));
+      const updated = await api.chats.update(auth, chatId, { project_id: projectId });
+      setChats((prev) => upsertChatToTop(prev, mapApiChat(updated)));
     },
     [authHeaders],
   );
@@ -306,31 +358,51 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const createChat = useCallback(
-    async (options?: {
-      activate?: boolean;
-      onChatCreated?: (chatId: string) => void;
-    }): Promise<string | null> => {
+    async (options?: CreateChatOptions): Promise<string | null> => {
       const auth = authHeaders();
       if (!auth) return null;
-      const chat = await api.chats.create(auth, { title: "New chat" });
-      const mapped = mapChat(chat);
-      setChats((prev) => [mapped, ...prev]);
-      // Allow callers (composer upload) to retain chips / delay activation.
-      options?.onChatCreated?.(chat.id);
-      if (options?.activate !== false) {
-        setActiveChatId(chat.id);
+
+      // Share one in-flight create so upload + send cannot POST twice.
+      if (!createChatInflightRef.current) {
+        createChatInflightRef.current = (async () => {
+          try {
+            const chat = await api.chats.create(auth, {
+              title: "New chat",
+              project_id: options?.projectId ?? undefined,
+            });
+            const mapped = mapApiChat(chat);
+            setChats((prev) => upsertChatToTop(prev, mapped));
+            return chat.id;
+          } finally {
+            createChatInflightRef.current = null;
+          }
+        })();
       }
-      return chat.id;
+
+      const chatId = await createChatInflightRef.current;
+      if (!chatId) return null;
+      options?.onChatCreated?.(chatId);
+      if (options?.activate !== false) {
+        setActiveChatId(chatId);
+      }
+      return chatId;
     },
     [authHeaders, setActiveChatId],
   );
 
   const applyChatUpdate = useCallback((chat: ApiChat) => {
-    const mapped = mapChat(chat);
+    setChats((prev) => upsertChatToTop(prev, mapApiChat(chat)));
+  }, []);
+
+  const applyChatActivityFromTurn = useCallback((turn: ApiTurn) => {
     setChats((prev) => {
-      const exists = prev.some((item) => item.id === mapped.id);
-      if (!exists) return [mapped, ...prev];
-      return prev.map((item) => (item.id === mapped.id ? mapped : item));
+      const existing = prev.find((item) => item.id === turn.chat_id);
+      const next = chatFromTurnActivity(existing, {
+        chatId: turn.chat_id,
+        title: turn.chat_title ?? existing?.title,
+        updatedAt: turn.chat_updated_at ?? undefined,
+      });
+      return upsertChatToTop(prev, next);
     });
   }, []);
 
@@ -371,6 +443,8 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       createChat,
       refreshAll,
       applyChatUpdate,
+      applyChatActivityFromTurn,
+      discardUnusedChat,
       projectChatCount,
       projectById,
     }),
@@ -395,6 +469,8 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       createChat,
       refreshAll,
       applyChatUpdate,
+      applyChatActivityFromTurn,
+      discardUnusedChat,
       projectChatCount,
       projectById,
     ],

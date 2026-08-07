@@ -1388,6 +1388,9 @@ class TurnResponse(BaseModel):
     lesson_id: str | None = None
     lesson_status: str | None = None
     created_at: datetime
+    # Populated on turn create/regenerate so clients can update sidebar title/recency.
+    chat_title: str | None = None
+    chat_updated_at: datetime | None = None
 
 
 class TurnRegenerateResponse(BaseModel):

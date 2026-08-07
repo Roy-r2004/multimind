@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -201,10 +201,16 @@ async def update_chat(
 @router.delete("/{chat_id}", response_model=MessageResponse)
 async def delete_chat(
     chat_id: UUID,
+    only_if_unused: bool = Query(
+        False,
+        description="When true, delete only if the chat has no turns and no attachments.",
+    ),
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    await chat_service.delete_chat(db, auth, str(chat_id))
+    await chat_service.delete_chat(
+        db, auth, str(chat_id), only_if_unused=only_if_unused
+    )
     return MessageResponse(message="Chat deleted")
 
 

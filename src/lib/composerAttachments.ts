@@ -274,6 +274,27 @@ export function endComposerUploadRetention(
   }
 }
 
+/**
+ * Failed first-send cleanup must not delete a chat that an upload flow still owns
+ * (retention / in-flight upload / already-persisted attachment chips).
+ */
+export function shouldSkipAutoDiscardUnusedChat(options: {
+  chatId: string;
+  retainForChatId: string | null;
+  files: ComposerFileChip[];
+}): boolean {
+  if (options.retainForChatId === options.chatId) return true;
+  if (hasUploadingComposerFiles(options.files)) return true;
+  if (
+    options.files.some(
+      (file) => file.state === "uploaded" && Boolean(file.attachmentId),
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export type ComposerUploadChip = ComposerFileChip;
 
 export type RunComposerUploadsDeps = {

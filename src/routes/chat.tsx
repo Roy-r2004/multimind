@@ -70,6 +70,7 @@ import {
   shouldApplyPendingAttachmentRestore,
   shouldClearComposerFilesOnChatChange,
   shouldDeleteComposerAttachmentRemotely,
+  shouldSkipAutoDiscardUnusedChat,
   submittedAttachmentIds,
   triggerComposerUploadFromMenu,
 } from "@/lib/composerAttachments";
@@ -229,6 +230,8 @@ export function ChatPage() {
     chats,
     deleteChat,
     applyChatUpdate,
+    applyChatActivityFromTurn,
+    discardUnusedChat,
   } = useChatStore();
   const { authHeaders, isAuthenticated } = useAuth();
   const { modelById } = useModels();
@@ -290,6 +293,7 @@ export function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const modelSetRestoredForChatRef = useRef<string | null>(null);
   const modelSetsRef = useRef(modelSets);
+  const sendInFlightRef = useRef(false);
   modelSetsRef.current = modelSets;
   const activeChat = chats.find((c) => c.id === activeChatId);
   const pinnedTurnId = activeChat?.pinnedTurnId ?? null;
@@ -596,6 +600,7 @@ export function ChatPage() {
   }
 
   async function send() {
+    if (sendInFlightRef.current) return;
     if (isVoiceActive || !input.trim() || !set) return;
     if (hasUploadingComposerFiles(filesRef.current)) {
       toast.error("Wait for file uploads to finish before sending.");
@@ -607,12 +612,18 @@ export function ChatPage() {
       void navigate({ to: "/login" });
       return;
     }
+    sendInFlightRef.current = true;
     const uploadedIds = submittedAttachmentIds(filesRef.current);
+    const hadActiveChat = Boolean(activeChatId);
+    let createdChatId: string | null = null;
     setInput("");
     setSending(true);
     try {
       let chatId = activeChatId;
-      if (!chatId) chatId = await createChat();
+      if (!chatId) {
+        chatId = await createChat();
+        createdChatId = chatId;
+      }
       if (!chatId) {
         setInput(question);
         return;
@@ -624,6 +635,7 @@ export function ChatPage() {
         custom_instructions: customInstructions,
         attachment_ids: uploadedIds,
       });
+      applyChatActivityFromTurn(pending);
       scrollThreadToLatest("smooth");
       setRefChat(null);
       setFiles((prev) => removeSubmittedComposerFiles(prev, uploadedIds));
@@ -635,8 +647,22 @@ export function ChatPage() {
       console.error(error);
       setInput(question);
       alert(error instanceof Error ? error.message : "Failed to run turn");
+      // Only discard a chat this send() created, and only if still unused and
+      // not owned by an in-flight / retained upload on the same chat.
+      if (
+        !hadActiveChat &&
+        createdChatId &&
+        !shouldSkipAutoDiscardUnusedChat({
+          chatId: createdChatId,
+          retainForChatId: retainComposerFilesForChatRef.current,
+          files: filesRef.current,
+        })
+      ) {
+        await discardUnusedChat(createdChatId);
+      }
     } finally {
       setSending(false);
+      sendInFlightRef.current = false;
     }
   }
 
@@ -722,6 +748,7 @@ export function ChatPage() {
           a.created_at.localeCompare(b.created_at),
         );
       });
+      applyChatActivityFromTurn(result.new_turn);
       setPendingEdit(null);
       if (result.model_set_fallback) {
         toast.warning(
