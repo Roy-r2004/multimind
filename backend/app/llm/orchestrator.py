@@ -33,6 +33,9 @@ MODEL_ANSWER_FAILED_CODE = "MODEL_ANSWER_FAILED"
 MODEL_ANSWER_FAILED_MESSAGE = "A model failed to respond."
 TURN_FAILED_CODE = "TURN_FAILED"
 TURN_FAILED_MESSAGE = "Turn failed."
+VERDICT_MAX_ATTEMPTS = 2
+VERDICT_MAX_TOKENS = 4096
+VERDICT_DEFAULT_REASON = "Synthesized from model responses."
 
 
 class TurnNoLongerWritable(Exception):
@@ -88,6 +91,32 @@ def format_llm_error(exc: Exception) -> str:
         if inner is not None:
             return str(inner)
     return str(exc)
+
+
+def _verdict_fields(provider: Any, raw_text: str) -> tuple[str, str]:
+    """Extract ``(text, reason)`` from a verdict response.
+
+    Strict JSON is preferred, but a verdict that arrives wrapped in prose or
+    truncated by the token cap still carries the answer the user asked for.
+    Returning the raw text keeps the turn usable instead of discarding it.
+    """
+    parsed = provider.parse_json_object_lenient(raw_text)
+    fallback = (raw_text or "").strip()
+    if not isinstance(parsed, dict):
+        return fallback, VERDICT_DEFAULT_REASON
+
+    text = parsed.get("text")
+    text = text.strip() if isinstance(text, str) else ""
+    reason = parsed.get("reason")
+    reason = reason.strip() if isinstance(reason, str) else ""
+
+    if not text:
+        # Recovered JSON without a usable verdict body (e.g. truncated before
+        # "text"): prefer the raw response over an empty verdict card.
+        text = fallback
+    if not reason:
+        reason = VERDICT_DEFAULT_REASON
+    return text, reason
 
 
 class TurnOrchestrator:
@@ -468,17 +497,44 @@ class TurnOrchestrator:
 
         try:
             await self._ensure_not_deleted(db, ctx.turn_id)
-            verdict_response = await self._await_provider_complete(
-                ctx.turn_id,
-                provider.complete(
-                    system=verdict_system,
-                    user="Produce the verdict JSON now.",
-                    model=verdict_model.provider_model,
-                    max_tokens=2048,
-                ),
-            )
+            # The verdict call is the single point where a whole turn used to be
+            # thrown away: a transient provider error or a response that was not
+            # strict JSON produced "4 answers, no verdict". Retry once, then fall
+            # back to the raw text rather than failing the turn.
+            verdict_response = None
+            last_error: Exception | None = None
+            for attempt in range(VERDICT_MAX_ATTEMPTS):
+                try:
+                    verdict_response = await self._await_provider_complete(
+                        ctx.turn_id,
+                        provider.complete(
+                            system=verdict_system,
+                            user="Produce the verdict JSON now.",
+                            model=verdict_model.provider_model,
+                            max_tokens=VERDICT_MAX_TOKENS,
+                        ),
+                    )
+                    break
+                except (asyncio.CancelledError, TurnNoLongerWritable):
+                    raise
+                except Exception as exc:  # noqa: BLE001 - retried below
+                    last_error = exc
+                    if attempt + 1 >= VERDICT_MAX_ATTEMPTS:
+                        raise
+                    logger.warning(
+                        "verdict_attempt_failed",
+                        attempt=attempt + 1,
+                        error=format_llm_error(exc),
+                    )
+                    await self._ensure_not_deleted(db, ctx.turn_id)
+
+            if verdict_response is None:  # pragma: no cover - defensive
+                raise last_error or RuntimeError("Verdict model returned no response")
+
             await self._ensure_not_deleted(db, ctx.turn_id)
-            parsed = provider.parse_json_response(verdict_response.text)
+            verdict_text, verdict_reason = _verdict_fields(provider, verdict_response.text)
+            if not verdict_text:
+                raise ValueError("Verdict model returned an empty response")
 
             failed_count = sum(1 for a in answer_context if a["failed"])
             final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
@@ -491,8 +547,8 @@ class TurnOrchestrator:
                 turn_id=ctx.turn_id,
                 model_id=ctx.verdict_model_id,
                 strategy=ctx.strategy,
-                text=parsed.get("text", verdict_response.text),
-                reason=parsed.get("reason", "Synthesized from model responses."),
+                text=verdict_text,
+                reason=verdict_reason,
                 tokens_input=verdict_response.tokens_input,
                 tokens_output=verdict_response.tokens_output,
                 cost_usd=stored_verdict_cost,

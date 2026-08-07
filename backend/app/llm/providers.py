@@ -62,6 +62,78 @@ class LLMProvider(ABC):
             text = re.sub(r"\n?```$", "", text)
         return json.loads(text)
 
+    @staticmethod
+    def parse_json_object_lenient(text: str) -> dict[str, Any] | None:
+        """Best-effort JSON object recovery from a model response.
+
+        Tolerates prose around the object and a response cut off by the token
+        cap. Returns ``None`` when nothing usable can be recovered so callers
+        can fall back to the raw text instead of discarding the response.
+        """
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return None
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned)
+            cleaned = cleaned.strip()
+
+        try:
+            parsed = json.loads(cleaned)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+
+        start = cleaned.find("{")
+        if start == -1:
+            return None
+        candidate = cleaned[start:]
+
+        # Single scan: find the first balanced object, and record how much is
+        # still open at the end so a truncated response can be repaired.
+        depth = 0
+        in_string = False
+        escaped = False
+        balanced_end: int | None = None
+        for index, char in enumerate(candidate):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    balanced_end = index + 1
+                    break
+
+        if balanced_end is not None:
+            try:
+                parsed = json.loads(candidate[:balanced_end])
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # Truncated mid-object: close the dangling string and braces.
+        repaired = candidate
+        if in_string:
+            repaired += '"'
+        if depth > 0:
+            repaired += "}" * depth
+        try:
+            parsed = json.loads(repaired)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
+
 
 class OpenRouterProvider(LLMProvider):
     """Unified gateway — one key routes to OpenAI, Anthropic, Google, DeepSeek, etc."""

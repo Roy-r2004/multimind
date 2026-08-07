@@ -33,7 +33,7 @@ from app.db.models import (
     Verdict,
 )
 from app.llm.orchestrator import TurnContext, TurnOrchestrator
-from app.llm.providers import LLMResponse
+from app.llm.providers import LLMProvider, LLMResponse
 from app.schemas.api import TurnCreateRequest
 from app.services import chat_service as chat_service_module
 from app.services.chat_service import chat_service
@@ -98,6 +98,9 @@ class FakeProvider:
 
     def parse_json_response(self, text: str):
         return {"text": "Final verdict", "reason": "Because."}
+
+    def parse_json_object_lenient(self, text: str):
+        return LLMProvider.parse_json_object_lenient(text)
 
 
 class FakeRegistry:
