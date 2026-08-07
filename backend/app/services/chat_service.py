@@ -246,11 +246,32 @@ class ChatService:
         await db.flush()
         return await self._chat_response_async(db, chat)
 
-    async def delete_chat(self, db: AsyncSession, auth: AuthContext, chat_id: str) -> None:
+    async def delete_chat(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        chat_id: str,
+        *,
+        only_if_unused: bool = False,
+    ) -> None:
         await self.get_chat(db, auth, chat_id)
         turn_rows = (
             await db.execute(select(Turn.id, Turn.status).where(Turn.chat_id == chat_id))
         ).all()
+        if only_if_unused:
+            if turn_rows:
+                raise ConflictError("Chat has turns and cannot be discarded as unused")
+            attachment_count = (
+                await db.execute(
+                    select(ChatAttachment.id).where(
+                        ChatAttachment.org_id == auth.org_id,
+                        ChatAttachment.chat_id == chat_id,
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+            if attachment_count is not None:
+                raise ConflictError("Chat has attachments and cannot be discarded as unused")
+
         captured_tasks = {
             row.id: _orchestration_tasks.get(row.id)
             for row in turn_rows
@@ -517,6 +538,8 @@ class ChatService:
                 decision_insurance_enabled=False,
             )
             db.add(new_turn)
+            # User regenerate is a conversation action — bump recency once.
+            locked_chat.updated_at = datetime.now(UTC)
             await db.flush()
 
             for model_id in model_set.models:
@@ -547,9 +570,13 @@ class ChatService:
             )
         )
         created = loaded.scalar_one()
+        # Re-load chat for authoritative title/updated_at after commit.
+        chat_row = (
+            await db.execute(select(Chat).where(Chat.id == chat_id, Chat.org_id == auth.org_id))
+        ).scalar_one()
         return TurnRegenerateResponse(
             old_turn_id=turn_id,
-            new_turn=self._pending_turn_response(created),
+            new_turn=self._pending_turn_response(created, chat=chat_row),
             superseded_turn_ids=superseded_ids,
             model_set_fallback=used_fallback,
             status="queued",
@@ -604,6 +631,8 @@ class ChatService:
         )
         db.add(turn)
 
+        # Recency: every new user turn bumps the parent chat (not streaming/verdict).
+        chat.updated_at = datetime.now(UTC)
         if chat.title == "New chat":
             chat.title = data.user_message.strip()[:80] or "New chat"
 
@@ -643,7 +672,7 @@ class ChatService:
             )
         )
         turn = loaded.scalar_one()
-        return self._pending_turn_response(turn)
+        return self._pending_turn_response(turn, chat=chat)
 
     async def _resolve_attachments_for_turn(
         self,
@@ -758,7 +787,9 @@ class ChatService:
 
         return "".join(parts) or None
 
-    def _pending_turn_response(self, turn: Turn) -> TurnResponse:
+    def _pending_turn_response(
+        self, turn: Turn, *, chat: Chat | None = None
+    ) -> TurnResponse:
         answers = []
         for a in turn.model_answers:
             model = get_model(a.model_id)
@@ -788,6 +819,8 @@ class ChatService:
             decision_insurance=None,
             lesson_id=None,
             created_at=turn.created_at,
+            chat_title=chat.title if chat is not None else None,
+            chat_updated_at=chat.updated_at if chat is not None else None,
         )
 
     async def _poll_turn_until_done(

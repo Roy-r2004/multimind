@@ -168,12 +168,14 @@ export const api = {
         orgId: auth.orgId,
       }),
 
-    delete: (auth: Auth, chatId: string) =>
-      apiRequest<{ message: string }>(`/chats/${chatId}`, {
+    delete: (auth: Auth, chatId: string, options?: { onlyIfUnused?: boolean }) => {
+      const qs = options?.onlyIfUnused ? "?only_if_unused=true" : "";
+      return apiRequest<{ message: string }>(`/chats/${chatId}${qs}`, {
         method: "DELETE",
         token: auth.token,
         orgId: auth.orgId,
-      }),
+      });
+    },
 
     pinVerdict: (auth: Auth, chatId: string, verdictId: string) =>
       apiRequest<ApiChat>(`/chats/${chatId}/pinned-verdict`, {

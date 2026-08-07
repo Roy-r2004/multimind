@@ -9,7 +9,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
 import { Modal } from "@/components/Modal";
 import {
@@ -18,25 +18,36 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { recentChats, shouldShowSeeAll } from "@/lib/chatHistory";
 import type { Chat } from "@/lib/mock";
 import { useChatStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
-  const { chats, projectById, renameChat, assignChatToProject, setActiveChatId, refreshAll } =
-    useChatStore();
+  const {
+    chats,
+    activeChatId,
+    projectById,
+    renameChat,
+    assignChatToProject,
+    setActiveChatId,
+    refreshAll,
+  } = useChatStore();
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Chat | null>(null);
   const [assignTarget, setAssignTarget] = useState<Chat | null>(null);
   const [showCreateProject, setShowCreateProject] = useState(false);
 
+  const visibleChats = useMemo(() => recentChats(chats), [chats]);
+  const showSeeAll = shouldShowSeeAll(chats);
+
   function saveRename(chatId: string) {
     if (!renameTitle.trim()) {
       setEditingChatId(null);
       return;
     }
-    renameChat(chatId, renameTitle.trim());
+    void renameChat(chatId, renameTitle.trim());
     setEditingChatId(null);
     setRenameTitle("");
   }
@@ -60,77 +71,101 @@ export function ChatSidebarContent({ onNavigate }: { onNavigate: () => void }) {
           <History className="size-3.5" /> Recent
         </div>
         <div className="mt-2 min-h-0 flex-1 space-y-0.5 overflow-y-auto">
-          {chats.length === 0 ? (
+          {visibleChats.length === 0 ? (
             <p className="px-2 py-3 text-xs text-muted-foreground">No chats yet</p>
           ) : (
-            chats.map((c) => (
-              <div key={c.id} className="group relative rounded-lg hover:bg-accent">
-                {editingChatId === c.id ? (
-                  <input
-                    autoFocus
-                    value={renameTitle}
-                    onChange={(e) => setRenameTitle(e.target.value)}
-                    onBlur={() => saveRename(c.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") saveRename(c.id);
-                      if (e.key === "Escape") setEditingChatId(null);
-                    }}
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
-                  />
-                ) : (
-                  <Link
-                    to="/chat"
-                    onClick={() => {
-                      setActiveChatId(c.id);
-                      onNavigate();
-                    }}
-                    className="block truncate px-3 py-2 pr-8 text-sm text-sidebar-foreground/85"
-                  >
-                    {c.title}
-                    {projectById(c.projectId) && (
-                      <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                        {projectById(c.projectId)?.name}
-                      </span>
-                    )}
-                  </Link>
-                )}
-                {editingChatId !== c.id && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        aria-label={`Chat options for ${c.title}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="absolute right-1 top-1.5 z-10 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100"
-                      >
-                        <MoreHorizontal className="size-4 text-muted-foreground" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
-                      <DropdownMenuItem
-                        onSelect={() => {
-                          setEditingChatId(c.id);
-                          setRenameTitle(c.title);
-                        }}
-                      >
-                        <Pencil className="size-3.5" /> Rename
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setAssignTarget(c)}>
-                        <FolderPlus className="size-3.5" /> Project
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        className="text-destructive focus:text-destructive"
-                        onSelect={() => setDeleteTarget(c)}
-                      >
-                        <Trash2 className="size-3.5" /> Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-              </div>
-            ))
+            visibleChats.map((c) => {
+              const isActive = c.id === activeChatId;
+              return (
+                <div
+                  key={c.id}
+                  className={cn(
+                    "group relative rounded-lg hover:bg-accent",
+                    isActive && "bg-accent/80",
+                  )}
+                >
+                  {editingChatId === c.id ? (
+                    <input
+                      autoFocus
+                      value={renameTitle}
+                      onChange={(e) => setRenameTitle(e.target.value)}
+                      onBlur={() => saveRename(c.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveRename(c.id);
+                        if (e.key === "Escape") setEditingChatId(null);
+                      }}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                    />
+                  ) : (
+                    <Link
+                      to="/chat"
+                      aria-current={isActive ? "page" : undefined}
+                      onClick={() => {
+                        setActiveChatId(c.id);
+                        onNavigate();
+                      }}
+                      className={cn(
+                        "block truncate px-3 py-2 pr-8 text-sm text-sidebar-foreground/85",
+                        isActive && "font-medium text-foreground",
+                      )}
+                    >
+                      {c.title}
+                      {projectById(c.projectId) && (
+                        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                          {projectById(c.projectId)?.name}
+                        </span>
+                      )}
+                    </Link>
+                  )}
+                  {editingChatId !== c.id && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={`Chat options for ${c.title}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="absolute right-1 top-1.5 z-10 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100"
+                        >
+                          <MoreHorizontal className="size-4 text-muted-foreground" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            setEditingChatId(c.id);
+                            setRenameTitle(c.title);
+                          }}
+                        >
+                          <Pencil className="size-3.5" /> Rename
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setAssignTarget(c)}>
+                          <FolderPlus className="size-3.5" /> Project
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onSelect={() => setDeleteTarget(c)}
+                        >
+                          <Trash2 className="size-3.5" /> Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
+        {showSeeAll ? (
+          <div className="shrink-0 border-t border-border py-2">
+            <Link
+              to="/chat/history"
+              onClick={onNavigate}
+              className="block rounded-lg px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              See all
+            </Link>
+          </div>
+        ) : null}
       </div>
       <DeleteChatModal chat={deleteTarget} onClose={() => setDeleteTarget(null)} />
       <AddToProjectModal
@@ -221,6 +256,7 @@ function AddToProjectModal({
         {projects.map((p) => (
           <button
             key={p.id}
+            type="button"
             onClick={() => setSelected(p.id)}
             className={cn(
               "flex w-full items-center gap-3 rounded-xl border p-3 text-left text-sm",
@@ -232,6 +268,7 @@ function AddToProjectModal({
           </button>
         ))}
         <button
+          type="button"
           onClick={onCreateProject}
           className="flex w-full items-center gap-3 rounded-xl border border-dashed border-border p-3 text-sm text-muted-foreground hover:bg-accent"
         >
@@ -239,13 +276,14 @@ function AddToProjectModal({
         </button>
       </div>
       <div className="mt-4 flex justify-end gap-2">
-        <button onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm">
+        <button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm">
           Cancel
         </button>
         <button
+          type="button"
           disabled={!selected || !chat}
           onClick={() => {
-            if (chat && selected) assignChatToProject(chat.id, selected);
+            if (chat && selected) void assignChatToProject(chat.id, selected);
             onClose();
           }}
           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40"

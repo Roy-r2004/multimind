@@ -189,6 +189,8 @@ export type ApiTurn = {
   lesson_id?: string | null;
   lesson_status?: string | null;
   created_at: string;
+  chat_title?: string | null;
+  chat_updated_at?: string | null;
 };
 
 export type FacilitatorStance = "agreed" | "disagreed" | "partly_agreed";

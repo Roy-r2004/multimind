@@ -22,6 +22,7 @@ import {
   shouldApplyPendingAttachmentRestore,
   shouldClearComposerFilesOnChatChange,
   shouldDeleteComposerAttachmentRemotely,
+  shouldSkipAutoDiscardUnusedChat,
   submittedAttachmentIds,
   triggerComposerUploadFromMenu,
   validateComposerAttachment,
@@ -473,5 +474,67 @@ test("switching to another existing chat still clears chips", () => {
       retainForChatId: null,
     }),
     true,
+  );
+});
+
+test("auto-discard allowed for exclusive failed first send with no upload", () => {
+  assert.equal(
+    shouldSkipAutoDiscardUnusedChat({
+      chatId: "chat-new",
+      retainForChatId: null,
+      files: [],
+    }),
+    false,
+  );
+});
+
+test("auto-discard skipped while upload retains the shared chat", () => {
+  assert.equal(
+    shouldSkipAutoDiscardUnusedChat({
+      chatId: "chat-new",
+      retainForChatId: "chat-new",
+      files: [],
+    }),
+    true,
+  );
+});
+
+test("auto-discard skipped while upload chips are in progress", () => {
+  assert.equal(
+    shouldSkipAutoDiscardUnusedChat({
+      chatId: "chat-new",
+      retainForChatId: null,
+      files: [{ localId: "1", name: "a.txt", state: "uploading" }],
+    }),
+    true,
+  );
+});
+
+test("auto-discard skipped when attachment already persisted on chips", () => {
+  assert.equal(
+    shouldSkipAutoDiscardUnusedChat({
+      chatId: "chat-new",
+      retainForChatId: null,
+      files: [
+        {
+          localId: "1",
+          name: "a.txt",
+          state: "uploaded",
+          attachmentId: "att-1",
+        },
+      ],
+    }),
+    true,
+  );
+});
+
+test("auto-discard still allowed when retain points at a different chat", () => {
+  assert.equal(
+    shouldSkipAutoDiscardUnusedChat({
+      chatId: "chat-new",
+      retainForChatId: "chat-other",
+      files: [],
+    }),
+    false,
   );
 });
