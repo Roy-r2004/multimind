@@ -26,6 +26,7 @@ COUNTER_FIELDS: tuple[str, ...] = (
     "crawl_requests",
     "estimated_tokens",
     "total_cost_usd",
+    "sibling_location_calls",
 )
 
 
@@ -44,6 +45,7 @@ class MapsQuotaMetrics:
     crawl_requests: int = 0
     estimated_tokens: int = 0
     total_cost_usd: float = 0.0
+    sibling_location_calls: int = 0
     runtime_seconds: float = 0.0
 
     def as_dict(self) -> dict[str, float]:
@@ -88,6 +90,9 @@ class MapsQuotaTracker:
 
     def add_crawl_request(self, count: int = 1) -> None:
         self.metrics.crawl_requests += count
+
+    def add_sibling_location_call(self, count: int = 1) -> None:
+        self.metrics.sibling_location_calls += count
 
     def add_tokens(self, tokens: int) -> None:
         self.metrics.estimated_tokens += max(0, int(tokens))

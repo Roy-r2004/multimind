@@ -41,6 +41,8 @@ DEFAULT_PATH_KEYWORDS: tuple[str, ...] = (
     "mission",
     "centre",
     "center",
+    "location",
+    "branch",
     "soin",
     "traitement",
     "dependance",

@@ -26,6 +26,13 @@ from app.services.scraping.maps_place_enrichment_service import (
     maps_place_enrichment_service,
 )
 from app.services.scraping.maps_quota_tracker import MapsQuotaTracker
+from app.services.scraping.maps_sibling_location_service import (
+    SIBLING_EXTRACTION_SOURCE,
+    contains_multi_location_signal,
+    create_sibling_candidates,
+    extract_sibling_locations,
+    reopen_run_for_new_candidates,
+)
 from app.services.scraping.maps_website_crawl_service import (
     MapsWebsiteCrawlError,
     maps_website_crawl_service,
@@ -371,24 +378,41 @@ class MapsDetailEnrichmentService:
 
         payloads = []
         place_ids = []
+        sibling_candidates_by_place: dict[str, tuple[MapsPlace, dict[str, Any]]] = {}
         async with session_factory() as session:
             for place in places:
                 fresh = await session.get(MapsPlace, place.id)
                 if fresh is None:
                     continue
                 place_ids.append(fresh.id)
+                payload = maps_place_enrichment_service._facility_payload(
+                    fresh,
+                    website_crawl_excerpt=crawl_excerpts.get(fresh.id),
+                )
                 payloads.append(
                     cap_payload_excerpt(
-                        maps_place_enrichment_service._facility_payload(
-                            fresh,
-                            website_crawl_excerpt=crawl_excerpts.get(fresh.id),
-                        ),
+                        payload,
                         max_chars=get_settings().maps_census_enrichment_max_crawl_excerpt_chars,
                     )
                 )
+                if (
+                    get_settings().maps_sibling_location_extraction_enabled
+                    and SIBLING_EXTRACTION_SOURCE not in (fresh.discovery_sources or [])
+                    and contains_multi_location_signal(crawl_excerpts.get(fresh.id))
+                ):
+                    sibling_candidates_by_place[fresh.id] = (fresh, payload)
 
         if not payloads:
             return 0
+
+        if sibling_candidates_by_place:
+            await self._extract_sibling_locations_for_batch(
+                session_factory,
+                candidates=sibling_candidates_by_place,
+                country_code=country_code,
+                country_name=country_name,
+                tracker=tracker,
+            )
 
         results_by_id: dict[str, Any] = {}
         try:
@@ -485,6 +509,56 @@ class MapsDetailEnrichmentService:
             record_parse_failure(parse_stats, error=exc, raw_text=response.text or "", attempt="detail")
             raise EnrichmentFetchError(str(exc)) from exc
         return batch.results
+
+    async def _extract_sibling_locations_for_batch(
+        self,
+        session_factory,
+        *,
+        candidates: dict[str, tuple[MapsPlace, dict[str, Any]]],
+        country_code: str,
+        country_name: str,
+        tracker: MapsQuotaTracker,
+    ) -> None:
+        """For each place whose crawled site hints at other in-country
+        locations of the same organization, ask the model to find them and
+        add any genuinely new ones as fresh keep/drop candidates. Failures
+        here must never break the main detail-enrichment batch — this is an
+        opportunistic bonus, not a required step."""
+        settings = get_settings()
+        model = get_model(settings.maps_census_enrichment_model)
+        provider = get_provider_registry().get_provider(model.provider)
+
+        run_id = next(iter(candidates.values()))[0].run_id
+        total_created = 0
+        for parent_place, payload in candidates.values():
+            try:
+                sibling_candidates = await extract_sibling_locations(
+                    provider,
+                    model_slug=model.provider_model,
+                    facility_payload=payload,
+                    crawl_excerpt=payload.get("website_crawl_excerpt"),
+                    country_code=country_code,
+                    country_name=country_name,
+                )
+                tracker.add_sibling_location_call()
+                if sibling_candidates:
+                    total_created += await create_sibling_candidates(
+                        session_factory,
+                        run_id=run_id,
+                        parent_place=parent_place,
+                        candidates=sibling_candidates,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "maps_sibling_location_extraction_failed place_id=%s error=%s",
+                    parent_place.id,
+                    exc,
+                )
+
+        if total_created:
+            await reopen_run_for_new_candidates(
+                session_factory, run_id=run_id, created_count=total_created
+            )
 
 
 maps_detail_enrichment_service = MapsDetailEnrichmentService()
