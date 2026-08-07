@@ -21,11 +21,18 @@ Your answer will be compared with other models and synthesized into a final Verd
 
 {% include "partials/user_brain.j2" %}
 
-{% if previous_verdict_context %}
-## Prior Conversation Context (read-only — do NOT answer previous questions)
-The user is continuing this chat. The content below is **prior context only** — use it to understand conversation history when relevant, but answer only the current User Question below.
+{% if rolling_chat_memory %}
+## Older Chat Memory
+Compact summary of important information from earlier turns in this chat (before the recent window). Use it for continuity. Prefer newer facts when memory and recent conversation conflict. Do **not** answer old questions from this section.
 
-{{ previous_verdict_context }}
+{{ rolling_chat_memory }}
+{% endif %}
+
+{% if recent_conversation_context %}
+## Recent Conversation
+The user is continuing this chat. The content below is **prior context only** — recent user questions with their final verdicts (and rationales when present). Use it to understand conversation history when relevant, but answer only the current User Question below.
+
+{{ recent_conversation_context }}
 {% endif %}
 
 {% if chat_history %}
