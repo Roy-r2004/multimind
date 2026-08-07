@@ -22,6 +22,10 @@ import type {
   ApiBrain,
   ApiContentLabel,
   ApiDiscussResponse,
+  ApiLibraryFolder,
+  ApiLibraryItem,
+  ApiLibraryLabel,
+  ApiChatAttachment,
   ApiSavedDocument,
   ApiSavedDocumentSuggest,
   ApiSavedPrompt,
@@ -247,14 +251,7 @@ export const api = {
     uploadAttachment: (auth: Auth, chatId: string, file: File) => {
       const formData = new FormData();
       formData.append("file", file, file.name);
-      return apiFormRequest<{
-        id: string;
-        filename: string;
-        content_type: string | null;
-        size_bytes: number;
-        text_excerpt: string | null;
-        excerpt_status: string;
-      }>(`/chats/${chatId}/attachments`, {
+      return apiFormRequest<ApiChatAttachment>(`/chats/${chatId}/attachments`, {
         formData,
         token: auth.token,
         orgId: auth.orgId,
@@ -263,16 +260,15 @@ export const api = {
     },
 
     listAttachments: (auth: Auth, chatId: string) =>
-      apiRequest<{
-        items: Array<{
-          id: string;
-          filename: string;
-          content_type: string | null;
-          size_bytes: number;
-          text_excerpt: string | null;
-          excerpt_status: string;
-        }>;
-      }>(`/chats/${chatId}/attachments`, {
+      apiRequest<{ items: ApiChatAttachment[] }>(`/chats/${chatId}/attachments`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    attachFromLibrary: (auth: Auth, chatId: string, libraryItemId: string) =>
+      apiRequest<ApiChatAttachment>(`/chats/${chatId}/attachments/from-library`, {
+        method: "POST",
+        body: { library_item_id: libraryItemId },
         token: auth.token,
         orgId: auth.orgId,
       }),
@@ -463,6 +459,162 @@ export const api = {
 
     delete: (auth: Auth, promptId: string) =>
       apiRequest<{ message: string }>(`/saved-prompts/${promptId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  library: {
+    listFolders: (auth: Auth) =>
+      apiRequest<ApiLibraryFolder[]>("/library/folders", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    createFolder: (auth: Auth, data: { name: string; parent_id?: string | null }) =>
+      apiRequest<ApiLibraryFolder>("/library/folders", {
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    updateFolder: (
+      auth: Auth,
+      folderId: string,
+      data: { name?: string; parent_id?: string | null; clear_parent?: boolean },
+    ) =>
+      apiRequest<ApiLibraryFolder>(`/library/folders/${folderId}`, {
+        method: "PATCH",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    deleteFolder: (auth: Auth, folderId: string) =>
+      apiRequest<{ message: string }>(`/library/folders/${folderId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    listLabels: (auth: Auth) =>
+      apiRequest<ApiLibraryLabel[]>("/library/labels", {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    createLabel: (auth: Auth, name: string) =>
+      apiRequest<ApiLibraryLabel>("/library/labels", {
+        body: { name },
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    updateLabel: (auth: Auth, labelId: string, name: string) =>
+      apiRequest<ApiLibraryLabel>(`/library/labels/${labelId}`, {
+        method: "PATCH",
+        body: { name },
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    deleteLabel: (auth: Auth, labelId: string) =>
+      apiRequest<{ message: string }>(`/library/labels/${labelId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    listItems: (
+      auth: Auth,
+      params?: {
+        q?: string;
+        folder_id?: string;
+        unfiled?: boolean;
+        label_id?: string;
+        item_type?: string;
+        favorites?: boolean;
+        recent?: boolean;
+      },
+    ) => {
+      const search = new URLSearchParams();
+      if (params?.q) search.set("q", params.q);
+      if (params?.folder_id) search.set("folder_id", params.folder_id);
+      if (params?.unfiled) search.set("unfiled", "true");
+      if (params?.label_id) search.set("label_id", params.label_id);
+      if (params?.item_type) search.set("item_type", params.item_type);
+      if (params?.favorites) search.set("favorites", "true");
+      if (params?.recent) search.set("recent", "true");
+      const qs = search.toString();
+      return apiRequest<ApiLibraryItem[]>(`/library/items${qs ? `?${qs}` : ""}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
+
+    getItem: (auth: Auth, itemId: string) =>
+      apiRequest<ApiLibraryItem>(`/library/items/${itemId}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    createDocument: (
+      auth: Auth,
+      data: {
+        title: string;
+        content_text?: string;
+        folder_id?: string | null;
+        label_ids?: string[];
+        label_names?: string[];
+        is_favorite?: boolean;
+      },
+    ) =>
+      apiRequest<ApiLibraryItem>("/library/items/documents", {
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    uploadFile: (
+      auth: Auth,
+      file: File,
+      options?: { title?: string; folder_id?: string; is_favorite?: boolean },
+    ) => {
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+      if (options?.title) formData.append("title", options.title);
+      if (options?.folder_id) formData.append("folder_id", options.folder_id);
+      if (options?.is_favorite) formData.append("is_favorite", "true");
+      return apiFormRequest<ApiLibraryItem>("/library/items/upload", {
+        formData,
+        token: auth.token,
+        orgId: auth.orgId,
+        timeoutMs: 120_000,
+      });
+    },
+
+    updateItem: (
+      auth: Auth,
+      itemId: string,
+      data: {
+        title?: string;
+        content_text?: string;
+        folder_id?: string | null;
+        clear_folder?: boolean;
+        label_ids?: string[];
+        is_favorite?: boolean;
+      },
+    ) =>
+      apiRequest<ApiLibraryItem>(`/library/items/${itemId}`, {
+        method: "PATCH",
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    deleteItem: (auth: Auth, itemId: string) =>
+      apiRequest<{ message: string }>(`/library/items/${itemId}`, {
         method: "DELETE",
         token: auth.token,
         orgId: auth.orgId,

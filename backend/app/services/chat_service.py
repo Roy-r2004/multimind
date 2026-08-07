@@ -284,6 +284,7 @@ class ChatService:
                     select(ChatAttachment.relative_path).where(
                         ChatAttachment.org_id == auth.org_id,
                         ChatAttachment.chat_id == chat_id,
+                        ChatAttachment.library_item_id.is_(None),
                     )
                 )
             ).scalars().all()
