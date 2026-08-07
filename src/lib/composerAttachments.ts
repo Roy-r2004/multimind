@@ -32,6 +32,7 @@ export type ComposerFileChip = {
   name: string;
   state: "uploading" | "uploaded" | "error";
   attachmentId?: string;
+  libraryItemId?: string;
   textExcerpt?: string | null;
   errorMessage?: string;
   deleting?: boolean;
@@ -144,6 +145,7 @@ export type PendingAttachmentItem = {
   id: string;
   filename: string;
   text_excerpt?: string | null;
+  library_item_id?: string | null;
 };
 
 /**
@@ -161,18 +163,26 @@ export function mergePendingAttachments(options: {
       .map((file) => file.attachmentId)
       .filter((id): id is string => Boolean(id)),
   );
+  const knownLibraryIds = new Set(
+    current
+      .map((file) => file.libraryItemId)
+      .filter((id): id is string => Boolean(id)),
+  );
 
   const additions: ComposerFileChip[] = [];
   const seenServerIds = new Set<string>();
   for (const item of serverPending) {
     if (!item.id || seenServerIds.has(item.id) || knownAttachmentIds.has(item.id)) continue;
+    if (item.library_item_id && knownLibraryIds.has(item.library_item_id)) continue;
     seenServerIds.add(item.id);
     knownAttachmentIds.add(item.id);
+    if (item.library_item_id) knownLibraryIds.add(item.library_item_id);
     additions.push({
       localId: item.id,
       name: item.filename,
       state: "uploaded",
       attachmentId: item.id,
+      libraryItemId: item.library_item_id ?? undefined,
       textExcerpt: item.text_excerpt ?? null,
     });
   }
