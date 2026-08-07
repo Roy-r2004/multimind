@@ -214,6 +214,7 @@ export function VoiceRecorderButton({
   const activeStartedAtRef = useRef<number | null>(null);
   const elapsedBeforePauseMsRef = useRef(0);
   const maxDurationRef = useRef(maxDurationSeconds);
+  const onRecordingStateChangeRef = useRef(onRecordingStateChange);
 
   const maxDuration = Math.max(1, maxDurationSeconds);
   const hasAuth = Boolean(auth?.token && auth.orgId);
@@ -227,6 +228,10 @@ export function VoiceRecorderButton({
   useEffect(() => {
     maxDurationRef.current = maxDuration;
   }, [maxDuration]);
+
+  useEffect(() => {
+    onRecordingStateChangeRef.current = onRecordingStateChange;
+  }, [onRecordingStateChange]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -245,6 +250,7 @@ export function VoiceRecorderButton({
       streamRef.current = null;
       chunksRef.current = [];
       retainedBlobRef.current = null;
+      onRecordingStateChangeRef.current?.(false);
     };
   }, []);
 
