@@ -455,7 +455,7 @@ class LessonService:
             strategy=turn.strategy,
             model_set_name=f"{model_set.name} challenge council",
             custom_instructions=turn.custom_instructions,
-            previous_verdict_context=previous_context,
+            recent_conversation_context=previous_context,
         )
         result = await get_orchestrator().run(db, ctx)
 
