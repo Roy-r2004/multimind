@@ -29,19 +29,25 @@ import {
   type ComposerFileChip,
 } from "../../src/lib/composerAttachments.ts";
 
-test("accept list includes docx xlsx and pdf and excludes images", () => {
+test("accept list includes documents and common image types", () => {
   assert.match(COMPOSER_FILE_ACCEPT, /\.docx/);
   assert.match(COMPOSER_FILE_ACCEPT, /\.xlsx/);
   assert.match(COMPOSER_FILE_ACCEPT, /\.pdf/);
-  assert.equal(COMPOSER_FILE_ACCEPT.includes("image"), false);
-  assert.equal(COMPOSER_FILE_ACCEPT.includes(".png"), false);
+  assert.match(COMPOSER_FILE_ACCEPT, /\.png/);
+  assert.match(COMPOSER_FILE_ACCEPT, /\.jpg/);
+  assert.match(COMPOSER_FILE_ACCEPT, /\.jpeg/);
+  assert.match(COMPOSER_FILE_ACCEPT, /\.webp/);
 });
 
-test("validates supported extensions including docx xlsx and pdf", () => {
+test("validates supported extensions including docx xlsx pdf and images", () => {
   assert.equal(validateComposerAttachment({ name: "a.docx", size: 12 }).ok, true);
   assert.equal(validateComposerAttachment({ name: "b.xlsx", size: 12 }).ok, true);
   assert.equal(validateComposerAttachment({ name: "c.pdf", size: 12 }).ok, true);
   assert.equal(validateComposerAttachment({ name: "c.txt", size: 12 }).ok, true);
+  assert.equal(validateComposerAttachment({ name: "photo.png", size: 12 }).ok, true);
+  assert.equal(validateComposerAttachment({ name: "shot.jpg", size: 12 }).ok, true);
+  assert.equal(validateComposerAttachment({ name: "shot.jpeg", size: 12 }).ok, true);
+  assert.equal(validateComposerAttachment({ name: "shot.webp", size: 12 }).ok, true);
 });
 
 test("rejects empty, oversized, and unsupported files before network", () => {
@@ -50,7 +56,7 @@ test("rejects empty, oversized, and unsupported files before network", () => {
     validateComposerAttachment({ name: "a.txt", size: COMPOSER_ATTACHMENT_MAX_BYTES + 1 }).ok,
     false,
   );
-  const bad = validateComposerAttachment({ name: "photo.png", size: 10 });
+  const bad = validateComposerAttachment({ name: "virus.exe", size: 10 });
   assert.equal(bad.ok, false);
   if (!bad.ok) {
     assert.match(bad.message, /Unsupported/i);

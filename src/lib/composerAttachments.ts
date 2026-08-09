@@ -17,6 +17,10 @@ export const COMPOSER_ATTACHMENT_EXTENSIONS = [
   ".docx",
   ".xlsx",
   ".pdf",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
 ] as const;
 
 export const COMPOSER_FILE_ACCEPT = COMPOSER_ATTACHMENT_EXTENSIONS.join(",");
@@ -101,7 +105,8 @@ export function validateComposerAttachment(file: {
   if (!EXTENSION_SET.has(extension)) {
     return {
       ok: false,
-      message: "Unsupported file type. Upload a text file, .docx, .xlsx, or .pdf.",
+      message:
+        "Unsupported file type. Upload a text file, .docx, .xlsx, .pdf, or image (.png, .jpg, .jpeg, .webp).",
     };
   }
   return { ok: true, extension };

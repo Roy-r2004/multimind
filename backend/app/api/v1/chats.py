@@ -35,9 +35,11 @@ from app.schemas.api import (
     TurnResponse,
 )
 from app.services.attachment_types import (
+    is_image_extension,
     library_ref_relative_path,
     validate_attachment_content_type,
     validate_attachment_filename,
+    validate_image_magic_bytes,
 )
 
 # Backward-compatible aliases for tests that import private validators from chats.
@@ -264,6 +266,17 @@ async def upload_attachment(
             max_bytes=settings.chat_attachment_max_bytes,
             extension=ext,
         )
+
+        if is_image_extension(ext):
+            # Validate magic bytes without treating the image as text.
+            with tmp_path.open("rb") as handle:
+                header = handle.read(64)
+            try:
+                validate_image_magic_bytes(header, ext)
+            except InvalidAttachmentError:
+                cleanup_path(tmp_path)
+                tmp_path = None
+                raise
 
         try:
             text_excerpt, excerpt_status = extract_attachment_text_from_path(tmp_path, ext)

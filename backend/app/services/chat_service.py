@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, select, update
@@ -49,9 +50,17 @@ from app.schemas.api import (
     TurnResponse,
     VerdictResponse,
 )
+from app.services.attachment_types import IMAGE_EXTENSIONS
 from app.services.brain_service import brain_service
 from app.services.chat_attachment_storage import safe_delete_attachment_files
 from app.services.chat_memory_service import chat_memory_service
+from app.services.chat_vision import (
+    IMAGE_ANALYSIS_FAILED_CODE,
+    IMAGE_ANALYSIS_FAILED_MESSAGE,
+    ImageAnalysisError,
+    ensure_image_context_for_turn,
+    merge_image_context_into_instructions,
+)
 from app.services.saved_verdict_service import saved_verdict_service
 
 logger = get_logger(__name__)
@@ -786,6 +795,11 @@ class ChatService:
         for index, attachment in enumerate(attachments):
             filename = attachment.filename
             if attachment.excerpt_status == "ready" and attachment.text_excerpt:
+                ext = Path(filename or "").suffix.lower()
+                excerpt_upper = attachment.text_excerpt.upper()
+                # Image analysis is injected later as a dedicated IMAGE CONTEXT block.
+                if ext in IMAGE_EXTENSIONS or excerpt_upper.lstrip().startswith("IMAGE CONTEXT"):
+                    continue
                 prefix = f"Attached file: {filename}\nContent:\n```text\n"
                 suffix = "\n```"
                 excerpt = attachment.text_excerpt
@@ -821,6 +835,13 @@ class ChatService:
                     note = "(No readable content)"
                 if not try_append(f"Attached file: {filename}\n{note}"):
                     try_append(f"Attached file: {filename}")
+            elif attachment.excerpt_status == "image":
+                note = (
+                    "(Image attached. A dedicated vision pass will describe it for the "
+                    "council before answers are generated.)"
+                )
+                if not try_append(f"Attached image: {filename}\n{note}"):
+                    try_append(f"Attached image: {filename}")
             else:
                 block = (
                     f"Attached file: {filename}\n"
@@ -954,6 +975,58 @@ class ChatService:
         )
         rolling_chat_memory = (chat.rolling_memory or "").strip() or None
 
+        try:
+            image_context = await ensure_image_context_for_turn(
+                db, turn=turn, org_id=auth.org_id
+            )
+        except ImageAnalysisError as exc:
+            message = str(exc) or IMAGE_ANALYSIS_FAILED_MESSAGE
+            await db.execute(
+                update(Turn)
+                .where(Turn.id == turn_id, Turn.deleted_at.is_(None))
+                .values(status=TurnStatus.FAILED, error_message=message[:2000])
+            )
+            await db.commit()
+            yield {
+                "type": "turn_failed",
+                "data": {
+                    "code": IMAGE_ANALYSIS_FAILED_CODE,
+                    "error": message,
+                },
+            }
+            saved_verdict_ids = await self._saved_verdict_ids_for_turns(db, auth, [turn])
+            # Reload turn for response after failure stamp.
+            failed = (
+                await db.execute(
+                    select(Turn)
+                    .where(Turn.id == turn_id)
+                    .options(
+                        selectinload(Turn.model_answers),
+                        selectinload(Turn.verdict),
+                        selectinload(Turn.decision_insurance),
+                        selectinload(Turn.lesson),
+                    )
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if failed is not None:
+                yield {
+                    "type": "turn_completed",
+                    "data": self._turn_response(
+                        failed, saved_verdict_ids
+                    ).model_dump(mode="json"),
+                }
+            return
+
+        custom_instructions = turn.custom_instructions
+        if image_context:
+            custom_instructions = merge_image_context_into_instructions(
+                custom_instructions,
+                image_context,
+            )
+            turn.custom_instructions = custom_instructions
+            await db.flush()
+
         ctx = TurnContext(
             turn_id=turn.id,
             chat_id=chat.id,
@@ -964,7 +1037,7 @@ class ChatService:
             verdict_model_id=turn.verdict_model,
             strategy=turn.strategy,
             model_set_name=model_set.name,
-            custom_instructions=turn.custom_instructions,
+            custom_instructions=custom_instructions,
             user_brain_context=user_brain_context or None,
             rolling_chat_memory=rolling_chat_memory,
             recent_conversation_context=recent_conversation_context,
