@@ -6,6 +6,7 @@ import {
   findDefaultModelSetId,
   normalizeModelSetTitle,
   resolveModelSetIdFromTurns,
+  resolveNextModelSetId,
   selectExistingModelSetId,
 } from "../../src/lib/modelSetSelection.ts";
 
@@ -56,6 +57,46 @@ test("existing chat turns restore newest model_set_id", () => {
 
 test("empty turns do not invent a chat model set", () => {
   assert.equal(resolveModelSetIdFromTurns([]), null);
+});
+
+test("next-message selection prefers chat.model_set_id over older turns", () => {
+  const turns = [
+    { model_set_id: "old-set", created_at: "2026-01-01T00:00:00Z" },
+    { model_set_id: "newest-turn-set", created_at: "2026-06-01T00:00:00Z" },
+  ];
+  assert.equal(
+    resolveNextModelSetId({
+      chatModelSetId: "switched-set",
+      turns,
+      availableSetIds: ["old-set", "newest-turn-set", "switched-set"],
+    }),
+    "switched-set",
+  );
+});
+
+test("next-message selection falls back to newest turn when chat has no set", () => {
+  assert.equal(
+    resolveNextModelSetId({
+      chatModelSetId: null,
+      turns: [
+        { model_set_id: "old-set", created_at: "2026-01-01T00:00:00Z" },
+        { model_set_id: "newest-turn-set", created_at: "2026-06-01T00:00:00Z" },
+      ],
+      availableSetIds: ["old-set", "newest-turn-set", "other"],
+    }),
+    "newest-turn-set",
+  );
+});
+
+test("next-message selection ignores unavailable chat model set", () => {
+  assert.equal(
+    resolveNextModelSetId({
+      chatModelSetId: "deleted-set",
+      turns: [{ model_set_id: "alive-set", created_at: "2026-06-01T00:00:00Z" }],
+      availableSetIds: ["alive-set"],
+    }),
+    "alive-set",
+  );
 });
 
 test("missing target set falls back to legacy referee then first set", () => {

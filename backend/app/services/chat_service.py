@@ -239,11 +239,16 @@ class ChatService:
     async def create_chat(
         self, db: AsyncSession, auth: AuthContext, data: ChatCreateRequest
     ) -> ChatResponse:
+        model_set_id: str | None = None
+        if data.model_set_id is not None and data.model_set_id.strip():
+            model_set = await self._resolve_model_set(db, auth, data.model_set_id.strip())
+            model_set_id = model_set.slug
         chat = Chat(
             org_id=auth.org_id,
             project_id=data.project_id,
             created_by=auth.user.id,
             title=data.title,
+            model_set_id=model_set_id,
         )
         db.add(chat)
         await db.flush()
@@ -273,6 +278,13 @@ class ChatService:
             chat.title = data.title.strip()
         if data.project_id is not None:
             chat.project_id = data.project_id
+        if data.model_set_id is not None:
+            slug = data.model_set_id.strip()
+            if not slug:
+                chat.model_set_id = None
+            else:
+                model_set = await self._resolve_model_set(db, auth, slug)
+                chat.model_set_id = model_set.slug
         await db.flush()
         return await self._chat_response_async(db, chat)
 
@@ -664,6 +676,7 @@ class ChatService:
 
         # Recency: every new user turn bumps the parent chat (not streaming/verdict).
         chat.updated_at = datetime.now(UTC)
+        chat.model_set_id = model_set.slug
         if chat.title == "New chat":
             chat.title = data.user_message.strip()[:80] or "New chat"
 
@@ -1311,6 +1324,7 @@ class ChatService:
             id=chat.id,  # type: ignore[arg-type]
             title=chat.title,
             project_id=chat.project_id,
+            model_set_id=chat.model_set_id,
             pinned_verdict_id=chat.pinned_verdict_id,
             pinned_turn_id=pinned_turn_id,
             updated_at=chat.updated_at,

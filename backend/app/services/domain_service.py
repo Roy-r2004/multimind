@@ -120,6 +120,7 @@ class ProjectService:
                     id=c.id,
                     title=c.title,
                     project_id=c.project_id,
+                    model_set_id=c.model_set_id,
                     updated_at=c.updated_at,
                 )
                 for c in chats

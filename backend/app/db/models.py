@@ -378,6 +378,8 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     project_id: Mapped[str | None] = UuidFK("projects", nullable=True)
     created_by: Mapped[str] = UuidFK("users")
     title: Mapped[str] = mapped_column(String(512), nullable=False, default="New chat")
+    # Council/model-set slug for the *next* turn in this chat (not historical turns).
+    model_set_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pinned_verdict_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("verdicts.id", ondelete="SET NULL"), nullable=True
     )
