@@ -12,9 +12,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -160,6 +161,25 @@ class MapsPlaceEnrichmentResult(TruncatingModel):
     addictions_treated: list[EvidenceField] = Field(default_factory=list)
     languages_spoken: list[EvidenceField] = Field(default_factory=list)
     treatment_price: str | None = Field(default=None, max_length=512)
+    # Residential/inpatient capacity, when the facility states it. Null when
+    # unstated — never inferred or guessed from typical facility size.
+    bed_count: int | None = Field(
+        default=None, ge=0, le=100_000, validation_alias=AliasChoices("bed_count", "beds")
+    )
+
+    @field_validator("bed_count", mode="before")
+    @classmethod
+    def _extract_bed_count(cls, value: object) -> object:
+        """Tolerate a verbose answer ("17 beds", "approximately 20") instead
+        of failing the whole batch's validation over one non-numeric field —
+        same philosophy as TruncatingModel for string fields."""
+        if value is None or isinstance(value, (int, float)):
+            return value
+        if isinstance(value, str):
+            match = re.search(r"\d+", value)
+            return int(match.group()) if match else None
+        return None
+
     # Phone extracted from the facility's own official-website crawl excerpt.
     # Preferred over Google Places' internationalPhoneNumber when present —
     # Google Business Profile phone numbers are frequently stale for the

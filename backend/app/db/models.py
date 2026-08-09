@@ -2754,6 +2754,7 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     addictions_treated: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     languages_spoken: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     treatment_price: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    bed_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enrichment_pages_crawled: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # Web-search verification of whether the listing really is an addiction facility.
     verification_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)

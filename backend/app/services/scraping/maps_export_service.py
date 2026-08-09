@@ -44,6 +44,7 @@ EXPORT_HEADERS = [
     "Email",
     "Phone Number",
     "Treatment Price",
+    "Bed Count",
 ]
 
 _NOT_SPECIFIED = "Not Specified"
@@ -56,7 +57,7 @@ _EMAIL_HEADERS = {"Email"}
 # Headers whose values must stay textual so "+" and leading zeroes survive.
 _TEXT_HEADERS = {"Phone Number"}
 # Short, scannable columns that read best centered in both axes.
-_CENTERED_HEADERS = {"Phone Number", "Treatment Price"}
+_CENTERED_HEADERS = {"Phone Number", "Treatment Price", "Bed Count"}
 
 _WIDE_COLUMNS = {
     "Facility Name": 34,
@@ -67,6 +68,7 @@ _WIDE_COLUMNS = {
     "Email": 30,
     "Phone Number": 20,
     "Treatment Price": 20,
+    "Bed Count": 12,
 }
 
 
@@ -155,6 +157,7 @@ class MapsExportService:
             _ui_text(place.contact_email),
             _ui_text(place.international_phone_number),
             _ui_price(place.treatment_price),
+            place.bed_count if place.bed_count is not None else _NOT_SPECIFIED,
         ]
 
     def _write_sheet(

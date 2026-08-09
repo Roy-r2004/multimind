@@ -170,7 +170,8 @@ Return a JSON object with this shape only:
       "languages_spoken": [],
       "treatment_price": "string or null",
       "email": "string or null",
-      "phone": "string or null"
+      "phone": "string or null",
+      "bed_count": "integer or null"
     }
   ]
 }

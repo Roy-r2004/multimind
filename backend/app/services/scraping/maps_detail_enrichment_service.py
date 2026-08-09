@@ -451,6 +451,8 @@ class MapsDetailEnrichmentService:
                     candidate_phone = str(result.contact_phone or "").strip()
                     if candidate_phone:
                         place.international_phone_number = candidate_phone[:64]
+                    if result.bed_count is not None:
+                        place.bed_count = result.bed_count
                     if place.enrichment_extraction_source in {
                         None,
                         "structured_classification",
@@ -496,8 +498,8 @@ class MapsDetailEnrichmentService:
         response = await provider.complete(
             system=(
                 "You have live web search. Return addictions, languages, treatment_price, a "
-                "contact email, and a contact phone number for each facility. Return strict "
-                "JSON only."
+                "contact email, a contact phone number, and bed count for each facility. "
+                "Return strict JSON only."
             ),
             user=prompt,
             model=model.provider_model,

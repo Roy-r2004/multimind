@@ -28,6 +28,7 @@ const basePlace: MapsPlaceItem = {
   addictions_treated: ["Alcohol"],
   languages_spoken: [],
   treatment_price: null,
+  bed_count: null,
   verification_verdict: null,
   verification_reason: null,
   verification_source_url: null,
@@ -45,6 +46,7 @@ describe("placeToExportRow", () => {
     expect(row.cells.Website).toBe("https://example.com");
     expect(row.cells["Phone Number"]).toBe("+358 123");
     expect(row.cells["Treatment Price"]).toBe("Contact for pricing");
+    expect(row.cells["Bed Count"]).toBe("Not Specified");
   });
 
   it("fills every export column when enrichment fields are missing", () => {
@@ -54,6 +56,7 @@ describe("placeToExportRow", () => {
         addictions_treated: undefined as unknown as string[],
         languages_spoken: undefined as unknown as string[],
         treatment_price: null,
+        bed_count: null,
         official_website: null,
         raw_website: null,
         international_phone_number: null,
@@ -72,11 +75,18 @@ describe("placeToExportRow", () => {
       "Website",
       "Phone Number",
       "Treatment Price",
+      "Bed Count",
     ] as const) {
       expect(row.cells[column].length).toBeGreaterThan(0);
     }
     expect(row.cells["Addictions Treated"]).toBe("Not Specified");
     expect(row.cells["Languages Spoken"]).toBe("Not Specified");
     expect(row.cells["Treatment Price"]).toBe("Contact for pricing");
+    expect(row.cells["Bed Count"]).toBe("Not Specified");
+  });
+
+  it("formats bed count when present", () => {
+    const row = placeToExportRow({ ...basePlace, bed_count: 25 });
+    expect(row.cells["Bed Count"]).toBe("25");
   });
 });

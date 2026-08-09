@@ -61,6 +61,10 @@ Return these exact fields for every facility:
 - `phone`: a contact phone number for this specific facility (prefer the number listed on
   its own official website/contact page over a stale Google Business Profile number), in
   the format it appears in the source. `null` if none found.
+- `bed_count`: the facility's stated number of residential/inpatient beds, as a plain integer.
+  Only report a number the facility (or an attributable source) explicitly states as its bed
+  count or capacity — never infer from facility size or type. Use the lower bound if a range
+  is given (e.g. "15-20 beds" → 15). `null` if capacity is not stated anywhere.
 
 How to classify:
 - Use `confirmed_government` / `public_hospital` / `government_agency` only when sources
@@ -137,7 +141,8 @@ Return strict JSON only with this shape:
       ],
       "treatment_price": "from 30,000 DZD / month",
       "email": "kontakt@example.org",
-      "phone": "+213 555 123 456"
+      "phone": "+213 555 123 456",
+      "bed_count": 17
     }
   ]
 }

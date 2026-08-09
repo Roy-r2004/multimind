@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(Get-ChildItem -Path \"c:\\\\multi-mind-verdict\" -Directory)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(cd c:/multi-mind-verdict && grep -n \"FacilitiesExportTable\" src/routes/maps.\\\\$runId.tsx | head -5)",
+      "Read(//c/multi-mind-verdict/src/routes/**)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/scraping/maps_detail_enrichment_service.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/db/models.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "WebFetch(domain:www.euda.europa.eu)",
+      "WebSearch",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

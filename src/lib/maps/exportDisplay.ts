@@ -9,6 +9,7 @@ export const EXPORT_COLUMNS = [
   "Email",
   "Phone Number",
   "Treatment Price",
+  "Bed Count",
 ] as const;
 
 const NOT_SPECIFIED = "Not Specified";
@@ -57,6 +58,7 @@ export function placeToExportRow(place: MapsPlaceItem, countryName?: string): Ex
       Email: (place.contact_email || "").trim() || NOT_SPECIFIED,
       "Phone Number": (place.international_phone_number || "").trim() || NOT_SPECIFIED,
       "Treatment Price": (place.treatment_price || "").trim() || CONTACT_PRICING,
+      "Bed Count": place.bed_count != null ? String(place.bed_count) : NOT_SPECIFIED,
     },
   };
 }
