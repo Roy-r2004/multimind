@@ -110,6 +110,7 @@ class UsageKind(str, enum.Enum):
     INSURANCE = "insurance"
     LESSON = "lesson"
     BRAIN = "brain"
+    CHAT_MEMORY = "chat_memory"
 
 
 class LessonStatus(str, enum.Enum):
@@ -380,10 +381,23 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     pinned_verdict_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("verdicts.id", ondelete="SET NULL"), nullable=True
     )
+    # Per-chat rolling summary of turns older than the recent-history window.
+    # Separate from user-level Brain (UserBrain / BrainKnowledgeItem).
+    rolling_memory: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rolling_memory_through_turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+    rolling_memory_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     organization: Mapped["Organization"] = relationship(back_populates="chats")
     project: Mapped["Project | None"] = relationship(back_populates="chats")
-    turns: Mapped[list["Turn"]] = relationship(back_populates="chat", order_by="Turn.created_at")
+    turns: Mapped[list["Turn"]] = relationship(
+        back_populates="chat",
+        order_by="Turn.created_at",
+        foreign_keys="Turn.chat_id",
+    )
     share_links: Mapped[list["ShareLink"]] = relationship(back_populates="chat")
     pinned_verdict: Mapped["Verdict | None"] = relationship(
         "Verdict",
@@ -2021,7 +2035,10 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
-    chat: Mapped["Chat"] = relationship(back_populates="turns")
+    chat: Mapped["Chat"] = relationship(
+        back_populates="turns",
+        foreign_keys=[chat_id],
+    )
     model_answers: Mapped[list["ModelAnswer"]] = relationship(back_populates="turn")
     verdict: Mapped["Verdict | None"] = relationship(back_populates="turn")
     decision_insurance: Mapped["DecisionInsurance | None"] = relationship(back_populates="turn")
