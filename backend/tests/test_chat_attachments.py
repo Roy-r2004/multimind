@@ -92,9 +92,9 @@ async def test_unsupported_extension_returns_415(
         response = await _upload(
             client,
             chat.id,
-            filename="photo.png",
-            content=b"\x89PNG",
-            content_type="image/png",
+            filename="malware.exe",
+            content=b"MZ",
+            content_type="application/octet-stream",
         )
     assert response.status_code == 415
     assert response.json()["error"] == "UNSUPPORTED_ATTACHMENT_TYPE"

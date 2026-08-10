@@ -13,6 +13,7 @@ import httpx
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logging import get_logger
+from app.services.chat_vision import VisionImage, build_openrouter_user_content
 
 logger = get_logger(__name__)
 
@@ -42,6 +43,7 @@ class LLMProvider(ABC):
         max_tokens: int = 4096,
         response_format: dict[str, Any] | None = None,
         temperature: float | None = None,
+        images: list[VisionImage] | None = None,
     ) -> LLMResponse:
         pass
 
@@ -165,6 +167,7 @@ class OpenRouterProvider(LLMProvider):
         max_tokens: int = 4096,
         response_format: dict[str, Any] | None = None,
         temperature: float | None = None,
+        images: list[VisionImage] | None = None,
     ) -> LLMResponse:
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
@@ -179,6 +182,7 @@ class OpenRouterProvider(LLMProvider):
                     max_tokens=max_tokens,
                     response_format=response_format,
                     temperature=temperature,
+                    images=images,
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -198,13 +202,15 @@ class OpenRouterProvider(LLMProvider):
         max_tokens: int,
         response_format: dict[str, Any] | None,
         temperature: float | None = None,
+        images: list[VisionImage] | None = None,
     ) -> LLMResponse:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
+            user_content = build_openrouter_user_content(user, images)
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": [
                     {"role": "system", "content": system},
-                    {"role": "user", "content": user},
+                    {"role": "user", "content": user_content},
                 ],
                 "temperature": DEFAULT_LLM_TEMPERATURE if temperature is None else temperature,
                 "max_tokens": max_tokens,
@@ -231,9 +237,10 @@ class OpenRouterProvider(LLMProvider):
         cost_usd = _parse_reported_cost(usage.get("cost"))
         _record_maps_quota_cost(cost_usd)
         text, confidence = self.parse_confidence(content)
+        prompt_chars = len(system) + len(user)
         return LLMResponse(
             text=text,
-            tokens_input=usage.get("prompt_tokens", len(system) // 4),
+            tokens_input=usage.get("prompt_tokens", prompt_chars // 4),
             tokens_output=usage.get("completion_tokens", len(text) // 4),
             cost_usd=cost_usd,
             confidence=confidence,

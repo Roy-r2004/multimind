@@ -91,3 +91,22 @@ export function resolveModelSetIdFromTurns(
   const id = sorted[0]?.model_set_id?.trim();
   return id || null;
 }
+
+/**
+ * Resolve the model set for the *next* message in a chat.
+ * Prefer the chat-level selection when still available; otherwise fall back to
+ * the newest turn's snapshot (legacy chats without chats.model_set_id).
+ */
+export function resolveNextModelSetId(options: {
+  chatModelSetId?: string | null;
+  turns: readonly TurnModelSetRef[];
+  availableSetIds: readonly string[];
+}): string | null {
+  const available = new Set(options.availableSetIds);
+  const fromChat = options.chatModelSetId?.trim();
+  if (fromChat && available.has(fromChat)) return fromChat;
+
+  const fromTurns = resolveModelSetIdFromTurns(options.turns);
+  if (fromTurns && available.has(fromTurns)) return fromTurns;
+  return null;
+}

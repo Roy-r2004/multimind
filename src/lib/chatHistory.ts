@@ -40,6 +40,7 @@ export function mapApiChat(c: ApiChat): Chat {
     title: c.title,
     updated: formatRelativeTime(c.updated_at),
     projectId: c.project_id,
+    modelSetId: c.model_set_id ?? null,
     pinnedVerdictId: c.pinned_verdict_id ?? null,
     pinnedTurnId: c.pinned_turn_id ?? null,
   };
@@ -52,6 +53,7 @@ export function chatFromTurnActivity(
     chatId: string;
     title?: string | null;
     updatedAt?: string | null;
+    modelSetId?: string | null;
   },
 ): Chat {
   const title = (data.title?.trim() || existing?.title || "New chat").slice(0, 512);
@@ -61,6 +63,7 @@ export function chatFromTurnActivity(
     title,
     updated: formatRelativeTime(updatedAt),
     projectId: existing?.projectId ?? null,
+    modelSetId: data.modelSetId ?? existing?.modelSetId ?? null,
     pinnedVerdictId: existing?.pinnedVerdictId ?? null,
     pinnedTurnId: existing?.pinnedTurnId ?? null,
   };

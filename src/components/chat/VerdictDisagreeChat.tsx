@@ -3,8 +3,9 @@ import { ChevronDown, Loader2, Send, Sparkles, User } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Modal } from "@/components/Modal";
 import { MessageContent } from "@/components/chat/MessageContent";
+import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
 import { api } from "@/lib/api";
-import type { ApiDiscussMessage } from "@/lib/api/types";
+import type { ApiDiscussMessage, ApiTranscriptionResponse } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
@@ -92,10 +93,12 @@ export function VerdictDisagreeChat({
   const [finalizing, setFinalizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCouncilReasoning, setShowCouncilReasoning] = useState(false);
+  const [isVoiceActive, setIsVoiceActive] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const onDiscussStartRef = useRef(onDiscussStart);
   const requestIdRef = useRef(0);
+  const voiceAuth = authHeaders();
 
   useEffect(() => {
     onDiscussStartRef.current = onDiscussStart;
@@ -161,9 +164,19 @@ export function VerdictDisagreeChat({
     return () => window.clearTimeout(timer);
   }, [open, messages]);
 
+  function handleVoiceTranscript(result: ApiTranscriptionResponse) {
+    const transcript = result.text.trim();
+    if (!transcript) return;
+
+    setInput((current) => {
+      const existing = current.trimEnd();
+      return existing ? `${existing}\n${transcript}` : transcript;
+    });
+  }
+
   async function sendMessage() {
     const text = input.trim();
-    if (!text || loading || !ready || finalizing) return;
+    if (!text || loading || !ready || finalizing || isVoiceActive) return;
     const auth = authHeaders();
     if (!auth) return;
 
@@ -377,20 +390,28 @@ export function VerdictDisagreeChat({
                 }
               }}
               rows={2}
-              disabled={loading || !ready || finalizing}
+              disabled={loading || !ready || finalizing || isVoiceActive}
               spellCheck={true}
               autoCorrect="on"
               autoCapitalize="sentences"
               className="min-h-[44px] flex-1 resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary disabled:opacity-50"
             />
-            <button
-              type="button"
-              onClick={() => void sendMessage()}
-              disabled={loading || !ready || finalizing || !input.trim()}
-              className="grid size-10 shrink-0 place-items-center self-end rounded-xl bg-primary text-primary-foreground disabled:opacity-50"
-            >
-              <Send className="size-4" />
-            </button>
+            <div className="flex shrink-0 items-end gap-1 self-end">
+              <VoiceRecorderButton
+                auth={voiceAuth}
+                disabled={loading || !ready || finalizing}
+                onTranscript={handleVoiceTranscript}
+                onRecordingStateChange={setIsVoiceActive}
+              />
+              <button
+                type="button"
+                onClick={() => void sendMessage()}
+                disabled={loading || !ready || finalizing || isVoiceActive || !input.trim()}
+                className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground disabled:opacity-50"
+              >
+                <Send className="size-4" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

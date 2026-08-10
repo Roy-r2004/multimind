@@ -104,7 +104,7 @@ import {
 } from "@/lib/promptEdit";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
-import { resolveModelSetIdFromTurns } from "@/lib/modelSetSelection";
+import { resolveNextModelSetId } from "@/lib/modelSetSelection";
 import { chatAnswerCardsClassName } from "@/lib/chatTurnLayout";
 import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
 import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
@@ -232,6 +232,7 @@ export function ChatPage() {
     applyChatUpdate,
     applyChatActivityFromTurn,
     discardUnusedChat,
+    setChatModelSet,
   } = useChatStore();
   const { authHeaders, isAuthenticated } = useAuth();
   const { modelById } = useModels();
@@ -293,8 +294,10 @@ export function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const modelSetRestoredForChatRef = useRef<string | null>(null);
   const modelSetsRef = useRef(modelSets);
+  const chatsRef = useRef(chats);
   const sendInFlightRef = useRef(false);
   modelSetsRef.current = modelSets;
+  chatsRef.current = chats;
   const activeChat = chats.find((c) => c.id === activeChatId);
   const pinnedTurnId = activeChat?.pinnedTurnId ?? null;
   const pinnedVerdictId = activeChat?.pinnedVerdictId ?? null;
@@ -484,13 +487,17 @@ export function ChatPage() {
       setApiTurns(merged);
 
       if (modelSetRestoredForChatRef.current !== chatId) {
-        const fromChat = resolveModelSetIdFromTurns(merged);
-        const sets = modelSetsRef.current;
-        if (fromChat && sets.some((item) => item.id === fromChat)) {
+        const chatRow = chatsRef.current.find((item) => item.id === chatId);
+        const fromChat = resolveNextModelSetId({
+          chatModelSetId: chatRow?.modelSetId,
+          turns: merged,
+          availableSetIds: modelSetsRef.current.map((item) => item.id),
+        });
+        if (fromChat) {
           modelSetRestoredForChatRef.current = chatId;
           setActiveModelSetId(fromChat);
-        } else if (!fromChat) {
-          // Empty chat: keep current selection (default or manual).
+        } else if (!merged.length) {
+          // Empty chat without a stored set: keep current selection (default or manual).
           modelSetRestoredForChatRef.current = chatId;
         }
       }
@@ -532,14 +539,21 @@ export function ChatPage() {
   }, [isApiMode, activeChatId, authHeaders, setActiveModelSetId]);
 
   useEffect(() => {
-    if (!activeChatId || !apiTurns.length || !modelSets.length) return;
+    if (!activeChatId || !modelSets.length) return;
     if (modelSetRestoredForChatRef.current === activeChatId) return;
-    const fromChat = resolveModelSetIdFromTurns(apiTurns);
-    if (fromChat && modelSets.some((item) => item.id === fromChat)) {
+    const chatRow = chats.find((item) => item.id === activeChatId);
+    const fromChat = resolveNextModelSetId({
+      chatModelSetId: chatRow?.modelSetId,
+      turns: apiTurns,
+      availableSetIds: modelSets.map((item) => item.id),
+    });
+    if (fromChat) {
       modelSetRestoredForChatRef.current = activeChatId;
       setActiveModelSetId(fromChat);
+    } else if (!apiTurns.length && chatRow) {
+      modelSetRestoredForChatRef.current = activeChatId;
     }
-  }, [activeChatId, apiTurns, modelSets, setActiveModelSetId]);
+  }, [activeChatId, apiTurns, modelSets, chats, setActiveModelSetId]);
 
   function handleVoiceTranscript(result: ApiTranscriptionResponse) {
     const transcript = result.text.trim();
@@ -880,10 +894,17 @@ export function ChatPage() {
           {set ? (
             <button
               onClick={() => setShowSet(true)}
+              title={`Model set for next message: ${set.name}`}
+              aria-label={`Model set for next message: ${set.name}`}
               className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm font-medium hover:border-primary/40"
             >
               <Gavel className="size-3.5 text-primary" />
-              {set.name}
+              <span className="flex min-w-0 flex-col items-start leading-tight">
+                <span className="text-[10px] font-normal uppercase tracking-wide text-muted-foreground">
+                  Next message
+                </span>
+                <span className="truncate">{set.name}</span>
+              </span>
               <ChevronDown className="size-3.5 text-muted-foreground" />
             </button>
           ) : (
@@ -1372,8 +1393,14 @@ export function ChatPage() {
           sets={modelSets}
           modelById={modelById}
           onPick={(id) => {
-            setActiveModelSetId(id);
-            setShowSet(false);
+            void (async () => {
+              if (activeChatId) {
+                await setChatModelSet(activeChatId, id);
+              } else {
+                setActiveModelSetId(id);
+              }
+              setShowSet(false);
+            })();
           }}
           onCreate={() => {
             setShowSet(false);
@@ -1389,14 +1416,22 @@ export function ChatPage() {
         onSave={async (next) => {
           if (set && modelSets.some((s) => s.id === set.id) && !SYSTEM_MODEL_SETS.has(set.id)) {
             await updateModelSet({ ...next, id: set.id });
-            setActiveModelSetId(set.id);
+            if (activeChatId) {
+              await setChatModelSet(activeChatId, set.id);
+            } else {
+              setActiveModelSetId(set.id);
+            }
             return;
           }
           const created = await createModelSet({
             ...next,
             name: next.name === set?.name ? "My Council" : next.name,
           });
-          setActiveModelSetId(created.id);
+          if (activeChatId) {
+            await setChatModelSet(activeChatId, created.id);
+          } else {
+            setActiveModelSetId(created.id);
+          }
         }}
       />
 
@@ -2029,7 +2064,12 @@ function ModelSetPickerModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Model sets</h3>
+          <div>
+            <h3 className="text-lg font-semibold">Model sets</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Choose the council for the next message. Past turns keep their original models.
+            </p>
+          </div>
           <button
             onClick={onCreate}
             className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground"

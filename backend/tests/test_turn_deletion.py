@@ -63,7 +63,7 @@ class FakeProvider:
     def tracking_model_id(self, model: str) -> str:
         return self.MODEL_TRACKING_ALIASES.get(model, model)
 
-    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096):
+    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096, **_kwargs):
         tracking_id = self.tracking_model_id(model)
         self.started.setdefault(tracking_id, asyncio.Event()).set()
         self.calls.append(tracking_id)

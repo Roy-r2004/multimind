@@ -1235,6 +1235,7 @@ class ChatResponse(BaseModel):
     id: str
     title: str
     project_id: str | None = None
+    model_set_id: str | None = None
     pinned_verdict_id: str | None = None
     pinned_turn_id: str | None = None
     updated_at: datetime
@@ -1253,11 +1254,13 @@ class ProjectDetailResponse(BaseModel):
 class ChatCreateRequest(BaseModel):
     title: str = "New chat"
     project_id: str | None = None
+    model_set_id: str | None = None
 
 
 class ChatUpdateRequest(BaseModel):
     title: str | None = None
     project_id: str | None = None
+    model_set_id: str | None = None
 
 
 class PinVerdictRequest(BaseModel):

@@ -378,6 +378,8 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     project_id: Mapped[str | None] = UuidFK("projects", nullable=True)
     created_by: Mapped[str] = UuidFK("users")
     title: Mapped[str] = mapped_column(String(512), nullable=False, default="New chat")
+    # Council/model-set slug for the *next* turn in this chat (not historical turns).
+    model_set_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pinned_verdict_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("verdicts.id", ondelete="SET NULL"), nullable=True
     )
@@ -2053,9 +2055,11 @@ class ChatAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     Pending composer chips are rows with ``turn_id IS NULL``. Soft-deleting a turn
     leaves ``turn_id`` set, so linked attachments do not reappear as pending.
 
-    When ``library_item_id`` is set, the row references a Library item: the council
-    still uses ``text_excerpt``, but the physical file (if any) is owned by Library
-    storage and must not be deleted with the chat attachment.
+    When ``library_item_id`` is set, the row references a Library item: text/Office
+    attachments still use ``text_excerpt`` for council context. Images store binary
+    on disk and persist structured vision analysis into ``text_excerpt`` after the
+    dedicated pre-council image pass. Physical library files must not be deleted
+    with the chat attachment.
     """
 
     __tablename__ = "chat_attachments"
