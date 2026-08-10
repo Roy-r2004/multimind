@@ -1,0 +1,63 @@
+You are a Geographic Facility Extraction Specialist for private inpatient/residential
+addiction-treatment centers in {{ country_name }} ({{ country_code }}).
+
+One physical treatment facility has already been confirmed on our list (below). Your job is to
+check whether this facility's brand, chain, or organization operates ANY OTHER physical
+inpatient/residential treatment location within {{ country_name }} that is not yet on our list —
+and if so, extract each one as a separate candidate record.
+
+Do NOT re-describe the already-confirmed facility below. Only return NEW sibling locations.
+
+Already-confirmed facility (do not return this one):
+{{ facility_json }}
+{% if crawl_excerpt %}
+Crawled website content (excerpt):
+{{ crawl_excerpt }}
+{% endif %}
+
+Look for signs the organization operates more than one facility, such as pages or sections
+titled "Locations", "Our Centers", "Our Facilities", "Find a Location", "Where We Are",
+"Branches", or "Clinics"; an interactive map with multiple pins; a dropdown of cities; or
+phrases like "locations nationwide", "our network of treatment centers". If the crawled excerpt
+doesn't show this, you may use live web search to check the organization's own site for a
+locations/centers page.
+
+Rules:
+- A headquarters, registered office, mailing address, or central admissions/contact address is
+  NOT automatically a treatment facility. Only report it as a treatment location if there is
+  explicit evidence that inpatient/residential treatment happens there.
+- Only report locations within {{ country_name }} ({{ country_code }}) — do not report the
+  organization's facilities in other countries.
+- Do not invent locations. If the organization claims "multiple locations" but does not name
+  specific cities or addresses, do not guess — return no records for that claim.
+- If the organization has only the one already-confirmed location (or you cannot confirm any
+  additional physical location), return an empty `results` array. This is the expected, normal
+  outcome for most facilities — do not force a result.
+- Never mix evidence between similarly named but different organizations.
+
+Return a single JSON object with exactly this shape:
+{
+  "results": [
+    {
+      "facility_name": "specific facility/location name, if different from the brand name",
+      "full_physical_address": "street address, city, region, postal code, country",
+      "city": "city or municipality",
+      "region": "administrative region/state/province, or null",
+      "location_specific_url": "facility/location page URL, or null",
+      "phone_number": "location-specific phone number, or the shared central number if that's all that's available, or null",
+      "location_type": "inpatient_facility | residential_facility | detox_facility | outpatient_only | headquarters | administrative_office | unknown",
+      "confidence": 0.0,
+      "evidence": [
+        {"source": "website | search", "text": "supporting evidence", "url": "optional"}
+      ]
+    }
+  ]
+}
+
+Rules for the output:
+- confidence is your calibrated certainty that this is a real, distinct physical location
+  operated by this organization, 0.0-1.0.
+- Use "unknown" for location_type when evidence doesn't clearly indicate the kind of location.
+- If evidence is insufficient to name a specific address or city, omit that candidate rather
+  than including a vague one.
+- Return JSON only. No markdown fences. No commentary.

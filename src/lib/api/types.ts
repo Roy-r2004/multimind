@@ -567,6 +567,48 @@ export type ApiSavedPrompt = {
   updated_at: string;
 };
 
+export type ApiLibraryLabel = {
+  id: string;
+  name: string;
+  item_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiLibraryFolder = {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiLibraryItem = {
+  id: string;
+  item_type: "file" | "document" | string;
+  title: string;
+  folder_id: string | null;
+  is_favorite: boolean;
+  original_filename?: string | null;
+  content_type?: string | null;
+  size_bytes?: number | null;
+  excerpt_status?: string | null;
+  content_text?: string | null;
+  labels: { id: string; name: string }[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiChatAttachment = {
+  id: string;
+  filename: string;
+  content_type: string | null;
+  size_bytes: number;
+  text_excerpt: string | null;
+  excerpt_status: string;
+  library_item_id?: string | null;
+};
+
 export class ApiClientError extends Error {
   constructor(
     message: string,

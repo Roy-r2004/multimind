@@ -250,6 +250,13 @@ class Settings(BaseSettings):
     # crawl-excerpt budgets in this file (keep-drop uses 4000, structured
     # classification uses 20000) — 1200 was a clear outlier.
     maps_census_enrichment_max_crawl_excerpt_chars: int = 4000
+    # Multi-location brand disaggregation: during detail enrichment, check
+    # whether a kept facility's own website reveals other in-country physical
+    # locations of the same organization not yet discovered, and add them as
+    # new candidates for the strict keep/drop gate. Gated on a cheap keyword
+    # pre-filter (see contains_multi_location_signal), so this only costs an
+    # extra call when the crawled text actually hints at multiple locations.
+    maps_sibling_location_extraction_enabled: bool = True
     maps_census_auto_enrichment_enabled: bool = True
     maps_census_cascade_enrichment_enabled: bool = True
     maps_census_two_phase_pipeline_enabled: bool = True
@@ -336,6 +343,8 @@ class Settings(BaseSettings):
     chat_attachment_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
     chat_attachment_dir: str = "data/chat_attachments"
     chat_attachment_context_max_chars: int = Field(default=50_000)
+    library_file_dir: str = "data/library_files"
+    library_file_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
 
     # Rate limiting
     rate_limit_per_minute: int = 60
