@@ -42,7 +42,7 @@ class ScriptedProvider:
         self._verdict_script = list(verdict_script)
         self.verdict_calls = 0
 
-    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096):
+    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096, **_kwargs):
         if user == VERDICT_USER_PROMPT:
             self.verdict_calls += 1
             step = (

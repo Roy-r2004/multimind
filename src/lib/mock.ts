@@ -37,6 +37,7 @@ export type Chat = {
   title: string;
   updated: string;
   projectId?: string | null;
+  modelSetId?: string | null;
   pinnedVerdictId?: string | null;
   pinnedTurnId?: string | null;
 };

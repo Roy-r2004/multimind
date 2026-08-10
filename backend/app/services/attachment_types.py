@@ -23,7 +23,8 @@ TEXT_EXTENSIONS = frozenset(
 )
 OFFICE_EXTENSIONS = frozenset({".docx", ".xlsx"})
 PDF_EXTENSIONS = frozenset({".pdf"})
-ALLOWED_EXTENSIONS = TEXT_EXTENSIONS | OFFICE_EXTENSIONS | PDF_EXTENSIONS
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+ALLOWED_EXTENSIONS = TEXT_EXTENSIONS | OFFICE_EXTENSIONS | PDF_EXTENSIONS | IMAGE_EXTENSIONS
 LEGACY_OFFICE_EXTENSIONS = frozenset({".doc", ".xls", ".docm", ".xlsm"})
 
 TEXT_CONTENT_TYPES = frozenset(
@@ -44,15 +45,42 @@ TEXT_CONTENT_TYPES = frozenset(
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PDF_CONTENT_TYPE = "application/pdf"
+IMAGE_CONTENT_TYPES = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+    }
+)
 GENERIC_BINARY_TYPE = "application/octet-stream"
 
 UNSUPPORTED_TYPE_MESSAGE = (
-    "Unsupported file type. Upload a text file, .docx, .xlsx, or .pdf."
+    "Unsupported file type. Upload a text file, .docx, .xlsx, .pdf, or image "
+    "(.png, .jpg, .jpeg, .webp)."
 )
 
 # Pending chat attachment rows that reference a Library item use this path prefix
 # under the chat attachment root. No physical chat-owned file exists for them.
 LIBRARY_REF_PATH_PREFIX = "library-ref/"
+
+IMAGE_EXCERPT_STATUS = "image"
+
+# Extension → canonical OpenRouter/media type for data URLs.
+IMAGE_MEDIA_TYPE_BY_EXT: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def is_image_extension(ext: str) -> bool:
+    return ext.lower() in IMAGE_EXTENSIONS
+
+
+def image_media_type_for_extension(ext: str) -> str:
+    return IMAGE_MEDIA_TYPE_BY_EXT.get(ext.lower(), "application/octet-stream")
 
 
 def normalize_media_type(content_type: str | None) -> str:
@@ -115,7 +143,37 @@ def validate_attachment_content_type(
             return normalized
         raise UnsupportedAttachmentTypeError(UNSUPPORTED_TYPE_MESSAGE)
 
+    if ext in IMAGE_EXTENSIONS:
+        if normalized in IMAGE_CONTENT_TYPES or normalized == GENERIC_BINARY_TYPE:
+            # Canonicalize jpg → jpeg for data URLs / OpenRouter.
+            if normalized in {"image/jpg", GENERIC_BINARY_TYPE}:
+                return image_media_type_for_extension(ext)
+            return normalized
+        raise UnsupportedAttachmentTypeError(UNSUPPORTED_TYPE_MESSAGE)
+
     raise UnsupportedAttachmentTypeError(UNSUPPORTED_TYPE_MESSAGE)
+
+
+def validate_image_magic_bytes(content: bytes, ext: str) -> None:
+    """Reject files whose magic bytes do not match the claimed image extension."""
+    ext = ext.lower()
+    if ext not in IMAGE_EXTENSIONS:
+        return
+    if len(content) < 12:
+        raise InvalidAttachmentError("Image file is empty or truncated")
+
+    if ext == ".png":
+        if not content.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise InvalidAttachmentError("File content does not match a PNG image")
+        return
+    if ext in {".jpg", ".jpeg"}:
+        if not content.startswith(b"\xff\xd8\xff"):
+            raise InvalidAttachmentError("File content does not match a JPEG image")
+        return
+    if ext == ".webp":
+        if content[:4] != b"RIFF" or content[8:12] != b"WEBP":
+            raise InvalidAttachmentError("File content does not match a WebP image")
+        return
 
 
 def library_ref_relative_path(library_item_id: str) -> str:

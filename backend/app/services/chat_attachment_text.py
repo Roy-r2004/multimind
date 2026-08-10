@@ -23,6 +23,9 @@ _BLANK_LINE_RE = re.compile(r"\n{3,}")
 def extract_attachment_text(content: bytes, extension: str) -> tuple[str | None, str]:
     """Return (excerpt, excerpt_status) for an allowed attachment extension."""
     ext = extension.lower()
+    if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+        # Images are vision inputs — never decode as text / OCR.
+        return None, "image"
     try:
         if ext in {".docx"}:
             return _finalize(_extract_docx_text(content))
@@ -43,8 +46,11 @@ def extract_attachment_text_from_path(path: Path, extension: str) -> tuple[str |
     """Extract from a temp/final file path without requiring a full in-memory upload buffer.
 
     Plain text reads only a bounded prefix. Office/PDF parsers open the path directly.
+    Images skip extraction entirely (native vision path).
     """
     ext = extension.lower()
+    if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+        return None, "image"
     try:
         if ext in {".docx"}:
             return _finalize(_extract_docx_from_path(path))

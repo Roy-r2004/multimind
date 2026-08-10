@@ -24,8 +24,10 @@ from app.schemas.api import (
     LibraryLabelResponse,
 )
 from app.services.attachment_types import (
+    is_image_extension,
     validate_attachment_content_type,
     validate_attachment_filename,
+    validate_image_magic_bytes,
 )
 from app.services.chat_attachment_storage import (
     cleanup_path,
@@ -406,6 +408,10 @@ class LibraryService:
                 extension=ext,
                 root=settings.library_file_dir,
             )
+            if is_image_extension(ext):
+                with tmp_path.open("rb") as handle:
+                    header = handle.read(64)
+                validate_image_magic_bytes(header, ext)
             text_excerpt, excerpt_status = extract_attachment_text_from_path(
                 tmp_path, ext
             )
