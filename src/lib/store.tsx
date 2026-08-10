@@ -51,8 +51,6 @@ type ChatStore = {
   createProject: (input: CreateProjectInput) => Promise<Project>;
   deleteProject: (projectId: string) => Promise<void>;
   createChat: (options?: CreateChatOptions) => Promise<string | null>;
-  /** Persist the model set used for the next message on an existing chat. */
-  setChatModelSet: (chatId: string, modelSetId: string) => Promise<void>;
   refreshAll: () => Promise<void>;
   applyChatUpdate: (chat: ApiChat) => void;
   /** Move/update sidebar chat from turn create/regenerate metadata. */
@@ -102,8 +100,6 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
   const activeChatIdRef = useRef<string | null>(null);
   activeChatIdRef.current = activeChatId;
-  const activeModelSetIdRef = useRef("");
-  activeModelSetIdRef.current = activeModelSetId;
   const createChatInflightRef = useRef<Promise<string | null> | null>(null);
   const refreshGenerationRef = useRef(0);
 
@@ -368,13 +364,11 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
 
       // Share one in-flight create so upload + send cannot POST twice.
       if (!createChatInflightRef.current) {
-        const modelSetId = activeModelSetIdRef.current || undefined;
         createChatInflightRef.current = (async () => {
           try {
             const chat = await api.chats.create(auth, {
               title: "New chat",
               project_id: options?.projectId ?? undefined,
-              model_set_id: modelSetId || null,
             });
             const mapped = mapApiChat(chat);
             setChats((prev) => upsertChatToTop(prev, mapped));
@@ -396,24 +390,6 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     [authHeaders, setActiveChatId],
   );
 
-  const setChatModelSet = useCallback(
-    async (chatId: string, modelSetId: string) => {
-      const next = modelSetId.trim();
-      if (!next) return;
-      setActiveModelSetIdState(next);
-      setChats((prev) => {
-        const current = prev.find((c) => c.id === chatId);
-        if (!current) return prev;
-        return upsertChatToTop(prev, { ...current, modelSetId: next });
-      });
-      const auth = authHeaders();
-      if (!auth) return;
-      const updated = await api.chats.update(auth, chatId, { model_set_id: next });
-      setChats((prev) => upsertChatToTop(prev, mapApiChat(updated)));
-    },
-    [authHeaders],
-  );
-
   const applyChatUpdate = useCallback((chat: ApiChat) => {
     setChats((prev) => upsertChatToTop(prev, mapApiChat(chat)));
   }, []);
@@ -425,9 +401,6 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         chatId: turn.chat_id,
         title: turn.chat_title ?? existing?.title,
         updatedAt: turn.chat_updated_at ?? undefined,
-        // Prefer the chat's next-message selection; only fill from the turn when unset
-        // (e.g. first send). Regenerate must not overwrite a mid-chat switch.
-        modelSetId: existing?.modelSetId ?? turn.model_set_id,
       });
       return upsertChatToTop(prev, next);
     });
@@ -468,7 +441,6 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       createProject,
       deleteProject,
       createChat,
-      setChatModelSet,
       refreshAll,
       applyChatUpdate,
       applyChatActivityFromTurn,
@@ -495,7 +467,6 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       createProject,
       deleteProject,
       createChat,
-      setChatModelSet,
       refreshAll,
       applyChatUpdate,
       applyChatActivityFromTurn,

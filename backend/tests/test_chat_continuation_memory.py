@@ -581,6 +581,56 @@ async def test_prompts_receive_rolling_memory_and_recent_history():
     assert "Current council answer only" not in model_prompt
 
 
+def test_orchestrator_prompt_kwargs_match_rolling_memory_architecture():
+    """Regression: orchestrator must not pass removed previous_verdict_context."""
+    import inspect
+    from pathlib import Path
+
+    from app.db.models import Chat
+    from app.llm import orchestrator as orch_mod
+    from app.llm.orchestrator import TurnContext
+    from app.llm.prompt_engine import PromptEngine
+    from app.services import chat_service as chat_service_mod
+
+    orch_src = Path(orch_mod.__file__).read_text(encoding="utf-8")
+    chat_src = Path(chat_service_mod.__file__).read_text(encoding="utf-8")
+    assert "previous_verdict_context" not in orch_src
+    assert "previous_verdict_context" not in chat_src
+    assert "rolling_chat_memory=ctx.rolling_chat_memory" in orch_src
+    assert "recent_conversation_context=ctx.recent_conversation_context" in orch_src
+    assert "rolling_chat_memory" in TurnContext.__dataclass_fields__
+    assert "recent_conversation_context" in TurnContext.__dataclass_fields__
+    assert "previous_verdict_context" not in TurnContext.__dataclass_fields__
+    assert hasattr(Chat, "rolling_memory")
+    assert "rolling_memory" in Chat.__table__.columns
+
+    model_params = inspect.signature(PromptEngine.model_answer_prompt).parameters
+    verdict_params = inspect.signature(PromptEngine.verdict_prompt).parameters
+    assert "rolling_chat_memory" in model_params
+    assert "recent_conversation_context" in model_params
+    assert "previous_verdict_context" not in model_params
+    assert "previous_verdict_context" not in verdict_params
+
+    # Binding smoke test: kwargs orchestrator passes must be accepted (no TypeError).
+    engine = PromptEngine()
+    engine.model_answer_prompt(
+        user_message="hi",
+        model_id="gpt-4.1",
+        model_name="GPT",
+        vendor="OpenAI",
+        model_set_name="Council",
+        rolling_chat_memory="older memory",
+        recent_conversation_context="recent history",
+    )
+    engine.verdict_prompt(
+        strategy="Referee",
+        user_message="hi",
+        model_answers=[],
+        rolling_chat_memory="older memory",
+        recent_conversation_context="recent history",
+    )
+
+
 @pytest.mark.asyncio
 async def test_brain_remains_unchanged_by_chat_memory_merge(memory_env, monkeypatch):
     base = datetime(2026, 8, 1, tzinfo=UTC)

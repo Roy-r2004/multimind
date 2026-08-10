@@ -13,13 +13,20 @@ import httpx
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logging import get_logger
-from app.services.chat_vision import VisionImage, build_openrouter_user_content
 
 logger = get_logger(__name__)
 
 CONFIDENCE_PATTERN = re.compile(r"CONFIDENCE:\s*(\d{1,3})", re.IGNORECASE)
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_LLM_TEMPERATURE = 0.7
+
+# Claude Fable 5: prefer OpenRouter Exacto (quality/reliability) over price-weighted
+# load balancing, while keeping same-model provider failover enabled.
+CLAUDE_FABLE_5_SLUG = "anthropic/claude-fable-5"
+CLAUDE_FABLE_5_ROUTED_SLUG = f"{CLAUDE_FABLE_5_SLUG}:exacto"
+CLAUDE_FABLE_5_PROVIDER_PREFERENCES: dict[str, Any] = {
+    "allow_fallbacks": True,
+}
 
 
 @dataclass
@@ -43,7 +50,6 @@ class LLMProvider(ABC):
         max_tokens: int = 4096,
         response_format: dict[str, Any] | None = None,
         temperature: float | None = None,
-        images: list[VisionImage] | None = None,
     ) -> LLMResponse:
         pass
 
@@ -167,7 +173,6 @@ class OpenRouterProvider(LLMProvider):
         max_tokens: int = 4096,
         response_format: dict[str, Any] | None = None,
         temperature: float | None = None,
-        images: list[VisionImage] | None = None,
     ) -> LLMResponse:
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
@@ -182,7 +187,6 @@ class OpenRouterProvider(LLMProvider):
                     max_tokens=max_tokens,
                     response_format=response_format,
                     temperature=temperature,
-                    images=images,
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -202,22 +206,16 @@ class OpenRouterProvider(LLMProvider):
         max_tokens: int,
         response_format: dict[str, Any] | None,
         temperature: float | None = None,
-        images: list[VisionImage] | None = None,
     ) -> LLMResponse:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            user_content = build_openrouter_user_content(user, images)
-            payload: dict[str, Any] = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_content},
-                ],
-                "temperature": DEFAULT_LLM_TEMPERATURE if temperature is None else temperature,
-                "max_tokens": max_tokens,
-                "usage": {"include": True},
-            }
-            if response_format is not None:
-                payload["response_format"] = response_format
+            payload = build_openrouter_chat_payload(
+                model=model,
+                system=system,
+                user=user,
+                max_tokens=max_tokens,
+                response_format=response_format,
+                temperature=temperature,
+            )
             resp = await client.post(
                 OPENROUTER_CHAT_URL,
                 headers=self._headers(),
@@ -237,15 +235,67 @@ class OpenRouterProvider(LLMProvider):
         cost_usd = _parse_reported_cost(usage.get("cost"))
         _record_maps_quota_cost(cost_usd)
         text, confidence = self.parse_confidence(content)
-        prompt_chars = len(system) + len(user)
         return LLMResponse(
             text=text,
-            tokens_input=usage.get("prompt_tokens", prompt_chars // 4),
+            tokens_input=usage.get("prompt_tokens", len(system) // 4),
             tokens_output=usage.get("completion_tokens", len(text) // 4),
             cost_usd=cost_usd,
             confidence=confidence,
             raw=data,
         )
+
+
+def _is_claude_fable_5(model: str) -> bool:
+    """True for anthropic/claude-fable-5, with or without a routing suffix."""
+    base = (model or "").split(":", 1)[0].strip().lower()
+    return base == CLAUDE_FABLE_5_SLUG
+
+
+def resolve_openrouter_model_slug(model: str) -> str:
+    """Apply per-model OpenRouter routing variants without changing catalog ids."""
+    if _is_claude_fable_5(model):
+        # Keep an already-selected variant (e.g. :nitro) if the caller set one;
+        # otherwise prefer Exacto quality routing over default price weighting.
+        if ":" in model:
+            return model
+        return CLAUDE_FABLE_5_ROUTED_SLUG
+    return model
+
+
+def openrouter_provider_preferences(model: str) -> dict[str, Any] | None:
+    """Optional OpenRouter ``provider`` object for a request model slug."""
+    if _is_claude_fable_5(model):
+        return dict(CLAUDE_FABLE_5_PROVIDER_PREFERENCES)
+    return None
+
+
+def build_openrouter_chat_payload(
+    *,
+    model: str,
+    system: str,
+    user: str,
+    max_tokens: int,
+    response_format: dict[str, Any] | None = None,
+    temperature: float | None = None,
+) -> dict[str, Any]:
+    """Build the OpenRouter chat/completions JSON body (routing prefs included)."""
+    routed_model = resolve_openrouter_model_slug(model)
+    payload: dict[str, Any] = {
+        "model": routed_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": DEFAULT_LLM_TEMPERATURE if temperature is None else temperature,
+        "max_tokens": max_tokens,
+        "usage": {"include": True},
+    }
+    provider = openrouter_provider_preferences(model)
+    if provider is not None:
+        payload["provider"] = provider
+    if response_format is not None:
+        payload["response_format"] = response_format
+    return payload
 
 
 def _record_maps_quota_cost(cost_usd: float | None) -> None:
