@@ -1,6 +1,7 @@
 /** Typed API methods — one function per backend endpoint */
 
 import { apiFormRequest, apiRequest } from "@/lib/api/client";
+import { composerAttachmentUploadTimeoutMs } from "@/lib/composerAttachments";
 import type {
   ApiChat,
   ApiCostSummary,
@@ -259,7 +260,8 @@ export const api = {
         formData,
         token: auth.token,
         orgId: auth.orgId,
-        timeoutMs: 120_000,
+        // .webm transcription runs inside this request; documents keep the short timeout.
+        timeoutMs: composerAttachmentUploadTimeoutMs(file.name),
       });
     },
 

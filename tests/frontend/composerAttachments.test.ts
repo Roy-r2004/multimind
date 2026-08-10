@@ -4,11 +4,14 @@ import test from "node:test";
 import { resolveFailedResponseMessage } from "../../src/lib/api/errorMessage.ts";
 import {
   COMPOSER_ATTACHMENT_MAX_BYTES,
+  COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS,
+  COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS,
   COMPOSER_FILE_ACCEPT,
   apiErrorMessage,
   canAcceptMoreComposerAttachments,
   canStartComposerAttachmentDelete,
   captureComposerFileInputFiles,
+  composerAttachmentUploadTimeoutMs,
   countActiveComposerAttachments,
   hasUploadingComposerFiles,
   markComposerFileDeleting,
@@ -29,25 +32,40 @@ import {
   type ComposerFileChip,
 } from "../../src/lib/composerAttachments.ts";
 
-test("accept list includes documents and common image types", () => {
+test("accept list includes docx xlsx pdf webm and excludes images", () => {
   assert.match(COMPOSER_FILE_ACCEPT, /\.docx/);
   assert.match(COMPOSER_FILE_ACCEPT, /\.xlsx/);
   assert.match(COMPOSER_FILE_ACCEPT, /\.pdf/);
-  assert.match(COMPOSER_FILE_ACCEPT, /\.png/);
-  assert.match(COMPOSER_FILE_ACCEPT, /\.jpg/);
-  assert.match(COMPOSER_FILE_ACCEPT, /\.jpeg/);
-  assert.match(COMPOSER_FILE_ACCEPT, /\.webp/);
+  assert.match(COMPOSER_FILE_ACCEPT, /\.webm/);
+  assert.equal(COMPOSER_FILE_ACCEPT.includes("image"), false);
+  assert.equal(COMPOSER_FILE_ACCEPT.includes(".png"), false);
+  assert.equal(COMPOSER_FILE_ACCEPT.includes(".mp3"), false);
 });
 
-test("validates supported extensions including docx xlsx pdf and images", () => {
+test("validates supported extensions including docx xlsx pdf and webm", () => {
   assert.equal(validateComposerAttachment({ name: "a.docx", size: 12 }).ok, true);
   assert.equal(validateComposerAttachment({ name: "b.xlsx", size: 12 }).ok, true);
   assert.equal(validateComposerAttachment({ name: "c.pdf", size: 12 }).ok, true);
   assert.equal(validateComposerAttachment({ name: "c.txt", size: 12 }).ok, true);
-  assert.equal(validateComposerAttachment({ name: "photo.png", size: 12 }).ok, true);
-  assert.equal(validateComposerAttachment({ name: "shot.jpg", size: 12 }).ok, true);
-  assert.equal(validateComposerAttachment({ name: "shot.jpeg", size: 12 }).ok, true);
-  assert.equal(validateComposerAttachment({ name: "shot.webp", size: 12 }).ok, true);
+  assert.equal(validateComposerAttachment({ name: "clip.webm", size: 12 }).ok, true);
+});
+
+test("rejects unsupported audio formats before network", () => {
+  for (const name of ["song.mp3", "track.wav", "voice.m4a", "clip.ogg"]) {
+    const bad = validateComposerAttachment({ name, size: 10 });
+    assert.equal(bad.ok, false, name);
+    if (!bad.ok) {
+      assert.match(bad.message, /Unsupported/i);
+    }
+  }
+});
+
+test("audio attachment uploads use an extended timeout; documents keep 120s", () => {
+  assert.equal(composerAttachmentUploadTimeoutMs("notes.txt"), COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS);
+  assert.equal(composerAttachmentUploadTimeoutMs("deck.pdf"), COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS);
+  assert.equal(composerAttachmentUploadTimeoutMs("clip.webm"), COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS);
+  assert.equal(COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS, 1_000_000);
+  assert.equal(COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS, 120_000);
 });
 
 test("rejects empty, oversized, and unsupported files before network", () => {
@@ -56,7 +74,7 @@ test("rejects empty, oversized, and unsupported files before network", () => {
     validateComposerAttachment({ name: "a.txt", size: COMPOSER_ATTACHMENT_MAX_BYTES + 1 }).ok,
     false,
   );
-  const bad = validateComposerAttachment({ name: "virus.exe", size: 10 });
+  const bad = validateComposerAttachment({ name: "photo.png", size: 10 });
   assert.equal(bad.ok, false);
   if (!bad.ok) {
     assert.match(bad.message, /Unsupported/i);

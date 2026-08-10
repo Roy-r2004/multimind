@@ -1492,3 +1492,338 @@ async def test_pending_attachment_cap_rejects_eleventh_upload(
     assert eleventh.status_code == 400
     assert eleventh.json()["error"] == "VALIDATION_ERROR"
     assert "at most 10" in eleventh.json()["message"]
+
+
+# --- .webm audio attachment transcription ---------------------------------
+
+
+def _fake_webm_bytes() -> bytes:
+    # Opaque payload is fine: Whisper is mocked; we only need a non-empty file on disk.
+    return b"FAKEWEBM\x00audio-payload-for-attachment-tests"
+
+
+def test_webm_content_type_normalization_and_allowlist():
+    """MIME parameter stripping + labels browsers/OS use for MediaRecorder .webm."""
+    from app.api.v1.chats import (
+        _normalize_media_type,
+        _validate_attachment_content_type,
+    )
+    from app.core.exceptions import UnsupportedAttachmentTypeError
+
+    assert _normalize_media_type("audio/webm;codecs=opus") == "audio/webm"
+    assert _normalize_media_type("  AUDIO/WEBM ; codecs=opus ") == "audio/webm"
+
+    assert (
+        _validate_attachment_content_type("audio/webm", "clip.webm", ".webm") == "audio/webm"
+    )
+    assert (
+        _validate_attachment_content_type("audio/webm;codecs=opus", "clip.webm", ".webm")
+        == "audio/webm"
+    )
+    assert (
+        _validate_attachment_content_type("  Audio/WebM ;codecs=opus ", "clip.webm", ".webm")
+        == "audio/webm"
+    )
+    assert (
+        _validate_attachment_content_type("video/webm", "clip.webm", ".webm") == "video/webm"
+    )
+    assert (
+        _validate_attachment_content_type("video/webm;codecs=vp8,opus", "clip.webm", ".webm")
+        == "video/webm"
+    )
+    assert (
+        _validate_attachment_content_type("application/octet-stream", "clip.webm", ".webm")
+        == "application/octet-stream"
+    )
+    # Missing Content-Type: do not use mimetypes.guess_type(.webm) → video/webm reject path.
+    assert _validate_attachment_content_type(None, "clip.webm", ".webm") == "audio/webm"
+    assert _validate_attachment_content_type("", "clip.webm", ".webm") == "audio/webm"
+
+    for bad in ("audio/mpeg", "audio/wav", "audio/mp4", "image/png", "text/plain"):
+        try:
+            _validate_attachment_content_type(bad, "clip.webm", ".webm")
+            raise AssertionError(f"expected reject for {bad}")
+        except UnsupportedAttachmentTypeError:
+            pass
+
+    try:
+        _validate_attachment_content_type("audio/mpeg", "song.mp3", ".mp3")
+        raise AssertionError("mp3 must remain unsupported")
+    except UnsupportedAttachmentTypeError:
+        pass
+
+    # Document MIME behavior unchanged.
+    assert (
+        _validate_attachment_content_type("application/pdf", "a.pdf", ".pdf") == "application/pdf"
+    )
+    assert (
+        _validate_attachment_content_type(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "a.docx",
+            ".docx",
+        )
+        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+
+@pytest.mark.asyncio
+async def test_webm_upload_accepts_codecs_parameter_and_video_webm(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from app.services.transcription_service import TranscriptionResult
+    import app.api.v1.chats as chats_api
+
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+
+    async def fake_transcribe(file_path: Path, *, language: str | None = None):
+        return TranscriptionResult(
+            text="ok",
+            language="en",
+            language_probability=1.0,
+            duration_seconds=1.0,
+            processing_seconds=0.1,
+        )
+
+    monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
+
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        with_codecs = await _upload(
+            client,
+            chat.id,
+            filename="rec-codecs.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm;codecs=opus",
+        )
+        as_video = await _upload(
+            client,
+            chat.id,
+            filename="rec-video-label.webm",
+            content=_fake_webm_bytes() + b"2",
+            content_type="video/webm",
+        )
+        missing_mime = await client.post(
+            f"/api/v1/chats/{chat.id}/attachments",
+            # Omit explicit Content-Type: clients often guess video/webm for .webm.
+            files={"file": ("rec-empty-mime.webm", BytesIO(_fake_webm_bytes() + b"3"))},
+        )
+
+    assert with_codecs.status_code == 201, with_codecs.text
+    assert with_codecs.json()["content_type"] == "audio/webm"
+    assert as_video.status_code == 201, as_video.text
+    assert as_video.json()["content_type"] == "video/webm"
+    assert missing_mime.status_code == 201, missing_mime.text
+    # httpx/Starlette typically guess video/webm from the .webm filename when MIME is omitted.
+    assert missing_mime.json()["content_type"] in {"audio/webm", "video/webm"}
+
+
+@pytest.mark.asyncio
+async def test_webm_upload_accepted_and_transcribed(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from app.services.transcription_service import TranscriptionResult
+    import app.api.v1.chats as chats_api
+
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+
+    called: dict[str, object] = {}
+
+    async def fake_transcribe(file_path: Path, *, language: str | None = None):
+        called["path"] = file_path
+        called["language"] = language
+        assert file_path.exists()
+        assert file_path.read_bytes() == _fake_webm_bytes()
+        return TranscriptionResult(
+            text="  hello from webm  ",
+            language="en",
+            language_probability=0.99,
+            duration_seconds=1.5,
+            processing_seconds=0.1,
+        )
+
+    monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
+
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        response = await _upload(
+            client,
+            chat.id,
+            filename="clip.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm",
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["filename"] == "clip.webm"
+    assert body["content_type"] == "audio/webm"
+    assert body["excerpt_status"] == "ready"
+    assert body["text_excerpt"] == "hello from webm"
+    assert body["size_bytes"] == len(_fake_webm_bytes())
+    assert called["language"] == "en"
+    assert isinstance(called["path"], Path)
+
+    row = (
+        await db.execute(select(ChatAttachment).where(ChatAttachment.id == body["id"]))
+    ).scalar_one()
+    stored = attach_dir / row.relative_path
+    assert stored.is_file()
+    assert stored.suffix == ".webm"
+    assert stored.read_bytes() == _fake_webm_bytes()
+    assert not (attach_dir / ".tmp").exists() or not any((attach_dir / ".tmp").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_mp3_attachment_still_rejected(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(tmp_path / "attachments"))
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        response = await _upload(
+            client,
+            chat.id,
+            filename="song.mp3",
+            content=b"ID3fake",
+            content_type="audio/mpeg",
+        )
+    assert response.status_code == 415
+    assert response.json()["error"] == "UNSUPPORTED_ATTACHMENT_TYPE"
+
+
+@pytest.mark.asyncio
+async def test_webm_silent_transcription_marks_empty(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from app.core.exceptions import SilentAudioError
+    import app.api.v1.chats as chats_api
+
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+
+    async def fake_transcribe(file_path: Path, *, language: str | None = None):
+        raise SilentAudioError()
+
+    monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
+
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        response = await _upload(
+            client,
+            chat.id,
+            filename="quiet.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm",
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["excerpt_status"] == "empty"
+    assert body["text_excerpt"] is None
+    row = (
+        await db.execute(select(ChatAttachment).where(ChatAttachment.id == body["id"]))
+    ).scalar_one()
+    assert (attach_dir / row.relative_path).is_file()
+
+
+@pytest.mark.asyncio
+async def test_webm_transcription_busy_cleans_temp(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from app.core.exceptions import TranscriptionBusyError
+    import app.api.v1.chats as chats_api
+
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+
+    async def fake_transcribe(file_path: Path, *, language: str | None = None):
+        raise TranscriptionBusyError()
+
+    monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
+
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        response = await _upload(
+            client,
+            chat.id,
+            filename="busy.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm",
+        )
+
+    assert response.status_code == 429
+    assert response.json()["error"] == "TRANSCRIPTION_BUSY"
+    assert (await db.execute(select(ChatAttachment))).scalars().all() == []
+    tmp_dir = attach_dir / ".tmp"
+    if tmp_dir.exists():
+        assert list(tmp_dir.iterdir()) == []
+    # No promoted audio files left behind
+    leftover = [p for p in attach_dir.rglob("*") if p.is_file()]
+    assert leftover == []
+
+
+@pytest.mark.asyncio
+async def test_webm_transcription_failure_cleans_temp(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from app.core.exceptions import InvalidAudioError
+    import app.api.v1.chats as chats_api
+
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+
+    async def fake_transcribe(file_path: Path, *, language: str | None = None):
+        raise InvalidAudioError("corrupt webm")
+
+    monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
+
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        response = await _upload(
+            client,
+            chat.id,
+            filename="bad.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm",
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "INVALID_AUDIO"
+    leftover = [p for p in attach_dir.rglob("*") if p.is_file()]
+    assert leftover == []
+
+
+def test_audio_transcript_enters_attachment_instructions():
+    from types import SimpleNamespace
+
+    attachments = [
+        SimpleNamespace(
+            filename="clip.webm",
+            excerpt_status="ready",
+            text_excerpt="spoken transcript for the council",
+        ),
+        SimpleNamespace(
+            filename="notes.txt",
+            excerpt_status="ready",
+            text_excerpt="document body",
+        ),
+    ]
+    text = chat_service._build_attachment_instructions(attachments)
+    assert text is not None
+    assert "clip.webm" in text
+    assert "spoken transcript for the council" in text
+    assert "notes.txt" in text
+    assert "document body" in text
+    assert "```text" in text

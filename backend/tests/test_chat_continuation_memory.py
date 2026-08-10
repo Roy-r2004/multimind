@@ -370,7 +370,7 @@ async def test_rolling_memory_merges_expired_once_and_is_idempotent(memory_env, 
     calls: list[str] = []
 
     class FakeProvider:
-        async def complete(self, *, system, user, model, max_tokens=4096, **_kwargs):
+        async def complete(self, *, system, user, model, max_tokens=4096):
             calls.append(system)
             # Echo a deterministic memory update for assertions.
             return SimpleNamespace(
@@ -450,7 +450,7 @@ async def test_later_correction_supersedes_old_memory_fact(memory_env, monkeypat
     ]
 
     class FakeProvider:
-        async def complete(self, *, system, user, model, max_tokens=4096, **_kwargs):
+        async def complete(self, *, system, user, model, max_tokens=4096):
             return SimpleNamespace(
                 text=responses.pop(0),
                 tokens_input=1,
@@ -586,7 +586,7 @@ async def test_brain_remains_unchanged_by_chat_memory_merge(memory_env, monkeypa
     base = datetime(2026, 8, 1, tzinfo=UTC)
 
     class FakeProvider:
-        async def complete(self, *, system, user, model, max_tokens=4096, **_kwargs):
+        async def complete(self, *, system, user, model, max_tokens=4096):
             return SimpleNamespace(
                 text="Chat-only memory fact.",
                 tokens_input=1,

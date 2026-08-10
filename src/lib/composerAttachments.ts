@@ -17,13 +17,14 @@ export const COMPOSER_ATTACHMENT_EXTENSIONS = [
   ".docx",
   ".xlsx",
   ".pdf",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
+  ".webm",
 ] as const;
 
 export const COMPOSER_FILE_ACCEPT = COMPOSER_ATTACHMENT_EXTENSIONS.join(",");
+
+/** Document uploads stay at 120s; audio transcription can approach the ~900s backend limit. */
+export const COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS = 120_000;
+export const COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS = 1_000_000;
 
 const EXTENSION_SET = new Set<string>(COMPOSER_ATTACHMENT_EXTENSIONS);
 
@@ -83,6 +84,12 @@ export function composerAttachmentExtension(filename: string): string {
   return base.slice(dot).toLowerCase();
 }
 
+export function composerAttachmentUploadTimeoutMs(filename: string): number {
+  return composerAttachmentExtension(filename) === ".webm"
+    ? COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS
+    : COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS;
+}
+
 export function validateComposerAttachment(file: {
   name?: string | null;
   size?: number | null;
@@ -105,8 +112,7 @@ export function validateComposerAttachment(file: {
   if (!EXTENSION_SET.has(extension)) {
     return {
       ok: false,
-      message:
-        "Unsupported file type. Upload a text file, .docx, .xlsx, .pdf, or image (.png, .jpg, .jpeg, .webp).",
+      message: "Unsupported file type. Upload a text file, .docx, .xlsx, .pdf, or .webm.",
     };
   }
   return { ok: true, extension };
