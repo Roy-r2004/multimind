@@ -68,6 +68,11 @@ def _finalize(text: str) -> tuple[str | None, str]:
     return excerpt, "ready"
 
 
+def excerpt_from_transcript(text: str) -> tuple[str | None, str]:
+    """Map a transcription string into attachment text_excerpt / excerpt_status."""
+    return _finalize(text.strip())
+
+
 def _extract_plain_text(content: bytes) -> str:
     return content.decode("utf-8", errors="replace")
 
