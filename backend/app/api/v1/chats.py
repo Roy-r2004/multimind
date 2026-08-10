@@ -13,8 +13,6 @@ from app.core.exceptions import (
     ConflictError,
     InvalidAttachmentError,
     NotFoundError,
-    SilentAudioError,
-    UnsupportedAttachmentTypeError,
     ValidationError,
 )
 from app.core.logging import get_logger
@@ -37,11 +35,9 @@ from app.schemas.api import (
     TurnResponse,
 )
 from app.services.attachment_types import (
-    is_image_extension,
     library_ref_relative_path,
     validate_attachment_content_type,
     validate_attachment_filename,
-    validate_image_magic_bytes,
 )
 
 # Backward-compatible aliases for tests that import private validators from chats.
@@ -57,13 +53,11 @@ from app.services.chat_attachment_storage import (
 )
 from app.services.chat_attachment_text import (
     ATTACHMENT_TEXT_EXCERPT_MAX,
-    excerpt_from_transcript,
     extract_attachment_text_from_path,
 )
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
 from app.services.library_service import ITEM_TYPE_DOCUMENT, ITEM_TYPE_FILE
 from app.services.share_service import share_service
-from app.services.transcription_service import transcription_service
 
 _MAX_PENDING_ATTACHMENTS = 10
 
@@ -271,27 +265,8 @@ async def upload_attachment(
             extension=ext,
         )
 
-        if is_image_extension(ext):
-            # Validate magic bytes without treating the image as text.
-            with tmp_path.open("rb") as handle:
-                header = handle.read(64)
-            try:
-                validate_image_magic_bytes(header, ext)
-            except InvalidAttachmentError:
-                cleanup_path(tmp_path)
-                tmp_path = None
-                raise
-
         try:
-            if ext in _AUDIO_EXTENSIONS:
-                try:
-                    result = await transcription_service.transcribe(tmp_path, language="en")
-                    text_excerpt, excerpt_status = excerpt_from_transcript(result.text)
-                except SilentAudioError:
-                    # Match empty document extraction: keep the file, mark excerpt empty.
-                    text_excerpt, excerpt_status = None, "empty"
-            else:
-                text_excerpt, excerpt_status = extract_attachment_text_from_path(tmp_path, ext)
+            text_excerpt, excerpt_status = extract_attachment_text_from_path(tmp_path, ext)
         except InvalidAttachmentError:
             cleanup_path(tmp_path)
             tmp_path = None

@@ -18,11 +18,11 @@ from scripts.seed import (
 ULTIMATE_SLUG = "set-7edaefc8"
 ULTIMATE_NAME = "Chafic ultimate model set"
 ULTIMATE_MODELS = [
+    "gpt-4.1",
+    "or:anthropic--claude-fable-5",
     "gemini",
-    "or:openai--gpt-5",
-    "or:anthropic--claude-opus-4",
 ]
-ULTIMATE_VERDICT = "or:openai--gpt-5.5"
+ULTIMATE_VERDICT = "gpt-4.1"
 
 
 @pytest.fixture
@@ -74,10 +74,10 @@ async def test_seed_creates_exact_models_order_and_verdict(db: AsyncSession) -> 
     assert row.best_for == "Custom model set."
 
     # Stable OpenRouter-derived ids (not environment UUIDs).
+    assert model_id_to_slug("gpt-4.1") == "openai/gpt-4.1"
+    assert model_id_to_slug("or:anthropic--claude-fable-5") == "anthropic/claude-fable-5"
     assert model_id_to_slug("gemini") == "google/gemini-2.5-pro"
-    assert model_id_to_slug("or:openai--gpt-5") == "openai/gpt-5"
-    assert model_id_to_slug("or:anthropic--claude-opus-4") == "anthropic/claude-opus-4"
-    assert model_id_to_slug("or:openai--gpt-5.5") == "openai/gpt-5.5"
+    assert model_id_to_slug(ULTIMATE_VERDICT) == "openai/gpt-4.1"
 
 
 @pytest.mark.asyncio
@@ -194,11 +194,11 @@ def test_ultimate_spec_is_present_in_system_model_sets() -> None:
     assert spec["models"] == ULTIMATE_MODELS
     assert spec["verdict_model"] == ULTIMATE_VERDICT
     assert spec["name"] == ULTIMATE_NAME
-    assert ULTIMATE_MODELS[0] == "gemini"
+    assert ULTIMATE_MODELS[0] == "gpt-4.1"
     assert ULTIMATE_MODELS == [
+        "gpt-4.1",
+        "or:anthropic--claude-fable-5",
         "gemini",
-        "or:openai--gpt-5",
-        "or:anthropic--claude-opus-4",
     ]
     assert len(ULTIMATE_MODELS) == 3
     # Missing OpenRouter models are not validated at seed time (same as other system sets);
