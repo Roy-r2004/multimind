@@ -110,6 +110,7 @@ class UsageKind(str, enum.Enum):
     INSURANCE = "insurance"
     LESSON = "lesson"
     BRAIN = "brain"
+    CHAT_MEMORY = "chat_memory"
 
 
 class LessonStatus(str, enum.Enum):
@@ -380,10 +381,23 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     pinned_verdict_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("verdicts.id", ondelete="SET NULL"), nullable=True
     )
+    # Per-chat rolling summary of turns older than the recent-history window.
+    # Separate from user-level Brain (UserBrain / BrainKnowledgeItem).
+    rolling_memory: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rolling_memory_through_turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+    rolling_memory_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     organization: Mapped["Organization"] = relationship(back_populates="chats")
     project: Mapped["Project | None"] = relationship(back_populates="chats")
-    turns: Mapped[list["Turn"]] = relationship(back_populates="chat", order_by="Turn.created_at")
+    turns: Mapped[list["Turn"]] = relationship(
+        back_populates="chat",
+        order_by="Turn.created_at",
+        foreign_keys="Turn.chat_id",
+    )
     share_links: Mapped[list["ShareLink"]] = relationship(back_populates="chat")
     pinned_verdict: Mapped["Verdict | None"] = relationship(
         "Verdict",
@@ -2021,7 +2035,10 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
-    chat: Mapped["Chat"] = relationship(back_populates="turns")
+    chat: Mapped["Chat"] = relationship(
+        back_populates="turns",
+        foreign_keys=[chat_id],
+    )
     model_answers: Mapped[list["ModelAnswer"]] = relationship(back_populates="turn")
     verdict: Mapped["Verdict | None"] = relationship(back_populates="turn")
     decision_insurance: Mapped["DecisionInsurance | None"] = relationship(back_populates="turn")
@@ -2035,12 +2052,17 @@ class ChatAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     Pending composer chips are rows with ``turn_id IS NULL``. Soft-deleting a turn
     leaves ``turn_id`` set, so linked attachments do not reappear as pending.
+
+    When ``library_item_id`` is set, the row references a Library item: the council
+    still uses ``text_excerpt``, but the physical file (if any) is owned by Library
+    storage and must not be deleted with the chat attachment.
     """
 
     __tablename__ = "chat_attachments"
     __table_args__ = (
         Index("ix_chat_attachments_org_chat", "org_id", "chat_id"),
         Index("ix_chat_attachments_turn_id", "turn_id"),
+        Index("ix_chat_attachments_library_item_id", "library_item_id"),
     )
 
     org_id: Mapped[str] = UuidFK("organizations")
@@ -2051,6 +2073,9 @@ class ChatAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     turn_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
     )
+    library_item_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("library_items.id", ondelete="SET NULL"), nullable=True
+    )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     stored_name: Mapped[str] = mapped_column(String(255), nullable=False)
     content_type: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -2060,6 +2085,105 @@ class ChatAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     excerpt_status: Mapped[str] = mapped_column(String(32), nullable=False, default="failed")
 
     turn: Mapped["Turn | None"] = relationship(back_populates="attachments")
+
+
+class LibraryFolder(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Nested folder for the user Library (independent of Saved Documents)."""
+
+    __tablename__ = "library_folders"
+    __table_args__ = (
+        Index("ix_library_folders_org_user_parent", "org_id", "user_id", "parent_id"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    parent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("library_folders.id", ondelete="CASCADE"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    parent: Mapped["LibraryFolder | None"] = relationship(
+        remote_side="LibraryFolder.id",
+        back_populates="children",
+    )
+    children: Mapped[list["LibraryFolder"]] = relationship(
+        back_populates="parent",
+    )
+
+
+class LibraryLabel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Labels for Library items only (not shared with ContentLabel)."""
+
+    __tablename__ = "library_labels"
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", "name", name="uq_library_label_org_user_name"),
+        Index("ix_library_labels_org_user", "org_id", "user_id"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    items: Mapped[list["LibraryItem"]] = relationship(
+        secondary="library_item_labels",
+        back_populates="labels",
+    )
+
+
+class LibraryItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Independent Library entry: uploaded file or MultiMind Document."""
+
+    __tablename__ = "library_items"
+    __table_args__ = (
+        Index("ix_library_items_org_user_updated", "org_id", "user_id", "updated_at"),
+        Index("ix_library_items_org_user_folder", "org_id", "user_id", "folder_id"),
+        Index("ix_library_items_org_user_favorite", "org_id", "user_id", "is_favorite"),
+        CheckConstraint(
+            "item_type IN ('file', 'document')",
+            name="ck_library_items_item_type",
+        ),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    item_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    folder_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("library_folders.id", ondelete="SET NULL"), nullable=True
+    )
+    is_favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Uploaded file fields (item_type == "file")
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stored_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    text_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    excerpt_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # MultiMind Document body (item_type == "document")
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    folder: Mapped["LibraryFolder | None"] = relationship()
+    labels: Mapped[list["LibraryLabel"]] = relationship(
+        secondary="library_item_labels",
+        back_populates="items",
+    )
+
+
+class LibraryItemLabel(Base):
+    __tablename__ = "library_item_labels"
+    __table_args__ = (
+        UniqueConstraint("item_id", "label_id", name="uq_library_item_label"),
+    )
+
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("library_items.id", ondelete="CASCADE"), primary_key=True
+    )
+    label_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("library_labels.id", ondelete="CASCADE"), primary_key=True
+    )
 
 
 class ModelAnswer(Base, UUIDPrimaryKeyMixin, TimestampMixin):

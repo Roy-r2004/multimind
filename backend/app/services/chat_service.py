@@ -51,6 +51,7 @@ from app.schemas.api import (
 )
 from app.services.brain_service import brain_service
 from app.services.chat_attachment_storage import safe_delete_attachment_files
+from app.services.chat_memory_service import chat_memory_service
 from app.services.saved_verdict_service import saved_verdict_service
 
 logger = get_logger(__name__)
@@ -124,6 +125,35 @@ async def _cancel_orchestration_task_after_commit(
 
 def _create_orchestration_task(coroutine: Any) -> asyncio.Task[None]:
     return asyncio.create_task(coroutine)
+
+
+def _create_chat_memory_task(coroutine: Any) -> asyncio.Task[None]:
+    return asyncio.create_task(coroutine)
+
+
+async def _run_chat_memory_update_best_effort(
+    *,
+    chat_id: str,
+    org_id: str,
+    project_id: str | None,
+    turn_id: str,
+) -> None:
+    try:
+        async with AsyncSessionLocal() as memory_db:
+            await chat_memory_service.merge_expired_turns(
+                memory_db,
+                chat_id=chat_id,
+                org_id=org_id,
+                project_id=project_id,
+            )
+            await memory_db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "chat_rolling_memory_update_failed",
+            chat_id=chat_id,
+            turn_id=turn_id,
+            error=str(exc),
+        )
 
 
 async def _commit_or_rollback(db: AsyncSession) -> None:
@@ -284,6 +314,7 @@ class ChatService:
                     select(ChatAttachment.relative_path).where(
                         ChatAttachment.org_id == auth.org_id,
                         ChatAttachment.chat_id == chat_id,
+                        ChatAttachment.library_item_id.is_(None),
                     )
                 )
             ).scalars().all()
@@ -905,9 +936,10 @@ class ChatService:
             query=turn.user_message,
             project_id=chat.project_id,
         )
-        previous_verdict_context = await self._latest_previous_verdict_context(
+        recent_conversation_context = await chat_memory_service.build_recent_conversation_context(
             db, chat.id, turn.id, turn.created_at
         )
+        rolling_chat_memory = (chat.rolling_memory or "").strip() or None
 
         ctx = TurnContext(
             turn_id=turn.id,
@@ -921,7 +953,8 @@ class ChatService:
             model_set_name=model_set.name,
             custom_instructions=turn.custom_instructions,
             user_brain_context=user_brain_context or None,
-            previous_verdict_context=previous_verdict_context,
+            rolling_chat_memory=rolling_chat_memory,
+            recent_conversation_context=recent_conversation_context,
             skip_answer_seed=True,
         )
 
@@ -1058,6 +1091,18 @@ class ChatService:
                     await queue.put(
                         {"type": "turn_completed", "data": final.model_dump(mode="json")}
                     )
+                    if final.status in (
+                        TurnStatus.COMPLETED.value,
+                        TurnStatus.PARTIAL.value,
+                    ):
+                        _create_chat_memory_task(
+                            _run_chat_memory_update_best_effort(
+                                chat_id=ctx.chat_id,
+                                org_id=ctx.org_id,
+                                project_id=ctx.project_id,
+                                turn_id=turn_id,
+                            )
+                        )
             except asyncio.CancelledError:
                 await queue.put({"type": "turn_deleted", "data": {"turn_id": turn_id}})
             except Exception:
@@ -1188,62 +1233,17 @@ class ChatService:
         verdict_ids = [str(turn.verdict.id) for turn in turns if turn.verdict]
         return await saved_verdict_service.saved_source_verdict_ids(db, auth, verdict_ids)
 
-    async def _latest_previous_verdict_context(
+    async def _recent_conversation_context(
         self,
         db: AsyncSession,
         chat_id: str,
         current_turn_id: str,
         current_turn_created_at: datetime | None,
     ) -> str | None:
-        filters = [
-            Turn.chat_id == chat_id,
-            Turn.id != current_turn_id,
-            Turn.deleted_at.is_(None),
-            (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
-        ]
-        if current_turn_created_at is not None:
-            filters.append(Turn.created_at < current_turn_created_at)
-
-        result = await db.execute(
-            select(Turn, Verdict)
-            .join(Verdict, Verdict.turn_id == Turn.id)
-            .where(*filters)
-            .order_by(Turn.created_at.desc())
-            .limit(1)
+        """Build recent Q/verdict/reason history for continuation prompts."""
+        return await chat_memory_service.build_recent_conversation_context(
+            db, chat_id, current_turn_id, current_turn_created_at
         )
-        row = result.first()
-        if row is None:
-            logger.debug(
-                "previous_verdict_context_lookup",
-                previous_verdict_lookup_chat_id=chat_id,
-                previous_verdict_lookup_current_turn_id=current_turn_id,
-                previous_verdict_context_found=False,
-                previous_verdict_context_chars=0,
-                previous_verdict_turn_id=None,
-            )
-            return None
-
-        previous_turn, verdict = row
-        parts = [
-            f"Previous final verdict:\n{verdict.text.strip()}",
-        ]
-        if verdict.reason:
-            parts.append(f"Previous verdict rationale:\n{verdict.reason.strip()}")
-        parts.append(
-            f"Prior user question (prior context only — do not answer this):\n{previous_turn.user_message.strip()}"
-        )
-
-        context = "\n\n".join(part for part in parts if part.strip())
-        context = context[:6000] if context else None
-        logger.debug(
-            "previous_verdict_context_lookup",
-            previous_verdict_lookup_chat_id=chat_id,
-            previous_verdict_lookup_current_turn_id=current_turn_id,
-            previous_verdict_context_found=context is not None,
-            previous_verdict_context_chars=len(context or ""),
-            previous_verdict_turn_id=previous_turn.id,
-        )
-        return context
 
     async def pin_verdict(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, verdict_id: str

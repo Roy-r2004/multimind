@@ -428,23 +428,32 @@ async def test_deleting_completed_middle_turn_removes_only_selected_related_rows
         response = await chat_service.delete_turn(
             db, db_setup.auth, db_setup.chat_id, middle.id
         )
-        context = await chat_service._latest_previous_verdict_context(
+        context = await chat_service._recent_conversation_context(
             db, db_setup.chat_id, turns[2].id, None
         )
         await db.commit()
 
     assert response.deleted is True
     assert await count_rows(db_setup.Session, Turn, id=turns[0].id) == 1
-    assert await count_rows(db_setup.Session, Turn, id=middle.id) == 0
+    assert await count_rows(db_setup.Session, Turn, id=middle.id) == 1
     assert await count_rows(db_setup.Session, Turn, id=turns[2].id) == 1
-    assert await count_rows(db_setup.Session, ModelAnswer, turn_id=middle.id) == 0
-    assert await count_rows(db_setup.Session, Verdict, turn_id=middle.id) == 0
-    assert await count_rows(db_setup.Session, CostRecord, turn_id=middle.id) == 0
-    assert await count_rows(db_setup.Session, DecisionInsurance, turn_id=middle.id) == 0
+    async with db_setup.Session() as db:
+        middle_row = await db.get(Turn, middle.id)
+    assert middle_row is not None
+    assert middle_row.deleted_at is not None
+    assert await count_rows(db_setup.Session, ModelAnswer, turn_id=middle.id) == 2
+    assert await count_rows(db_setup.Session, Verdict, turn_id=middle.id) == 1
+    assert await count_rows(db_setup.Session, CostRecord, turn_id=middle.id) == 1
+    assert await count_rows(db_setup.Session, DecisionInsurance, turn_id=middle.id) == 1
     assert await count_rows(db_setup.Session, SavedVerdict, source_turn_id=middle.id) == 1
     assert context is not None
     assert "Prompt 2" not in context
     assert "Verdict 2" not in context
+    assert "Prompt 1" in context
+    assert "Verdict 1" in context
+    assert "Answer 1A" not in context
+    assert "Answer 2A" not in context
+    assert "Answer 3A" not in context
 
 
 @pytest.mark.asyncio

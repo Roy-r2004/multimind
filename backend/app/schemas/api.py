@@ -1409,10 +1409,15 @@ class AttachmentResponse(BaseModel):
     size_bytes: int
     text_excerpt: str | None = None
     excerpt_status: str
+    library_item_id: str | None = None
 
 
 class AttachmentListResponse(BaseModel):
     items: list[AttachmentResponse]
+
+
+class AttachLibraryItemRequest(BaseModel):
+    library_item_id: str = Field(min_length=1, max_length=36)
 
 
 class VerdictDisagreeRequest(BaseModel):
@@ -1932,3 +1937,82 @@ class SavedPromptUpdateRequest(BaseModel):
     title: str | None = None
     prompt_text: str | None = None
     label_ids: list[str] | None = None
+
+
+# --- Library (independent files + MultiMind Documents) ---
+
+
+class LibraryLabelBrief(BaseModel):
+    id: str
+    name: str
+
+
+class LibraryLabelResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    item_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class LibraryLabelCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class LibraryLabelUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class LibraryFolderResponse(BaseModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LibraryFolderCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    parent_id: str | None = None
+
+
+class LibraryFolderUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    parent_id: str | None = None
+    clear_parent: bool = False
+
+
+class LibraryItemResponse(BaseModel):
+    id: str
+    item_type: str
+    title: str
+    folder_id: str | None = None
+    is_favorite: bool = False
+    original_filename: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+    excerpt_status: str | None = None
+    content_text: str | None = None
+    labels: list[LibraryLabelBrief] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class LibraryDocumentCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    content_text: str = ""
+    folder_id: str | None = None
+    label_ids: list[str] = []
+    label_names: list[str] = []
+    is_favorite: bool = False
+
+
+class LibraryItemUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    content_text: str | None = None
+    folder_id: str | None = None
+    clear_folder: bool = False
+    label_ids: list[str] | None = None
+    is_favorite: bool | None = None

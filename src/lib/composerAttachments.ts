@@ -17,9 +17,14 @@ export const COMPOSER_ATTACHMENT_EXTENSIONS = [
   ".docx",
   ".xlsx",
   ".pdf",
+  ".webm",
 ] as const;
 
 export const COMPOSER_FILE_ACCEPT = COMPOSER_ATTACHMENT_EXTENSIONS.join(",");
+
+/** Document uploads stay at 120s; audio transcription can approach the ~900s backend limit. */
+export const COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS = 120_000;
+export const COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS = 1_000_000;
 
 const EXTENSION_SET = new Set<string>(COMPOSER_ATTACHMENT_EXTENSIONS);
 
@@ -32,6 +37,7 @@ export type ComposerFileChip = {
   name: string;
   state: "uploading" | "uploaded" | "error";
   attachmentId?: string;
+  libraryItemId?: string;
   textExcerpt?: string | null;
   errorMessage?: string;
   deleting?: boolean;
@@ -78,6 +84,12 @@ export function composerAttachmentExtension(filename: string): string {
   return base.slice(dot).toLowerCase();
 }
 
+export function composerAttachmentUploadTimeoutMs(filename: string): number {
+  return composerAttachmentExtension(filename) === ".webm"
+    ? COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS
+    : COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS;
+}
+
 export function validateComposerAttachment(file: {
   name?: string | null;
   size?: number | null;
@@ -100,7 +112,7 @@ export function validateComposerAttachment(file: {
   if (!EXTENSION_SET.has(extension)) {
     return {
       ok: false,
-      message: "Unsupported file type. Upload a text file, .docx, .xlsx, or .pdf.",
+      message: "Unsupported file type. Upload a text file, .docx, .xlsx, .pdf, or .webm.",
     };
   }
   return { ok: true, extension };
@@ -144,6 +156,7 @@ export type PendingAttachmentItem = {
   id: string;
   filename: string;
   text_excerpt?: string | null;
+  library_item_id?: string | null;
 };
 
 /**
@@ -161,18 +174,26 @@ export function mergePendingAttachments(options: {
       .map((file) => file.attachmentId)
       .filter((id): id is string => Boolean(id)),
   );
+  const knownLibraryIds = new Set(
+    current
+      .map((file) => file.libraryItemId)
+      .filter((id): id is string => Boolean(id)),
+  );
 
   const additions: ComposerFileChip[] = [];
   const seenServerIds = new Set<string>();
   for (const item of serverPending) {
     if (!item.id || seenServerIds.has(item.id) || knownAttachmentIds.has(item.id)) continue;
+    if (item.library_item_id && knownLibraryIds.has(item.library_item_id)) continue;
     seenServerIds.add(item.id);
     knownAttachmentIds.add(item.id);
+    if (item.library_item_id) knownLibraryIds.add(item.library_item_id);
     additions.push({
       localId: item.id,
       name: item.filename,
       state: "uploaded",
       attachmentId: item.id,
+      libraryItemId: item.library_item_id ?? undefined,
       textExcerpt: item.text_excerpt ?? null,
     });
   }

@@ -12,6 +12,7 @@ from app.api.v1 import (
     costs,
     health,
     lessons,
+    library,
     maps,
     model_sets,
     models,
@@ -40,6 +41,7 @@ api_router.include_router(saved_verdicts.router, prefix="/saved-verdicts", tags=
 api_router.include_router(content_labels.router, prefix="/content-labels", tags=["content-labels"])
 api_router.include_router(saved_documents.router, prefix="/saved-documents", tags=["saved-documents"])
 api_router.include_router(saved_prompts.router, prefix="/saved-prompts", tags=["saved-prompts"])
+api_router.include_router(library.router, prefix="/library", tags=["library"])
 api_router.include_router(share.router, prefix="/share", tags=["share"])
 api_router.include_router(model_sets.router, prefix="/model-sets", tags=["model-sets"])
 api_router.include_router(templates.router, prefix="/templates", tags=["templates"])
