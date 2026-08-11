@@ -491,6 +491,41 @@ test("existing-chat upload does not create a chat and still uploads", async () =
   assert.equal(files[0]?.attachmentId, "att-chat-existing");
 });
 
+test("webm file reaches uploadAttachment instead of validation-error path", async () => {
+  const file = { name: "multimind-recording-2026-08-11-09-53-42.webm", size: 2048 } as File;
+  const retainRef = { current: null as string | null };
+  let files: ComposerFileChip[] = [];
+  const uploadCalls: string[] = [];
+  const validationErrors: string[] = [];
+
+  const result = await runComposerUploads([file], {
+    activeChatId: "chat-existing",
+    retainRef,
+    getActiveChatId: () => "chat-existing",
+    getFiles: () => files,
+    setFiles: (updater) => {
+      files = updater(files);
+    },
+    createChat: async () => "should-not-run",
+    uploadAttachment: async (chatId, uploadedFile) => {
+      uploadCalls.push(`${chatId}:${uploadedFile.name}`);
+      return { id: "att-webm", text_excerpt: "hello from webm" };
+    },
+    onValidationError: (fileName, message) => {
+      validationErrors.push(`${fileName}:${message}`);
+    },
+  });
+
+  assert.equal(result.uploadAttempts, 1);
+  assert.deepEqual(uploadCalls, [
+    "chat-existing:multimind-recording-2026-08-11-09-53-42.webm",
+  ]);
+  assert.deepEqual(validationErrors, []);
+  assert.equal(files[0]?.state, "uploaded");
+  assert.equal(files[0]?.attachmentId, "att-webm");
+  assert.equal(files[0]?.textExcerpt, "hello from webm");
+});
+
 test("switching to another existing chat still clears chips", () => {
   assert.equal(
     shouldClearComposerFilesOnChatChange({

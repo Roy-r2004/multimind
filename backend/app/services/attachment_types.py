@@ -24,7 +24,10 @@ TEXT_EXTENSIONS = frozenset(
 OFFICE_EXTENSIONS = frozenset({".docx", ".xlsx"})
 PDF_EXTENSIONS = frozenset({".pdf"})
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+AUDIO_EXTENSIONS = frozenset({".webm"})
+# Library uploads share this allowlist; chat attachments may also include AUDIO_EXTENSIONS.
 ALLOWED_EXTENSIONS = TEXT_EXTENSIONS | OFFICE_EXTENSIONS | PDF_EXTENSIONS | IMAGE_EXTENSIONS
+CHAT_ALLOWED_EXTENSIONS = ALLOWED_EXTENSIONS | AUDIO_EXTENSIONS
 LEGACY_OFFICE_EXTENSIONS = frozenset({".doc", ".xls", ".docm", ".xlsm"})
 
 TEXT_CONTENT_TYPES = frozenset(
@@ -54,10 +57,24 @@ IMAGE_CONTENT_TYPES = frozenset(
     }
 )
 GENERIC_BINARY_TYPE = "application/octet-stream"
+WEBM_CONTENT_TYPE = "audio/webm"
+# Browsers/OS (and Python mimetypes.guess_type) often label .webm as video/webm
+# even for audio-only MediaRecorder output.
+WEBM_CONTENT_TYPES = frozenset(
+    {
+        WEBM_CONTENT_TYPE,
+        "video/webm",
+        GENERIC_BINARY_TYPE,
+    }
+)
 
 UNSUPPORTED_TYPE_MESSAGE = (
     "Unsupported file type. Upload a text file, .docx, .xlsx, .pdf, or image "
     "(.png, .jpg, .jpeg, .webp)."
+)
+UNSUPPORTED_TYPE_MESSAGE_WITH_AUDIO = (
+    "Unsupported file type. Upload a text file, .docx, .xlsx, .pdf, image "
+    "(.png, .jpg, .jpeg, .webp), or .webm."
 )
 
 # Pending chat attachment rows that reference a Library item use this path prefix
@@ -79,6 +96,10 @@ def is_image_extension(ext: str) -> bool:
     return ext.lower() in IMAGE_EXTENSIONS
 
 
+def is_audio_extension(ext: str) -> bool:
+    return ext.lower() in AUDIO_EXTENSIONS
+
+
 def image_media_type_for_extension(ext: str) -> str:
     return IMAGE_MEDIA_TYPE_BY_EXT.get(ext.lower(), "application/octet-stream")
 
@@ -89,7 +110,12 @@ def normalize_media_type(content_type: str | None) -> str:
     return content_type.split(";", 1)[0].strip().lower()
 
 
-def validate_attachment_filename(filename: str | None) -> tuple[str, str]:
+def validate_attachment_filename(
+    filename: str | None, *, allow_audio: bool = False
+) -> tuple[str, str]:
+    unsupported_message = (
+        UNSUPPORTED_TYPE_MESSAGE_WITH_AUDIO if allow_audio else UNSUPPORTED_TYPE_MESSAGE
+    )
     if filename is None:
         raise InvalidAttachmentError("A valid filename is required")
     if "\x00" in filename:
@@ -104,14 +130,15 @@ def validate_attachment_filename(filename: str | None) -> tuple[str, str]:
         raise InvalidAttachmentError("A valid filename is required")
     ext = Path(basename).suffix.lower()
     if not ext:
-        raise UnsupportedAttachmentTypeError(UNSUPPORTED_TYPE_MESSAGE)
+        raise UnsupportedAttachmentTypeError(unsupported_message)
     if ext in LEGACY_OFFICE_EXTENSIONS:
         raise UnsupportedAttachmentTypeError(
             "Legacy Word/Excel formats (.doc, .xls) are not supported. "
             "Upload .docx or .xlsx instead."
         )
-    if ext not in ALLOWED_EXTENSIONS:
-        raise UnsupportedAttachmentTypeError(UNSUPPORTED_TYPE_MESSAGE)
+    allowed = CHAT_ALLOWED_EXTENSIONS if allow_audio else ALLOWED_EXTENSIONS
+    if ext not in allowed:
+        raise UnsupportedAttachmentTypeError(unsupported_message)
     return basename, ext
 
 
@@ -120,8 +147,12 @@ def validate_attachment_content_type(
 ) -> str:
     normalized = normalize_media_type(content_type)
     if not normalized:
-        guessed = mimetypes.guess_type(filename)[0]
-        normalized = (guessed or GENERIC_BINARY_TYPE).lower()
+        # For .webm, prefer audio/webm: mimetypes.guess_type(".webm") returns video/webm.
+        if ext == ".webm":
+            normalized = WEBM_CONTENT_TYPE
+        else:
+            guessed = mimetypes.guess_type(filename)[0]
+            normalized = (guessed or GENERIC_BINARY_TYPE).lower()
 
     if ext in TEXT_EXTENSIONS:
         if normalized in TEXT_CONTENT_TYPES or normalized == GENERIC_BINARY_TYPE:
@@ -150,6 +181,11 @@ def validate_attachment_content_type(
                 return image_media_type_for_extension(ext)
             return normalized
         raise UnsupportedAttachmentTypeError(UNSUPPORTED_TYPE_MESSAGE)
+
+    if ext in AUDIO_EXTENSIONS:
+        if normalized in WEBM_CONTENT_TYPES:
+            return normalized
+        raise UnsupportedAttachmentTypeError(UNSUPPORTED_TYPE_MESSAGE_WITH_AUDIO)
 
     raise UnsupportedAttachmentTypeError(UNSUPPORTED_TYPE_MESSAGE)
 
