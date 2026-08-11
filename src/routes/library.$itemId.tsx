@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Download,
   Loader2,
   Paperclip,
   Save,
@@ -17,15 +18,21 @@ import { api } from "@/lib/api";
 import type { ApiLibraryFolder, ApiLibraryItem, ApiLibraryLabel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 import { attachLibraryItemViaApi } from "@/lib/libraryAttach";
+import { libraryFileContentView, libraryItemOpensDetail } from "@/lib/libraryContent";
+import {
+  formatLibraryBytes,
+  formatLibraryUpdatedAt,
+  libraryItemTypeLabel,
+} from "@/lib/libraryUi";
 import { useChatStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/library/$itemId")({
-  head: () => ({ meta: [{ title: "Library Document — MultiAI" }] }),
-  component: LibraryDocumentPage,
+  head: () => ({ meta: [{ title: "Library Item — MultiAI" }] }),
+  component: LibraryItemPage,
 });
 
-function LibraryDocumentPage() {
+function LibraryItemPage() {
   const { itemId } = Route.useParams();
   const { authHeaders } = useAuth();
   const navigate = useNavigate();
@@ -41,38 +48,53 @@ function LibraryDocumentPage() {
   const [selectedLabelIds, setSelectedLabelIds] = useState<string[]>([]);
   const [newLabel, setNewLabel] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  const isDocument = item?.item_type === "document";
+  const isFile = item?.item_type === "file";
 
   const load = useCallback(async () => {
     const auth = authHeaders();
     if (!auth) {
       setLoading(false);
+      setItem(null);
+      setLoadError("Sign in to open this Library item.");
       return;
     }
     setLoading(true);
+    setLoadError(null);
     try {
-      const [doc, folderList, labelList] = await Promise.all([
+      const [loaded, folderList, labelList] = await Promise.all([
         api.library.getItem(auth, itemId),
         api.library.listFolders(auth),
         api.library.listLabels(auth),
       ]);
-      if (doc.item_type !== "document") {
-        toast.error("Only MultiMind Documents can be edited here");
+      if (!libraryItemOpensDetail(loaded.item_type)) {
+        const message = "This Library item cannot be opened here";
+        toast.error(message);
+        setItem(null);
+        setLoadError(message);
         await navigate({ to: "/library" });
         return;
       }
-      setItem(doc);
-      setTitle(doc.title);
-      setContent(doc.content_text ?? "");
-      setFolderId(doc.folder_id ?? null);
-      setSelectedLabelIds(doc.labels.map((label) => label.id));
+      setItem(loaded);
+      setTitle(loaded.title);
+      setContent(loaded.content_text ?? "");
+      setFolderId(loaded.folder_id ?? null);
+      setSelectedLabelIds(loaded.labels.map((label) => label.id));
       setFolders(folderList);
       setLabels(labelList);
       setDirty(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to load document");
+      const message =
+        error instanceof Error ? error.message : "Failed to load Library item";
+      toast.error(message);
+      setItem(null);
+      setLoadError(message);
       await navigate({ to: "/library" });
     } finally {
       setLoading(false);
@@ -95,13 +117,16 @@ function LibraryDocumentPage() {
         setNewLabel("");
         setLabels((prev) => [...prev, created]);
       }
-      const updated = await api.library.updateItem(auth, item.id, {
+      const payload: Parameters<typeof api.library.updateItem>[2] = {
         title: title.trim() || item.title,
-        content_text: content,
         folder_id: folderId || undefined,
         clear_folder: !folderId,
         label_ids: labelIds,
-      });
+      };
+      if (item.item_type === "document") {
+        payload.content_text = content;
+      }
+      const updated = await api.library.updateItem(auth, item.id, payload);
       setItem(updated);
       setTitle(updated.title);
       setContent(updated.content_text ?? "");
@@ -139,6 +164,34 @@ function LibraryDocumentPage() {
       await navigate({ to: "/library" });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Delete failed");
+    }
+  }
+
+  async function downloadFile() {
+    const auth = authHeaders();
+    if (!auth || !item || item.item_type !== "file") return;
+    setDownloading(true);
+    try {
+      const base = import.meta.env.VITE_API_URL ?? "/api/v1";
+      const response = await fetch(`${base}/library/items/${item.id}/download`, {
+        headers: auth,
+      });
+      if (!response.ok) {
+        throw new Error("Download failed");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = item.original_filename || item.title;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Download failed");
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -184,13 +237,32 @@ function LibraryDocumentPage() {
       <AppShell>
         <div className="flex items-center justify-center gap-2 py-24 text-muted-foreground">
           <Loader2 className="size-4 animate-spin" />
-          Loading document…
+          Loading…
         </div>
       </AppShell>
     );
   }
 
-  if (!item) return null;
+  if (!item) {
+    return (
+      <AppShell>
+        <div className="mx-auto flex w-full max-w-4xl flex-col items-start gap-4 px-4 py-8 md:px-8">
+          <Link
+            to="/library"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="size-4" />
+            Back to Library
+          </Link>
+          <p className="text-sm text-muted-foreground">
+            {loadError ?? "This Library item could not be loaded."}
+          </p>
+        </div>
+      </AppShell>
+    );
+  }
+
+  const fileContent = isFile ? libraryFileContentView(item) : null;
 
   return (
     <AppShell>
@@ -217,6 +289,21 @@ function LibraryDocumentPage() {
                 )}
               />
             </button>
+            {isFile && (
+              <button
+                type="button"
+                onClick={() => void downloadFile()}
+                disabled={downloading}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+              >
+                {downloading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Download className="size-4" />
+                )}
+                Download
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void attachToChat()}
@@ -251,21 +338,35 @@ function LibraryDocumentPage() {
         </div>
 
         <GlassCard className="space-y-4 p-5">
-          <input
-            value={title}
-            onChange={(e) => {
-              setTitle(e.target.value);
-              setDirty(true);
-            }}
-            className="w-full border-0 bg-transparent font-display text-2xl font-semibold outline-none"
-            placeholder="Document title"
-          />
+          {isDocument ? (
+            <input
+              value={title}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                setDirty(true);
+              }}
+              className="w-full border-0 bg-transparent font-display text-2xl font-semibold outline-none"
+              placeholder="Document title"
+            />
+          ) : (
+            <div>
+              <h1 className="font-display text-2xl font-semibold">{item.title}</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {libraryItemTypeLabel(item)}
+                {item.size_bytes != null ? ` · ${formatLibraryBytes(item.size_bytes)}` : ""}
+                {item.original_filename && item.original_filename !== item.title
+                  ? ` · ${item.original_filename}`
+                  : ""}
+                {item.updated_at ? ` · Updated ${formatLibraryUpdatedAt(item.updated_at)}` : ""}
+              </p>
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="library-doc-folder">Folder</Label>
+              <Label htmlFor="library-item-folder">Folder</Label>
               <LibraryFolderSelect
-                id="library-doc-folder"
+                id="library-item-folder"
                 folders={folders}
                 value={folderId}
                 onChange={(next) => {
@@ -305,19 +406,42 @@ function LibraryDocumentPage() {
             </div>
           </div>
 
-          <textarea
-            value={content}
-            onChange={(e) => {
-              setContent(e.target.value);
-              setDirty(true);
-            }}
-            rows={22}
-            placeholder="Write your document…"
-            className="w-full resize-y rounded-lg border border-border bg-background/60 px-3 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-2 focus:ring-ring"
-          />
-          <p className="text-[11px] text-muted-foreground">
-            {dirty ? "Unsaved changes" : "All changes saved"} · MultiMind Document
-          </p>
+          {isDocument ? (
+            <>
+              <textarea
+                value={content}
+                onChange={(e) => {
+                  setContent(e.target.value);
+                  setDirty(true);
+                }}
+                rows={22}
+                placeholder="Write your document…"
+                className="w-full resize-y rounded-lg border border-border bg-background/60 px-3 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-2 focus:ring-ring"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                {dirty ? "Unsaved changes" : "All changes saved"} · MultiMind Document
+              </p>
+            </>
+          ) : (
+            <section className="space-y-2">
+              <h2 className="text-sm font-medium text-foreground">Content</h2>
+              {fileContent?.kind === "text" ? (
+                <div className="max-h-[min(70vh,40rem)] overflow-auto rounded-lg border border-border bg-background/60 px-3 py-3">
+                  <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
+                    {fileContent.text}
+                  </pre>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-border bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
+                  {fileContent?.message ??
+                    "Preview is not available for this file. Download it to view it."}
+                </div>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                {dirty ? "Unsaved changes" : "Read-only file preview"} · Uploaded file
+              </p>
+            </section>
+          )}
         </GlassCard>
       </div>
     </AppShell>

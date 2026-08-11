@@ -228,3 +228,71 @@ async def test_attach_library_item_to_chat_and_reject_cross_org(
             json={"library_item_id": item_id},
         )
         assert rejected.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_library_item_detail_returns_document_content_and_file_excerpt(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "library_file_dir", str(tmp_path / "library"))
+    async with await _client_for(db, auth) as client:
+        doc = await client.post(
+            "/api/v1/library/items/documents",
+            json={
+                "title": "Editable Doc",
+                "content_text": "Full document body for viewing",
+            },
+        )
+        assert doc.status_code == 201
+        doc_id = doc.json()["id"]
+
+        uploaded = await client.post(
+            "/api/v1/library/items/upload",
+            files={"file": ("brief.txt", BytesIO(b"Extracted file body"), "text/plain")},
+            data={"title": "Brief"},
+        )
+        assert uploaded.status_code == 201
+        file_id = uploaded.json()["id"]
+
+        doc_detail = await client.get(f"/api/v1/library/items/{doc_id}")
+        assert doc_detail.status_code == 200
+        doc_body = doc_detail.json()
+        assert doc_body["item_type"] == "document"
+        assert doc_body["content_text"] == "Full document body for viewing"
+        assert doc_body["text_excerpt"] == "Full document body for viewing"
+
+        file_detail = await client.get(f"/api/v1/library/items/{file_id}")
+        assert file_detail.status_code == 200
+        file_body = file_detail.json()
+        assert file_body["item_type"] == "file"
+        assert file_body["content_text"] is None
+        assert file_body["text_excerpt"] == "Extracted file body"
+        assert file_body["excerpt_status"] == "ready"
+
+        listed = await client.get("/api/v1/library/items")
+        assert listed.status_code == 200
+        by_id = {row["id"]: row for row in listed.json()}
+        assert by_id[doc_id]["content_text"] is None
+        assert by_id[doc_id].get("text_excerpt") is None
+        assert by_id[file_id]["content_text"] is None
+        assert by_id[file_id].get("text_excerpt") is None
+
+
+@pytest.mark.asyncio
+async def test_library_file_detail_org_isolation(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "library_file_dir", str(tmp_path / "library"))
+    other = await create_other_auth(db)
+    async with await _client_for(db, auth) as client:
+        uploaded = await client.post(
+            "/api/v1/library/items/upload",
+            files={"file": ("secret.txt", BytesIO(b"org private"), "text/plain")},
+        )
+        item_id = uploaded.json()["id"]
+
+    async with await _client_for(db, other) as other_client:
+        fetched = await other_client.get(f"/api/v1/library/items/{item_id}")
+        assert fetched.status_code == 404
+        downloaded = await other_client.get(f"/api/v1/library/items/{item_id}/download")
+        assert downloaded.status_code == 404

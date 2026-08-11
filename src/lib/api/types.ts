@@ -594,6 +594,7 @@ export type ApiLibraryItem = {
   size_bytes?: number | null;
   excerpt_status?: string | null;
   content_text?: string | null;
+  text_excerpt?: string | null;
   labels: { id: string; name: string }[];
   created_at: string;
   updated_at: string;
