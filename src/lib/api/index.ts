@@ -1,7 +1,6 @@
 /** Typed API methods — one function per backend endpoint */
 
 import { apiFormRequest, apiRequest } from "@/lib/api/client";
-import { composerAttachmentUploadTimeoutMs } from "@/lib/composerAttachments";
 import type {
   ApiChat,
   ApiCostSummary,
@@ -162,14 +161,10 @@ export const api = {
   chats: {
     list: (auth: Auth) => apiRequest<ApiChat[]>("/chats", { token: auth.token, orgId: auth.orgId }),
 
-    create: (auth: Auth, data: { title?: string; project_id?: string | null; model_set_id?: string | null }) =>
+    create: (auth: Auth, data: { title?: string; project_id?: string | null }) =>
       apiRequest<ApiChat>("/chats", { body: data, token: auth.token, orgId: auth.orgId }),
 
-    update: (
-      auth: Auth,
-      chatId: string,
-      data: { title?: string; project_id?: string | null; model_set_id?: string | null },
-    ) =>
+    update: (auth: Auth, chatId: string, data: { title?: string; project_id?: string | null }) =>
       apiRequest<ApiChat>(`/chats/${chatId}`, {
         method: "PATCH",
         body: data,
@@ -260,8 +255,7 @@ export const api = {
         formData,
         token: auth.token,
         orgId: auth.orgId,
-        // .webm transcription runs inside this request; documents keep the short timeout.
-        timeoutMs: composerAttachmentUploadTimeoutMs(file.name),
+        timeoutMs: 120_000,
       });
     },
 
