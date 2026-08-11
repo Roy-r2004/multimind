@@ -37,6 +37,7 @@ import { GlassCard, ModelPill, CinematicBackdrop } from "@/components/cinematic/
 import ModelSetModal from "@/components/ModelSetModal";
 import { PromptBuilderModal } from "@/components/chat/PromptBuilderModal";
 import { ChatReferenceModal, type ChatReferencePick } from "@/components/chat/ChatReferenceModal";
+import { createTurnReferenceFields, shouldClearReferenceAfterSend } from "@/lib/chatReference";
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
@@ -174,37 +175,6 @@ function transcriptInsertion(
     value: `${before}${insertion}${after}`,
     cursor: before.length + prefix.length + transcript.length,
   };
-}
-
-async function buildComposerInstructions(
-  auth: { token: string; orgId: string },
-  ref: ChatReferencePick | null,
-): Promise<string | undefined> {
-  const parts: string[] = [];
-  if (ref) {
-    if (ref.mode === "full") {
-      try {
-        const turns = await api.chats.listTurns(auth, ref.chatId);
-        const excerpt = turns
-          .slice(-4)
-          .map((t) =>
-            `User: ${t.user_message}\n${t.verdict?.text ? `Verdict: ${t.verdict.text}` : ""}`.trim(),
-          )
-          .join("\n\n");
-        parts.push(
-          `The user is continuing from chat "${ref.title}". Prior context:\n${excerpt || "(empty chat)"}`,
-        );
-      } catch {
-        parts.push(`The user is continuing from a previous chat titled "${ref.title}".`);
-      }
-    } else {
-      parts.push(
-        `The user is continuing from a previous chat titled "${ref.title}". Keep that thread in mind.`,
-      );
-    }
-  }
-  const text = parts.join("\n\n").trim();
-  return text || undefined;
 }
 
 const SYSTEM_MODEL_SETS = new Set([
@@ -628,16 +598,17 @@ export function ChatPage() {
         setInput(question);
         return;
       }
-      const customInstructions = await buildComposerInstructions(auth, refChat);
       const pending = await api.chats.createTurn(auth, chatId, {
         user_message: question,
         model_set_id: set.id,
-        custom_instructions: customInstructions,
         attachment_ids: uploadedIds,
+        ...createTurnReferenceFields(refChat),
       });
       applyChatActivityFromTurn(pending);
       scrollThreadToLatest("smooth");
-      setRefChat(null);
+      if (shouldClearReferenceAfterSend(true)) {
+        setRefChat(null);
+      }
       setFiles((prev) => removeSubmittedComposerFiles(prev, uploadedIds));
       void runTurnInBackground(auth, chatId, pending).catch((error) => {
         console.error(error);
@@ -1142,9 +1113,7 @@ export function ChatPage() {
             {refChat && (
               <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
                 <Link2 className="size-3 text-primary" />
-                <span>
-                  Ref: {refChat.title} ({refChat.mode})
-                </span>
+                <span>Ref: {refChat.title}</span>
                 <button
                   type="button"
                   onClick={() => setRefChat(null)}
@@ -1280,7 +1249,7 @@ export function ChatPage() {
                       />
                       <ComposerMenuItem
                         icon={Link2}
-                        label="Add reference chat"
+                        label="Continue from chat"
                         onClick={() => {
                           setShowPlus(false);
                           setShowRef(true);
