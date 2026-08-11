@@ -4,16 +4,16 @@ Residential/inpatient capacity (number of beds), extracted during detail
 enrichment the same way treatment_price already is — a stated fact from web
 evidence, null when a facility doesn't publish it.
 
-Revision ID: 044
-Revises: 043
+Revision ID: 047
+Revises: 046
 Create Date: 2026-08-07
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "044"
-down_revision = "043"
+revision = "047"
+down_revision = "046"
 branch_labels = None
 depends_on = None
 
