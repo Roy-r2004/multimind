@@ -1998,6 +1998,7 @@ class LibraryItemResponse(BaseModel):
     size_bytes: int | None = None
     excerpt_status: str | None = None
     content_text: str | None = None
+    text_excerpt: str | None = None
     labels: list[LibraryLabelBrief] = []
     created_at: datetime
     updated_at: datetime

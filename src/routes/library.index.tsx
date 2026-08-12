@@ -48,7 +48,7 @@ import {
 import { useChatStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/library")({
+export const Route = createFileRoute("/library/")({
   head: () => ({ meta: [{ title: "Library — MultiAI" }] }),
   component: LibraryPage,
 });
@@ -544,17 +544,13 @@ function LibraryPage() {
                         <div className="flex items-start gap-3">
                           <ItemIcon item={item} />
                           <div className="min-w-0">
-                            {item.item_type === "document" ? (
-                              <Link
-                                to="/library/$itemId"
-                                params={{ itemId: item.id }}
-                                className="truncate font-medium hover:underline"
-                              >
-                                {item.title}
-                              </Link>
-                            ) : (
-                              <p className="truncate font-medium">{item.title}</p>
-                            )}
+                            <Link
+                              to="/library/$itemId"
+                              params={{ itemId: item.id }}
+                              className="truncate font-medium hover:underline"
+                            >
+                              {item.title}
+                            </Link>
                             <p className="mt-0.5 text-xs text-muted-foreground">
                               {libraryItemTypeLabel(item)}
                               {item.size_bytes != null ? ` · ${formatLibraryBytes(item.size_bytes)}` : ""}

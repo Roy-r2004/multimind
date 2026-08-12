@@ -14,7 +14,7 @@ import { Route as AdminRouteRouteImport } from './routes/admin/route'
 import { Route as BrainRouteImport } from './routes/brain'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as LessonsRouteRouteImport } from './routes/lessons.route'
-import { Route as LibraryRouteImport } from './routes/library'
+import { Route as LibraryRouteRouteImport } from './routes/library.route'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as MapsRouteRouteImport } from './routes/maps.route'
 import { Route as ModelSetsRouteImport } from './routes/model-sets'
@@ -39,6 +39,7 @@ import { Route as AdminUsersRouteImport } from './routes/admin/users'
 import { Route as ChatHistoryRouteImport } from './routes/chat.history'
 import { Route as LessonsIndexRouteImport } from './routes/lessons.index'
 import { Route as LessonsIdRouteImport } from './routes/lessons.$id'
+import { Route as LibraryIndexRouteImport } from './routes/library.index'
 import { Route as LibraryItemIdRouteImport } from './routes/library.$itemId'
 import { Route as MapsIndexRouteImport } from './routes/maps.index'
 import { Route as MapsRunIdRouteImport } from './routes/maps.$runId'
@@ -85,7 +86,7 @@ const LessonsRouteRoute = LessonsRouteRouteImport.update({
   path: '/lessons',
   getParentRoute: () => rootRouteImport,
 } as any)
-const LibraryRoute = LibraryRouteImport.update({
+const LibraryRouteRoute = LibraryRouteRouteImport.update({
   id: '/library',
   path: '/library',
   getParentRoute: () => rootRouteImport,
@@ -210,10 +211,15 @@ const LessonsIdRoute = LessonsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => LessonsRouteRoute,
 } as any)
+const LibraryIndexRoute = LibraryIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
 const LibraryItemIdRoute = LibraryItemIdRouteImport.update({
   id: '/$itemId',
   path: '/$itemId',
-  getParentRoute: () => LibraryRoute,
+  getParentRoute: () => LibraryRouteRoute,
 } as any)
 const MapsIndexRoute = MapsIndexRouteImport.update({
   id: '/',
@@ -320,12 +326,12 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteRouteWithChildren
   '/lessons': typeof LessonsRouteRouteWithChildren
+  '/library': typeof LibraryRouteRouteWithChildren
   '/maps': typeof MapsRouteRouteWithChildren
   '/projects': typeof ProjectsRouteRouteWithChildren
   '/scraping': typeof ScrapingRouteRouteWithChildren
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRouteWithChildren
-  '/library': typeof LibraryRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
@@ -354,6 +360,7 @@ export interface FileRoutesByFullPath {
   '/shared/$token': typeof SharedTokenRoute
   '/admin/': typeof AdminIndexRoute
   '/lessons/': typeof LessonsIndexRoute
+  '/library/': typeof LibraryIndexRoute
   '/maps/': typeof MapsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/scraping/': typeof ScrapingIndexRoute
@@ -372,7 +379,6 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRouteWithChildren
-  '/library': typeof LibraryRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
@@ -400,6 +406,7 @@ export interface FileRoutesByTo {
   '/shared/$token': typeof SharedTokenRoute
   '/admin': typeof AdminIndexRoute
   '/lessons': typeof LessonsIndexRoute
+  '/library': typeof LibraryIndexRoute
   '/maps': typeof MapsIndexRoute
   '/projects': typeof ProjectsIndexRoute
   '/scraping': typeof ScrapingIndexRoute
@@ -418,12 +425,12 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteRouteWithChildren
   '/lessons': typeof LessonsRouteRouteWithChildren
+  '/library': typeof LibraryRouteRouteWithChildren
   '/maps': typeof MapsRouteRouteWithChildren
   '/projects': typeof ProjectsRouteRouteWithChildren
   '/scraping': typeof ScrapingRouteRouteWithChildren
   '/brain': typeof BrainRoute
   '/chat': typeof ChatRouteWithChildren
-  '/library': typeof LibraryRouteWithChildren
   '/login': typeof LoginRoute
   '/model-sets': typeof ModelSetsRoute
   '/saved-documents': typeof SavedDocumentsRoute
@@ -452,6 +459,7 @@ export interface FileRoutesById {
   '/shared/$token': typeof SharedTokenRoute
   '/admin/': typeof AdminIndexRoute
   '/lessons/': typeof LessonsIndexRoute
+  '/library/': typeof LibraryIndexRoute
   '/maps/': typeof MapsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/scraping/': typeof ScrapingIndexRoute
@@ -472,12 +480,12 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/lessons'
+    | '/library'
     | '/maps'
     | '/projects'
     | '/scraping'
     | '/brain'
     | '/chat'
-    | '/library'
     | '/login'
     | '/model-sets'
     | '/saved-documents'
@@ -506,6 +514,7 @@ export interface FileRouteTypes {
     | '/shared/$token'
     | '/admin/'
     | '/lessons/'
+    | '/library/'
     | '/maps/'
     | '/projects/'
     | '/scraping/'
@@ -524,7 +533,6 @@ export interface FileRouteTypes {
     | '/'
     | '/brain'
     | '/chat'
-    | '/library'
     | '/login'
     | '/model-sets'
     | '/saved-documents'
@@ -552,6 +560,7 @@ export interface FileRouteTypes {
     | '/shared/$token'
     | '/admin'
     | '/lessons'
+    | '/library'
     | '/maps'
     | '/projects'
     | '/scraping'
@@ -569,12 +578,12 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/lessons'
+    | '/library'
     | '/maps'
     | '/projects'
     | '/scraping'
     | '/brain'
     | '/chat'
-    | '/library'
     | '/login'
     | '/model-sets'
     | '/saved-documents'
@@ -603,6 +612,7 @@ export interface FileRouteTypes {
     | '/shared/$token'
     | '/admin/'
     | '/lessons/'
+    | '/library/'
     | '/maps/'
     | '/projects/'
     | '/scraping/'
@@ -622,12 +632,12 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRouteRoute: typeof AdminRouteRouteWithChildren
   LessonsRouteRoute: typeof LessonsRouteRouteWithChildren
+  LibraryRouteRoute: typeof LibraryRouteRouteWithChildren
   MapsRouteRoute: typeof MapsRouteRouteWithChildren
   ProjectsRouteRoute: typeof ProjectsRouteRouteWithChildren
   ScrapingRouteRoute: typeof ScrapingRouteRouteWithChildren
   BrainRoute: typeof BrainRoute
   ChatRoute: typeof ChatRouteWithChildren
-  LibraryRoute: typeof LibraryRouteWithChildren
   LoginRoute: typeof LoginRoute
   ModelSetsRoute: typeof ModelSetsRoute
   SavedDocumentsRoute: typeof SavedDocumentsRoute
@@ -679,7 +689,7 @@ declare module '@tanstack/react-router' {
       id: '/library'
       path: '/library'
       fullPath: '/library'
-      preLoaderRoute: typeof LibraryRouteImport
+      preLoaderRoute: typeof LibraryRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -850,12 +860,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LessonsIdRouteImport
       parentRoute: typeof LessonsRouteRoute
     }
+    '/library/': {
+      id: '/library/'
+      path: '/'
+      fullPath: '/library/'
+      preLoaderRoute: typeof LibraryIndexRouteImport
+      parentRoute: typeof LibraryRouteRoute
+    }
     '/library/$itemId': {
       id: '/library/$itemId'
       path: '/$itemId'
       fullPath: '/library/$itemId'
       preLoaderRoute: typeof LibraryItemIdRouteImport
-      parentRoute: typeof LibraryRoute
+      parentRoute: typeof LibraryRouteRoute
     }
     '/maps/': {
       id: '/maps/'
@@ -1067,6 +1084,20 @@ const LessonsRouteRouteWithChildren = LessonsRouteRoute._addFileChildren(
   LessonsRouteRouteChildren,
 )
 
+interface LibraryRouteRouteChildren {
+  LibraryItemIdRoute: typeof LibraryItemIdRoute
+  LibraryIndexRoute: typeof LibraryIndexRoute
+}
+
+const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
+  LibraryItemIdRoute: LibraryItemIdRoute,
+  LibraryIndexRoute: LibraryIndexRoute,
+}
+
+const LibraryRouteRouteWithChildren = LibraryRouteRoute._addFileChildren(
+  LibraryRouteRouteChildren,
+)
+
 interface MapsRouteRouteChildren {
   MapsRunIdRoute: typeof MapsRunIdRoute
   MapsNewRoute: typeof MapsNewRoute
@@ -1161,27 +1192,16 @@ const ChatRouteChildren: ChatRouteChildren = {
 
 const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
 
-interface LibraryRouteChildren {
-  LibraryItemIdRoute: typeof LibraryItemIdRoute
-}
-
-const LibraryRouteChildren: LibraryRouteChildren = {
-  LibraryItemIdRoute: LibraryItemIdRoute,
-}
-
-const LibraryRouteWithChildren =
-  LibraryRoute._addFileChildren(LibraryRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRouteRoute: AdminRouteRouteWithChildren,
   LessonsRouteRoute: LessonsRouteRouteWithChildren,
+  LibraryRouteRoute: LibraryRouteRouteWithChildren,
   MapsRouteRoute: MapsRouteRouteWithChildren,
   ProjectsRouteRoute: ProjectsRouteRouteWithChildren,
   ScrapingRouteRoute: ScrapingRouteRouteWithChildren,
   BrainRoute: BrainRoute,
   ChatRoute: ChatRouteWithChildren,
-  LibraryRoute: LibraryRouteWithChildren,
   LoginRoute: LoginRoute,
   ModelSetsRoute: ModelSetsRoute,
   SavedDocumentsRoute: SavedDocumentsRoute,

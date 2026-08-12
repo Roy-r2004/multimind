@@ -700,6 +700,8 @@ class LibraryService:
         content = item.content_text if include_content else None
         if item.item_type != ITEM_TYPE_DOCUMENT:
             content = None
+        # List responses stay light; detail (include_content) returns stored extract.
+        text_excerpt = item.text_excerpt if include_content else None
         return LibraryItemResponse(
             id=item.id,
             item_type=item.item_type,
@@ -711,6 +713,7 @@ class LibraryService:
             size_bytes=item.size_bytes,
             excerpt_status=item.excerpt_status,
             content_text=content,
+            text_excerpt=text_excerpt,
             labels=labels,
             created_at=item.created_at,
             updated_at=item.updated_at,
