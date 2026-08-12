@@ -43,6 +43,8 @@ import type {
   ApiSession,
   ApiPromptBuilderImproveRequest,
   ApiPromptBuilderImproveResponse,
+  ApiPromptBuilderRefineRequest,
+  ApiPromptBuilderRefineResponse,
   ApiShareLink,
   ApiSavedVerdictDelete,
   ApiSavedVerdictPurge,
@@ -719,6 +721,12 @@ export const api = {
   promptBuilder: {
     improve: (auth: Auth, data: ApiPromptBuilderImproveRequest) =>
       apiRequest<ApiPromptBuilderImproveResponse>("/prompt-builder/improve", {
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+    refine: (auth: Auth, data: ApiPromptBuilderRefineRequest) =>
+      apiRequest<ApiPromptBuilderRefineResponse>("/prompt-builder/refine", {
         body: data,
         token: auth.token,
         orgId: auth.orgId,

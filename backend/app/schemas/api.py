@@ -1378,6 +1378,21 @@ class PromptBuilderImproveResponse(BaseModel):
     improved_prompt: str
 
 
+class PromptBuilderRefineMessage(BaseModel):
+    role: str = Field(min_length=1, max_length=32)
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class PromptBuilderRefineRequest(BaseModel):
+    messages: list[PromptBuilderRefineMessage] = Field(min_length=1, max_length=40)
+    model_set_id: str = Field(min_length=1, max_length=128)
+
+
+class PromptBuilderRefineResponse(BaseModel):
+    assistant_message: str
+    improved_prompt: str
+
+
 class TurnResponse(BaseModel):
     id: str
     chat_id: str
