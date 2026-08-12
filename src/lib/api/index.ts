@@ -208,6 +208,7 @@ export const api = {
         model_set_id: string;
         decision_insurance_enabled?: boolean;
         custom_instructions?: string | null;
+        referenced_chat_id?: string | null;
         attachment_ids?: string[];
       },
     ) =>

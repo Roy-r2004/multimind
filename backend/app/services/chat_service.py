@@ -138,6 +138,7 @@ async def _run_chat_memory_update_best_effort(
     project_id: str | None,
     turn_id: str,
 ) -> None:
+    """Background rolling-memory merge only. Continuation seeding is synchronous."""
     try:
         async with AsyncSessionLocal() as memory_db:
             await chat_memory_service.merge_expired_turns(
@@ -154,6 +155,26 @@ async def _run_chat_memory_update_best_effort(
             turn_id=turn_id,
             error=str(exc),
         )
+
+
+async def _seed_continuation_memory_after_success(
+    db: AsyncSession,
+    *,
+    chat_id: str,
+    turn: Turn,
+) -> bool:
+    """One-time Chat B seed after COMPLETED/PARTIAL — before turn_completed is emitted.
+
+    Uses the handoff already stored on the turn. Does not fetch Chat A, does not
+    overwrite non-empty memory, and does not run for failed turns.
+    """
+    if turn.status not in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
+        return False
+    return await chat_memory_service.seed_continuation_memory_if_empty(
+        db,
+        chat_id=chat_id,
+        custom_instructions=turn.custom_instructions,
+    )
 
 
 async def _commit_or_rollback(db: AsyncSession) -> None:
@@ -641,10 +662,21 @@ class ChatService:
         )
         attachment_instructions = self._build_attachment_instructions(attachments)
 
+        continuation_handoff: str | None = None
+        referenced_chat_id = (data.referenced_chat_id or "").strip() or None
+        if referenced_chat_id:
+            if referenced_chat_id == chat.id:
+                raise ValidationError("Cannot reference the current chat")
+            source_chat = await self.get_chat(db, auth, referenced_chat_id)
+            continuation_handoff = await chat_memory_service.build_continuation_handoff(
+                db, source_chat=source_chat
+            )
+
         instruction_parts = [
             part.strip()
             for part in (
                 model_set.custom_instructions,
+                continuation_handoff,
                 data.custom_instructions,
                 attachment_instructions,
             )
@@ -1038,24 +1070,24 @@ class ChatService:
             try:
                 async with AsyncSessionLocal() as run_db:
                     await get_orchestrator().run(run_db, ctx, on_event=on_event)
-                    try:
-                        from app.services.brain_knowledge_service import brain_knowledge_service
-
-                        turn_row = (
-                            await run_db.execute(
-                                select(Turn)
-                                .where(Turn.id == turn_id)
-                                .options(
-                                    selectinload(Turn.verdict),
-                                    selectinload(Turn.model_answers),
-                                    selectinload(Turn.chat),
-                                )
+                    turn_row = (
+                        await run_db.execute(
+                            select(Turn)
+                            .where(Turn.id == turn_id)
+                            .options(
+                                selectinload(Turn.verdict),
+                                selectinload(Turn.model_answers),
+                                selectinload(Turn.chat),
                             )
-                        ).scalar_one_or_none()
-                        if turn_row and turn_row.status in (
-                            TurnStatus.COMPLETED,
-                            TurnStatus.PARTIAL,
-                        ):
+                        )
+                    ).scalar_one_or_none()
+                    if turn_row and turn_row.status in (
+                        TurnStatus.COMPLETED,
+                        TurnStatus.PARTIAL,
+                    ):
+                        try:
+                            from app.services.brain_knowledge_service import brain_knowledge_service
+
                             digest = "; ".join(
                                 f"{a.model_id}: {(a.text or '')[:160]}"
                                 for a in (turn_row.model_answers or [])
@@ -1072,12 +1104,27 @@ class ChatService:
                                 verdict_text=turn_row.verdict.text if turn_row.verdict else None,
                                 council_digest=digest or None,
                             )
-                    except Exception as ingest_exc:  # noqa: BLE001
-                        logger.warning(
-                            "brain_turn_ingest_failed",
-                            turn_id=turn_id,
-                            error=str(ingest_exc),
-                        )
+                        except Exception as ingest_exc:  # noqa: BLE001
+                            logger.warning(
+                                "brain_turn_ingest_failed",
+                                turn_id=turn_id,
+                                error=str(ingest_exc),
+                            )
+                        # Synchronous continuation seed BEFORE commit / turn_completed so
+                        # Turn 2 cannot race an empty Chat B rolling_memory.
+                        try:
+                            await _seed_continuation_memory_after_success(
+                                run_db,
+                                chat_id=ctx.chat_id,
+                                turn=turn_row,
+                            )
+                        except Exception as seed_exc:  # noqa: BLE001
+                            logger.warning(
+                                "continuation_memory_seed_failed",
+                                chat_id=ctx.chat_id,
+                                turn_id=turn_id,
+                                error=str(seed_exc),
+                            )
                     await run_db.commit()
                 async with AsyncSessionLocal() as read_db:
                     if await is_turn_deleted(read_db, turn_id):
@@ -1095,6 +1142,7 @@ class ChatService:
                         TurnStatus.COMPLETED.value,
                         TurnStatus.PARTIAL.value,
                     ):
+                        # Expired-turn merge stays best-effort/background.
                         _create_chat_memory_task(
                             _run_chat_memory_update_best_effort(
                                 chat_id=ctx.chat_id,

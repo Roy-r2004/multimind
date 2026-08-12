@@ -1355,6 +1355,9 @@ class TurnCreateRequest(BaseModel):
     model_set_id: str
     decision_insurance_enabled: bool = False
     custom_instructions: str | None = None
+    # Ephemeral request-only: backend builds a one-time continuation handoff.
+    # Not persisted as a DB column.
+    referenced_chat_id: str | None = None
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
