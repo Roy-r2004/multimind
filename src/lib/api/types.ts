@@ -271,6 +271,21 @@ export type ApiPromptBuilderImproveRequest = {
   raw_prompt: string;
 };
 
+export type ApiPromptBuilderRefineMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type ApiPromptBuilderRefineRequest = {
+  messages: ApiPromptBuilderRefineMessage[];
+  model_set_id: string;
+};
+
+export type ApiPromptBuilderRefineResponse = {
+  assistant_message: string;
+  improved_prompt: string;
+};
+
 export type ApiSession = {
   user: { id: string; email: string; full_name: string; avatar_url?: string | null };
   organization: {
