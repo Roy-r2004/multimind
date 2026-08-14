@@ -5,7 +5,7 @@ const LABELS: Record<MapsCensusRunStatus, string> = {
   queued: "queued",
   running: "running",
   completed: "completed",
-  completed_with_warnings: "completed w/ warnings",
+  completed_with_warnings: "completed",
   failed: "failed",
   cancelled: "cancelled",
 };
