@@ -44,6 +44,8 @@ logger = get_logger(__name__)
 MODEL_ID_MAX_LEN = 128
 BEST_FOR_MAX_LEN = 512
 TEMPLATE_NAME_MAX_LEN = 255
+# System sets that may be PATCHed in place. Delete remains forbidden for all system sets.
+UPDATABLE_SYSTEM_SLUGS = frozenset({"set-7edaefc8"})
 
 
 class ProjectService:
@@ -237,7 +239,7 @@ class ModelSetService:
     ) -> ModelSetResponse:
         fields = self._submitted_field_names(data, exclude_unset=True)
         try:
-            model_set = await self._get_editable(db, auth, slug)
+            model_set = await self._get_updatable(db, auth, slug)
             if data.name is not None:
                 model_set.name = data.name
             if data.description is not None:
@@ -300,6 +302,19 @@ class ModelSetService:
         if in_use.scalar_one_or_none() is not None:
             raise ConflictError("Model set is used by a scraping mission")
         await db.delete(model_set)
+
+    async def _get_updatable(self, db: AsyncSession, auth: AuthContext, slug: str) -> ModelSet:
+        result = await db.execute(select(ModelSet).where(ModelSet.slug == slug))
+        model_set = result.scalar_one_or_none()
+        if model_set is None:
+            raise NotFoundError("ModelSet", slug)
+        if model_set.is_system:
+            if model_set.slug not in UPDATABLE_SYSTEM_SLUGS:
+                raise ForbiddenError("System model sets cannot be modified")
+            return model_set
+        if model_set.org_id != auth.org_id:
+            raise ForbiddenError("Model set belongs to another organization")
+        return model_set
 
     async def _get_editable(self, db: AsyncSession, auth: AuthContext, slug: str) -> ModelSet:
         result = await db.execute(select(ModelSet).where(ModelSet.slug == slug))

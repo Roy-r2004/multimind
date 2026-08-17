@@ -105,12 +105,50 @@ async def test_second_seed_run_creates_no_duplicates(db: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_updates_existing_row_without_depending_on_uuid(db: AsyncSession) -> None:
-    # Pre-existing row with a different DB id and stale config, same stable slug.
-    stale = ModelSet(
+async def test_seed_preserves_existing_ultimate_row(db: AsyncSession) -> None:
+    custom_models = ["gpt-4.1", "or:x-ai--grok-4", "gemini"]
+    existing = ModelSet(
         org_id=None,
         slug=ULTIMATE_SLUG,
-        name="stale name",
+        name="Edited Ultimate",
+        description="ui edit",
+        models=custom_models,
+        verdict_model="gemini",
+        strategy=Strategy.SYNTHESIZE,
+        best_for="edited",
+        template_name="Custom",
+        custom_instructions="do not overwrite",
+        is_system=True,
+    )
+    db.add(existing)
+    await db.flush()
+    original_id = existing.id
+
+    await ensure_system_model_sets(db)
+    await db.commit()
+
+    row = (
+        await db.execute(select(ModelSet).where(ModelSet.slug == ULTIMATE_SLUG))
+    ).scalar_one()
+    assert row.id == original_id
+    assert row.name == "Edited Ultimate"
+    assert row.description == "ui edit"
+    assert row.models == custom_models
+    assert row.verdict_model == "gemini"
+    assert row.strategy == Strategy.SYNTHESIZE
+    assert row.best_for == "edited"
+    assert row.template_name == "Custom"
+    assert row.custom_instructions == "do not overwrite"
+    assert row.is_system is True
+    assert row.org_id is None
+
+
+@pytest.mark.asyncio
+async def test_seed_still_updates_other_system_sets(db: AsyncSession) -> None:
+    stale = ModelSet(
+        org_id=None,
+        slug="referee",
+        name="stale referee",
         description="stale",
         models=["gpt-4.1"],
         verdict_model="gpt-4.1",
@@ -126,14 +164,16 @@ async def test_seed_updates_existing_row_without_depending_on_uuid(db: AsyncSess
     await db.commit()
 
     row = (
-        await db.execute(select(ModelSet).where(ModelSet.slug == ULTIMATE_SLUG))
+        await db.execute(select(ModelSet).where(ModelSet.slug == "referee"))
     ).scalar_one()
     assert row.id == original_id
-    assert row.name == ULTIMATE_NAME
-    assert row.models == ULTIMATE_MODELS
-    assert row.verdict_model == ULTIMATE_VERDICT
+    assert row.name == "Chafiq Referee"
+    assert row.models == ["gpt-4.1", "claude", "gemini", "grok", "deepseek"]
+    assert row.verdict_model == "gpt-4.1"
+    assert row.strategy == Strategy.REFEREE
     assert row.is_system is True
     assert row.org_id is None
+    assert row.custom_instructions == REFEREE_CUSTOM_INSTRUCTIONS
 
 
 @pytest.mark.asyncio

@@ -216,6 +216,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         verdict_model: set.verdictModel,
         strategy: set.strategy,
         best_for: set.bestFor,
+        template_name: set.templateName ?? null,
         custom_instructions: set.customInstructions ?? null,
       });
       setModelSets((prev) =>

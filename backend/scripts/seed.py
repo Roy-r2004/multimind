@@ -291,12 +291,21 @@ async def find_legacy_user(db, emails: tuple[str, ...]) -> User | None:
     return None
 
 
+PRESERVE_EXISTING_SYSTEM_SLUGS = frozenset({"set-7edaefc8"})
+
+
 async def ensure_system_model_sets(db) -> None:
-    """Idempotently upsert system model sets by stable slug (not row UUID)."""
+    """Idempotently upsert system model sets by stable slug (not row UUID).
+
+    Chafic Ultimate (``set-7edaefc8``) is create-if-missing only so UI edits
+    survive later seeds. Every other system set is still overwritten.
+    """
     for data in SYSTEM_MODEL_SETS:
         exists = await db.execute(select(ModelSet).where(ModelSet.slug == data["slug"]))
         model_set = exists.scalar_one_or_none()
         if model_set:
+            if data["slug"] in PRESERVE_EXISTING_SYSTEM_SLUGS:
+                continue
             model_set.name = data["name"]
             model_set.description = data["description"]
             model_set.models = list(data["models"])
