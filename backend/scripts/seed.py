@@ -72,6 +72,7 @@ SYSTEM_MODEL_SETS = [
             "gpt-4.1",
             "or:anthropic--claude-fable-5",
             "gemini",
+            "or:x-ai--grok-4",
         ],
         "verdict_model": "gpt-4.1",
         "strategy": Strategy.REFEREE,

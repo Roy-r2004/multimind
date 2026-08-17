@@ -21,6 +21,7 @@ ULTIMATE_MODELS = [
     "gpt-4.1",
     "or:anthropic--claude-fable-5",
     "gemini",
+    "or:x-ai--grok-4",
 ]
 ULTIMATE_VERDICT = "gpt-4.1"
 
@@ -77,6 +78,7 @@ async def test_seed_creates_exact_models_order_and_verdict(db: AsyncSession) -> 
     assert model_id_to_slug("gpt-4.1") == "openai/gpt-4.1"
     assert model_id_to_slug("or:anthropic--claude-fable-5") == "anthropic/claude-fable-5"
     assert model_id_to_slug("gemini") == "google/gemini-2.5-pro"
+    assert model_id_to_slug("or:x-ai--grok-4") == "x-ai/grok-4"
     assert model_id_to_slug(ULTIMATE_VERDICT) == "openai/gpt-4.1"
 
 
@@ -199,8 +201,9 @@ def test_ultimate_spec_is_present_in_system_model_sets() -> None:
         "gpt-4.1",
         "or:anthropic--claude-fable-5",
         "gemini",
+        "or:x-ai--grok-4",
     ]
-    assert len(ULTIMATE_MODELS) == 3
+    assert len(ULTIMATE_MODELS) == 4
     # Missing OpenRouter models are not validated at seed time (same as other system sets);
     # identifiers remain stable slug-derived ids for cross-environment use.
     for model_id in ULTIMATE_MODELS + [ULTIMATE_VERDICT]:

@@ -28,6 +28,14 @@ CLAUDE_FABLE_5_PROVIDER_PREFERENCES: dict[str, Any] = {
     "allow_fallbacks": True,
 }
 
+# Grok 4: try Grok 4 providers first, then Grok 4.3 only if Grok 4 cannot complete.
+GROK_4_SLUG = "x-ai/grok-4"
+GROK_4_EMERGENCY_FALLBACK_SLUG = "x-ai/grok-4.3"
+GROK_4_MODEL_FALLBACKS = [GROK_4_SLUG, GROK_4_EMERGENCY_FALLBACK_SLUG]
+GROK_4_PROVIDER_PREFERENCES: dict[str, Any] = {
+    "allow_fallbacks": True,
+}
+
 
 @dataclass
 class LLMResponse:
@@ -245,10 +253,18 @@ class OpenRouterProvider(LLMProvider):
         )
 
 
+def _openrouter_base_slug(model: str) -> str:
+    return (model or "").split(":", 1)[0].strip().lower()
+
+
 def _is_claude_fable_5(model: str) -> bool:
     """True for anthropic/claude-fable-5, with or without a routing suffix."""
-    base = (model or "").split(":", 1)[0].strip().lower()
-    return base == CLAUDE_FABLE_5_SLUG
+    return _openrouter_base_slug(model) == CLAUDE_FABLE_5_SLUG
+
+
+def _is_grok_4(model: str) -> bool:
+    """True for x-ai/grok-4, with or without a routing suffix — not grok-4.3."""
+    return _openrouter_base_slug(model) == GROK_4_SLUG
 
 
 def resolve_openrouter_model_slug(model: str) -> str:
@@ -266,6 +282,8 @@ def openrouter_provider_preferences(model: str) -> dict[str, Any] | None:
     """Optional OpenRouter ``provider`` object for a request model slug."""
     if _is_claude_fable_5(model):
         return dict(CLAUDE_FABLE_5_PROVIDER_PREFERENCES)
+    if _is_grok_4(model):
+        return dict(GROK_4_PROVIDER_PREFERENCES)
     return None
 
 
@@ -279,9 +297,7 @@ def build_openrouter_chat_payload(
     temperature: float | None = None,
 ) -> dict[str, Any]:
     """Build the OpenRouter chat/completions JSON body (routing prefs included)."""
-    routed_model = resolve_openrouter_model_slug(model)
     payload: dict[str, Any] = {
-        "model": routed_model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -290,6 +306,11 @@ def build_openrouter_chat_payload(
         "max_tokens": max_tokens,
         "usage": {"include": True},
     }
+    if _is_grok_4(model):
+        # Ordered models[] is the current OpenRouter fallback chain; omit `model`.
+        payload["models"] = list(GROK_4_MODEL_FALLBACKS)
+    else:
+        payload["model"] = resolve_openrouter_model_slug(model)
     provider = openrouter_provider_preferences(model)
     if provider is not None:
         payload["provider"] = provider
