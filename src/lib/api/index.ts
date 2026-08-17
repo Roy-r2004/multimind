@@ -684,6 +684,7 @@ export const api = {
         verdict_model: string;
         strategy: Strategy;
         best_for: string;
+        template_name?: string | null;
         custom_instructions: string | null;
       }>,
     ) =>

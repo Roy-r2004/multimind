@@ -21,6 +21,10 @@ import { Modal } from "@/components/Modal";
 import { useChatStore } from "@/lib/store";
 import { useModels } from "@/lib/models";
 import { cn } from "@/lib/utils";
+import {
+  clonedSystemModelSetName,
+  shouldCloneSystemModelSet,
+} from "@/lib/modelSetEdit";
 
 export const Route = createFileRoute("/model-sets")({
   head: () => ({ meta: [{ title: "Model Sets — MultiAI" }] }),
@@ -145,7 +149,11 @@ function ModelSetsPage() {
                       <button
                         type="button"
                         onClick={() => setEditing(s.id)}
-                        title={isSystemSet ? "Customize set" : "Edit set"}
+                        title={
+                          shouldCloneSystemModelSet(s.id, SYSTEM_MODEL_SETS)
+                            ? "Customize set"
+                            : "Edit set"
+                        }
                         className="rounded-lg p-2 hover:bg-accent"
                       >
                         <Pencil className="size-4" />
@@ -205,10 +213,10 @@ function ModelSetsPage() {
             setShowCreate(false);
           }}
           onUpdate={async (modelSet) => {
-            if (SYSTEM_MODEL_SETS.has(modelSet.id)) {
+            if (shouldCloneSystemModelSet(modelSet.id, SYSTEM_MODEL_SETS)) {
               await createModelSet({
                 ...modelSet,
-                name: modelSet.name.startsWith("My ") ? modelSet.name : `My ${modelSet.name}`,
+                name: clonedSystemModelSetName(modelSet.name),
               });
             } else {
               await updateModelSet(modelSet);

@@ -1,6 +1,7 @@
 """Model set create/update failure mapping and validation."""
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
 
 from app.core.dependencies import AuthContext
@@ -155,6 +156,78 @@ async def test_update_success(db, auth: AuthContext) -> None:
     )
     assert updated.name == "Renamed"
     assert updated.models == ["claude"]
+
+
+@pytest.mark.asyncio
+async def test_update_chafic_ultimate_system_set_in_place(db, auth: AuthContext) -> None:
+    ultimate = ModelSet(
+        org_id=None,
+        slug="set-7edaefc8",
+        name="Chafic ultimate model set",
+        description="Custom model set.",
+        models=["gpt-4.1", "or:anthropic--claude-fable-5", "gemini", "or:x-ai--grok-4"],
+        verdict_model="gpt-4.1",
+        strategy=Strategy.REFEREE,
+        best_for="Custom model set.",
+        template_name="Chafiq Referee",
+        custom_instructions="keep me",
+        is_system=True,
+    )
+    db.add(ultimate)
+    await db.flush()
+    original_id = ultimate.id
+
+    updated = await model_set_service.update(
+        db,
+        auth,
+        "set-7edaefc8",
+        ModelSetUpdateRequest(
+            description="Temporary description for in-place edit",
+            template_name="Chafiq Referee",
+        ),
+    )
+
+    row = (
+        await db.execute(select(ModelSet).where(ModelSet.slug == "set-7edaefc8"))
+    ).scalar_one()
+    assert updated.id == "set-7edaefc8"
+    assert row.id == original_id
+    assert row.slug == "set-7edaefc8"
+    assert row.is_system is True
+    assert row.org_id is None
+    assert row.description == "Temporary description for in-place edit"
+    assert row.template_name == "Chafiq Referee"
+    assert row.models == ["gpt-4.1", "or:anthropic--claude-fable-5", "gemini", "or:x-ai--grok-4"]
+    assert row.verdict_model == "gpt-4.1"
+    assert row.strategy == Strategy.REFEREE
+    assert row.custom_instructions == "keep me"
+    assert updated.is_system is True
+
+
+@pytest.mark.asyncio
+async def test_delete_chafic_ultimate_system_set_forbidden(db, auth: AuthContext) -> None:
+    db.add(
+        ModelSet(
+            org_id=None,
+            slug="set-7edaefc8",
+            name="Chafic ultimate model set",
+            description="",
+            models=["gpt-4.1"],
+            verdict_model="gpt-4.1",
+            strategy=Strategy.REFEREE,
+            best_for="",
+            is_system=True,
+        )
+    )
+    await db.flush()
+
+    with pytest.raises(ForbiddenError, match="System model sets"):
+        await model_set_service.delete(db, auth, "set-7edaefc8")
+
+    remaining = (
+        await db.execute(select(ModelSet).where(ModelSet.slug == "set-7edaefc8"))
+    ).scalar_one()
+    assert remaining.is_system is True
 
 
 def test_map_db_exception_integrity() -> None:
