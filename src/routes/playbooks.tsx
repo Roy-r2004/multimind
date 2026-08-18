@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/cinematic/PageChrome";
 import { PlaybookGeneratePanel } from "@/components/playbooks/PlaybookGeneratePanel";
@@ -336,7 +336,7 @@ function PlaybooksPage() {
         ) : null}
 
         {pageState === "active" || pageState === "active_with_warnings" ? (
-          <div className="mt-8 space-y-8">
+          <div className="mt-8 space-y-7">
             {run && (run.status === "queued" || run.status === "processing") ? (
               <PlaybookProgressCard run={run} pollError={pollError} />
             ) : null}
@@ -350,20 +350,34 @@ function PlaybooksPage() {
             ) : null}
             {playbook ? (
               <>
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
-                  <div className="text-sm">
-                    {pending?.up_to_date
-                      ? "Up to date"
-                      : `${pending?.pending_source_items ?? 0} pending source update(s)`}
-                    {pending && !pending.up_to_date ? (
-                      <span className="ml-2 text-muted-foreground">
-                        {pending.new_chats} new chats · {pending.new_turns} new ·{" "}
-                        {pending.changed_turns} changed · {pending.removed_turns} removed ·{" "}
-                        {pending.brain_changes} Brain
-                      </span>
-                    ) : null}
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-border/80 bg-card/80 px-5 py-4 shadow-sm">
+                  <div className="flex items-start gap-3 text-sm">
+                    <span
+                      className={`mt-0.5 grid size-8 shrink-0 place-items-center rounded-full ${pending?.up_to_date ? "bg-emerald-50 text-emerald-700" : "bg-primary/10 text-primary"}`}
+                    >
+                      {pending?.up_to_date ? (
+                        <CheckCircle2 className="size-4" aria-hidden />
+                      ) : (
+                        <RefreshCw className="size-4" aria-hidden />
+                      )}
+                    </span>
+                    <div>
+                      <p className="font-semibold text-foreground">
+                        {pending?.up_to_date
+                          ? "Your Playbook is up to date"
+                          : `${pending?.pending_source_items ?? 0} pending source update(s)`}
+                      </p>
+                      {pending && !pending.up_to_date ? (
+                        <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                          {pending.new_chats} new chats · {pending.new_turns} new ·{" "}
+                          {pending.changed_turns} changed · {pending.removed_turns} removed ·{" "}
+                          {pending.brain_changes} Brain
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                   <Button
+                    variant={pending?.up_to_date ? "outline" : "default"}
                     onClick={() => void startRerun()}
                     disabled={submitting || !pending || pending.up_to_date}
                   >
@@ -383,21 +397,34 @@ function PlaybooksPage() {
                 />
               </>
             ) : null}
-            {observationError ? (
-              <Alert variant="destructive">
-                <AlertTitle>Could not load observations</AlertTitle>
-                <AlertDescription>
-                  <p>{observationError}</p>
-                  {playbook ? (
-                    <Button className="mt-4" onClick={() => void loadObservations(playbook)}>
-                      Retry observations
-                    </Button>
-                  ) : null}
-                </AlertDescription>
-              </Alert>
-            ) : (
-              <PlaybookObservationGroups observations={observations} />
-            )}
+            <div className="pt-3">
+              <div className="mb-6 border-b border-border/70 pb-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-primary">
+                  Supporting detail
+                </p>
+                <h2 className="mt-1 font-display text-2xl font-semibold tracking-tight">
+                  Observations
+                </h2>
+                <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">
+                  The evidence and recurring signals behind your Playbook summary.
+                </p>
+              </div>
+              {observationError ? (
+                <Alert variant="destructive">
+                  <AlertTitle>Could not load observations</AlertTitle>
+                  <AlertDescription>
+                    <p>{observationError}</p>
+                    {playbook ? (
+                      <Button className="mt-4" onClick={() => void loadObservations(playbook)}>
+                        Retry observations
+                      </Button>
+                    ) : null}
+                  </AlertDescription>
+                </Alert>
+              ) : (
+                <PlaybookObservationGroups observations={observations} />
+              )}
+            </div>
           </div>
         ) : null}
       </div>
