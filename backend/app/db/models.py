@@ -2976,3 +2976,262 @@ class MapsPlaceReviewAction(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# --- My Playbooks (user+org personal operating profile) ---
+
+
+PLAYBOOK_STATUS_NOT_GENERATED = "not_generated"
+PLAYBOOK_STATUS_ACTIVE = "active"
+PLAYBOOK_RUN_KIND_FULL = "full"
+PLAYBOOK_RUN_KIND_INCREMENTAL = "incremental"
+PLAYBOOK_RUN_STATUS_QUEUED = "queued"
+PLAYBOOK_RUN_STATUS_PROCESSING = "processing"
+PLAYBOOK_RUN_STATUS_COMPLETED = "completed"
+PLAYBOOK_RUN_STATUS_COMPLETED_WITH_WARNINGS = "completed_with_warnings"
+PLAYBOOK_RUN_STATUS_FAILED = "failed"
+PLAYBOOK_SOURCE_STATE_PROCESSED = "processed"
+PLAYBOOK_OBSERVATION_STATUS_ACTIVE = "active"
+PLAYBOOK_SOURCE_TYPE_TURN = "turn"
+PLAYBOOK_SOURCE_TYPE_USER_BRAIN = "user_brain"
+PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE = "brain_knowledge"
+
+
+class Playbook(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Personal Playbook for one user inside one organization."""
+
+    __tablename__ = "playbooks"
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", name="uq_playbook_org_user"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    user_id: Mapped[str] = UuidFK("users")
+    status: Mapped[str] = mapped_column(
+        String(32), default=PLAYBOOK_STATUS_NOT_GENERATED, nullable=False
+    )
+    injection_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    core_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extraction_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    playbook_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_success_run_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey(
+            "playbook_runs.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_playbooks_last_success_run_id",
+        ),
+        nullable=True,
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    last_success_run: Mapped["PlaybookRun | None"] = relationship(
+        "PlaybookRun",
+        foreign_keys=[last_success_run_id],
+        post_update=True,
+    )
+    observations: Mapped[list["PlaybookObservation"]] = relationship(
+        back_populates="playbook",
+        cascade="all, delete-orphan",
+    )
+    runs: Mapped[list["PlaybookRun"]] = relationship(
+        back_populates="playbook",
+        foreign_keys="PlaybookRun.playbook_id",
+        cascade="all, delete-orphan",
+    )
+    source_states: Mapped[list["PlaybookSourceState"]] = relationship(
+        back_populates="playbook",
+        cascade="all, delete-orphan",
+    )
+    excluded_sources: Mapped[list["PlaybookExcludedSource"]] = relationship(
+        back_populates="playbook",
+        cascade="all, delete-orphan",
+    )
+
+
+class PlaybookObservation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Structured Playbook observation with optional evidence and supersession."""
+
+    __tablename__ = "playbook_observations"
+    __table_args__ = (
+        Index(
+            "ix_playbook_observations_playbook_category_status",
+            "playbook_id",
+            "category",
+            "status",
+        ),
+    )
+
+    playbook_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("playbooks.id", ondelete="CASCADE"), nullable=False
+    )
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    observation: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), default=PLAYBOOK_OBSERVATION_STATUS_ACTIVE, nullable=False
+    )
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    first_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    superseded_by_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("playbook_observations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    user_corrected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    user_excluded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    playbook: Mapped["Playbook"] = relationship(back_populates="observations")
+    superseded_by: Mapped["PlaybookObservation | None"] = relationship(
+        remote_side="PlaybookObservation.id",
+        foreign_keys=[superseded_by_id],
+    )
+    sources: Mapped[list["PlaybookObservationSource"]] = relationship(
+        back_populates="observation",
+        cascade="all, delete-orphan",
+    )
+
+
+class PlaybookObservationSource(Base, UUIDPrimaryKeyMixin):
+    """Evidence pointer for a Playbook observation. Chat/turn FKs are optional."""
+
+    __tablename__ = "playbook_observation_sources"
+    __table_args__ = (
+        Index("ix_playbook_observation_sources_observation_id", "observation_id"),
+    )
+
+    observation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("playbook_observations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="SET NULL"), nullable=True
+    )
+    turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+    source_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    epistemic_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    observation: Mapped["PlaybookObservation"] = relationship(back_populates="sources")
+
+
+class PlaybookRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Generation or incremental rerun record. Jobs are not implemented in Phase 1."""
+
+    __tablename__ = "playbook_runs"
+    __table_args__ = (
+        Index("ix_playbook_runs_playbook_created_at", "playbook_id", "created_at"),
+    )
+
+    playbook_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("playbooks.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), default=PLAYBOOK_RUN_STATUS_QUEUED, nullable=False
+    )
+    processed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    warning_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    playbook: Mapped["Playbook"] = relationship(
+        back_populates="runs",
+        foreign_keys=[playbook_id],
+    )
+
+
+class PlaybookSourceState(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Per-source checkpoint for future incremental Playbook reruns."""
+
+    __tablename__ = "playbook_source_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "playbook_id",
+            "source_type",
+            "source_id",
+            name="uq_playbook_source_state",
+        ),
+    )
+
+    playbook_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("playbooks.id", ondelete="CASCADE"), nullable=False
+    )
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    processed_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("playbook_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(32), default=PLAYBOOK_SOURCE_STATE_PROCESSED, nullable=False
+    )
+
+    playbook: Mapped["Playbook"] = relationship(back_populates="source_states")
+
+
+class PlaybookExcludedSource(Base, UUIDPrimaryKeyMixin):
+    """User-excluded chat or turn that future extraction should skip."""
+
+    __tablename__ = "playbook_excluded_sources"
+    __table_args__ = (
+        CheckConstraint(
+            "chat_id IS NOT NULL OR turn_id IS NOT NULL",
+            name="ck_playbook_excluded_source_present",
+        ),
+        Index(
+            "uq_playbook_excluded_chat",
+            "playbook_id",
+            "chat_id",
+            unique=True,
+            postgresql_where=text("turn_id IS NULL AND chat_id IS NOT NULL"),
+            sqlite_where=text("turn_id IS NULL AND chat_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_playbook_excluded_turn",
+            "playbook_id",
+            "turn_id",
+            unique=True,
+            postgresql_where=text("turn_id IS NOT NULL"),
+            sqlite_where=text("turn_id IS NOT NULL"),
+        ),
+    )
+
+    playbook_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("playbooks.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="CASCADE"), nullable=True
+    )
+    turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    playbook: Mapped["Playbook"] = relationship(back_populates="excluded_sources")

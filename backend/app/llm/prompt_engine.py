@@ -26,6 +26,7 @@ _BASE_CONTEXT_DEFAULTS = {
     "user_brain_context": "",
     "rolling_chat_memory": "",
     "recent_conversation_context": "",
+    "playbook_context": "",
 }
 
 
@@ -65,6 +66,7 @@ class PromptEngine:
         user_brain_context: str | None = None,
         rolling_chat_memory: str | None = None,
         recent_conversation_context: str | None = None,
+        playbook_context: str | None = None,
     ) -> str:
         return self.render(
             "system/model_answer.j2",
@@ -79,6 +81,7 @@ class PromptEngine:
             user_brain_context=user_brain_context or "",
             rolling_chat_memory=rolling_chat_memory or "",
             recent_conversation_context=recent_conversation_context or "",
+            playbook_context=playbook_context or "",
         )
 
     def verdict_prompt(
@@ -92,6 +95,7 @@ class PromptEngine:
         user_brain_context: str | None = None,
         rolling_chat_memory: str | None = None,
         recent_conversation_context: str | None = None,
+        playbook_context: str | None = None,
     ) -> str:
         template = STRATEGY_TEMPLATE_MAP.get(strategy, "system/verdict.j2")
         return self.render(
@@ -104,6 +108,7 @@ class PromptEngine:
             user_brain_context=user_brain_context or "",
             rolling_chat_memory=rolling_chat_memory or "",
             recent_conversation_context=recent_conversation_context or "",
+            playbook_context=playbook_context or "",
         )
 
     def decision_insurance_prompt(

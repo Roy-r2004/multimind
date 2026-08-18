@@ -177,6 +177,41 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  playbook-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.playbooks.worker.WorkerSettings"]
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-multiai}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-multiai}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-change-me-now}
+      PLAYBOOK_WORKER_QUEUE_NAME: ${PLAYBOOK_WORKER_QUEUE_NAME:-playbooks}
+      PLAYBOOK_WORKER_CONCURRENCY: ${PLAYBOOK_WORKER_CONCURRENCY:-1}
+      PLAYBOOK_WORKER_JOB_TIMEOUT_SECONDS: ${PLAYBOOK_WORKER_JOB_TIMEOUT_SECONDS:-3600}
+      PLAYBOOK_WORKER_KEEP_RESULT_SECONDS: ${PLAYBOOK_WORKER_KEEP_RESULT_SECONDS:-3600}
+
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_SITE_URL: ${PUBLIC_APP_URL:-https://multiverdict.tech}
+      OPENROUTER_APP_NAME: MultiAI
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://multiverdict.tech}
+      PLAYBOOK_EXTRACTION_MODEL_ID: ${PLAYBOOK_EXTRACTION_MODEL_ID:-gpt-4.1}
+      PLAYBOOK_CORE_SUMMARY_MAX_CHARS: ${PLAYBOOK_CORE_SUMMARY_MAX_CHARS:-4000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "arq", "app.playbooks.worker.WorkerSettings", "--check"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    restart: unless-stopped
+
   web:
     build:
       context: .

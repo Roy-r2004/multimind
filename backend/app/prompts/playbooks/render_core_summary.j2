@@ -1,0 +1,41 @@
+{# Compact Playbook core summary for later prompt injection. #}
+Write a compact operating Playbook for this user from the canonical observations.
+
+## Include when present
+- durable direct user communication preferences
+- answer-structure preferences
+- working style
+- things to avoid
+- major user-owned active projects and concrete current project state
+- user-confirmed decisions
+- actual completed work
+- current blockers
+- current priorities and next steps
+
+## Do not include
+- raw source IDs, chat IDs, turn IDs
+- confidence numbers
+- verbose evidence quotes
+- passwords, API keys, tokens, or credentials
+- unsupported sensitive inferences
+- every historical rejected option
+- uncertain or low-confidence material
+- temporary/session-only facts
+- AI-only advice or recommendations
+- document recommendations the user did not adopt
+- vague or incomplete observations
+- one-off incidental facts
+- superseded information
+- large transcript excerpts
+
+Rank projects by direct user ownership, active status, recency/repetition, and concrete current state. Do not present every project-like mention as equally important.
+When source-derived information is included, attribute it accurately (for example, "a project document describes..."). Never turn source language into a user decision.
+
+Maximum length: {{ max_chars }} characters. The entire output must stay within that limit.
+
+Write plain text, not JSON. Use short labeled sections.
+
+## Canonical observations
+{% for item in observations %}
+- [{{ item.category }}/{{ item.status }}] {{ item.subject }}: {{ item.observation }}
+{% endfor %}

@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     # When true (default in development), run scrapes inside the API process if Redis/worker is down
     scraping_inline_execution: bool | None = None
 
+    # Dedicated Playbook ARQ worker (separate queue from scraping/maps).
+    # Infrastructure defaults, not final extraction performance tuning.
+    playbook_worker_queue_name: str = "playbooks"
+    playbook_worker_concurrency: int = 1
+    playbook_worker_job_timeout_seconds: int = 3600
+    playbook_worker_keep_result_seconds: int = 3600
+    playbook_extraction_model_id: str = "gpt-4.1"
+    playbook_core_summary_max_chars: int = 4000
+
     # LLM — OpenRouter (single key for all models)
     openrouter_api_key: str | None = None
     openrouter_site_url: str | None = None

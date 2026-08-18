@@ -52,6 +52,7 @@ from app.schemas.api import (
 from app.services.brain_service import brain_service
 from app.services.chat_attachment_storage import safe_delete_attachment_files
 from app.services.chat_memory_service import chat_memory_service
+from app.services.playbook_context_service import playbook_context_service
 from app.services.saved_verdict_service import saved_verdict_service
 
 logger = get_logger(__name__)
@@ -911,6 +912,26 @@ class ChatService:
             yield {"type": "ping", "data": {}}
             await asyncio.sleep(2)
 
+    async def _load_playbook_context(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        *,
+        query: str,
+        turn_id: str,
+        chat_id: str,
+    ) -> str | None:
+        try:
+            return await playbook_context_service.build_for_turn(db, auth, query=query)
+        except Exception as exc:
+            logger.warning(
+                "playbook_context_load_failed",
+                turn_id=turn_id,
+                chat_id=chat_id,
+                error_type=type(exc).__name__,
+            )
+            return None
+
     async def execute_turn_stream(
         self, db: AsyncSession, auth: AuthContext, turn_id: str
     ) -> AsyncIterator[dict[str, Any]]:
@@ -972,6 +993,13 @@ class ChatService:
             db, chat.id, turn.id, turn.created_at
         )
         rolling_chat_memory = (chat.rolling_memory or "").strip() or None
+        playbook_context = await self._load_playbook_context(
+            db,
+            auth,
+            query=turn.user_message,
+            turn_id=turn.id,
+            chat_id=chat.id,
+        )
 
         ctx = TurnContext(
             turn_id=turn.id,
@@ -987,6 +1015,7 @@ class ChatService:
             user_brain_context=user_brain_context or None,
             rolling_chat_memory=rolling_chat_memory,
             recent_conversation_context=recent_conversation_context,
+            playbook_context=playbook_context,
             skip_answer_seed=True,
         )
 
