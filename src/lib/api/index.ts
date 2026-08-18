@@ -2,6 +2,15 @@
 
 import { apiFormRequest, apiRequest } from "@/lib/api/client";
 import { composerAttachmentUploadTimeoutMs } from "@/lib/composerAttachments";
+import {
+  buildPlaybookObservationsPath,
+  PLAYBOOK_GENERATE_PATH,
+  PLAYBOOK_LATEST_RUN_PATH,
+  PLAYBOOK_MINE_PATH,
+  PLAYBOOK_PENDING_PATH,
+  PLAYBOOK_RERUN_PATH,
+  playbookRunPath,
+} from "@/lib/playbooks";
 import type {
   ApiChat,
   ApiCostSummary,
@@ -43,6 +52,11 @@ import type {
   ApiSession,
   ApiPromptBuilderImproveRequest,
   ApiPromptBuilderImproveResponse,
+  ApiPlaybook,
+  ApiPlaybookPending,
+  ApiPlaybookObservation,
+  ApiPlaybookObservationFilters,
+  ApiPlaybookRun,
   ApiPromptBuilderRefineRequest,
   ApiPromptBuilderRefineResponse,
   ApiShareLink,
@@ -220,12 +234,7 @@ export const api = {
         orgId: auth.orgId,
       }),
 
-    regenerateTurn: (
-      auth: Auth,
-      chatId: string,
-      turnId: string,
-      data: { prompt: string },
-    ) =>
+    regenerateTurn: (auth: Auth, chatId: string, turnId: string, data: { prompt: string }) =>
       apiRequest<{
         old_turn_id: string;
         new_turn: ApiTurn;
@@ -402,11 +411,7 @@ export const api = {
         orgId: auth.orgId,
       }),
 
-    update: (
-      auth: Auth,
-      documentId: string,
-      data: { name?: string; label_ids?: string[] },
-    ) =>
+    update: (auth: Auth, documentId: string, data: { name?: string; label_ids?: string[] }) =>
       apiRequest<ApiSavedDocument>(`/saved-documents/${documentId}`, {
         method: "PATCH",
         body: data,
@@ -943,5 +948,48 @@ export const api = {
 
   brain: {
     get: (auth: Auth) => apiRequest<ApiBrain>("/brain", { token: auth.token, orgId: auth.orgId }),
+  },
+
+  playbooks: {
+    getMine: (auth: Auth) =>
+      apiRequest<ApiPlaybook>(PLAYBOOK_MINE_PATH, { token: auth.token, orgId: auth.orgId }),
+
+    getPending: (auth: Auth) =>
+      apiRequest<ApiPlaybookPending>(PLAYBOOK_PENDING_PATH, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    listObservations: (auth: Auth, filters?: ApiPlaybookObservationFilters) =>
+      apiRequest<ApiPlaybookObservation[]>(buildPlaybookObservationsPath(filters), {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    getLatestRun: (auth: Auth) =>
+      apiRequest<ApiPlaybookRun | null>(PLAYBOOK_LATEST_RUN_PATH, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    getRun: (auth: Auth, runId: string) =>
+      apiRequest<ApiPlaybookRun>(playbookRunPath(runId), {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    generate: (auth: Auth) =>
+      apiRequest<ApiPlaybookRun>(PLAYBOOK_GENERATE_PATH, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    rerun: (auth: Auth) =>
+      apiRequest<ApiPlaybookRun>(PLAYBOOK_RERUN_PATH, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
   },
 };

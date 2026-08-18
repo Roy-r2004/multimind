@@ -2035,3 +2035,86 @@ class LibraryItemUpdateRequest(BaseModel):
     clear_folder: bool = False
     label_ids: list[str] | None = None
     is_favorite: bool | None = None
+
+
+# --- My Playbooks ---
+
+
+class PlaybookResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    org_id: str
+    user_id: str
+    status: str
+    injection_enabled: bool
+    core_summary: str | None = None
+    extraction_version: int
+    playbook_version: int
+    last_success_run_id: str | None = None
+    last_success_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlaybookObservationSourceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    observation_id: str
+    chat_id: str | None = None
+    turn_id: str | None = None
+    source_kind: str
+    epistemic_role: str | None = None
+    quote: str | None = None
+    created_at: datetime
+
+
+class PlaybookObservationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    playbook_id: str
+    category: str
+    subject: str | None = None
+    observation: str
+    status: str
+    confidence: float | None = None
+    evidence_count: int = 0
+    first_observed_at: datetime | None = None
+    last_confirmed_at: datetime | None = None
+    superseded_by_id: str | None = None
+    user_corrected: bool = False
+    user_excluded: bool = False
+    sources: list[PlaybookObservationSourceResponse] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlaybookRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    playbook_id: str
+    kind: str
+    status: str
+    processed_count: int = 0
+    total_count: int = 0
+    warning_count: int = 0
+    error_message: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlaybookPendingResponse(BaseModel):
+    up_to_date: bool
+    pending_source_items: int
+    new_chats: int
+    new_turns: int
+    changed_turns: int
+    removed_turns: int
+    brain_changes: int
+    last_success_at: datetime | None = None
+    playbook_version: int

@@ -13,6 +13,7 @@ import {
   Menu,
   MessageSquare,
   MessageSquareText,
+  NotebookTabs,
   Settings,
   X,
 } from "lucide-react";
@@ -28,6 +29,7 @@ const NAV = [
   { to: "/model-sets", label: "Model Sets", icon: LayoutGrid },
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/brain", label: "Brain", icon: Brain },
+  { to: "/playbooks", label: "My Playbooks", icon: NotebookTabs },
   { to: "/lessons", label: "Lessons", icon: BookOpen },
   { to: "/saved-documents", label: "Saved Documents", icon: FileText },
   { to: "/saved-prompts", label: "Saved Prompts", icon: MessageSquareText },

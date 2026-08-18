@@ -1,12 +1,6 @@
 /** API types — mirror backend Pydantic schemas */
 
-export type Strategy =
-  | "Reconcile"
-  | "Synthesize"
-  | "Rank"
-  | "Pick Best"
-  | "Debate"
-  | "Referee";
+export type Strategy = "Reconcile" | "Synthesize" | "Rank" | "Pick Best" | "Debate" | "Referee";
 
 export type ApiModelPricing = {
   input_per_1k: number;
@@ -541,6 +535,94 @@ export type ApiBrain = {
   lesson_count: number;
   knowledge_count?: number;
   updated_at?: string | null;
+};
+
+export type ApiPlaybookStatus = "not_generated" | "active" | string;
+
+export type ApiPlaybookRunStatus =
+  | "queued"
+  | "processing"
+  | "completed"
+  | "completed_with_warnings"
+  | "failed"
+  | string;
+
+export type ApiPlaybook = {
+  id: string;
+  org_id: string;
+  user_id: string;
+  status: ApiPlaybookStatus;
+  injection_enabled: boolean;
+  core_summary: string | null;
+  extraction_version: number;
+  playbook_version: number;
+  last_success_run_id: string | null;
+  last_success_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiPlaybookObservationSource = {
+  id: string;
+  observation_id: string;
+  chat_id: string | null;
+  turn_id: string | null;
+  source_kind: string;
+  epistemic_role: string | null;
+  quote: string | null;
+  created_at: string;
+};
+
+export type ApiPlaybookObservation = {
+  id: string;
+  playbook_id: string;
+  category: string;
+  subject: string | null;
+  observation: string;
+  status: string;
+  confidence: number | null;
+  evidence_count: number;
+  first_observed_at: string | null;
+  last_confirmed_at: string | null;
+  superseded_by_id: string | null;
+  user_corrected: boolean;
+  user_excluded: boolean;
+  sources: ApiPlaybookObservationSource[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiPlaybookRun = {
+  id: string;
+  playbook_id: string;
+  kind: string;
+  status: ApiPlaybookRunStatus;
+  processed_count: number;
+  total_count: number;
+  warning_count: number;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiPlaybookPending = {
+  up_to_date: boolean;
+  pending_source_items: number;
+  new_chats: number;
+  new_turns: number;
+  changed_turns: number;
+  removed_turns: number;
+  brain_changes: number;
+  last_success_at: string | null;
+  playbook_version: number;
+};
+
+export type ApiPlaybookObservationFilters = {
+  category?: string;
+  status?: string;
+  include_excluded?: boolean;
 };
 
 export type ApiContentLabel = {

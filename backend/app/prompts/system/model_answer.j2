@@ -35,6 +35,10 @@ The user is continuing this chat. The content below is **prior context only** â€
 {{ recent_conversation_context }}
 {% endif %}
 
+{% if playbook_context %}
+{{ playbook_context }}
+{% endif %}
+
 {% if chat_history %}
 ## Prior Conversation (for context only)
 {% for msg in chat_history %}

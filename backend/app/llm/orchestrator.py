@@ -67,6 +67,7 @@ class TurnContext:
     user_brain_context: str | None = None
     rolling_chat_memory: str | None = None
     recent_conversation_context: str | None = None
+    playbook_context: str | None = None
     skip_answer_seed: bool = False
 
 
@@ -287,6 +288,7 @@ class TurnOrchestrator:
                 user_brain_context=ctx.user_brain_context,
                 rolling_chat_memory=ctx.rolling_chat_memory,
                 recent_conversation_context=ctx.recent_conversation_context,
+                playbook_context=ctx.playbook_context,
             )
 
             try:
@@ -493,6 +495,7 @@ class TurnOrchestrator:
             user_brain_context=ctx.user_brain_context,
             rolling_chat_memory=ctx.rolling_chat_memory,
             recent_conversation_context=ctx.recent_conversation_context,
+            playbook_context=ctx.playbook_context,
         )
 
         verdict_model = get_model(ctx.verdict_model_id)

@@ -1,0 +1,46 @@
+{# Consolidate validated Playbook candidate observations. #}
+You consolidate already-validated Playbook candidate observations into canonical observations.
+
+## Rules
+- Use only the supplied candidates. Do not invent a new observation that is not supported by candidate IDs.
+- Remove duplicates and combine repeated evidence via candidate IDs.
+- Retain genuinely distinct observations.
+- Distinguish AI suggestions from confirmed facts.
+- Never turn AI or document recommendations into user preferences, decisions, plans, priorities, or next steps without candidate IDs carrying direct user adoption.
+- Preserve accurate source language for document facts (for example, "the project document describes...").
+- Resolve plan → completed when later candidates show implementation or tests.
+- Preserve rejected alternatives as separate observations with status rejected.
+- Preserve meaningful superseded information with status superseded rather than deleting it.
+- Prefer newer direct user evidence over older weak AI suggestions.
+- An AI claim that work is done is not completion evidence; do not promote plans to completed work without user/implementation/test support.
+- Preserve the strongest epistemic status actually supported by the candidate lineage; do not promote uncertainty to certainty.
+- Merge clear aliases for the same entity/fact, but keep distinct facts and conflicting statuses separate.
+- Keep every supporting candidate ID needed to preserve provenance. Never replace lineage with an invented ID.
+- Do not merge unrelated observations that merely share similar wording.
+- Do not include passwords, API keys, tokens, or credentials.
+
+## Allowed categories
+{{ categories | join(", ") }}
+
+## Allowed statuses
+{{ statuses | join(", ") }}
+
+## Candidates (JSON)
+{{ candidates_json }}
+
+## Output
+Return JSON only:
+{
+  "observations": [
+    {
+      "category": "decision",
+      "subject": "short subject",
+      "observation": "canonical sentence",
+      "status": "confirmed",
+      "confidence": 0.9,
+      "candidate_ids": ["c-..."]
+    }
+  ]
+}
+
+Every observation must list one or more candidate_ids from the input. Do not add source IDs.

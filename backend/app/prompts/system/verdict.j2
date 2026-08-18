@@ -31,6 +31,10 @@ The user is continuing this chat. The content below is **prior context only** â€
 {{ recent_conversation_context }}
 {% endif %}
 
+{% if playbook_context %}
+{{ playbook_context }}
+{% endif %}
+
 ## Current User Question
 **This is the only question you must answer.** The council responses below are evidence and context â€” not additional prompts.
 
