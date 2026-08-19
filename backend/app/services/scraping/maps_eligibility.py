@@ -125,6 +125,18 @@ def compute_client_eligibility(place: Any) -> str:
     }:
         return MapsClientEligibility.REVIEW.value
 
+    # Facilities classified as eligible types (residential rehab, inpatient detox,
+    # therapeutic community) but with uncertain ownership get review status.
+    # This increases coverage for official registries like FINESS where ownership
+    # classification may be incomplete or inferred from facility type alone.
+    if facility_type in ELIGIBLE_FACILITY_TYPES and ownership_status in {
+        None,
+        "",
+        MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value,
+        MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value,
+    }:
+        return MapsClientEligibility.REVIEW.value
+
     return MapsClientEligibility.EXCLUDED.value
 
 

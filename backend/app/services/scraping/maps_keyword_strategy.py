@@ -112,11 +112,18 @@ EXCLUSION_KEYWORDS = [
 TRANSLATIONS = {
     "FR": {  # French
         "facility": [
-            "clinique de désintoxication privée",
+            "clinique de désintoxication",
             "centre de réadaptation résidentiel",
             "centre de traitement des dépendances",
             "centre d'accueil en internat",
-            "programme de cure 24h"
+            "programme de cure 24h",
+            "établissement de santé addiction",
+            "service d'addictologie résidentiel",
+            "unité de désintoxication",
+            "centre de traitement de l'addiction",
+            "clinique de réhabilitation",
+            "centre de soins résidentiel",
+            "structure de cure spécialisée",
         ],
         "substance": [
             "alcool", "cocaïne", "héroïne", "méthamphétamine", "opioïdes",
