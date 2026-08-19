@@ -261,11 +261,13 @@ export function ChatPage() {
   const shouldPinToBottomRef = useRef(true);
   const showScrollToLatestRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const restoredChatIdFromUrlRef = useRef(false);
   const modelSetRestoredForChatRef = useRef<string | null>(null);
   const modelSetsRef = useRef(modelSets);
   const sendInFlightRef = useRef(false);
   modelSetsRef.current = modelSets;
   const activeChat = chats.find((c) => c.id === activeChatId);
+  const draftStorageKey = `multimind:draft:${activeChatId ?? "new"}`;
   const pinnedTurnId = activeChat?.pinnedTurnId ?? null;
   const pinnedVerdictId = activeChat?.pinnedVerdictId ?? null;
 
@@ -321,6 +323,8 @@ export function ChatPage() {
   }, [activeChatId, scrollThreadToLatest]);
 
   useEffect(() => {
+    if (restoredChatIdFromUrlRef.current) return;
+    restoredChatIdFromUrlRef.current = true;
     const params = new URLSearchParams(window.location.search);
     const chatId = params.get("chatId");
     if (chatId && chatId !== activeChatId) {
@@ -411,6 +415,21 @@ export function ChatPage() {
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`;
   }, [input]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setInput(window.localStorage.getItem(draftStorageKey) ?? "");
+  }, [draftStorageKey]);
+
+  function updateComposerInput(value: string) {
+    setInput(value);
+    if (typeof window === "undefined") return;
+    if (value === "") {
+      window.localStorage.removeItem(draftStorageKey);
+    } else {
+      window.localStorage.setItem(draftStorageKey, value);
+    }
+  }
 
   useEffect(() => {
     if (!isApiMode || !activeChatId) {
@@ -523,6 +542,9 @@ export function ChatPage() {
     setInput((current) => {
       const next = transcriptInsertion(current, transcript, selectionStart, selectionEnd);
       cursorPosition = next.cursor;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(draftStorageKey, next.value);
+      }
       return next.value;
     });
 
@@ -604,6 +626,9 @@ export function ChatPage() {
         attachment_ids: uploadedIds,
         ...createTurnReferenceFields(refChat),
       });
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(`multimind:draft:${hadActiveChat ? chatId : "new"}`);
+      }
       applyChatActivityFromTurn(pending);
       scrollThreadToLatest("smooth");
       if (shouldClearReferenceAfterSend(true)) {
@@ -1200,7 +1225,7 @@ export function ChatPage() {
               <textarea
                 ref={textareaRef}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => updateComposerInput(e.target.value)}
                 onKeyDown={onComposerKeyDown}
                 rows={2}
                 disabled={!isAuthenticated || !set}
@@ -1396,7 +1421,7 @@ export function ChatPage() {
       <PromptBuilderModal
         open={showPrompt}
         onClose={() => setShowPrompt(false)}
-        onUse={(text) => setInput(text)}
+        onUse={updateComposerInput}
         modelSetId={set?.id ?? activeModelSetId}
         initialComposerText={input}
         voiceDisabled={isComposerVoiceActive}
