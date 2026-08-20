@@ -1358,6 +1358,9 @@ class TurnCreateRequest(BaseModel):
     # Ephemeral request-only: backend builds a one-time continuation handoff.
     # Not persisted as a DB column.
     referenced_chat_id: str | None = None
+    # Compatibility-preserving multi-reference input. One item is normalized to
+    # the legacy single-reference path; exactly two use the smart processor.
+    referenced_chat_ids: list[str] | None = Field(default=None, max_length=2)
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
