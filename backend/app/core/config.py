@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     playbook_worker_keep_result_seconds: int = 3600
     playbook_extraction_model_id: str = "gpt-4.1"
     playbook_core_summary_max_chars: int = 4000
+    multi_reference_extraction_model_id: str = "gpt-4.1"
+    multi_reference_extraction_deadline_seconds: float = 15.0
 
     # LLM — OpenRouter (single key for all models)
     openrouter_api_key: str | None = None

@@ -36,6 +36,7 @@ from app.db.models import (
 )
 from app.services.brain_knowledge_service import brain_knowledge_service
 from app.services.chat_memory_service import CONTINUATION_HANDOFF_HEADER
+from app.services.multi_reference_context_service import MULTI_REFERENCE_HEADER
 from app.services.chat_vision import ensure_image_context_for_turn
 from app.services.playbook_service import playbook_service
 from app.services.playbook_source_service import (
@@ -645,6 +646,15 @@ async def test_referenced_chat_handoff_detection(db: AsyncSession, auth: AuthCon
     )
     await _make_turn(db, chat, user_message="with handoff", custom_instructions=original)
     await _make_turn(db, chat, user_message="unusual", custom_instructions=unusual)
+    await _make_turn(
+        db,
+        chat,
+        user_message="multi handoff",
+        custom_instructions=(
+            f"{MULTI_REFERENCE_HEADER}\n\n### Source 1 — Alpha\n- [USER STATED] Fact"
+            "\n\nAttached file:\nnotes.txt\nignored"
+        ),
+    )
     await _make_turn(db, chat, user_message="none", custom_instructions="Just be concise.")
 
     assembled = await playbook_source_service.assemble_all_transcripts(db, auth)
@@ -665,6 +675,11 @@ async def test_referenced_chat_handoff_detection(db: AsyncSession, auth: AuthCon
     assert "IMAGE CONTEXT" not in (spaced.referenced_chat_handoff or "")
     assert spaced.custom_instructions == unusual
     assert any(warning.code == "unusual_continuation_handoff" for warning in spaced.warnings)
+
+    multi = by_message["multi handoff"]
+    assert multi.has_referenced_chat_handoff is True
+    assert MULTI_REFERENCE_HEADER in (multi.referenced_chat_handoff or "")
+    assert "Attached file:" not in (multi.referenced_chat_handoff or "")
 
     none = by_message["none"]
     assert none.has_referenced_chat_handoff is False

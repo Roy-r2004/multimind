@@ -52,6 +52,7 @@ from app.schemas.api import (
 from app.services.brain_service import brain_service
 from app.services.chat_attachment_storage import safe_delete_attachment_files
 from app.services.chat_memory_service import chat_memory_service
+from app.services.multi_reference_context_service import multi_reference_context_service
 from app.services.playbook_context_service import playbook_context_service
 from app.services.saved_verdict_service import saved_verdict_service
 
@@ -171,7 +172,14 @@ async def _seed_continuation_memory_after_success(
     """
     if turn.status not in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
         return False
-    return await chat_memory_service.seed_continuation_memory_if_empty(
+    seeded = await chat_memory_service.seed_continuation_memory_if_empty(
+        db,
+        chat_id=chat_id,
+        custom_instructions=turn.custom_instructions,
+    )
+    if seeded:
+        return True
+    return await multi_reference_context_service.seed_memory_if_empty(
         db,
         chat_id=chat_id,
         custom_instructions=turn.custom_instructions,
@@ -663,21 +671,46 @@ class ChatService:
         )
         attachment_instructions = self._build_attachment_instructions(attachments)
 
-        continuation_handoff: str | None = None
-        referenced_chat_id = (data.referenced_chat_id or "").strip() or None
-        if referenced_chat_id:
-            if referenced_chat_id == chat.id:
-                raise ValidationError("Cannot reference the current chat")
-            source_chat = await self.get_chat(db, auth, referenced_chat_id)
-            continuation_handoff = await chat_memory_service.build_continuation_handoff(
-                db, source_chat=source_chat
+        reference_context: str | None = None
+        if data.referenced_chat_id is not None and data.referenced_chat_ids is not None:
+            raise ValidationError(
+                "Use either referenced_chat_id or referenced_chat_ids, not both"
+            )
+        raw_reference_ids = (
+            data.referenced_chat_ids
+            if data.referenced_chat_ids is not None
+            else ([data.referenced_chat_id] if data.referenced_chat_id is not None else [])
+        )
+        reference_ids = [reference_id.strip() for reference_id in raw_reference_ids]
+        if any(not reference_id for reference_id in reference_ids):
+            raise ValidationError("Referenced chat IDs cannot be blank")
+        if len(reference_ids) > 2:
+            raise ValidationError("At most two referenced chats are allowed")
+        if len(reference_ids) != len(set(reference_ids)):
+            raise ValidationError("Duplicate referenced chat IDs are not allowed")
+        if chat.id in reference_ids:
+            raise ValidationError("Cannot reference the current chat")
+
+        # Authorize every source before reading any source content or invoking
+        # the extractor. get_chat deliberately preserves same-org 404 semantics.
+        source_chats = [
+            await self.get_chat(db, auth, reference_id) for reference_id in reference_ids
+        ]
+        if len(source_chats) == 1:
+            # Exact legacy path: do not route a single reference through the new service.
+            reference_context = await chat_memory_service.build_continuation_handoff(
+                db, source_chat=source_chats[0]
+            )
+        elif len(source_chats) == 2:
+            reference_context = await multi_reference_context_service.build(
+                db, source_chats=source_chats, question=data.user_message.strip()
             )
 
         instruction_parts = [
             part.strip()
             for part in (
                 model_set.custom_instructions,
-                continuation_handoff,
+                reference_context,
                 data.custom_instructions,
                 attachment_instructions,
             )

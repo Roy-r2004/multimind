@@ -225,6 +225,7 @@ export const api = {
         decision_insurance_enabled?: boolean;
         custom_instructions?: string | null;
         referenced_chat_id?: string | null;
+        referenced_chat_ids?: string[] | null;
         attachment_ids?: string[];
       },
     ) =>

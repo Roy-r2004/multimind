@@ -214,7 +214,7 @@ export function ChatPage() {
   const [isPromptVoiceActive, setIsPromptVoiceActive] = useState(false);
   const isVoiceActive = isComposerVoiceActive || isPromptVoiceActive;
   const [files, setFiles] = useState<ComposerFile[]>([]);
-  const [refChat, setRefChat] = useState<ChatReferencePick | null>(null);
+  const [refChats, setRefChats] = useState<ChatReferencePick[]>([]);
   const [showSet, setShowSet] = useState(false);
   const [showStrategy, setShowStrategy] = useState(false);
   const [showCouncil, setShowCouncil] = useState(false);
@@ -624,7 +624,7 @@ export function ChatPage() {
         user_message: question,
         model_set_id: set.id,
         attachment_ids: uploadedIds,
-        ...createTurnReferenceFields(refChat),
+        ...createTurnReferenceFields(refChats),
       });
       if (typeof window !== "undefined") {
         window.localStorage.removeItem(`multimind:draft:${hadActiveChat ? chatId : "new"}`);
@@ -632,7 +632,7 @@ export function ChatPage() {
       applyChatActivityFromTurn(pending);
       scrollThreadToLatest("smooth");
       if (shouldClearReferenceAfterSend(true)) {
-        setRefChat(null);
+        setRefChats([]);
       }
       setFiles((prev) => removeSubmittedComposerFiles(prev, uploadedIds));
       void runTurnInBackground(auth, chatId, pending).catch((error) => {
@@ -1135,17 +1135,21 @@ export function ChatPage() {
         {/* Composer */}
         <div className="border-t border-border bg-background px-4 py-4 md:px-6 xl:px-8">
           <div className="mx-auto max-w-6xl">
-            {refChat && (
-              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
-                <Link2 className="size-3 text-primary" />
-                <span>Ref: {refChat.title}</span>
-                <button
-                  type="button"
-                  onClick={() => setRefChat(null)}
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="size-3" />
-                </button>
+            {refChats.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {refChats.map((refChat) => (
+                  <div key={refChat.chatId} className="inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
+                    <Link2 className="size-3 text-primary" />
+                    <span>Ref: {refChat.title}</span>
+                    <button
+                      type="button"
+                      onClick={() => setRefChats((items) => items.filter((item) => item.chatId !== refChat.chatId))}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
             {files.length > 0 && (
@@ -1432,7 +1436,8 @@ export function ChatPage() {
         onClose={() => setShowRef(false)}
         chats={chats}
         currentChatId={activeChatId}
-        onPick={setRefChat}
+        selected={refChats}
+        onChange={setRefChats}
       />
       <ExcelPreviewModal
         open={showExcel}

@@ -125,6 +125,7 @@ from app.services.chat_memory_service import (
     CHALLENGE_TURN_MARKER,
     extract_continuation_handoff,
 )
+from app.services.multi_reference_context_service import extract_multi_reference_context
 
 ELIGIBLE_TURN_STATUSES = (TurnStatus.COMPLETED, TurnStatus.PARTIAL)
 USABLE_COUNCIL_STATUSES = (ModelAnswerStatus.COMPLETED,)
@@ -134,7 +135,7 @@ READY_ATTACHMENT_STATUS = "ready"
 PLAYBOOK_SOURCE_BATCH_MAX_CHARS = 24_000
 
 _HANDOFF_HEADER_RE = re.compile(
-    r"^#{2,}[ \t]+MultiMind[ \t]+Continuation[ \t]+Handoff[ \t]*$",
+    r"^#{2,}[ \t]+MultiMind[ \t]+(?:Continuation[ \t]+Handoff|Multi-Reference[ \t]+Context)[ \t]*$",
     re.MULTILINE,
 )
 _HANDOFF_STOPS = ("\n\nAttached file:", "\n\nIMAGE CONTEXT")
@@ -347,6 +348,9 @@ def detect_referenced_chat_handoff(
     exact = extract_continuation_handoff(text)
     if exact:
         return True, exact, False
+    exact_multi = extract_multi_reference_context(text)
+    if exact_multi:
+        return True, exact_multi, False
 
     stripped = text.strip()
     match = _HANDOFF_HEADER_RE.search(stripped)

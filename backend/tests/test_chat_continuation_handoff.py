@@ -42,6 +42,10 @@ from app.services.chat_service import (
     _seed_continuation_memory_after_success,
     chat_service,
 )
+from app.services.multi_reference_context_service import (
+    MULTI_REFERENCE_HEADER,
+    multi_reference_context_service,
+)
 from tests.conftest import create_model_set, create_other_auth
 
 
@@ -122,6 +126,135 @@ async def _add_completed_turn(
     )
     await db.flush()
     return turn
+
+
+@pytest.mark.asyncio
+async def test_one_reference_dispatches_only_to_legacy_builder(handoff_env, monkeypatch):
+    calls = {"legacy": 0, "multi": 0}
+    original = chat_memory_service.build_continuation_handoff
+
+    async def legacy(*args, **kwargs):
+        calls["legacy"] += 1
+        return await original(*args, **kwargs)
+
+    async def multi(*args, **kwargs):
+        calls["multi"] += 1
+        raise AssertionError("single reference reached multi-reference service")
+
+    monkeypatch.setattr(chat_memory_service, "build_continuation_handoff", legacy)
+    monkeypatch.setattr(multi_reference_context_service, "build", multi)
+    async with handoff_env.Session() as db:
+        await chat_service.start_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            TurnCreateRequest(
+                user_message="Continue",
+                model_set_id="research-set",
+                referenced_chat_ids=[handoff_env.chat_a_id],
+            ),
+        )
+    assert calls == {"legacy": 1, "multi": 0}
+
+
+@pytest.mark.asyncio
+async def test_two_references_dispatch_to_multi_and_persist_snapshot(handoff_env, monkeypatch):
+    async with handoff_env.Session() as db:
+        chat_c = Chat(
+            org_id=handoff_env.org_id,
+            created_by=handoff_env.user_id,
+            title="Second source",
+        )
+        db.add(chat_c)
+        await db.commit()
+        chat_c_id = chat_c.id
+
+    calls = 0
+
+    async def multi(_db, *, source_chats, question):
+        nonlocal calls
+        calls += 1
+        assert [chat.id for chat in source_chats] == [handoff_env.chat_a_id, chat_c_id]
+        assert question == "Combine"
+        return f"{MULTI_REFERENCE_HEADER}\n\ncombined snapshot"
+
+    monkeypatch.setattr(multi_reference_context_service, "build", multi)
+    async with handoff_env.Session() as db:
+        created = await chat_service.start_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            TurnCreateRequest(
+                user_message="Combine",
+                model_set_id="research-set",
+                referenced_chat_ids=[handoff_env.chat_a_id, chat_c_id],
+            ),
+        )
+        stored = await db.get(Turn, created.id)
+        assert MULTI_REFERENCE_HEADER in (stored.custom_instructions or "")
+        snapshot = stored.custom_instructions
+        stored.status = TurnStatus.COMPLETED
+        await db.flush()
+        assert await _seed_continuation_memory_after_success(
+            db, chat_id=handoff_env.chat_b_id, turn=stored
+        ) is True
+        destination = await db.get(Chat, handoff_env.chat_b_id)
+        assert MULTI_REFERENCE_HEADER in (destination.rolling_memory or "")
+        assert len(destination.rolling_memory or "") <= 16_000
+        await db.commit()
+
+        regenerated = await chat_service.regenerate_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            created.id,
+            TurnRegenerateRequest(prompt="Combine edited"),
+        )
+        regenerated_row = await db.get(Turn, regenerated.new_turn.id)
+        assert regenerated_row.custom_instructions == snapshot
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference_ids",
+    [
+        ["  "],
+        ["same", "same"],
+    ],
+)
+async def test_multi_reference_rejects_blank_and_duplicate_ids(
+    handoff_env, reference_ids
+):
+    with pytest.raises(ValidationError):
+        async with handoff_env.Session() as db:
+            await chat_service.start_turn(
+                db,
+                handoff_env.auth,
+                handoff_env.chat_b_id,
+                TurnCreateRequest(
+                    user_message="Invalid",
+                    model_set_id="research-set",
+                    referenced_chat_ids=reference_ids,
+                ),
+            )
+
+
+@pytest.mark.asyncio
+async def test_reference_fields_are_mutually_exclusive(handoff_env):
+    with pytest.raises(ValidationError, match="either"):
+        async with handoff_env.Session() as db:
+            await chat_service.start_turn(
+                db,
+                handoff_env.auth,
+                handoff_env.chat_b_id,
+                TurnCreateRequest(
+                    user_message="Invalid",
+                    model_set_id="research-set",
+                    referenced_chat_id=handoff_env.chat_a_id,
+                    referenced_chat_ids=[handoff_env.chat_a_id],
+                ),
+            )
 
 
 def test_handoff_text_budget_and_contents():
