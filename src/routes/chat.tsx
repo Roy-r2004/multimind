@@ -1,5 +1,12 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+} from "react";
 import {
   Send,
   Gavel,
@@ -74,6 +81,11 @@ import {
   shouldSkipAutoDiscardUnusedChat,
   submittedAttachmentIds,
   triggerComposerUploadFromMenu,
+  applySuccessfulAttachmentTranscription,
+  beginAttachmentTranscription,
+  failAttachmentTranscription,
+  isUploadedWebmAttachment,
+  type AttachmentTranscriptionState,
 } from "@/lib/composerAttachments";
 import {
   mergeWithCachedTurns,
@@ -98,11 +110,7 @@ import {
   isHistoricalTurnDeleteDisabled,
   removeTurnFromList,
 } from "@/lib/turnState";
-import {
-  canEditUserPrompt,
-  countLaterTurns,
-  LATER_TURNS_EDIT_WARNING,
-} from "@/lib/promptEdit";
+import { canEditUserPrompt, countLaterTurns, LATER_TURNS_EDIT_WARNING } from "@/lib/promptEdit";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
 import { resolveModelSetIdFromTurns } from "@/lib/modelSetSelection";
@@ -214,6 +222,9 @@ export function ChatPage() {
   const [isPromptVoiceActive, setIsPromptVoiceActive] = useState(false);
   const isVoiceActive = isComposerVoiceActive || isPromptVoiceActive;
   const [files, setFiles] = useState<ComposerFile[]>([]);
+  const [attachmentTranscriptions, setAttachmentTranscriptions] = useState<
+    Record<string, AttachmentTranscriptionState>
+  >({});
   const [refChats, setRefChats] = useState<ChatReferencePick[]>([]);
   const [showSet, setShowSet] = useState(false);
   const [showStrategy, setShowStrategy] = useState(false);
@@ -242,9 +253,7 @@ export function ChatPage() {
   const [deletedTurns, setDeletedTurns] = useState<ApiTurn[]>([]);
   const [restoringTurnId, setRestoringTurnId] = useState<string | null>(null);
   const [regeneratingTurnId, setRegeneratingTurnId] = useState<string | null>(null);
-  const [pendingEdit, setPendingEdit] = useState<{ turn: ApiTurn; prompt: string } | null>(
-    null,
-  );
+  const [pendingEdit, setPendingEdit] = useState<{ turn: ApiTurn; prompt: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef<ComposerFile[]>([]);
   const activeChatIdRef = useRef<string | null>(activeChatId);
@@ -442,6 +451,7 @@ export function ChatPage() {
         })
       ) {
         setFiles([]);
+        setAttachmentTranscriptions({});
       }
       modelSetRestoredForChatRef.current = null;
       return;
@@ -458,6 +468,7 @@ export function ChatPage() {
       })
     ) {
       setFiles([]);
+      setAttachmentTranscriptions({});
     }
 
     const restoreGeneration = ++pendingRestoreGenerationRef.current;
@@ -530,9 +541,9 @@ export function ChatPage() {
     }
   }, [activeChatId, apiTurns, modelSets, setActiveModelSetId]);
 
-  function handleVoiceTranscript(result: ApiTranscriptionResponse) {
-    const transcript = result.text.trim();
-    if (!transcript) return;
+  function insertTranscriptIntoComposer(transcriptValue: string): boolean {
+    const transcript = transcriptValue.trim();
+    if (!transcript) return false;
 
     const textarea = textareaRef.current;
     const selectionStart = textarea ? textarea.selectionStart : null;
@@ -555,6 +566,55 @@ export function ChatPage() {
         currentTextarea.focus();
         currentTextarea.setSelectionRange(cursorPosition, cursorPosition);
       });
+    }
+    return true;
+  }
+
+  function handleVoiceTranscript(result: ApiTranscriptionResponse) {
+    insertTranscriptIntoComposer(result.text);
+  }
+
+  async function transcribeComposerAttachment(file: ComposerFile) {
+    if (!activeChatId || !file.attachmentId || !isUploadedWebmAttachment(file)) return;
+    const auth = authHeaders();
+    if (!auth) {
+      void navigate({ to: "/login" });
+      return;
+    }
+    const attachmentId = file.attachmentId;
+    setAttachmentTranscriptions((current) => ({
+      ...current,
+      [attachmentId]: beginAttachmentTranscription(),
+    }));
+    let result: ApiTranscriptionResponse;
+    try {
+      result = await api.chats.transcribeAttachment(auth, activeChatId, attachmentId, "en");
+    } catch (error) {
+      const message = apiErrorMessage(error, "Transcription failed. You can retry.");
+      setAttachmentTranscriptions((current) => ({
+        ...current,
+        [attachmentId]: failAttachmentTranscription(message),
+      }));
+      return;
+    }
+
+    const inserted = await applySuccessfulAttachmentTranscription({
+      transcript: result.text,
+      insertTranscript: insertTranscriptIntoComposer,
+      removeAttachment: async () => {
+        setAttachmentTranscriptions((current) => {
+          const next = { ...current };
+          delete next[attachmentId];
+          return next;
+        });
+        await removeComposerFile(file);
+      },
+    });
+    if (!inserted) {
+      setAttachmentTranscriptions((current) => ({
+        ...current,
+        [attachmentId]: failAttachmentTranscription("No transcript was returned. You can retry."),
+      }));
     }
   }
 
@@ -635,6 +695,11 @@ export function ChatPage() {
         setRefChats([]);
       }
       setFiles((prev) => removeSubmittedComposerFiles(prev, uploadedIds));
+      setAttachmentTranscriptions((current) => {
+        const next = { ...current };
+        uploadedIds.forEach((id) => delete next[id]);
+        return next;
+      });
       void runTurnInBackground(auth, chatId, pending).catch((error) => {
         console.error(error);
         alert(error instanceof Error ? error.message : "Failed to run turn");
@@ -747,9 +812,7 @@ export function ChatPage() {
       applyChatActivityFromTurn(result.new_turn);
       setPendingEdit(null);
       if (result.model_set_fallback) {
-        toast.warning(
-          "Original model set was unavailable. Regenerated with a fallback model set.",
-        );
+        toast.warning("Original model set was unavailable. Regenerated with a fallback model set.");
       }
       scrollThreadToLatest("smooth");
       void runTurnInBackground(auth, activeChatId, result.new_turn).catch((error) => {
@@ -844,6 +907,11 @@ export function ChatPage() {
       await api.chats.deleteAttachment(auth, chatId, attachmentId);
       if (activeChatIdRef.current !== chatId) return;
       setFiles((prev) => removeComposerFileByLocalId(prev, localId));
+      setAttachmentTranscriptions((current) => {
+        const next = { ...current };
+        delete next[attachmentId];
+        return next;
+      });
     } catch (error) {
       const message = apiErrorMessage(error, "Failed to remove attachment");
       if (activeChatIdRef.current !== chatId) return;
@@ -889,14 +957,7 @@ export function ChatPage() {
             <div className="hidden items-center gap-1.5 sm:flex">
               {set.models.map((id) => {
                 const m = modelById(id);
-                return (
-                  <VendorLogo
-                    key={id}
-                    vendor={m.vendor}
-                    title={m.name}
-                    className="size-5"
-                  />
-                );
+                return <VendorLogo key={id} vendor={m.vendor} title={m.name} className="size-5" />;
               })}
               <span className="ml-2 text-xs text-muted-foreground">{set.strategy}</span>
               <button
@@ -973,8 +1034,7 @@ export function ChatPage() {
                   01 — Chat Council
                 </p>
                 <h2 className="font-display text-4xl tracking-tight md:text-6xl">
-                  Five minds.{" "}
-                  <span className="text-gradient italic">One verdict.</span>
+                  Five minds. <span className="text-gradient italic">One verdict.</span>
                 </h2>
                 <p className="mx-auto max-w-xl text-sm text-muted-foreground md:text-base">
                   Ask once. Compare frontier models. Decide with clarity — Verdict AI uses{" "}
@@ -1138,12 +1198,19 @@ export function ChatPage() {
             {refChats.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {refChats.map((refChat) => (
-                  <div key={refChat.chatId} className="inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
+                  <div
+                    key={refChat.chatId}
+                    className="inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs"
+                  >
                     <Link2 className="size-3 text-primary" />
                     <span>Ref: {refChat.title}</span>
                     <button
                       type="button"
-                      onClick={() => setRefChats((items) => items.filter((item) => item.chatId !== refChat.chatId))}
+                      onClick={() =>
+                        setRefChats((items) =>
+                          items.filter((item) => item.chatId !== refChat.chatId),
+                        )
+                      }
                       className="text-muted-foreground hover:text-foreground"
                     >
                       <X className="size-3" />
@@ -1163,7 +1230,9 @@ export function ChatPage() {
                     )}
                   >
                     <div className="flex items-center gap-2">
-                      {f.state === "uploading" && <Loader2 className="size-3 shrink-0 animate-spin" />}
+                      {f.state === "uploading" && (
+                        <Loader2 className="size-3 shrink-0 animate-spin" />
+                      )}
                       {f.deleting && <Loader2 className="size-3 shrink-0 animate-spin" />}
                       {f.state === "error" && !f.deleting && (
                         <AlertCircle className="size-3 shrink-0 text-destructive" />
@@ -1178,6 +1247,23 @@ export function ChatPage() {
                         {f.name}
                         {f.deleting ? "…" : ""}
                       </span>
+                      {isUploadedWebmAttachment(f) && f.attachmentId ? (
+                        <button
+                          type="button"
+                          disabled={
+                            f.deleting ||
+                            attachmentTranscriptions[f.attachmentId]?.status === "transcribing"
+                          }
+                          onClick={() => void transcribeComposerAttachment(f)}
+                          className="shrink-0 rounded border border-border px-2 py-0.5 font-medium hover:bg-accent disabled:opacity-40"
+                        >
+                          {attachmentTranscriptions[f.attachmentId]?.status === "transcribing"
+                            ? "Transcribing…"
+                            : attachmentTranscriptions[f.attachmentId]
+                              ? "Retry Transcription"
+                              : "Transcribe"}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         aria-label={`Remove ${f.name}`}
@@ -1191,6 +1277,12 @@ export function ChatPage() {
                     {(f.state === "error" || f.errorMessage) && f.errorMessage ? (
                       <span className="max-w-[16rem] truncate text-[11px] text-destructive">
                         {f.errorMessage}
+                      </span>
+                    ) : null}
+                    {f.attachmentId &&
+                    attachmentTranscriptions[f.attachmentId]?.status === "error" ? (
+                      <span className="max-w-[28rem] text-[11px] text-destructive">
+                        {attachmentTranscriptions[f.attachmentId]?.error ?? "Transcription failed."}
                       </span>
                     ) : null}
                   </div>
@@ -1653,8 +1745,7 @@ function LoadingTurn({
         className="mt-2 w-full border-2 border-primary/25 bg-primary/[0.04] p-5 text-sm text-muted-foreground sm:p-6"
         data-testid="loading-verdict"
       >
-        <Loader2 className="mr-2 inline size-3.5 animate-spin text-primary" /> Synthesizing
-        verdict…
+        <Loader2 className="mr-2 inline size-3.5 animate-spin text-primary" /> Synthesizing verdict…
       </GlassCard>
     </div>
   );
@@ -1736,9 +1827,7 @@ function AiTurn({
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {!hasVerdict ? (
-            <TurnCostSummary answers={turn.model_answers ?? []} />
-          ) : null}
+          {!hasVerdict ? <TurnCostSummary answers={turn.model_answers ?? []} /> : null}
           {canCollapseAnswers ? (
             <button
               type="button"
@@ -1774,7 +1863,11 @@ function AiTurn({
               )}
             >
               <div className="relative flex items-start gap-2.5 sm:gap-3">
-                <VendorLogo vendor={m.vendor} className="size-8 shrink-0 sm:size-9" title={m.name} />
+                <VendorLogo
+                  vendor={m.vendor}
+                  className="size-8 shrink-0 sm:size-9"
+                  title={m.name}
+                />
                 <div className="min-w-0 flex-1 space-y-1.5">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 text-sm font-semibold leading-tight sm:text-[0.9375rem]">
@@ -1920,49 +2013,43 @@ function AiTurn({
                 <Pin className={cn("size-3.5", isPinned && "fill-current")} />
                 {isPinned ? "Unpin" : "Pin"}
               </button>
-            {bookmarkState.visible && bookmarkState.verdictId && (
-              <button
-                type="button"
-                aria-label={bookmarkState.label}
-                title={bookmarkState.title}
-                disabled={bookmarkState.disabled}
-                onClick={() =>
-                  onToggleSavedVerdict(bookmarkState.verdictId!, bookmarkState.saved)
-                }
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
-                  bookmarkState.saved
-                    ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
-                    : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-              >
-                <Bookmark
-                  className={cn("size-3.5", bookmarkState.filled && "fill-current")}
-                />
-                {bookmarkState.disabled
-                  ? "Saving"
-                  : bookmarkState.saved
-                    ? "Saved"
-                    : "Save"}
-              </button>
-            )}
-            {turn.lesson_id && turn.lesson_status === "completed" ? (
-              <Link
-                to="/lessons/$id"
-                params={{ id: turn.lesson_id }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
-              >
-                <BookOpen className="size-3.5" /> View lesson
-              </Link>
-            ) : (
-              <button
-                type="button"
-                onClick={openDisagree}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
-              >
-                <Swords className="size-3.5" /> Challenge
-              </button>
-            )}
+              {bookmarkState.visible && bookmarkState.verdictId && (
+                <button
+                  type="button"
+                  aria-label={bookmarkState.label}
+                  title={bookmarkState.title}
+                  disabled={bookmarkState.disabled}
+                  onClick={() =>
+                    onToggleSavedVerdict(bookmarkState.verdictId!, bookmarkState.saved)
+                  }
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
+                    bookmarkState.saved
+                      ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                      : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  <Bookmark className={cn("size-3.5", bookmarkState.filled && "fill-current")} />
+                  {bookmarkState.disabled ? "Saving" : bookmarkState.saved ? "Saved" : "Save"}
+                </button>
+              )}
+              {turn.lesson_id && turn.lesson_status === "completed" ? (
+                <Link
+                  to="/lessons/$id"
+                  params={{ id: turn.lesson_id }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                >
+                  <BookOpen className="size-3.5" /> View lesson
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={openDisagree}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
+                >
+                  <Swords className="size-3.5" /> Challenge
+                </button>
+              )}
             </div>
           </div>
         </div>

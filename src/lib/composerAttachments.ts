@@ -43,6 +43,37 @@ export type ComposerFileChip = {
   deleting?: boolean;
 };
 
+export type AttachmentTranscriptionState = {
+  status: "idle" | "transcribing" | "error";
+  error?: string;
+};
+
+export function isUploadedWebmAttachment(file: ComposerFileChip): boolean {
+  return (
+    file.state === "uploaded" &&
+    Boolean(file.attachmentId) &&
+    composerAttachmentExtension(file.name) === ".webm"
+  );
+}
+
+export function beginAttachmentTranscription(): AttachmentTranscriptionState {
+  return { status: "transcribing" };
+}
+
+export function failAttachmentTranscription(error: string): AttachmentTranscriptionState {
+  return { status: "error", error };
+}
+
+export async function applySuccessfulAttachmentTranscription(options: {
+  transcript: string;
+  insertTranscript: (transcript: string) => boolean;
+  removeAttachment: () => Promise<void>;
+}): Promise<boolean> {
+  if (!options.insertTranscript(options.transcript)) return false;
+  await options.removeAttachment();
+  return true;
+}
+
 /** Uploaded pending chips with a backend ID need DELETE; local/error chips do not. */
 export function shouldDeleteComposerAttachmentRemotely(file: ComposerFileChip): boolean {
   return file.state === "uploaded" && Boolean(file.attachmentId);
@@ -170,14 +201,10 @@ export function mergePendingAttachments(options: {
 }): ComposerFileChip[] {
   const { current, serverPending } = options;
   const knownAttachmentIds = new Set(
-    current
-      .map((file) => file.attachmentId)
-      .filter((id): id is string => Boolean(id)),
+    current.map((file) => file.attachmentId).filter((id): id is string => Boolean(id)),
   );
   const knownLibraryIds = new Set(
-    current
-      .map((file) => file.libraryItemId)
-      .filter((id): id is string => Boolean(id)),
+    current.map((file) => file.libraryItemId).filter((id): id is string => Boolean(id)),
   );
 
   const additions: ComposerFileChip[] = [];
@@ -306,11 +333,7 @@ export function shouldSkipAutoDiscardUnusedChat(options: {
 }): boolean {
   if (options.retainForChatId === options.chatId) return true;
   if (hasUploadingComposerFiles(options.files)) return true;
-  if (
-    options.files.some(
-      (file) => file.state === "uploaded" && Boolean(file.attachmentId),
-    )
-  ) {
+  if (options.files.some((file) => file.state === "uploaded" && Boolean(file.attachmentId))) {
     return true;
   }
   return false;
@@ -401,10 +424,7 @@ export async function runComposerUploads(
       }
 
       activeSlots += 1;
-      deps.setFiles((prev) => [
-        ...prev,
-        { localId, name: displayName, state: "uploading" },
-      ]);
+      deps.setFiles((prev) => [...prev, { localId, name: displayName, state: "uploading" }]);
 
       uploadAttempts += 1;
       const chatIdForUpload = targetChatId;
@@ -460,4 +480,3 @@ export async function runComposerUploads(
 
   return { targetChatId, uploadAttempts };
 }
-

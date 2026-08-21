@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { resolveFailedResponseMessage } from "../../src/lib/api/errorMessage.ts";
@@ -8,12 +9,16 @@ import {
   COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS,
   COMPOSER_FILE_ACCEPT,
   apiErrorMessage,
+  applySuccessfulAttachmentTranscription,
+  beginAttachmentTranscription,
   canAcceptMoreComposerAttachments,
   canStartComposerAttachmentDelete,
   captureComposerFileInputFiles,
   composerAttachmentUploadTimeoutMs,
   countActiveComposerAttachments,
   hasUploadingComposerFiles,
+  failAttachmentTranscription,
+  isUploadedWebmAttachment,
   markComposerFileDeleting,
   mergePendingAttachments,
   mergeRestoredComposerFiles,
@@ -66,6 +71,101 @@ test("audio attachment uploads use an extended timeout; documents keep 120s", ()
   assert.equal(composerAttachmentUploadTimeoutMs("clip.webm"), COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS);
   assert.equal(COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS, 1_000_000);
   assert.equal(COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS, 120_000);
+});
+
+test("only uploaded webm attachments expose transcription", () => {
+  assert.equal(
+    isUploadedWebmAttachment({
+      localId: "1",
+      name: "recording.webm",
+      state: "uploaded",
+      attachmentId: "att-1",
+    }),
+    true,
+  );
+  assert.equal(
+    isUploadedWebmAttachment({ localId: "2", name: "recording.webm", state: "uploading" }),
+    false,
+  );
+  assert.equal(
+    isUploadedWebmAttachment({
+      localId: "3",
+      name: "notes.txt",
+      state: "uploaded",
+      attachmentId: "att-3",
+    }),
+    false,
+  );
+});
+
+test("attachment transcription transitions from transcribing to retryable error", () => {
+  const transcribing = beginAttachmentTranscription();
+  assert.deepEqual(transcribing, { status: "transcribing" });
+
+  const failed = failAttachmentTranscription("Service busy");
+  assert.equal(failed.status, "error");
+  assert.equal(failed.error, "Service busy");
+});
+
+test("successful attachment transcription inserts before requesting removal and never sends", async () => {
+  const calls: string[] = [];
+  let composer = "";
+  const sendCalls = 0;
+
+  const inserted = await applySuccessfulAttachmentTranscription({
+    transcript: "full transcript",
+    insertTranscript: (transcript) => {
+      calls.push("insert");
+      composer = transcript;
+      return true;
+    },
+    removeAttachment: async () => {
+      calls.push("remove");
+    },
+  });
+
+  assert.equal(inserted, true);
+  assert.equal(composer, "full transcript");
+  assert.deepEqual(calls, ["insert", "remove"]);
+  assert.equal(sendCalls, 0);
+});
+
+test("failed insertion does not request attachment removal", async () => {
+  let removeCalls = 0;
+  const inserted = await applySuccessfulAttachmentTranscription({
+    transcript: "",
+    insertTranscript: () => false,
+    removeAttachment: async () => {
+      removeCalls += 1;
+    },
+  });
+
+  assert.equal(inserted, false);
+  assert.equal(removeCalls, 0);
+});
+
+test("delete failure cannot undo an already inserted transcript", async () => {
+  let composer = "";
+  await assert.rejects(
+    applySuccessfulAttachmentTranscription({
+      transcript: "keep this transcript",
+      insertTranscript: (transcript) => {
+        composer = transcript;
+        return true;
+      },
+      removeAttachment: async () => {
+        throw new Error("delete failed");
+      },
+    }),
+    /delete failed/,
+  );
+  assert.equal(composer, "keep this transcript");
+});
+
+test("chat attachment UI has no separate transcript editor or Use Transcript action", () => {
+  const source = readFileSync(new URL("../../src/routes/chat.tsx", import.meta.url), "utf8");
+  assert.equal(source.includes("Use Transcript"), false);
+  assert.equal(source.includes("attachment-transcript-"), false);
 });
 
 test("rejects empty, oversized, and unsupported files before network", () => {
@@ -143,8 +243,14 @@ test("pending restore does not duplicate and keeps local busy chips", () => {
   ];
   const merged = mergeRestoredComposerFiles(local, pending);
   assert.equal(merged.filter((f) => f.attachmentId === "att-1").length, 1);
-  assert.equal(merged.some((f) => f.state === "uploading"), true);
-  assert.equal(merged.some((f) => f.state === "error"), true);
+  assert.equal(
+    merged.some((f) => f.state === "uploading"),
+    true,
+  );
+  assert.equal(
+    merged.some((f) => f.state === "error"),
+    true,
+  );
 });
 
 test("stale empty pending GET must not remove a newly uploaded chip", () => {
@@ -235,7 +341,10 @@ test("stale pending restore generation is ignored", () => {
 });
 
 test("apiErrorMessage prefers Error.message", () => {
-  assert.equal(apiErrorMessage(new Error("File exceeds maximum size of 10 MB.")), "File exceeds maximum size of 10 MB.");
+  assert.equal(
+    apiErrorMessage(new Error("File exceeds maximum size of 10 MB.")),
+    "File exceeds maximum size of 10 MB.",
+  );
   assert.equal(apiErrorMessage("plain"), "plain");
 });
 
@@ -459,12 +568,7 @@ test("new-chat first selection creates chat, uploads once, and survives chat-swi
   assert.equal(files[0].state, "uploaded");
   assert.equal(files[0].attachmentId, "att-1");
   assert.equal(retainRef.current, null);
-  assert.deepEqual(order, [
-    "created",
-    "upload",
-    "upload-started-before-activate",
-    "activated",
-  ]);
+  assert.deepEqual(order, ["created", "upload", "upload-started-before-activate", "activated"]);
 });
 
 test("existing-chat upload does not create a chat and still uploads", async () => {
@@ -517,9 +621,7 @@ test("webm file reaches uploadAttachment instead of validation-error path", asyn
   });
 
   assert.equal(result.uploadAttempts, 1);
-  assert.deepEqual(uploadCalls, [
-    "chat-existing:multimind-recording-2026-08-11-09-53-42.webm",
-  ]);
+  assert.deepEqual(uploadCalls, ["chat-existing:multimind-recording-2026-08-11-09-53-42.webm"]);
   assert.deepEqual(validationErrors, []);
   assert.equal(files[0]?.state, "uploaded");
   assert.equal(files[0]?.attachmentId, "att-webm");

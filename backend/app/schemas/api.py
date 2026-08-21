@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -1435,6 +1435,10 @@ class AttachmentResponse(BaseModel):
 
 class AttachmentListResponse(BaseModel):
     items: list[AttachmentResponse]
+
+
+class AttachmentTranscriptionRequest(BaseModel):
+    language: Literal["auto", "en", "fr"] = "auto"
 
 
 class AttachLibraryItemRequest(BaseModel):
