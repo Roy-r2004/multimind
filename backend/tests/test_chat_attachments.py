@@ -11,7 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import (
+    ConflictError,
+    InvalidAudioError,
+    NotFoundError,
+    SilentAudioError,
+    TranscriptionBusyError,
+    TranscriptionTimeoutError,
+)
 from app.db.models import Chat, ChatAttachment, Turn
 from app.db.session import get_db
 from app.main import create_app
@@ -1570,24 +1577,8 @@ def test_webm_content_type_normalization_and_allowlist():
 async def test_webm_upload_accepts_codecs_parameter_and_video_webm(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
-    from pathlib import Path
-
-    from app.services.transcription_service import TranscriptionResult
-    import app.api.v1.chats as chats_api
-
     attach_dir = tmp_path / "attachments"
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
-
-    async def fake_transcribe(file_path: Path, *, language: str | None = None):
-        return TranscriptionResult(
-            text="ok",
-            language="en",
-            language_probability=1.0,
-            duration_seconds=1.0,
-            processing_seconds=0.1,
-        )
-
-    monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
 
     chat = await _create_chat(db, auth)
     async with await _client_for(db, auth) as client:
@@ -1621,31 +1612,16 @@ async def test_webm_upload_accepts_codecs_parameter_and_video_webm(
 
 
 @pytest.mark.asyncio
-async def test_webm_upload_accepted_and_transcribed(
+async def test_webm_upload_is_stored_without_transcription(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
-    from pathlib import Path
-
-    from app.services.transcription_service import TranscriptionResult
     import app.api.v1.chats as chats_api
 
     attach_dir = tmp_path / "attachments"
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
 
-    called: dict[str, object] = {}
-
-    async def fake_transcribe(file_path: Path, *, language: str | None = None):
-        called["path"] = file_path
-        called["language"] = language
-        assert file_path.exists()
-        assert file_path.read_bytes() == _fake_webm_bytes()
-        return TranscriptionResult(
-            text="  hello from webm  ",
-            language="en",
-            language_probability=0.99,
-            duration_seconds=1.5,
-            processing_seconds=0.1,
-        )
+    async def fake_transcribe(*_args, **_kwargs):
+        raise AssertionError("upload must not invoke transcription")
 
     monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
 
@@ -1663,12 +1639,9 @@ async def test_webm_upload_accepted_and_transcribed(
     body = response.json()
     assert body["filename"] == "clip.webm"
     assert body["content_type"] == "audio/webm"
-    assert body["excerpt_status"] == "ready"
-    assert body["text_excerpt"] == "hello from webm"
+    assert body["excerpt_status"] == "failed"
+    assert body["text_excerpt"] is None
     assert body["size_bytes"] == len(_fake_webm_bytes())
-    assert called["language"] == "en"
-    assert isinstance(called["path"], Path)
-
     row = (
         await db.execute(select(ChatAttachment).where(ChatAttachment.id == body["id"]))
     ).scalar_one()
@@ -1698,19 +1671,16 @@ async def test_mp3_attachment_still_rejected(
 
 
 @pytest.mark.asyncio
-async def test_webm_silent_transcription_marks_empty(
+async def test_webm_upload_ignores_transcription_unavailability(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
-    from pathlib import Path
-
-    from app.core.exceptions import SilentAudioError
     import app.api.v1.chats as chats_api
 
     attach_dir = tmp_path / "attachments"
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
 
-    async def fake_transcribe(file_path: Path, *, language: str | None = None):
-        raise SilentAudioError()
+    async def fake_transcribe(*_args, **_kwargs):
+        raise AssertionError("upload must not invoke transcription")
 
     monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
 
@@ -1726,7 +1696,7 @@ async def test_webm_silent_transcription_marks_empty(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["excerpt_status"] == "empty"
+    assert body["excerpt_status"] == "failed"
     assert body["text_excerpt"] is None
     row = (
         await db.execute(select(ChatAttachment).where(ChatAttachment.id == body["id"]))
@@ -1735,19 +1705,16 @@ async def test_webm_silent_transcription_marks_empty(
 
 
 @pytest.mark.asyncio
-async def test_webm_transcription_busy_cleans_temp(
+async def test_webm_upload_does_not_call_busy_transcription_service(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
-    from pathlib import Path
-
-    from app.core.exceptions import TranscriptionBusyError
     import app.api.v1.chats as chats_api
 
     attach_dir = tmp_path / "attachments"
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
 
-    async def fake_transcribe(file_path: Path, *, language: str | None = None):
-        raise TranscriptionBusyError()
+    async def fake_transcribe(*_args, **_kwargs):
+        raise AssertionError("upload must not invoke transcription")
 
     monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
 
@@ -1761,31 +1728,26 @@ async def test_webm_transcription_busy_cleans_temp(
             content_type="audio/webm",
         )
 
-    assert response.status_code == 429
-    assert response.json()["error"] == "TRANSCRIPTION_BUSY"
-    assert (await db.execute(select(ChatAttachment))).scalars().all() == []
+    assert response.status_code == 201
+    row = (await db.execute(select(ChatAttachment))).scalar_one()
+    assert (attach_dir / row.relative_path).read_bytes() == _fake_webm_bytes()
     tmp_dir = attach_dir / ".tmp"
     if tmp_dir.exists():
         assert list(tmp_dir.iterdir()) == []
-    # No promoted audio files left behind
-    leftover = [p for p in attach_dir.rglob("*") if p.is_file()]
-    assert leftover == []
+    assert [p for p in attach_dir.rglob("*") if p.is_file()] == [attach_dir / row.relative_path]
 
 
 @pytest.mark.asyncio
-async def test_webm_transcription_failure_cleans_temp(
+async def test_webm_upload_does_not_call_failing_transcription_service(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
-    from pathlib import Path
-
-    from app.core.exceptions import InvalidAudioError
     import app.api.v1.chats as chats_api
 
     attach_dir = tmp_path / "attachments"
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
 
-    async def fake_transcribe(file_path: Path, *, language: str | None = None):
-        raise InvalidAudioError("corrupt webm")
+    async def fake_transcribe(*_args, **_kwargs):
+        raise AssertionError("upload must not invoke transcription")
 
     monkeypatch.setattr(chats_api.transcription_service, "transcribe", fake_transcribe)
 
@@ -1799,10 +1761,195 @@ async def test_webm_transcription_failure_cleans_temp(
             content_type="audio/webm",
         )
 
+    assert response.status_code == 201
+    row = (await db.execute(select(ChatAttachment))).scalar_one()
+    stored = attach_dir / row.relative_path
+    assert stored.read_bytes() == _fake_webm_bytes()
+
+
+@pytest.mark.asyncio
+async def test_stored_webm_transcription_returns_full_response_without_mutation(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    import app.api.v1.chats as chats_api
+    from app.services.transcription_service import TranscriptionResult
+
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        uploaded = await _upload(
+            client,
+            chat.id,
+            filename="saved.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm",
+        )
+        attachment_id = uploaded.json()["id"]
+        called: dict[str, object] = {}
+
+        def fake_inspect(path: Path):
+            called["inspected_path"] = path
+            return 8.5
+
+        async def fake_transcribe(path: Path, *, language: str | None = None):
+            called["path"] = path
+            called["language"] = language
+            return TranscriptionResult(
+                text="  full editable transcript  ",
+                language="en",
+                language_probability=0.98,
+                duration_seconds=8.5,
+                processing_seconds=1.2,
+            )
+
+        monkeypatch.setattr(chats_api, "inspect_audio_duration", fake_inspect)
+        monkeypatch.setattr(chats_api.transcription_service, "transcribe_nowait", fake_transcribe)
+        response = await client.post(
+            f"/api/v1/chats/{chat.id}/attachments/{attachment_id}/transcription",
+            json={"language": "en"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "text": "full editable transcript",
+        "language": "en",
+        "language_probability": 0.98,
+        "duration_seconds": 8.5,
+        "processing_seconds": 1.2,
+    }
+    row = (
+        await db.execute(select(ChatAttachment).where(ChatAttachment.id == attachment_id))
+    ).scalar_one()
+    assert called["path"] == attach_dir / row.relative_path
+    assert called["inspected_path"] == called["path"]
+    assert called["language"] == "en"
+    assert row.text_excerpt is None
+    assert row.excerpt_status == "failed"
+    assert (attach_dir / row.relative_path).read_bytes() == _fake_webm_bytes()
+    assert (await db.execute(select(Turn))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_attachment_transcription_rejects_wrong_chat_cross_org_and_non_webm(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+    chat = await _create_chat(db, auth)
+    other_chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        audio = await _upload(
+            client,
+            chat.id,
+            filename="saved.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm",
+        )
+        document = await _upload(client, chat.id)
+        wrong_chat = await client.post(
+            f"/api/v1/chats/{other_chat.id}/attachments/{audio.json()['id']}/transcription",
+            json={"language": "en"},
+        )
+        non_audio = await client.post(
+            f"/api/v1/chats/{chat.id}/attachments/{document.json()['id']}/transcription",
+            json={"language": "en"},
+        )
+
+    other_auth = await create_other_auth(db)
+    async with await _client_for(db, other_auth) as other_client:
+        cross_org = await other_client.post(
+            f"/api/v1/chats/{chat.id}/attachments/{audio.json()['id']}/transcription",
+            json={"language": "en"},
+        )
+
+    assert wrong_chat.status_code == 404
+    assert cross_org.status_code == 404
+    assert non_audio.status_code == 422
+    assert (attach_dir / (await db.get(ChatAttachment, audio.json()["id"])).relative_path).is_file()
+
+
+@pytest.mark.asyncio
+async def test_attachment_transcription_missing_file_preserves_row(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        uploaded = await _upload(
+            client,
+            chat.id,
+            filename="missing.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm",
+        )
+        row = await db.get(ChatAttachment, uploaded.json()["id"])
+        (attach_dir / row.relative_path).unlink()
+        response = await client.post(
+            f"/api/v1/chats/{chat.id}/attachments/{row.id}/transcription",
+            json={"language": "en"},
+        )
+
     assert response.status_code == 422
-    assert response.json()["error"] == "INVALID_AUDIO"
-    leftover = [p for p in attach_dir.rglob("*") if p.is_file()]
-    assert leftover == []
+    assert response.json()["error"] == "INVALID_ATTACHMENT"
+    assert await db.get(ChatAttachment, row.id) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_factory", "status_code", "error_code"),
+    [
+        (TranscriptionBusyError, 429, "TRANSCRIPTION_BUSY"),
+        (TranscriptionTimeoutError, 504, "TRANSCRIPTION_TIMEOUT"),
+        (SilentAudioError, 422, "SILENT_AUDIO"),
+        (InvalidAudioError, 422, "INVALID_AUDIO"),
+    ],
+)
+async def test_attachment_transcription_failure_preserves_saved_audio(
+    db: AsyncSession,
+    auth: AuthContext,
+    tmp_path,
+    monkeypatch,
+    error_factory,
+    status_code,
+    error_code,
+):
+    import app.api.v1.chats as chats_api
+
+    attach_dir = tmp_path / "attachments"
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(attach_dir))
+    monkeypatch.setattr(chats_api, "inspect_audio_duration", lambda _path: 2.0)
+
+    async def fail_transcription(*_args, **_kwargs):
+        raise error_factory()
+
+    monkeypatch.setattr(
+        chats_api.transcription_service,
+        "transcribe_nowait",
+        fail_transcription,
+    )
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        uploaded = await _upload(
+            client,
+            chat.id,
+            filename="retry.webm",
+            content=_fake_webm_bytes(),
+            content_type="audio/webm",
+        )
+        row = await db.get(ChatAttachment, uploaded.json()["id"])
+        response = await client.post(
+            f"/api/v1/chats/{chat.id}/attachments/{row.id}/transcription",
+            json={"language": "en"},
+        )
+
+    assert response.status_code == status_code
+    assert response.json()["error"] == error_code
+    assert await db.get(ChatAttachment, row.id) is not None
+    assert (attach_dir / row.relative_path).read_bytes() == _fake_webm_bytes()
 
 
 def test_audio_transcript_enters_attachment_instructions():

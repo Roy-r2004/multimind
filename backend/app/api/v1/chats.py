@@ -7,13 +7,13 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.transcriptions import inspect_audio_duration, language_to_service_value
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context, get_streaming_auth_context
 from app.core.exceptions import (
     ConflictError,
     InvalidAttachmentError,
     NotFoundError,
-    SilentAudioError,
     ValidationError,
 )
 from app.core.logging import get_logger
@@ -23,12 +23,14 @@ from app.schemas.api import (
     AttachLibraryItemRequest,
     AttachmentListResponse,
     AttachmentResponse,
+    AttachmentTranscriptionRequest,
     ChatCreateRequest,
     ChatResponse,
     ChatUpdateRequest,
     MessageResponse,
     PinVerdictRequest,
     ShareLinkResponse,
+    TranscriptionResponse,
     TurnCreateRequest,
     TurnDeleteResponse,
     TurnRegenerateRequest,
@@ -52,7 +54,6 @@ from app.services.chat_attachment_storage import (
 )
 from app.services.chat_attachment_text import (
     ATTACHMENT_TEXT_EXCERPT_MAX,
-    excerpt_from_transcript,
     extract_attachment_text_from_path,
 )
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
@@ -275,14 +276,9 @@ async def upload_attachment(
 
         try:
             if ext in AUDIO_EXTENSIONS:
-                try:
-                    result = await transcription_service.transcribe(
-                        tmp_path, language="en"
-                    )
-                    text_excerpt, excerpt_status = excerpt_from_transcript(result.text)
-                except SilentAudioError:
-                    # Match empty document extraction: keep the file, mark excerpt empty.
-                    text_excerpt, excerpt_status = None, "empty"
+                # Audio is the recovery source. Store it independently of Whisper so
+                # explicit transcription failures can always be retried later.
+                text_excerpt, excerpt_status = None, "failed"
             else:
                 text_excerpt, excerpt_status = extract_attachment_text_from_path(
                     tmp_path, ext
@@ -330,6 +326,56 @@ async def upload_attachment(
         return _attachment_response(row)
     finally:
         cleanup_path(tmp_path)
+
+
+@router.post(
+    "/{chat_id}/attachments/{attachment_id}/transcription",
+    response_model=TranscriptionResponse,
+)
+async def transcribe_attachment(
+    chat_id: UUID,
+    attachment_id: UUID,
+    data: AttachmentTranscriptionRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    await chat_service.get_chat(db, auth, str(chat_id))
+    row = (
+        await db.execute(
+            select(ChatAttachment).where(
+                ChatAttachment.id == str(attachment_id),
+                ChatAttachment.org_id == auth.org_id,
+                ChatAttachment.chat_id == str(chat_id),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise NotFoundError("Attachment", str(attachment_id))
+
+    _, ext = validate_attachment_filename(row.filename, allow_audio=True)
+    if ext not in AUDIO_EXTENSIONS or row.library_item_id is not None:
+        raise InvalidAttachmentError("Attachment is not a supported audio recording")
+    validate_attachment_content_type(row.content_type, row.filename, ext)
+
+    try:
+        path = resolve_attachment_path(row.relative_path)
+    except UnsafeAttachmentPathError as exc:
+        raise InvalidAttachmentError("Invalid attachment storage path") from exc
+    if not path.is_file():
+        raise InvalidAttachmentError("Stored audio attachment is missing")
+
+    inspected_duration = inspect_audio_duration(path)
+    result = await transcription_service.transcribe_nowait(
+        path,
+        language=language_to_service_value(data.language),
+    )
+    return TranscriptionResponse(
+        text=result.text.strip(),
+        language=result.language,
+        language_probability=result.language_probability,
+        duration_seconds=result.duration_seconds or inspected_duration,
+        processing_seconds=result.processing_seconds,
+    )
 
 
 @router.post(

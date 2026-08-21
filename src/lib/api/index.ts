@@ -1,7 +1,10 @@
 /** Typed API methods — one function per backend endpoint */
 
 import { apiFormRequest, apiRequest } from "@/lib/api/client";
-import { composerAttachmentUploadTimeoutMs } from "@/lib/composerAttachments";
+import {
+  COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS,
+  composerAttachmentUploadTimeoutMs,
+} from "@/lib/composerAttachments";
 import {
   buildPlaybookObservationsPath,
   PLAYBOOK_GENERATE_PATH,
@@ -294,6 +297,23 @@ export const api = {
         token: auth.token,
         orgId: auth.orgId,
       }),
+
+    transcribeAttachment: (
+      auth: Auth,
+      chatId: string,
+      attachmentId: string,
+      language: "auto" | "en" | "fr" = "en",
+    ) =>
+      apiRequest<ApiTranscriptionResponse>(
+        `/chats/${chatId}/attachments/${attachmentId}/transcription`,
+        {
+          method: "POST",
+          body: { language },
+          token: auth.token,
+          orgId: auth.orgId,
+          timeoutMs: COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS,
+        },
+      ),
 
     createShareLink: (auth: Auth, chatId: string) =>
       apiRequest<ApiShareLink>(`/chats/${chatId}/share`, {
