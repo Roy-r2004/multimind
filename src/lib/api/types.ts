@@ -182,9 +182,16 @@ export type ApiTurn = {
   decision_insurance?: ApiDecisionInsurance | null;
   lesson_id?: string | null;
   lesson_status?: string | null;
+  attachments?: ApiTurnAttachment[];
   created_at: string;
   chat_title?: string | null;
   chat_updated_at?: string | null;
+};
+
+export type ApiTurnAttachment = {
+  id: string;
+  filename: string;
+  content_type: string;
 };
 
 export type FacilitatorStance = "agreed" | "disagreed" | "partly_agreed";

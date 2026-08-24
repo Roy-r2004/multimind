@@ -1116,6 +1116,7 @@ export function ChatPage() {
                       <UserPromptBubble
                         turnId={turn.id}
                         message={turn.user_message}
+                        attachments={turn.attachments}
                         editable={showPromptEdit}
                         disabledReason={
                           canEditUserPrompt(turn, apiTurns) && !regeneratingTurnId
