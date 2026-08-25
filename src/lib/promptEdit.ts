@@ -28,12 +28,10 @@ export function countLaterTurns(
 }
 
 export function canSubmitEditedPrompt(
-  original: string,
+  _original: string,
   draft: string,
   submitting: boolean,
 ): boolean {
   if (submitting) return false;
-  const next = draft.trim();
-  if (!next) return false;
-  return next !== original.trim();
+  return Boolean(draft.trim());
 }
