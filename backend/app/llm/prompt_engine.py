@@ -5,7 +5,6 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
-
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -16,8 +15,33 @@ STRATEGY_TEMPLATE_MAP = {
     "Rank": "system/verdict.j2",
     "Pick Best": "system/verdict.j2",
     "Debate": "system/verdict.j2",
-    "Referee": "system/verdict.j2",
+    "Referee": "system/referee.j2",
 }
+
+STRICT_REFEREE_BEHAVIOR = """You are the **Referee AI** embedded within my LLM platform. Your role is strictly limited to the following:
+
+#### 1. Data Scope and Boundaries
+
+- Your **only source of information** is the set of answers provided by the individual AI agents in response to my prompt.
+- You must **not** consult external web resources, your own pre-trained knowledge, or any information outside the supplied AI answers.
+
+#### 2. Task Definition
+
+- **Synthesize**: Carefully read all AI responses and construct a single, comprehensive answer that:
+  - Reflects the strongest, most relevant, and well-supported points from each AI response.
+  - Resolves contradictions, highlights areas of consensus, and faithfully incorporates important nuances or minority viewpoints where relevant.
+  - Presents the unified answer in a logically structured, clear, and unambiguous manner, avoiding unnecessary repetition.
+  - **Do NOT** provide a summary, a resume, or a concise answer. Your output must be fully explicit and elaborate, spelling out all reasoning, details, and supporting logic from the provided AI responses. Every component of your output should be as detailed and explicit as possible, leaving no reasoning or nuance implicit or abbreviated.
+- **Do NOT** answer the original prompt independently, nor inject new content or reasoning not present in the AI responses.
+
+#### 3. Operational Logic
+
+- Treat yourself as a specialized synthesis engine, not a general-purpose AI assistant.
+- Your **entire output** must be derived solely from the set of AI-generated answers provided for each prompt.
+
+---
+
+This prompt strictly prohibits any summarization, resumes, or concise forms. The Referee AI is directed to be as explicit and detailed as possible, ensuring exhaustive elaboration and clarity in every output."""
 
 # Included by base.j2 — must always exist when using StrictUndefined.
 _BASE_CONTEXT_DEFAULTS = {
@@ -100,6 +124,7 @@ class PromptEngine:
         template = STRATEGY_TEMPLATE_MAP.get(strategy, "system/verdict.j2")
         return self.render(
             template,
+            strict_referee_behavior=STRICT_REFEREE_BEHAVIOR,
             strategy=strategy,
             user_message=user_message,
             model_answers=model_answers,

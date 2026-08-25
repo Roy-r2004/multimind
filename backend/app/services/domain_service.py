@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import AuthContext
@@ -23,9 +23,10 @@ from app.core.exceptions import (
 from app.core.logging import get_logger
 from app.db.models import Chat, CostRecord, ModelSet, Project, ScrapingMission, Strategy, Template
 from app.llm.catalog import is_builtin_model_id
+from app.llm.prompt_engine import STRICT_REFEREE_BEHAVIOR
 from app.schemas.api import (
-    CostSummaryResponse,
     ChatResponse,
+    CostSummaryResponse,
     ModelSetCreateRequest,
     ModelSetResponse,
     ModelSetUpdateRequest,
@@ -338,6 +339,9 @@ class ModelSetService:
             best_for=s.best_for,
             template_name=s.template_name,
             custom_instructions=s.custom_instructions,
+            effective_referee_prompt=(
+                STRICT_REFEREE_BEHAVIOR if s.strategy == Strategy.REFEREE else None
+            ),
             is_system=s.is_system,
         )
 

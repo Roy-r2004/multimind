@@ -10,15 +10,10 @@ export type ModelSet = {
   bestFor: string;
   templateName?: string;
   customInstructions?: string;
+  effectiveRefereePrompt?: string;
 };
 
-export type Strategy =
-  | "Reconcile"
-  | "Synthesize"
-  | "Rank"
-  | "Pick Best"
-  | "Debate"
-  | "Referee";
+export type Strategy = "Reconcile" | "Synthesize" | "Rank" | "Pick Best" | "Debate" | "Referee";
 
 export const STRATEGIES: { name: Strategy; desc: string }[] = [
   { name: "Reconcile", desc: "Finds agreements and disagreements, then writes a balanced answer." },

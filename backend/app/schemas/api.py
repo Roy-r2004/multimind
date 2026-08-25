@@ -112,6 +112,7 @@ class ModelSetResponse(BaseModel):
     best_for: str
     template_name: str | None = None
     custom_instructions: str | None = None
+    effective_referee_prompt: str | None = None
     is_system: bool = False
 
 
