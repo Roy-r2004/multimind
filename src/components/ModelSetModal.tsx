@@ -3,7 +3,6 @@ import { Modal } from "@/components/Modal";
 import { Plus, Loader2, X } from "lucide-react";
 import type { ModelSet, Strategy } from "@/lib/mock";
 import { STRATEGIES } from "@/lib/mock";
-import { REFEREE_CUSTOM_INSTRUCTIONS } from "@/lib/refereePrompt";
 import { useModels } from "@/lib/models";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
@@ -139,6 +138,7 @@ export function ModelSetModal({
       bestFor: desc.trim() || "Custom use case",
       templateName: custom.trim() ? (selectedTemplateName ?? "Custom") : undefined,
       customInstructions: custom.trim() || undefined,
+      effectiveRefereePrompt: initial?.effectiveRefereePrompt,
     };
     if (initial && onUpdate) onUpdate(payload);
     else if (!initial && onCreate) onCreate(payload);
@@ -382,10 +382,6 @@ export function ModelSetModal({
                 type="button"
                 onClick={() => {
                   setStrategy(s.name);
-                  if (s.name === "Referee") {
-                    setCustom(REFEREE_CUSTOM_INSTRUCTIONS);
-                    setSelectedTemplateName("Chafiq Referee");
-                  }
                 }}
                 className={cn(
                   "rounded-2xl border px-3 py-3 text-left text-sm transition",
@@ -402,17 +398,31 @@ export function ModelSetModal({
         </div>
 
         <div>
-          <div className="mb-1 font-medium">
-            Custom Verdict Instructions{" "}
-            <span className="font-normal text-muted-foreground">(Optional)</span>
-          </div>
-          <textarea
-            value={custom}
-            onChange={(e) => setCustom(e.target.value)}
-            rows={3}
-            placeholder="Example: Choose the answer that is easiest for a beginner to understand."
-            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-          />
+          {strategy === "Referee" ? (
+            <>
+              <div className="mb-1 font-medium">Referee Prompt</div>
+              <textarea
+                value={initial?.effectiveRefereePrompt ?? ""}
+                readOnly
+                rows={12}
+                className="w-full rounded-lg border border-border bg-muted px-3 py-2 text-sm"
+              />
+            </>
+          ) : (
+            <>
+              <div className="mb-1 font-medium">
+                Custom Verdict Instructions{" "}
+                <span className="font-normal text-muted-foreground">(Optional)</span>
+              </div>
+              <textarea
+                value={custom}
+                onChange={(e) => setCustom(e.target.value)}
+                rows={3}
+                placeholder="Example: Choose the answer that is easiest for a beginner to understand."
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              />
+            </>
+          )}
           <div className="mt-3">
             <div className="text-sm font-medium">Template</div>
             <div className="mt-2 flex flex-wrap items-center gap-2">

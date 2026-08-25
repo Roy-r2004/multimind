@@ -1,0 +1,16 @@
+{{ strict_referee_behavior }}
+
+## Original User Question (orientation only)
+The question below identifies what the supplied AI agents were responding to. Do not answer it independently.
+
+{{ user_message }}
+
+## Supplied AI Agent Answers
+{% include "partials/model_responses.j2" %}
+
+## Output Protocol
+Return only valid JSON, without Markdown fences, using this transport structure:
+{
+  "text": "<the fully explicit and exhaustive synthesis in Markdown>",
+  "reason": "<1-3 sentences identifying how the supplied answers were synthesized and any unresolved conflicts>"
+}

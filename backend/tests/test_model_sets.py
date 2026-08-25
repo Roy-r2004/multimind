@@ -2,7 +2,7 @@
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
 
 from app.core.dependencies import AuthContext
 from app.core.exceptions import (
@@ -13,6 +13,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.db.models import ModelSet, OrgRole, Strategy
+from app.llm.prompt_engine import STRICT_REFEREE_BEHAVIOR
 from app.schemas.api import ModelSetCreateRequest, ModelSetUpdateRequest, StrategyEnum
 from app.services.domain_service import BEST_FOR_MAX_LEN, MODEL_ID_MAX_LEN, model_set_service
 from tests.conftest import create_model_set, create_other_auth
@@ -37,6 +38,38 @@ async def test_create_model_set_success(db, auth: AuthContext) -> None:
     assert created.id.startswith("set-")
     assert created.is_system is False
     assert created.models == ["gpt-4.1", "claude"]
+    assert created.effective_referee_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_referee_response_exposes_prompt_from_prompt_engine_without_replacing_custom_instructions(
+    db, auth: AuthContext
+) -> None:
+    created = await model_set_service.create(
+        db,
+        auth,
+        _create_request(
+            strategy=StrategyEnum.REFEREE,
+            custom_instructions="legacy council instructions",
+        ),
+    )
+
+    assert created.effective_referee_prompt == STRICT_REFEREE_BEHAVIOR
+    assert created.custom_instructions == "legacy council instructions"
+
+
+@pytest.mark.asyncio
+async def test_model_set_list_only_exposes_effective_prompt_for_referee_sets(
+    db, auth: AuthContext
+) -> None:
+    referee = await create_model_set(db, auth, slug="referee-set")
+    referee.strategy = Strategy.REFEREE
+    await create_model_set(db, auth, slug="council-set")
+
+    responses = {item.id: item for item in await model_set_service.list(db, auth)}
+
+    assert responses["referee-set"].effective_referee_prompt == STRICT_REFEREE_BEHAVIOR
+    assert responses["council-set"].effective_referee_prompt is None
 
 
 @pytest.mark.asyncio

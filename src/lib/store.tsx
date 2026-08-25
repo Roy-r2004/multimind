@@ -74,6 +74,7 @@ function mapModelSet(s: ApiModelSet): ModelSet {
     bestFor: s.best_for,
     templateName: s.template_name ?? undefined,
     customInstructions: s.custom_instructions ?? undefined,
+    effectiveRefereePrompt: s.effective_referee_prompt ?? undefined,
   };
 }
 
