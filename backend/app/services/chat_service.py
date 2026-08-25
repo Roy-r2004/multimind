@@ -38,6 +38,7 @@ from app.llm.orchestrator import (
 )
 from app.schemas.api import (
     ChatCreateRequest,
+    ChatReferenceResponse,
     ChatResponse,
     ChatUpdateRequest,
     DecisionInsuranceResponse,
@@ -249,6 +250,13 @@ class ChatService:
             .order_by(Chat.updated_at.desc())
         )
         chats = list(result.scalars().all())
+        reference_ids = {c.active_referenced_chat_id for c in chats if c.active_referenced_chat_id}
+        reference_by_id: dict[str, Chat] = {}
+        if reference_ids:
+            rows = await db.execute(
+                select(Chat).where(Chat.id.in_(reference_ids), Chat.org_id == auth.org_id)
+            )
+            reference_by_id = {c.id: c for c in rows.scalars().all()}
         pinned_ids = [c.pinned_verdict_id for c in chats if c.pinned_verdict_id]
         turn_by_verdict: dict[str, str] = {}
         if pinned_ids:
@@ -259,6 +267,7 @@ class ChatService:
         return [
             self._chat_response(
                 c,
+                active_reference=reference_by_id.get(c.active_referenced_chat_id),
                 pinned_turn_id=turn_by_verdict.get(c.pinned_verdict_id)
                 if c.pinned_verdict_id
                 else None,
@@ -303,6 +312,13 @@ class ChatService:
             chat.title = data.title.strip()
         if data.project_id is not None:
             chat.project_id = data.project_id
+        if "active_referenced_chat_id" in data.model_fields_set:
+            reference_id = (data.active_referenced_chat_id or "").strip() or None
+            if reference_id == chat.id:
+                raise ValidationError("Cannot reference the current chat")
+            if reference_id is not None:
+                await self.get_chat(db, auth, reference_id)
+            chat.active_referenced_chat_id = reference_id
         await db.flush()
         return await self._chat_response_async(db, chat)
 
@@ -379,6 +395,13 @@ class ChatService:
                 )
             )
             await db.execute(delete(Turn).where(Turn.chat_id == chat_id))
+            # Mirror the FK's SET NULL behavior for databases/tests where FK actions
+            # are not enabled (notably SQLite).
+            await db.execute(
+                update(Chat)
+                .where(Chat.active_referenced_chat_id == chat_id)
+                .values(active_referenced_chat_id=None)
+            )
             await db.delete(locked_chat)
             await db.flush()
             await db.commit()
@@ -676,11 +699,23 @@ class ChatService:
             raise ValidationError(
                 "Use either referenced_chat_id or referenced_chat_ids, not both"
             )
-        raw_reference_ids = (
+        explicit_reference_ids = (
             data.referenced_chat_ids
             if data.referenced_chat_ids is not None
             else ([data.referenced_chat_id] if data.referenced_chat_id is not None else [])
         )
+        raw_reference_ids = explicit_reference_ids
+        if not raw_reference_ids and chat.active_referenced_chat_id:
+            persisted_row = await db.execute(
+                select(Chat.id).where(
+                    Chat.id == chat.active_referenced_chat_id,
+                    Chat.org_id == auth.org_id,
+                )
+            )
+            if persisted_row.scalar_one_or_none() is None:
+                chat.active_referenced_chat_id = None
+            else:
+                raw_reference_ids = [chat.active_referenced_chat_id]
         reference_ids = [reference_id.strip() for reference_id in raw_reference_ids]
         if any(not reference_id for reference_id in reference_ids):
             raise ValidationError("Referenced chat IDs cannot be blank")
@@ -701,6 +736,8 @@ class ChatService:
             reference_context = await chat_memory_service.build_continuation_handoff(
                 db, source_chat=source_chats[0]
             )
+            if explicit_reference_ids:
+                chat.active_referenced_chat_id = source_chats[0].id
         elif len(source_chats) == 2:
             reference_context = await multi_reference_context_service.build(
                 db, source_chats=source_chats, question=data.user_message.strip()
@@ -1416,13 +1453,24 @@ class ChatService:
             logger.warning("brain_unpin_cleanup_failed", error=str(exc))
         return await self._chat_response_async(db, chat)
 
-    def _chat_response(self, chat: Chat, *, pinned_turn_id: str | None = None) -> ChatResponse:
+    def _chat_response(
+        self,
+        chat: Chat,
+        *,
+        pinned_turn_id: str | None = None,
+        active_reference: Chat | None = None,
+    ) -> ChatResponse:
         return ChatResponse(
             id=chat.id,  # type: ignore[arg-type]
             title=chat.title,
             project_id=chat.project_id,
             pinned_verdict_id=chat.pinned_verdict_id,
             pinned_turn_id=pinned_turn_id,
+            active_referenced_chat=(
+                ChatReferenceResponse(id=active_reference.id, title=active_reference.title)
+                if active_reference is not None
+                else None
+            ),
             updated_at=chat.updated_at,
         )
 
@@ -1433,7 +1481,18 @@ class ChatService:
                 select(Verdict.turn_id).where(Verdict.id == chat.pinned_verdict_id)
             )
             pinned_turn_id = result.scalar_one_or_none()
-        return self._chat_response(chat, pinned_turn_id=pinned_turn_id)
+        active_reference = None
+        if chat.active_referenced_chat_id:
+            result = await db.execute(
+                select(Chat).where(
+                    Chat.id == chat.active_referenced_chat_id,
+                    Chat.org_id == chat.org_id,
+                )
+            )
+            active_reference = result.scalar_one_or_none()
+        return self._chat_response(
+            chat, pinned_turn_id=pinned_turn_id, active_reference=active_reference
+        )
 
     def _turn_response(
         self, turn: Turn, saved_verdict_ids: set[str] | None = None

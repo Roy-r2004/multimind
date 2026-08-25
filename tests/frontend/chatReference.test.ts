@@ -41,8 +41,9 @@ test("createTurnReferenceFields does not assemble handoff text or turns", () => 
   assert.equal("mode" in payload, false);
 });
 
-test("shouldClearReferenceAfterSend only after successful createTurn", () => {
-  assert.equal(shouldClearReferenceAfterSend(true), true);
+test("shouldClearReferenceAfterSend keeps a successful single reference", () => {
+  assert.equal(shouldClearReferenceAfterSend(true, 1), false);
+  assert.equal(shouldClearReferenceAfterSend(true, 2), true);
   assert.equal(shouldClearReferenceAfterSend(false), false);
 });
 

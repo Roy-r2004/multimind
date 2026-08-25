@@ -101,6 +101,7 @@ export type ApiChat = {
   project_id?: string | null;
   pinned_verdict_id?: string | null;
   pinned_turn_id?: string | null;
+  active_referenced_chat?: { id: string; title: string } | null;
   updated_at: string;
 };
 

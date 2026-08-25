@@ -380,6 +380,9 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     title: Mapped[str] = mapped_column(String(512), nullable=False, default="New chat")
     # Council/model-set slug for the *next* turn in this chat (not historical turns).
     model_set_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    active_referenced_chat_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     pinned_verdict_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("verdicts.id", ondelete="SET NULL"), nullable=True
     )
@@ -405,6 +408,9 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "Verdict",
         foreign_keys=[pinned_verdict_id],
         post_update=True,
+    )
+    active_referenced_chat: Mapped["Chat | None"] = relationship(
+        "Chat", foreign_keys=[active_referenced_chat_id], remote_side="Chat.id"
     )
 
 
