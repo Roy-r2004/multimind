@@ -42,6 +42,7 @@ from app.schemas.api import (
     ChatUpdateRequest,
     DecisionInsuranceResponse,
     ModelAnswerResponse,
+    TurnAttachmentResponse,
     TurnCreateRequest,
     TurnDeleteResponse,
     TurnRegenerateRequest,
@@ -444,6 +445,7 @@ class ChatService:
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
+                selectinload(Turn.attachments),
             )
         )
         turn = result.scalar_one_or_none()
@@ -461,6 +463,7 @@ class ChatService:
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
+                selectinload(Turn.attachments),
             )
         )
         restored = result.scalar_one()
@@ -628,6 +631,7 @@ class ChatService:
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
+                selectinload(Turn.attachments),
             )
         )
         created = loaded.scalar_one()
@@ -766,6 +770,7 @@ class ChatService:
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
+                selectinload(Turn.attachments),
             )
         )
         turn = loaded.scalar_one()
@@ -915,6 +920,14 @@ class ChatService:
             verdict=None,
             decision_insurance=None,
             lesson_id=None,
+            attachments=[
+                TurnAttachmentResponse(
+                    id=attachment.id,
+                    filename=attachment.filename,
+                    content_type=attachment.content_type,
+                )
+                for attachment in turn.attachments
+            ],
             created_at=turn.created_at,
             chat_title=chat.title if chat is not None else None,
             chat_updated_at=chat.updated_at if chat is not None else None,
@@ -978,6 +991,7 @@ class ChatService:
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
+                selectinload(Turn.attachments),
             )
         )
         turn = result.scalar_one_or_none()
@@ -1071,6 +1085,7 @@ class ChatService:
                     selectinload(Turn.verdict),
                     selectinload(Turn.decision_insurance),
                     selectinload(Turn.lesson),
+                    selectinload(Turn.attachments),
                 )
                 .execution_options(populate_existing=True)
             )
@@ -1306,6 +1321,7 @@ class ChatService:
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
+                selectinload(Turn.attachments),
             )
         )
         turn = result.scalar_one_or_none()
@@ -1330,6 +1346,7 @@ class ChatService:
                 selectinload(Turn.verdict),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
+                selectinload(Turn.attachments),
             )
             .order_by(Turn.created_at.asc())
         )
@@ -1495,6 +1512,14 @@ class ChatService:
             decision_insurance=insurance,
             lesson_id=turn.lesson.id if turn.lesson else None,
             lesson_status=turn.lesson.status.value if turn.lesson else None,
+            attachments=[
+                TurnAttachmentResponse(
+                    id=attachment.id,
+                    filename=attachment.filename,
+                    content_type=attachment.content_type,
+                )
+                for attachment in turn.attachments
+            ],
             created_at=turn.created_at,
         )
 

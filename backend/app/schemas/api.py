@@ -1396,6 +1396,12 @@ class PromptBuilderRefineResponse(BaseModel):
     improved_prompt: str
 
 
+class TurnAttachmentResponse(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+
+
 class TurnResponse(BaseModel):
     id: str
     chat_id: str
@@ -1409,6 +1415,7 @@ class TurnResponse(BaseModel):
     decision_insurance: DecisionInsuranceResponse | None = None
     lesson_id: str | None = None
     lesson_status: str | None = None
+    attachments: list[TurnAttachmentResponse] = Field(default_factory=list)
     created_at: datetime
     # Populated on turn create/regenerate so clients can update sidebar title/recency.
     chat_title: str | None = None

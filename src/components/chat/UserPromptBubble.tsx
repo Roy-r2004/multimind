@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { BookmarkPlus, Loader2, Pencil } from "lucide-react";
+import type { ApiTurnAttachment } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 import { canSubmitEditedPrompt } from "@/lib/promptEdit";
+import { SentTurnAttachments } from "@/components/chat/SentTurnAttachments";
 
 type Props = {
   turnId: string;
   message: string;
+  attachments?: ApiTurnAttachment[];
   editable: boolean;
   disabledReason?: string;
   submitting: boolean;
@@ -17,6 +20,7 @@ type Props = {
 export function UserPromptBubble({
   turnId,
   message,
+  attachments = [],
   editable,
   disabledReason,
   submitting,
@@ -156,6 +160,7 @@ export function UserPromptBubble({
         className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary/90 px-4 py-3 text-sm text-primary-foreground shadow-lg shadow-primary/20"
       >
         <p className="whitespace-pre-wrap leading-relaxed">{message}</p>
+        <SentTurnAttachments attachments={attachments} />
       </div>
     </div>
   );

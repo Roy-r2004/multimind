@@ -204,6 +204,24 @@ async def test_turn_creation_links_attachments_and_builds_context(
     )
     await db.commit()
 
+    assert {
+        (attachment.id, attachment.filename, attachment.content_type)
+        for attachment in turn.attachments
+    } == {
+        (first.json()["id"], "alpha.txt", "text/plain"),
+        (second.json()["id"], "beta.md", "text/plain"),
+    }
+
+    reloaded_turns = await chat_service.list_turns(db, auth, chat.id)
+    reloaded = next(item for item in reloaded_turns if item.id == turn.id)
+    assert {
+        (attachment.id, attachment.filename, attachment.content_type)
+        for attachment in reloaded.attachments
+    } == {
+        (first.json()["id"], "alpha.txt", "text/plain"),
+        (second.json()["id"], "beta.md", "text/plain"),
+    }
+
     stored = (await db.execute(select(Turn).where(Turn.id == turn.id))).scalar_one()
     assert stored.custom_instructions is not None
     assert "Reference prior chat context." in stored.custom_instructions
