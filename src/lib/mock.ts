@@ -40,6 +40,7 @@ export type Chat = {
   modelSetId?: string | null;
   pinnedVerdictId?: string | null;
   pinnedTurnId?: string | null;
+  activeReferencedChat?: { id: string; title: string } | null;
 };
 
 export type Project = {

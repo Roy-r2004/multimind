@@ -280,6 +280,15 @@ export function ChatPage() {
   const pinnedTurnId = activeChat?.pinnedTurnId ?? null;
   const pinnedVerdictId = activeChat?.pinnedVerdictId ?? null;
 
+  useEffect(() => {
+    if (!activeChatId) {
+      setRefChats([]);
+      return;
+    }
+    const persisted = activeChat?.activeReferencedChat;
+    setRefChats(persisted ? [{ chatId: persisted.id, title: persisted.title }] : []);
+  }, [activeChatId, activeChat?.activeReferencedChat]);
+
   const updateThreadScrollState = useCallback(() => {
     const thread = threadRef.current;
     if (!thread) return;
@@ -691,7 +700,18 @@ export function ChatPage() {
       }
       applyChatActivityFromTurn(pending);
       scrollThreadToLatest("smooth");
-      if (shouldClearReferenceAfterSend(true)) {
+      if (refChats.length === 1) {
+        applyChatUpdate({
+          id: chatId,
+          title: pending.chat_title ?? activeChat?.title ?? question.slice(0, 80),
+          project_id: activeChat?.projectId ?? null,
+          pinned_verdict_id: activeChat?.pinnedVerdictId ?? null,
+          pinned_turn_id: activeChat?.pinnedTurnId ?? null,
+          active_referenced_chat: { id: refChats[0].chatId, title: refChats[0].title },
+          updated_at: pending.chat_updated_at ?? new Date().toISOString(),
+        });
+      }
+      if (shouldClearReferenceAfterSend(true, refChats.length)) {
         setRefChats([]);
       }
       setFiles((prev) => removeSubmittedComposerFiles(prev, uploadedIds));
@@ -1207,11 +1227,29 @@ export function ChatPage() {
                     <span>Ref: {refChat.title}</span>
                     <button
                       type="button"
-                      onClick={() =>
+                      onClick={() => {
                         setRefChats((items) =>
                           items.filter((item) => item.chatId !== refChat.chatId),
-                        )
-                      }
+                        );
+                        if (
+                          activeChatId &&
+                          activeChat?.activeReferencedChat?.id === refChat.chatId
+                        ) {
+                          const auth = authHeaders();
+                          if (!auth) return;
+                          void api.chats
+                            .update(auth, activeChatId, { active_referenced_chat_id: null })
+                            .then(applyChatUpdate)
+                            .catch((error) => {
+                              setRefChats([refChat]);
+                              toast.error(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Could not remove reference",
+                              );
+                            });
+                        }
+                      }}
                       className="text-muted-foreground hover:text-foreground"
                     >
                       <X className="size-3" />

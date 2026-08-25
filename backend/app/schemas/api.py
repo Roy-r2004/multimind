@@ -1229,6 +1229,11 @@ class FacilityCandidatePublicationAuditResponse(BaseModel):
 # --- Chats ---
 
 
+class ChatReferenceResponse(BaseModel):
+    id: str
+    title: str
+
+
 class ChatResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1237,6 +1242,7 @@ class ChatResponse(BaseModel):
     project_id: str | None = None
     pinned_verdict_id: str | None = None
     pinned_turn_id: str | None = None
+    active_referenced_chat: ChatReferenceResponse | None = None
     updated_at: datetime
 
 
@@ -1258,6 +1264,7 @@ class ChatCreateRequest(BaseModel):
 class ChatUpdateRequest(BaseModel):
     title: str | None = None
     project_id: str | None = None
+    active_referenced_chat_id: str | None = None
 
 
 class PinVerdictRequest(BaseModel):

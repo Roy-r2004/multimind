@@ -43,6 +43,7 @@ export function mapApiChat(c: ApiChat): Chat {
     modelSetId: c.model_set_id ?? null,
     pinnedVerdictId: c.pinned_verdict_id ?? null,
     pinnedTurnId: c.pinned_turn_id ?? null,
+    activeReferencedChat: c.active_referenced_chat ?? null,
   };
 }
 
@@ -66,5 +67,6 @@ export function chatFromTurnActivity(
     modelSetId: data.modelSetId ?? existing?.modelSetId ?? null,
     pinnedVerdictId: existing?.pinnedVerdictId ?? null,
     pinnedTurnId: existing?.pinnedTurnId ?? null,
+    activeReferencedChat: existing?.activeReferencedChat ?? null,
   };
 }

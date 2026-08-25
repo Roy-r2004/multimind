@@ -25,7 +25,7 @@ from app.db.models import (
     User,
     Verdict,
 )
-from app.schemas.api import TurnCreateRequest, TurnRegenerateRequest
+from app.schemas.api import ChatUpdateRequest, TurnCreateRequest, TurnRegenerateRequest
 from app.services.chat_memory_service import (
     CONTINUATION_HANDOFF_HEADER,
     CONTINUATION_HANDOFF_MAX_CHARS,
@@ -155,6 +155,154 @@ async def test_one_reference_dispatches_only_to_legacy_builder(handoff_env, monk
             ),
         )
     assert calls == {"legacy": 1, "multi": 0}
+
+
+@pytest.mark.asyncio
+async def test_single_reference_persists_and_rebuilds_fresh_on_every_turn(
+    handoff_env, monkeypatch
+):
+    calls: list[str] = []
+
+    async def handoff(_db, *, source_chat):
+        calls.append(source_chat.id)
+        return f"{CONTINUATION_HANDOFF_HEADER}\n\nfresh-{len(calls)}-{source_chat.title}"
+
+    monkeypatch.setattr(chat_memory_service, "build_continuation_handoff", handoff)
+    async with handoff_env.Session() as db:
+        first = await chat_service.start_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            TurnCreateRequest(
+                user_message="Explicit",
+                model_set_id="research-set",
+                referenced_chat_id=handoff_env.chat_a_id,
+            ),
+        )
+        for index in range(2, 6):
+            turn = await chat_service.start_turn(
+                db,
+                handoff_env.auth,
+                handoff_env.chat_b_id,
+                TurnCreateRequest(user_message=f"Follow-up {index}", model_set_id="research-set"),
+            )
+            stored = await db.get(Turn, turn.id)
+            assert f"fresh-{index}-Capital of Lebanon" in (stored.custom_instructions or "")
+
+        chat = await db.get(Chat, handoff_env.chat_b_id)
+        first_row = await db.get(Turn, first.id)
+        assert chat.active_referenced_chat_id == handoff_env.chat_a_id
+        assert "fresh-1-Capital of Lebanon" in (first_row.custom_instructions or "")
+
+    assert calls == [handoff_env.chat_a_id] * 5
+
+
+@pytest.mark.asyncio
+async def test_explicit_persisted_reference_is_injected_exactly_once(handoff_env, monkeypatch):
+    calls = 0
+
+    async def handoff(_db, *, source_chat):
+        nonlocal calls
+        calls += 1
+        return f"{CONTINUATION_HANDOFF_HEADER}\n\n{source_chat.title}"
+
+    monkeypatch.setattr(chat_memory_service, "build_continuation_handoff", handoff)
+    async with handoff_env.Session() as db:
+        chat = await db.get(Chat, handoff_env.chat_b_id)
+        chat.active_referenced_chat_id = handoff_env.chat_a_id
+        turn = await chat_service.start_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            TurnCreateRequest(
+                user_message="Same again",
+                model_set_id="research-set",
+                referenced_chat_id=handoff_env.chat_a_id,
+            ),
+        )
+        stored = await db.get(Turn, turn.id)
+        assert (stored.custom_instructions or "").count(CONTINUATION_HANDOFF_HEADER) == 1
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_persistent_reference_replace_and_remove(handoff_env, monkeypatch):
+    seen: list[str] = []
+
+    async def handoff(_db, *, source_chat):
+        seen.append(source_chat.id)
+        return f"{CONTINUATION_HANDOFF_HEADER}\n\n{source_chat.title}"
+
+    monkeypatch.setattr(chat_memory_service, "build_continuation_handoff", handoff)
+    async with handoff_env.Session() as db:
+        chat_c = Chat(
+            org_id=handoff_env.org_id, created_by=handoff_env.user_id, title="Replacement"
+        )
+        db.add(chat_c)
+        await db.flush()
+        target = await db.get(Chat, handoff_env.chat_b_id)
+        target.active_referenced_chat_id = handoff_env.chat_a_id
+
+        await chat_service.start_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            TurnCreateRequest(
+                user_message="Replace",
+                model_set_id="research-set",
+                referenced_chat_id=chat_c.id,
+            ),
+        )
+        follow_up = await chat_service.start_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            TurnCreateRequest(user_message="Uses replacement", model_set_id="research-set"),
+        )
+        assert "Replacement" in ((await db.get(Turn, follow_up.id)).custom_instructions or "")
+        assert target.active_referenced_chat_id == chat_c.id
+
+        response = await chat_service.update_chat(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            ChatUpdateRequest(active_referenced_chat_id=None),
+        )
+        assert response.active_referenced_chat is None
+        no_reference = await chat_service.start_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            TurnCreateRequest(user_message="No reference", model_set_id="research-set"),
+        )
+        assert CONTINUATION_HANDOFF_HEADER not in (
+            (await db.get(Turn, no_reference.id)).custom_instructions or ""
+        )
+
+    assert seen == [chat_c.id, chat_c.id]
+
+
+@pytest.mark.asyncio
+async def test_deleting_referenced_chat_clears_reference_and_target_remains_usable(handoff_env):
+    async with handoff_env.Session() as db:
+        target = await db.get(Chat, handoff_env.chat_b_id)
+        target.active_referenced_chat_id = handoff_env.chat_a_id
+        await db.commit()
+
+        await chat_service.delete_chat(db, handoff_env.auth, handoff_env.chat_a_id)
+
+    async with handoff_env.Session() as db:
+        target = await db.get(Chat, handoff_env.chat_b_id)
+        assert target is not None
+        assert target.active_referenced_chat_id is None
+        turn = await chat_service.start_turn(
+            db,
+            handoff_env.auth,
+            handoff_env.chat_b_id,
+            TurnCreateRequest(user_message="Still works", model_set_id="research-set"),
+        )
+        stored = await db.get(Turn, turn.id)
+        assert CONTINUATION_HANDOFF_HEADER not in (stored.custom_instructions or "")
 
 
 @pytest.mark.asyncio
@@ -433,7 +581,7 @@ async def test_sync_seed_after_success_before_turn_two_sees_memory(handoff_env):
         assert chat_b.rolling_memory_through_turn_id is None
         seeded_memory = chat_b.rolling_memory
 
-        # Turn 2 immediately afterward must see Chat B memory (no Chat A reload).
+        # Turn 2 gets both normal Chat B memory and a freshly rebuilt Chat A handoff.
         second = await chat_service.start_turn(
             db,
             handoff_env.auth,
@@ -445,7 +593,7 @@ async def test_sync_seed_after_success_before_turn_two_sees_memory(handoff_env):
         )
         await db.commit()
         second_row = await db.get(Turn, second.id)
-        assert CONTINUATION_HANDOFF_HEADER not in (second_row.custom_instructions or "")
+        assert CONTINUATION_HANDOFF_HEADER in (second_row.custom_instructions or "")
         chat_b = await db.get(Chat, handoff_env.chat_b_id)
         assert chat_b.rolling_memory == seeded_memory
 
@@ -595,7 +743,7 @@ async def test_nonempty_chat_b_memory_not_overwritten(handoff_env):
 
 
 @pytest.mark.asyncio
-async def test_turn_two_without_reference_does_not_reload_chat_a(handoff_env):
+async def test_turn_two_without_explicit_reference_reloads_active_chat_a(handoff_env):
     async with handoff_env.Session() as db:
         chat_a = await db.get(Chat, handoff_env.chat_a_id)
         chat_a.rolling_memory = "Only in Chat A"
@@ -644,9 +792,8 @@ async def test_turn_two_without_reference_does_not_reload_chat_a(handoff_env):
         await db.commit()
         second_row = await db.get(Turn, second.id)
         instructions = second_row.custom_instructions or ""
-        assert CONTINUATION_HANDOFF_HEADER not in instructions
-        assert "Only in Chat A" not in instructions
-        assert handoff_env.chat_a_id not in instructions
+        assert CONTINUATION_HANDOFF_HEADER in instructions
+        assert "Only in Chat A" in instructions
 
 
 @pytest.mark.asyncio

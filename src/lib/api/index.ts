@@ -184,7 +184,15 @@ export const api = {
     create: (auth: Auth, data: { title?: string; project_id?: string | null }) =>
       apiRequest<ApiChat>("/chats", { body: data, token: auth.token, orgId: auth.orgId }),
 
-    update: (auth: Auth, chatId: string, data: { title?: string; project_id?: string | null }) =>
+    update: (
+      auth: Auth,
+      chatId: string,
+      data: {
+        title?: string;
+        project_id?: string | null;
+        active_referenced_chat_id?: string | null;
+      },
+    ) =>
       apiRequest<ApiChat>(`/chats/${chatId}`, {
         method: "PATCH",
         body: data,

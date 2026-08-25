@@ -1,4 +1,4 @@
-/** One-shot "continue from previous chat" composer selection. */
+/** Composer representation of an active or newly selected chat reference. */
 export type ChatReferencePick = {
   chatId: string;
   title: string;
@@ -28,7 +28,10 @@ export function toggleChatReference(
   return [...refs, ref];
 }
 
-/** After a successful createTurn, clear the composer reference chip. */
-export function shouldClearReferenceAfterSend(createTurnSucceeded: boolean): boolean {
-  return createTurnSucceeded;
+/** Keep a successful single reference; the existing two-reference selection is one-shot. */
+export function shouldClearReferenceAfterSend(
+  createTurnSucceeded: boolean,
+  referenceCount = 1,
+): boolean {
+  return createTurnSucceeded && referenceCount !== 1;
 }
