@@ -231,6 +231,33 @@ async def test_attach_library_item_to_chat_and_reject_cross_org(
 
 
 @pytest.mark.asyncio
+async def test_large_library_document_attachment_preserves_up_to_50k_characters(
+    db: AsyncSession, auth: AuthContext
+):
+    chat = await _create_chat(db, auth)
+    content = ("A" * 25_000) + ("B" * 25_000) + ("C" * 10_000)
+
+    async with await _client_for(db, auth) as client:
+        document = await client.post(
+            "/api/v1/library/items/documents",
+            json={"title": "Large document", "content_text": content},
+        )
+        assert document.status_code == 201
+
+        attached = await client.post(
+            f"/api/v1/chats/{chat.id}/attachments/from-library",
+            json={"library_item_id": document.json()["id"]},
+        )
+
+    assert attached.status_code == 201
+    excerpt = attached.json()["text_excerpt"]
+    assert len(excerpt) == 50_000
+    assert excerpt == content[:50_000]
+    assert "B" * 25_000 in excerpt
+    assert "C" not in excerpt
+
+
+@pytest.mark.asyncio
 async def test_library_item_detail_returns_document_content_and_file_excerpt(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):

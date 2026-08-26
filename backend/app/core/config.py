@@ -353,7 +353,7 @@ class Settings(BaseSettings):
     # Chat attachments
     chat_attachment_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
     chat_attachment_dir: str = "data/chat_attachments"
-    chat_attachment_context_max_chars: int = Field(default=50_000)
+    chat_attachment_context_max_chars: int = Field(default=100_000)
     # Catalog model id used for the single pre-council image analysis call.
     # Default: gemini (google/gemini-2.5-pro) — strong multimodal quality for
     # screenshots, UI, tables, charts, and photos at a reasonable OpenRouter cost.

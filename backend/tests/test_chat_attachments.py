@@ -1302,7 +1302,7 @@ async def test_pdf_extraction_truncates_at_excerpt_limit(
 ):
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(tmp_path / "attachments"))
     chat = await _create_chat(db, auth)
-    long_line = "WORD" * 3000
+    long_line = "WORD" * 6000
     async with await _client_for(db, auth) as client:
         response = await _upload(
             client,
@@ -1313,7 +1313,7 @@ async def test_pdf_extraction_truncates_at_excerpt_limit(
         )
     assert response.status_code == 201
     excerpt = response.json()["text_excerpt"]
-    assert len(excerpt) <= 20_000
+    assert len(excerpt) <= 50_000
     assert "[Content truncated]" in excerpt
 
 
@@ -1492,6 +1492,42 @@ def test_pdf_context_obeys_total_attachment_budget(monkeypatch):
     assert text is not None
     assert "first.pdf" in text
     assert "second.pdf" in text
+    assert (
+        "[Attachment context truncated]" in text
+        or "[Content omitted due to attachment context budget]" in text
+    )
+
+
+def test_multiple_attachments_use_increased_total_context_budget(monkeypatch):
+    monkeypatch.setattr(get_settings(), "chat_attachment_context_max_chars", 100_000)
+    from types import SimpleNamespace
+
+    text = chat_service._build_attachment_instructions(
+        [
+            SimpleNamespace(
+                filename="first.txt",
+                excerpt_status="ready",
+                text_excerpt="A" * 50_000,
+            ),
+            SimpleNamespace(
+                filename="second.txt",
+                excerpt_status="ready",
+                text_excerpt="B" * 50_000,
+            ),
+            SimpleNamespace(
+                filename="third.txt",
+                excerpt_status="ready",
+                text_excerpt="C" * 50_000,
+            ),
+        ]
+    )
+
+    assert text is not None
+    assert len(text) <= 100_000
+    assert "A" * 50_000 in text
+    assert text.count("B") > 40_000
+    assert "third.txt" in text
+    assert text.index("first.txt") < text.index("second.txt") < text.index("third.txt")
     assert (
         "[Attachment context truncated]" in text
         or "[Content omitted due to attachment context budget]" in text
