@@ -11,7 +11,7 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-ATTACHMENT_TEXT_EXCERPT_MAX = 50_000
+ATTACHMENT_TEXT_EXCERPT_MAX = 100_000
 _XLSX_MAX_SHEETS = 5
 _XLSX_MAX_ROWS = 200
 _XLSX_MAX_COLS = 30

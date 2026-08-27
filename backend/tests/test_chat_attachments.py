@@ -1070,6 +1070,25 @@ async def test_whitespace_only_text_is_empty_excerpt(
 
 
 @pytest.mark.asyncio
+async def test_large_text_attachment_retains_up_to_100k_characters(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(tmp_path / "attachments"))
+    chat = await _create_chat(db, auth)
+    content = ("A" * 60_000) + ("B" * 40_000) + ("C" * 10_000)
+    async with await _client_for(db, auth) as client:
+        response = await _upload(client, chat.id, content=content.encode())
+
+    assert response.status_code == 201
+    excerpt = response.json()["text_excerpt"]
+    assert len(excerpt) == 100_000
+    assert excerpt == content[:100_000]
+    assert len(excerpt) > 50_000
+    assert "B" * 40_000 in excerpt
+    assert "C" not in excerpt
+
+
+@pytest.mark.asyncio
 async def test_empty_attachment_does_not_inject_fake_content_block(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
@@ -1302,7 +1321,7 @@ async def test_pdf_extraction_truncates_at_excerpt_limit(
 ):
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(tmp_path / "attachments"))
     chat = await _create_chat(db, auth)
-    long_line = "WORD" * 6000
+    long_line = "WORD" * 10_000
     async with await _client_for(db, auth) as client:
         response = await _upload(
             client,
@@ -1313,7 +1332,8 @@ async def test_pdf_extraction_truncates_at_excerpt_limit(
         )
     assert response.status_code == 201
     excerpt = response.json()["text_excerpt"]
-    assert len(excerpt) <= 50_000
+    assert len(excerpt) <= 100_000
+    assert len(excerpt) > 50_000
     assert "[Content truncated]" in excerpt
 
 
@@ -1498,36 +1518,40 @@ def test_pdf_context_obeys_total_attachment_budget(monkeypatch):
     )
 
 
-def test_multiple_attachments_use_increased_total_context_budget(monkeypatch):
+@pytest.mark.parametrize(
+    ("sizes", "minimum_retained"),
+    [
+        ([50_000, 50_000], [50_000, 40_000]),
+        ([70_000, 40_000], [70_000, 20_000]),
+        ([25_000] * 4, [25_000, 25_000, 25_000, 15_000]),
+        ([20_000] * 10, [20_000, 20_000, 20_000, 20_000, 10_000]),
+    ],
+)
+def test_multiple_attachments_share_one_total_context_budget(
+    monkeypatch, sizes, minimum_retained
+):
     monkeypatch.setattr(get_settings(), "chat_attachment_context_max_chars", 100_000)
     from types import SimpleNamespace
 
+    markers = "ABCDEFGHIJ"
     text = chat_service._build_attachment_instructions(
         [
             SimpleNamespace(
-                filename="first.txt",
+                filename=f"attachment-{index}.txt",
                 excerpt_status="ready",
-                text_excerpt="A" * 50_000,
-            ),
-            SimpleNamespace(
-                filename="second.txt",
-                excerpt_status="ready",
-                text_excerpt="B" * 50_000,
-            ),
-            SimpleNamespace(
-                filename="third.txt",
-                excerpt_status="ready",
-                text_excerpt="C" * 50_000,
-            ),
+                text_excerpt=markers[index] * size,
+            )
+            for index, size in enumerate(sizes)
         ]
     )
 
     assert text is not None
-    assert len(text) <= 100_000
-    assert "A" * 50_000 in text
-    assert text.count("B") > 40_000
-    assert "third.txt" in text
-    assert text.index("first.txt") < text.index("second.txt") < text.index("third.txt")
+    assert len(text) <= get_settings().chat_attachment_context_max_chars
+    for index, minimum in enumerate(minimum_retained):
+        assert text.count(markers[index]) >= minimum
+        assert f"attachment-{index}.txt" in text
+    filenames = [text.index(f"attachment-{index}.txt") for index in range(len(sizes))]
+    assert filenames == sorted(filenames)
     assert (
         "[Attachment context truncated]" in text
         or "[Content omitted due to attachment context budget]" in text
