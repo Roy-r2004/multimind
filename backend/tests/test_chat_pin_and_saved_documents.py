@@ -1,16 +1,19 @@
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError
 from app.db.base import Base
 from app.db.models import (
+    BrainKnowledgeItem,
     Chat,
+    ChatVerdictPin,
+    Organization,
     OrgMembership,
     OrgRole,
-    Organization,
     Strategy,
     Turn,
     TurnStatus,
@@ -19,6 +22,7 @@ from app.db.models import (
 )
 from app.services.brain_knowledge_service import (
     SOURCE_CHAT_TURN,
+    SOURCE_PINNED_VERDICT,
     brain_knowledge_service,
 )
 from app.services.brain_service import brain_service
@@ -117,14 +121,14 @@ async def auth_for(db, setup, *, other: bool = False) -> AuthContext:
 
 
 @pytest.mark.asyncio
-async def test_pin_replace_and_unpin(db_setup):
+async def test_pin_multiple_duplicate_and_independent_unpin(db_setup):
     async with db_setup.Session() as db:
         auth = await auth_for(db, db_setup)
         pinned = await chat_service.pin_verdict(db, auth, db_setup.chat_id, db_setup.verdict_id)
-        assert pinned.pinned_verdict_id == db_setup.verdict_id
-        assert pinned.pinned_turn_id == db_setup.turn_id
+        assert [(pin.verdict_id, pin.turn_id) for pin in pinned.pinned_verdicts] == [
+            (db_setup.verdict_id, db_setup.turn_id)
+        ]
 
-        # second pin replaces
         turn2 = Turn(
             chat_id=db_setup.chat_id,
             user_message="Follow up",
@@ -144,12 +148,105 @@ async def test_pin_replace_and_unpin(db_setup):
         )
         db.add(verdict2)
         await db.flush()
-        replaced = await chat_service.pin_verdict(db, auth, db_setup.chat_id, verdict2.id)
-        assert replaced.pinned_verdict_id == verdict2.id
+        multiple = await chat_service.pin_verdict(db, auth, db_setup.chat_id, verdict2.id)
+        assert {pin.verdict_id for pin in multiple.pinned_verdicts} == {
+            db_setup.verdict_id,
+            verdict2.id,
+        }
+        assert len(multiple.pinned_verdicts) == 2
 
-        unpinned = await chat_service.unpin_verdict(db, auth, db_setup.chat_id)
-        assert unpinned.pinned_verdict_id is None
+        duplicate = await chat_service.pin_verdict(
+            db, auth, db_setup.chat_id, db_setup.verdict_id
+        )
+        assert len(duplicate.pinned_verdicts) == 2
+        pin_count = await db.scalar(
+            select(func.count(ChatVerdictPin.id)).where(
+                ChatVerdictPin.chat_id == db_setup.chat_id,
+                ChatVerdictPin.verdict_id == db_setup.verdict_id,
+            )
+        )
+        assert pin_count == 1
+
+        unpinned = await chat_service.unpin_verdict(
+            db, auth, db_setup.chat_id, verdict2.id
+        )
+        assert [pin.verdict_id for pin in unpinned.pinned_verdicts] == [db_setup.verdict_id]
         await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_delete_pinned_turn_removes_only_its_pin(db_setup):
+    async with db_setup.Session() as db:
+        auth = await auth_for(db, db_setup)
+        turn2 = Turn(
+            chat_id=db_setup.chat_id,
+            user_message="Follow up",
+            model_set_id="balanced",
+            strategy=Strategy.SYNTHESIZE,
+            verdict_model="gpt-4.1",
+            status=TurnStatus.COMPLETED,
+        )
+        db.add(turn2)
+        await db.flush()
+        verdict2 = Verdict(
+            turn_id=turn2.id,
+            model_id="gpt-4.1",
+            strategy=Strategy.SYNTHESIZE,
+            text="Second verdict",
+            reason="r",
+        )
+        db.add(verdict2)
+        await db.flush()
+        await chat_service.pin_verdict(db, auth, db_setup.chat_id, db_setup.verdict_id)
+        await chat_service.pin_verdict(db, auth, db_setup.chat_id, verdict2.id)
+
+        await chat_service.delete_turn(db, auth, db_setup.chat_id, db_setup.turn_id)
+
+        response = await chat_service._chat_response_async(
+            db, await chat_service.get_chat(db, auth, db_setup.chat_id)
+        )
+        assert [pin.verdict_id for pin in response.pinned_verdicts] == [verdict2.id]
+
+
+@pytest.mark.asyncio
+async def test_pinned_brain_items_are_independent(db_setup):
+    async with db_setup.Session() as db:
+        auth = await auth_for(db, db_setup)
+        turn2 = Turn(
+            chat_id=db_setup.chat_id,
+            user_message="Follow up",
+            model_set_id="balanced",
+            strategy=Strategy.SYNTHESIZE,
+            verdict_model="gpt-4.1",
+            status=TurnStatus.COMPLETED,
+        )
+        db.add(turn2)
+        await db.flush()
+        verdict2 = Verdict(
+            turn_id=turn2.id,
+            model_id="gpt-4.1",
+            strategy=Strategy.SYNTHESIZE,
+            text="Second verdict",
+            reason="r",
+        )
+        db.add(verdict2)
+        await db.flush()
+        await chat_service.pin_verdict(db, auth, db_setup.chat_id, db_setup.verdict_id)
+        await chat_service.pin_verdict(db, auth, db_setup.chat_id, verdict2.id)
+        await chat_service.unpin_verdict(db, auth, db_setup.chat_id, verdict2.id)
+
+        source_ids = set(
+            (
+                await db.execute(
+                    select(BrainKnowledgeItem.source_id).where(
+                        BrainKnowledgeItem.org_id == db_setup.org_id,
+                        BrainKnowledgeItem.user_id == db_setup.user_id,
+                        BrainKnowledgeItem.source_type == SOURCE_PINNED_VERDICT,
+                    )
+                )
+            ).scalars().all()
+        )
+        assert source_ids == {db_setup.verdict_id}
 
 
 @pytest.mark.asyncio

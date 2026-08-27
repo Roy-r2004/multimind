@@ -21,7 +21,17 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.logging import get_logger
-from app.db.models import Chat, CostRecord, ModelSet, Project, ScrapingMission, Strategy, Template
+from app.db.models import (
+    Chat,
+    ChatVerdictPin,
+    CostRecord,
+    ModelSet,
+    Project,
+    ScrapingMission,
+    Strategy,
+    Template,
+    Verdict,
+)
 from app.llm.catalog import is_builtin_model_id
 from app.llm.prompt_engine import STRICT_REFEREE_BEHAVIOR
 from app.schemas.api import (
@@ -30,6 +40,7 @@ from app.schemas.api import (
     ModelSetCreateRequest,
     ModelSetResponse,
     ModelSetUpdateRequest,
+    PinnedVerdictResponse,
     ProjectCreateRequest,
     ProjectDetailResponse,
     ProjectResponse,
@@ -106,6 +117,18 @@ class ProjectService:
             .order_by(Chat.updated_at.desc())
         )
         chats = result.scalars().all()
+        pins_by_chat: dict[str, list[PinnedVerdictResponse]] = {}
+        if chats:
+            pin_rows = await db.execute(
+                select(ChatVerdictPin.chat_id, Verdict.id, Verdict.turn_id)
+                .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)
+                .where(ChatVerdictPin.chat_id.in_([chat.id for chat in chats]))
+                .order_by(ChatVerdictPin.created_at, ChatVerdictPin.id)
+            )
+            for chat_id, verdict_id, turn_id in pin_rows.all():
+                pins_by_chat.setdefault(chat_id, []).append(
+                    PinnedVerdictResponse(verdict_id=verdict_id, turn_id=turn_id)
+                )
         mission_result = await db.execute(
             select(ScrapingMission)
             .where(ScrapingMission.project_id == project.id, ScrapingMission.org_id == auth.org_id)
@@ -124,6 +147,13 @@ class ProjectService:
                     title=c.title,
                     project_id=c.project_id,
                     model_set_id=c.model_set_id,
+                    pinned_verdict_id=(
+                        pins_by_chat[c.id][0].verdict_id if pins_by_chat.get(c.id) else None
+                    ),
+                    pinned_turn_id=(
+                        pins_by_chat[c.id][0].turn_id if pins_by_chat.get(c.id) else None
+                    ),
+                    pinned_verdicts=pins_by_chat.get(c.id, []),
                     updated_at=c.updated_at,
                 )
                 for c in chats

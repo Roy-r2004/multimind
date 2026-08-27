@@ -5,6 +5,7 @@ import {
   RECENT_CHAT_LIMIT,
   chatFromTurnActivity,
   filterChatsByTitle,
+  mapApiChat,
   recentChats,
   shouldShowSeeAll,
   upsertChatToTop,
@@ -12,8 +13,42 @@ import {
 import type { Chat } from "../../src/lib/mock.ts";
 
 function chat(id: string, title = id): Chat {
-  return { id, title, updated: "1m ago", projectId: null };
+  return { id, title, updated: "1m ago", projectId: null, pinnedVerdicts: [] };
 }
+
+test("mapApiChat maps every structured pinned verdict", () => {
+  const mapped = mapApiChat({
+    id: "chat-1",
+    title: "Pins",
+    updated_at: new Date().toISOString(),
+    pinned_verdicts: [
+      { verdict_id: "A", turn_id: "TA" },
+      { verdict_id: "B", turn_id: "TB" },
+    ],
+  });
+  assert.deepEqual(mapped.pinnedVerdicts, [
+    { verdictId: "A", turnId: "TA" },
+    { verdictId: "B", turnId: "TB" },
+  ]);
+});
+
+test("applying an authoritative mapped chat retains all returned pins", () => {
+  const current = chat("chat-1");
+  const updated = mapApiChat({
+    id: "chat-1",
+    title: "Pins",
+    updated_at: new Date().toISOString(),
+    pinned_verdicts: ["A", "B", "C"].map((id) => ({
+      verdict_id: id,
+      turn_id: `T${id}`,
+    })),
+  });
+  const [applied] = upsertChatToTop([current], updated);
+  assert.deepEqual(
+    applied?.pinnedVerdicts.map((pin) => pin.verdictId),
+    ["A", "B", "C"],
+  );
+});
 
 test("upsertChatToTop prepends a new chat id", () => {
   const next = upsertChatToTop([chat("a"), chat("b")], chat("c", "C"));

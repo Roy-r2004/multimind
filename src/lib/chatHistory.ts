@@ -41,8 +41,10 @@ export function mapApiChat(c: ApiChat): Chat {
     updated: formatRelativeTime(c.updated_at),
     projectId: c.project_id,
     modelSetId: c.model_set_id ?? null,
-    pinnedVerdictId: c.pinned_verdict_id ?? null,
-    pinnedTurnId: c.pinned_turn_id ?? null,
+    pinnedVerdicts: c.pinned_verdicts.map((pin) => ({
+      verdictId: pin.verdict_id,
+      turnId: pin.turn_id,
+    })),
     activeReferencedChat: c.active_referenced_chat ?? null,
   };
 }
@@ -65,8 +67,7 @@ export function chatFromTurnActivity(
     updated: formatRelativeTime(updatedAt),
     projectId: existing?.projectId ?? null,
     modelSetId: data.modelSetId ?? existing?.modelSetId ?? null,
-    pinnedVerdictId: existing?.pinnedVerdictId ?? null,
-    pinnedTurnId: existing?.pinnedTurnId ?? null,
+    pinnedVerdicts: existing?.pinnedVerdicts ?? [],
     activeReferencedChat: existing?.activeReferencedChat ?? null,
   };
 }
