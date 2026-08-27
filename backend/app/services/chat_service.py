@@ -17,6 +17,7 @@ from app.core.logging import get_logger
 from app.db.models import (
     Chat,
     ChatAttachment,
+    ChatVerdictPin,
     CostRecord,
     DecisionInsurance,
     ModelAnswer,
@@ -43,6 +44,7 @@ from app.schemas.api import (
     ChatUpdateRequest,
     DecisionInsuranceResponse,
     ModelAnswerResponse,
+    PinnedVerdictResponse,
     TurnAttachmentResponse,
     TurnCreateRequest,
     TurnDeleteResponse,
@@ -258,20 +260,23 @@ class ChatService:
                 select(Chat).where(Chat.id.in_(reference_ids), Chat.org_id == auth.org_id)
             )
             reference_by_id = {c.id: c for c in rows.scalars().all()}
-        pinned_ids = [c.pinned_verdict_id for c in chats if c.pinned_verdict_id]
-        turn_by_verdict: dict[str, str] = {}
-        if pinned_ids:
+        pins_by_chat: dict[str, list[PinnedVerdictResponse]] = {}
+        if chats:
             rows = await db.execute(
-                select(Verdict.id, Verdict.turn_id).where(Verdict.id.in_(pinned_ids))
+                select(ChatVerdictPin.chat_id, Verdict.id, Verdict.turn_id)
+                .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)
+                .where(ChatVerdictPin.chat_id.in_([chat.id for chat in chats]))
+                .order_by(ChatVerdictPin.created_at, ChatVerdictPin.id)
             )
-            turn_by_verdict = {vid: tid for vid, tid in rows.all()}
+            for chat_id, verdict_id, turn_id in rows.all():
+                pins_by_chat.setdefault(chat_id, []).append(
+                    PinnedVerdictResponse(verdict_id=verdict_id, turn_id=turn_id)
+                )
         return [
             self._chat_response(
                 c,
                 active_reference=reference_by_id.get(c.active_referenced_chat_id),
-                pinned_turn_id=turn_by_verdict.get(c.pinned_verdict_id)
-                if c.pinned_verdict_id
-                else None,
+                pinned_verdicts=pins_by_chat.get(c.id, []),
             )
             for c in chats
         ]
@@ -379,11 +384,22 @@ class ChatService:
                 raise NotFoundError("Chat", str(chat_id))
 
             turn_ids = select(Turn.id).where(Turn.chat_id == chat_id)
+            pinned_verdict_ids = list(
+                (
+                    await db.execute(
+                        select(ChatVerdictPin.verdict_id).where(
+                            ChatVerdictPin.chat_id == chat_id
+                        )
+                    )
+                ).scalars().all()
+            )
 
             await db.execute(delete(CostRecord).where(CostRecord.chat_id == chat_id))
             await db.execute(
                 delete(DecisionInsurance).where(DecisionInsurance.turn_id.in_(turn_ids))
             )
+            await db.execute(delete(ChatVerdictPin).where(ChatVerdictPin.chat_id == chat_id))
+            await self._delete_pinned_brain_sources(db, auth.org_id, pinned_verdict_ids)
             await db.execute(delete(Verdict).where(Verdict.turn_id.in_(turn_ids)))
             await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id.in_(turn_ids)))
             await db.execute(delete(ShareLink).where(ShareLink.chat_id == chat_id))
@@ -439,6 +455,28 @@ class ChatService:
             return TurnDeleteResponse(turn_id=turn_id, deleted=True)
 
         try:
+            pinned_verdict_ids = list(
+                (
+                    await db.execute(
+                        select(ChatVerdictPin.verdict_id)
+                        .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)
+                        .where(
+                            ChatVerdictPin.chat_id == chat_id,
+                            Verdict.turn_id == turn_id,
+                        )
+                    )
+                ).scalars().all()
+            )
+            if pinned_verdict_ids:
+                await db.execute(
+                    delete(ChatVerdictPin).where(
+                        ChatVerdictPin.chat_id == chat_id,
+                        ChatVerdictPin.verdict_id.in_(pinned_verdict_ids),
+                    )
+                )
+                await self._delete_pinned_brain_sources(
+                    db, auth.org_id, pinned_verdict_ids
+                )
             await db.execute(
                 update(Turn)
                 .where(Turn.id == turn_id, Turn.chat_id == chat_id)
@@ -596,16 +634,28 @@ class ChatService:
                 .values(deleted_at=now)
             )
 
-            if locked_chat.pinned_verdict_id:
-                pinned_turn_id = (
+            superseded_pinned_verdict_ids = list(
+                (
                     await db.execute(
-                        select(Verdict.turn_id).where(
-                            Verdict.id == locked_chat.pinned_verdict_id
+                        select(ChatVerdictPin.verdict_id)
+                        .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)
+                        .where(
+                            ChatVerdictPin.chat_id == chat_id,
+                            Verdict.turn_id.in_(superseded_ids),
                         )
                     )
-                ).scalar_one_or_none()
-                if pinned_turn_id in superseded_ids:
-                    locked_chat.pinned_verdict_id = None
+                ).scalars().all()
+            )
+            if superseded_pinned_verdict_ids:
+                await db.execute(
+                    delete(ChatVerdictPin).where(
+                        ChatVerdictPin.chat_id == chat_id,
+                        ChatVerdictPin.verdict_id.in_(superseded_pinned_verdict_ids),
+                    )
+                )
+                await self._delete_pinned_brain_sources(
+                    db, auth.org_id, superseded_pinned_verdict_ids
+                )
 
             set_instructions = (model_set.custom_instructions or "").strip()
             target_instructions = (target.custom_instructions or "").strip()
@@ -1424,8 +1474,15 @@ class ChatService:
         verdict = result.scalar_one_or_none()
         if verdict is None:
             raise NotFoundError("Verdict", verdict_id)
-        chat.pinned_verdict_id = verdict.id
-        await db.flush()
+        existing = await db.execute(
+            select(ChatVerdictPin.id).where(
+                ChatVerdictPin.chat_id == chat.id,
+                ChatVerdictPin.verdict_id == verdict.id,
+            )
+        )
+        if existing.scalar_one_or_none() is None:
+            db.add(ChatVerdictPin(chat_id=chat.id, verdict_id=verdict.id))
+            await db.flush()
         try:
             from app.services.brain_knowledge_service import (
                 SOURCE_PINNED_VERDICT,
@@ -1438,20 +1495,29 @@ class ChatService:
                 user_id=auth.user.id,
                 project_id=chat.project_id,
                 source_type=SOURCE_PINNED_VERDICT,
-                source_id=chat.id,
+                source_id=verdict.id,
                 title=f"Pinned verdict — {chat.title}",
                 content=verdict.text,
-                metadata={"verdict_id": verdict.id, "turn_id": verdict.turn_id},
+                metadata={
+                    "chat_id": chat.id,
+                    "verdict_id": verdict.id,
+                    "turn_id": verdict.turn_id,
+                },
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_pin_ingest_failed", error=str(exc))
         return await self._chat_response_async(db, chat)
 
     async def unpin_verdict(
-        self, db: AsyncSession, auth: AuthContext, chat_id: str
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, verdict_id: str
     ) -> ChatResponse:
         chat = await self.get_chat(db, auth, chat_id)
-        chat.pinned_verdict_id = None
+        await db.execute(
+            delete(ChatVerdictPin).where(
+                ChatVerdictPin.chat_id == chat.id,
+                ChatVerdictPin.verdict_id == verdict_id,
+            )
+        )
         await db.flush()
         try:
             from app.services.brain_knowledge_service import (
@@ -1464,25 +1530,43 @@ class ChatService:
                 org_id=auth.org_id,
                 user_id=auth.user.id,
                 source_type=SOURCE_PINNED_VERDICT,
-                source_id=chat.id,
+                source_id=verdict_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_unpin_cleanup_failed", error=str(exc))
         return await self._chat_response_async(db, chat)
 
+    async def unpin_legacy_verdict(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        result = await db.execute(
+            select(ChatVerdictPin.verdict_id)
+            .where(ChatVerdictPin.chat_id == chat.id)
+            .order_by(ChatVerdictPin.created_at, ChatVerdictPin.id)
+            .limit(1)
+        )
+        verdict_id = result.scalar_one_or_none()
+        if verdict_id is None:
+            return await self._chat_response_async(db, chat)
+        return await self.unpin_verdict(db, auth, chat_id, verdict_id)
+
     def _chat_response(
         self,
         chat: Chat,
         *,
-        pinned_turn_id: str | None = None,
+        pinned_verdicts: list[PinnedVerdictResponse] | None = None,
         active_reference: Chat | None = None,
     ) -> ChatResponse:
+        pins = pinned_verdicts or []
+        legacy_pin = pins[0] if pins else None
         return ChatResponse(
             id=chat.id,  # type: ignore[arg-type]
             title=chat.title,
             project_id=chat.project_id,
-            pinned_verdict_id=chat.pinned_verdict_id,
-            pinned_turn_id=pinned_turn_id,
+            pinned_verdict_id=legacy_pin.verdict_id if legacy_pin else None,
+            pinned_turn_id=legacy_pin.turn_id if legacy_pin else None,
+            pinned_verdicts=pins,
             active_referenced_chat=(
                 ChatReferenceResponse(id=active_reference.id, title=active_reference.title)
                 if active_reference is not None
@@ -1492,12 +1576,16 @@ class ChatService:
         )
 
     async def _chat_response_async(self, db: AsyncSession, chat: Chat) -> ChatResponse:
-        pinned_turn_id = None
-        if chat.pinned_verdict_id:
-            result = await db.execute(
-                select(Verdict.turn_id).where(Verdict.id == chat.pinned_verdict_id)
-            )
-            pinned_turn_id = result.scalar_one_or_none()
+        result = await db.execute(
+            select(Verdict.id, Verdict.turn_id)
+            .join(ChatVerdictPin, ChatVerdictPin.verdict_id == Verdict.id)
+            .where(ChatVerdictPin.chat_id == chat.id)
+            .order_by(ChatVerdictPin.created_at, ChatVerdictPin.id)
+        )
+        pinned_verdicts = [
+            PinnedVerdictResponse(verdict_id=verdict_id, turn_id=turn_id)
+            for verdict_id, turn_id in result.all()
+        ]
         active_reference = None
         if chat.active_referenced_chat_id:
             result = await db.execute(
@@ -1508,8 +1596,28 @@ class ChatService:
             )
             active_reference = result.scalar_one_or_none()
         return self._chat_response(
-            chat, pinned_turn_id=pinned_turn_id, active_reference=active_reference
+            chat, pinned_verdicts=pinned_verdicts, active_reference=active_reference
         )
+
+    async def _delete_pinned_brain_sources(
+        self, db: AsyncSession, org_id: str, verdict_ids: list[str]
+    ) -> None:
+        if not verdict_ids:
+            return
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_VERDICT,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.delete_sources_for_org(
+                db,
+                org_id=org_id,
+                source_type=SOURCE_PINNED_VERDICT,
+                source_ids=verdict_ids,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_pin_cleanup_failed", error=str(exc))
 
     def _turn_response(
         self, turn: Turn, saved_verdict_ids: set[str] | None = None

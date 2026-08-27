@@ -16,6 +16,7 @@ from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, Va
 from app.db.base import Base
 from app.db.models import (
     Chat,
+    ChatVerdictPin,
     ModelAnswer,
     ModelAnswerStatus,
     ModelSet,
@@ -213,6 +214,63 @@ async def test_later_turns_are_superseded(db_setup):
         listed = await chat_service.list_turns(db, db_setup.auth, db_setup.chat_id)
         assert len(listed) == 1
         assert listed[0].id == result.new_turn.id
+
+
+@pytest.mark.asyncio
+async def test_regeneration_removes_only_superseded_verdict_pins(db_setup):
+    Session = db_setup.Session
+    base = datetime.now(UTC)
+    t1 = await _complete_turn(
+        Session, chat_id=db_setup.chat_id, user_message="One", created_at=base
+    )
+    t2 = await _complete_turn(
+        Session,
+        chat_id=db_setup.chat_id,
+        user_message="Two",
+        created_at=base + timedelta(seconds=1),
+    )
+    t3 = await _complete_turn(
+        Session,
+        chat_id=db_setup.chat_id,
+        user_message="Three",
+        created_at=base + timedelta(seconds=2),
+    )
+
+    async with Session() as db:
+        verdicts = list(
+            (
+                await db.execute(
+                    select(Verdict).where(Verdict.turn_id.in_([t1.id, t2.id, t3.id]))
+                )
+            ).scalars().all()
+        )
+        verdict_by_turn = {verdict.turn_id: verdict for verdict in verdicts}
+        for turn in (t1, t2, t3):
+            await chat_service.pin_verdict(
+                db, db_setup.auth, db_setup.chat_id, verdict_by_turn[turn.id].id
+            )
+        await db.commit()
+
+    async with Session() as db:
+        await chat_service.regenerate_turn(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            t2.id,
+            TurnRegenerateRequest(prompt="Two edited"),
+        )
+
+    async with Session() as db:
+        pinned_ids = set(
+            (
+                await db.execute(
+                    select(ChatVerdictPin.verdict_id).where(
+                        ChatVerdictPin.chat_id == db_setup.chat_id
+                    )
+                )
+            ).scalars().all()
+        )
+        assert pinned_ids == {verdict_by_turn[t1.id].id}
 
 
 @pytest.mark.asyncio

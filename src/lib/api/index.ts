@@ -1,6 +1,7 @@
 /** Typed API methods — one function per backend endpoint */
 
 import { apiFormRequest, apiRequest } from "@/lib/api/client";
+import { verdictPinRequest } from "@/lib/pinnedVerdicts";
 import {
   COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS,
   composerAttachmentUploadTimeoutMs,
@@ -209,20 +210,23 @@ export const api = {
       });
     },
 
-    pinVerdict: (auth: Auth, chatId: string, verdictId: string) =>
-      apiRequest<ApiChat>(`/chats/${chatId}/pinned-verdict`, {
-        method: "PUT",
-        body: { verdict_id: verdictId },
+    pinVerdict: (auth: Auth, chatId: string, verdictId: string) => {
+      const request = verdictPinRequest(chatId, verdictId, "pin");
+      return apiRequest<ApiChat>(request.path, {
+        method: request.method,
         token: auth.token,
         orgId: auth.orgId,
-      }),
+      });
+    },
 
-    unpinVerdict: (auth: Auth, chatId: string) =>
-      apiRequest<ApiChat>(`/chats/${chatId}/pinned-verdict`, {
-        method: "DELETE",
+    unpinVerdict: (auth: Auth, chatId: string, verdictId: string) => {
+      const request = verdictPinRequest(chatId, verdictId, "unpin");
+      return apiRequest<ApiChat>(request.path, {
+        method: request.method,
         token: auth.token,
         orgId: auth.orgId,
-      }),
+      });
+    },
 
     listTurns: (auth: Auth, chatId: string) =>
       apiRequest<ApiTurn[]>(`/chats/${chatId}/turns`, { token: auth.token, orgId: auth.orgId }),

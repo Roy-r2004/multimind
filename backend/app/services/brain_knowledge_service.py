@@ -101,6 +101,25 @@ class BrainKnowledgeService:
         )
         await db.flush()
 
+    async def delete_sources_for_org(
+        self,
+        db: AsyncSession,
+        *,
+        org_id: str,
+        source_type: str,
+        source_ids: list[str],
+    ) -> None:
+        if not source_ids:
+            return
+        await db.execute(
+            delete(BrainKnowledgeItem).where(
+                BrainKnowledgeItem.org_id == org_id,
+                BrainKnowledgeItem.source_type == source_type,
+                BrainKnowledgeItem.source_id.in_(source_ids),
+            )
+        )
+        await db.flush()
+
     async def ingest_turn(
         self,
         db: AsyncSession,

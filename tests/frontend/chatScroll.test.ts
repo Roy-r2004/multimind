@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   CHAT_BOTTOM_THRESHOLD_PX,
   distanceFromChatBottom,
+  findVerdictSynthesisElement,
   isChatNearBottom,
   shouldShowScrollToLatest,
 } from "../../src/lib/chatScroll.ts";
@@ -49,4 +50,17 @@ test("scroll-to-latest button is visible when scrolled upward", () => {
     shouldShowScrollToLatest({ scrollTop: 500, scrollHeight: 1200, clientHeight: 400 }),
     true,
   );
+});
+
+test("selected pin navigation prefers the selected verdict id", () => {
+  const selected = { id: "verdict-B" } as HTMLElement;
+  const originalDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: (id: string) => (id === "verdict-B" ? selected : null),
+  } as Document;
+  try {
+    assert.equal(findVerdictSynthesisElement("B", "TB"), selected);
+  } finally {
+    globalThis.document = originalDocument;
+  }
 });

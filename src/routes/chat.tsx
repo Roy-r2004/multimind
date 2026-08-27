@@ -118,11 +118,12 @@ import { chatAnswerCardsClassName } from "@/lib/chatTurnLayout";
 import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
 import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
 import {
-  findPinnedSynthesisElement,
+  findVerdictSynthesisElement,
   isChatNearBottom,
   scrollThreadToElement,
   shouldShowScrollToLatest,
 } from "@/lib/chatScroll";
+import { buildPinnedVerdictMenuItems, isVerdictPinned } from "@/lib/pinnedVerdicts";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -239,6 +240,8 @@ export function ChatPage() {
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [stoppingTurnId, setStoppingTurnId] = useState<string | null>(null);
   const [pendingSavedVerdicts, setPendingSavedVerdicts] = useState<Set<string>>(() => new Set());
+  const [pendingPinnedVerdicts, setPendingPinnedVerdicts] = useState<Set<string>>(() => new Set());
+  const pendingPinnedVerdictsRef = useRef<Set<string>>(new Set());
   const [showDeleteChat, setShowDeleteChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
   const [deleteTurnTarget, setDeleteTurnTarget] = useState<ApiTurn | null>(null);
@@ -277,8 +280,8 @@ export function ChatPage() {
   modelSetsRef.current = modelSets;
   const activeChat = chats.find((c) => c.id === activeChatId);
   const draftStorageKey = `multimind:draft:${activeChatId ?? "new"}`;
-  const pinnedTurnId = activeChat?.pinnedTurnId ?? null;
-  const pinnedVerdictId = activeChat?.pinnedVerdictId ?? null;
+  const pinnedVerdicts = activeChat?.pinnedVerdicts ?? [];
+  const pinnedVerdictMenuItems = buildPinnedVerdictMenuItems(pinnedVerdicts, apiTurns);
 
   useEffect(() => {
     if (!activeChatId) {
@@ -359,8 +362,7 @@ export function ChatPage() {
     }
   }, [apiTurns.length, activeChatId]);
 
-  function scrollToPinnedVerdict() {
-    if (!pinnedVerdictId && !pinnedTurnId) return;
+  function scrollToPinnedVerdict(verdictId: string, turnId: string) {
     // Stop "stick to bottom" from fighting the jump to the pinned synthesis.
     shouldPinToBottomRef.current = false;
     showScrollToLatestRef.current = true;
@@ -374,7 +376,7 @@ export function ChatPage() {
     };
 
     const attempt = (n: number) => {
-      const target = findPinnedSynthesisElement(pinnedVerdictId, pinnedTurnId);
+      const target = findVerdictSynthesisElement(verdictId, turnId);
       if (!target) {
         if (n < 12) {
           window.setTimeout(() => attempt(n + 1), 40);
@@ -392,7 +394,7 @@ export function ChatPage() {
       flash(target);
       // Second pass after layout settles (images/markdown can shift height).
       window.setTimeout(() => {
-        const settled = findPinnedSynthesisElement(pinnedVerdictId, pinnedTurnId);
+        const settled = findVerdictSynthesisElement(verdictId, turnId);
         if (!settled) return;
         if (threadRef.current) {
           scrollThreadToElement(threadRef.current, settled, "auto");
@@ -407,15 +409,24 @@ export function ChatPage() {
 
   async function handlePinVerdict(verdictId: string, currentlyPinned: boolean) {
     const auth = authHeaders();
-    if (!auth || !activeChatId) return;
+    if (!auth || !activeChatId || pendingPinnedVerdictsRef.current.has(verdictId)) return;
+    pendingPinnedVerdictsRef.current.add(verdictId);
+    setPendingPinnedVerdicts((current) => new Set(current).add(verdictId));
     try {
       const updated = currentlyPinned
-        ? await api.chats.unpinVerdict(auth, activeChatId)
+        ? await api.chats.unpinVerdict(auth, activeChatId, verdictId)
         : await api.chats.pinVerdict(auth, activeChatId, verdictId);
       applyChatUpdate(updated);
       toast.success(currentlyPinned ? "Verdict unpinned" : "Verdict pinned");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update pin");
+    } finally {
+      pendingPinnedVerdictsRef.current.delete(verdictId);
+      setPendingPinnedVerdicts((current) => {
+        const next = new Set(current);
+        next.delete(verdictId);
+        return next;
+      });
     }
   }
 
@@ -705,8 +716,11 @@ export function ChatPage() {
           id: chatId,
           title: pending.chat_title ?? activeChat?.title ?? question.slice(0, 80),
           project_id: activeChat?.projectId ?? null,
-          pinned_verdict_id: activeChat?.pinnedVerdictId ?? null,
-          pinned_turn_id: activeChat?.pinnedTurnId ?? null,
+          pinned_verdicts:
+            activeChat?.pinnedVerdicts.map((pin) => ({
+              verdict_id: pin.verdictId,
+              turn_id: pin.turnId,
+            })) ?? [],
           active_referenced_chat: { id: refChats[0].chatId, title: refChats[0].title },
           updated_at: pending.chat_updated_at ?? new Date().toISOString(),
         });
@@ -997,14 +1011,30 @@ export function ChatPage() {
           )}
           <div className="ml-auto flex items-center gap-2">
             <ChatTurnLayoutToggle value={turnLayout} onChange={setTurnLayout} />
-            {pinnedTurnId && (
-              <button
-                type="button"
-                onClick={scrollToPinnedVerdict}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
-              >
-                <Pin className="size-3.5 fill-current" /> Go to pinned verdict
-              </button>
+            {pinnedVerdictMenuItems.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
+                  >
+                    <Pin className="size-3.5 fill-current" /> Pinned verdicts (
+                    {pinnedVerdictMenuItems.length})
+                    <ChevronDown className="size-3.5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  {pinnedVerdictMenuItems.map((pin) => (
+                    <DropdownMenuItem
+                      key={pin.verdictId}
+                      onSelect={() => scrollToPinnedVerdict(pin.verdictId, pin.turnId)}
+                    >
+                      <Pin className="size-3.5 fill-current text-amber-700" />
+                      {pin.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
             {activeChatId && (
               <button
@@ -1164,7 +1194,10 @@ export function ChatPage() {
                       turn={turn}
                       modelById={modelById}
                       pendingSavedVerdicts={pendingSavedVerdicts}
-                      pinnedVerdictId={pinnedVerdictId}
+                      pinnedVerdicts={pinnedVerdicts}
+                      pinPending={Boolean(
+                        turn.verdict && pendingPinnedVerdicts.has(turn.verdict.id),
+                      )}
                       onTogglePin={(verdictId, currentlyPinned) =>
                         void handlePinVerdict(verdictId, currentlyPinned)
                       }
@@ -1818,7 +1851,8 @@ function AiTurn({
   turn,
   modelById,
   pendingSavedVerdicts,
-  pinnedVerdictId,
+  pinnedVerdicts,
+  pinPending,
   onTogglePin,
   onToggleSavedVerdict,
   onLessonUpdate,
@@ -1827,7 +1861,8 @@ function AiTurn({
   turn: ApiTurn;
   modelById: (id: string) => { name: string; color: string; vendor: string };
   pendingSavedVerdicts: Set<string>;
-  pinnedVerdictId?: string | null;
+  pinnedVerdicts: Array<{ verdictId: string; turnId: string }>;
+  pinPending: boolean;
   onTogglePin: (verdictId: string, currentlyPinned: boolean) => void;
   onToggleSavedVerdict: (verdictId: string, saved: boolean) => void;
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
@@ -1846,7 +1881,7 @@ function AiTurn({
   const canCollapseAnswers = Boolean(turn.verdict);
   const turnStrategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
   const bookmarkState = getVerdictBookmarkState(turn, pendingSavedVerdicts);
-  const isPinned = Boolean(turn.verdict && pinnedVerdictId === turn.verdict.id);
+  const isPinned = isVerdictPinned(pinnedVerdicts, turn.verdict?.id);
   const hasVerdict = Boolean(turn.verdict);
 
   function openDisagree() {
@@ -2041,9 +2076,10 @@ function AiTurn({
                 type="button"
                 aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
                 title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
+                disabled={pinPending}
                 onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60",
                   isPinned
                     ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
                     : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",

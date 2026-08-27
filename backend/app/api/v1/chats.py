@@ -127,23 +127,45 @@ async def delete_chat(
     return MessageResponse(message="Chat deleted")
 
 
-@router.put("/{chat_id}/pinned-verdict", response_model=ChatResponse)
+@router.put("/{chat_id}/pinned-verdicts/{verdict_id}", response_model=ChatResponse)
 async def pin_verdict(
+    chat_id: UUID,
+    verdict_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.pin_verdict(db, auth, str(chat_id), str(verdict_id))
+
+
+@router.delete("/{chat_id}/pinned-verdicts/{verdict_id}", response_model=ChatResponse)
+async def unpin_verdict(
+    chat_id: UUID,
+    verdict_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.unpin_verdict(db, auth, str(chat_id), str(verdict_id))
+
+
+@router.put("/{chat_id}/pinned-verdict", response_model=ChatResponse, deprecated=True)
+async def pin_verdict_legacy(
     chat_id: UUID,
     data: PinVerdictRequest,
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
+    """Compatibility adapter for the current scalar-pin frontend."""
     return await chat_service.pin_verdict(db, auth, str(chat_id), data.verdict_id)
 
 
-@router.delete("/{chat_id}/pinned-verdict", response_model=ChatResponse)
-async def unpin_verdict(
+@router.delete("/{chat_id}/pinned-verdict", response_model=ChatResponse, deprecated=True)
+async def unpin_verdict_legacy(
     chat_id: UUID,
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    return await chat_service.unpin_verdict(db, auth, str(chat_id))
+    """Remove the deterministic legacy pin exposed to the current frontend."""
+    return await chat_service.unpin_legacy_verdict(db, auth, str(chat_id))
 
 
 @router.get("/{chat_id}/turns", response_model=list[TurnResponse])

@@ -102,6 +102,10 @@ export type ApiChat = {
   project_id?: string | null;
   pinned_verdict_id?: string | null;
   pinned_turn_id?: string | null;
+  pinned_verdicts: Array<{
+    verdict_id: string;
+    turn_id: string;
+  }>;
   active_referenced_chat?: { id: string; title: string } | null;
   updated_at: string;
 };

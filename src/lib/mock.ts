@@ -33,8 +33,7 @@ export type Chat = {
   updated: string;
   projectId?: string | null;
   modelSetId?: string | null;
-  pinnedVerdictId?: string | null;
-  pinnedTurnId?: string | null;
+  pinnedVerdicts: Array<{ verdictId: string; turnId: string }>;
   activeReferencedChat?: { id: string; title: string } | null;
 };
 

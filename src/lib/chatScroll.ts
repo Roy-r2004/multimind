@@ -36,22 +36,21 @@ export function scrollThreadToElement(
 ): void {
   const threadRect = thread.getBoundingClientRect();
   const targetRect = target.getBoundingClientRect();
-  const offset =
-    targetRect.top - threadRect.top - thread.clientHeight / 2 + targetRect.height / 2;
+  const offset = targetRect.top - threadRect.top - thread.clientHeight / 2 + targetRect.height / 2;
   const nextTop = Math.max(0, thread.scrollTop + offset);
   thread.scrollTo({ top: nextTop, behavior });
 }
 
-export function findPinnedSynthesisElement(
-  pinnedVerdictId: string | null | undefined,
-  pinnedTurnId: string | null | undefined,
+export function findVerdictSynthesisElement(
+  verdictId: string | null | undefined,
+  turnId: string | null | undefined,
 ): HTMLElement | null {
-  if (pinnedVerdictId) {
-    const verdict = document.getElementById(`verdict-${pinnedVerdictId}`);
+  if (verdictId) {
+    const verdict = document.getElementById(`verdict-${verdictId}`);
     if (verdict) return verdict;
   }
-  if (pinnedTurnId) {
-    const turn = document.getElementById(`turn-${pinnedTurnId}`);
+  if (turnId) {
+    const turn = document.getElementById(`turn-${turnId}`);
     if (turn) {
       const synthesis = turn.querySelector(
         '[data-verdict-synthesis="true"], [id^="verdict-"]',

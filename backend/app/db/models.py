@@ -6,10 +6,10 @@ from datetime import date, datetime, time
 from typing import Any
 
 from sqlalchemy import (
-    CheckConstraint,
-    Date,
     JSON,
     Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -383,9 +383,6 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     active_referenced_chat_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("chats.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    pinned_verdict_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("verdicts.id", ondelete="SET NULL"), nullable=True
-    )
     # Per-chat rolling summary of turns older than the recent-history window.
     # Separate from user-level Brain (UserBrain / BrainKnowledgeItem).
     rolling_memory: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -404,10 +401,11 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys="Turn.chat_id",
     )
     share_links: Mapped[list["ShareLink"]] = relationship(back_populates="chat")
-    pinned_verdict: Mapped["Verdict | None"] = relationship(
-        "Verdict",
-        foreign_keys=[pinned_verdict_id],
-        post_update=True,
+    verdict_pins: Mapped[list["ChatVerdictPin"]] = relationship(
+        back_populates="chat",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ChatVerdictPin.created_at, ChatVerdictPin.id",
     )
     active_referenced_chat: Mapped["Chat | None"] = relationship(
         "Chat", foreign_keys=[active_referenced_chat_id], remote_side="Chat.id"
@@ -2227,6 +2225,28 @@ class Verdict(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
     turn: Mapped["Turn"] = relationship(back_populates="verdict")
+    chat_pins: Mapped[list["ChatVerdictPin"]] = relationship(
+        back_populates="verdict", passive_deletes=True
+    )
+
+
+class ChatVerdictPin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "chat_verdict_pins"
+    __table_args__ = (
+        UniqueConstraint("chat_id", "verdict_id", name="uq_chat_verdict_pin"),
+        Index("ix_chat_verdict_pins_chat_id", "chat_id"),
+        Index("ix_chat_verdict_pins_verdict_id", "verdict_id"),
+    )
+
+    chat_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False
+    )
+    verdict_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("verdicts.id", ondelete="CASCADE"), nullable=False
+    )
+
+    chat: Mapped["Chat"] = relationship(back_populates="verdict_pins")
+    verdict: Mapped["Verdict"] = relationship(back_populates="chat_pins")
 
 
 class SavedVerdict(Base, UUIDPrimaryKeyMixin):

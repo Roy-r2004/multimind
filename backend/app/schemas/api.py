@@ -1235,6 +1235,11 @@ class ChatReferenceResponse(BaseModel):
     title: str
 
 
+class PinnedVerdictResponse(BaseModel):
+    verdict_id: str
+    turn_id: str
+
+
 class ChatResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1243,6 +1248,7 @@ class ChatResponse(BaseModel):
     project_id: str | None = None
     pinned_verdict_id: str | None = None
     pinned_turn_id: str | None = None
+    pinned_verdicts: list[PinnedVerdictResponse] = Field(default_factory=list)
     active_referenced_chat: ChatReferenceResponse | None = None
     updated_at: datetime
 
