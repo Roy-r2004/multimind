@@ -74,7 +74,7 @@ Copy `.env.example` to `.env`:
 | `TRANSCRIPTION_BEAM_SIZE`              | Whisper beam size; default `1`                        |
 | `CHAT_ATTACHMENT_DIR`                  | Absolute or relative directory for chat uploads; Docker default `/app/data/chat_attachments` |
 | `CHAT_ATTACHMENT_MAX_BYTES`            | Max upload size in bytes (default `10485760` = 10 MB); enforced while streaming |
-| `CHAT_ATTACHMENT_CONTEXT_MAX_CHARS`    | Max total attachment context characters injected into a turn (default `50000`) |
+| `CHAT_ATTACHMENT_CONTEXT_MAX_CHARS`    | Max total attachment context characters injected into a turn (default `100000`) |
 
 Voice transcription is local/free via Faster-Whisper. The supported transcription languages are English and French. `auto` language detection is accepted, but detected output outside English/French is rejected. Docker Compose mounts `/models/whisper` as a persistent model cache so container recreation does not redownload the model when the volume is retained.
 
