@@ -31,6 +31,7 @@ This prompt strictly prohibits any summarization, resumes, or concise forms. The
 def _answers() -> list[dict]:
     return [
         {
+            "answer_id": "answer-alpha",
             "model_id": "gpt-4.1",
             "model_name": "GPT-4.1",
             "text": "COUNCIL_ANSWER_ALPHA",
@@ -39,6 +40,7 @@ def _answers() -> list[dict]:
             "error_message": None,
         },
         {
+            "answer_id": "answer-beta",
             "model_id": "gemini",
             "model_name": "Gemini 2.5 Pro",
             "text": "COUNCIL_ANSWER_BETA",
@@ -47,6 +49,7 @@ def _answers() -> list[dict]:
             "error_message": None,
         },
         {
+            "answer_id": "answer-failed",
             "model_id": "or:x-ai--grok-4",
             "model_name": "Grok 4",
             "text": "",
@@ -79,15 +82,19 @@ def test_strict_referee_receives_question_answers_metadata_and_json_protocol():
         "GPT-4.1",
         "gpt-4.1",
         "COUNCIL_ANSWER_ALPHA",
-        "91%",
+        "answer-alpha",
         "Gemini 2.5 Pro",
         "COUNCIL_ANSWER_BETA",
         "Grok 4",
         "AGENT_FAILURE_SENTINEL",
+        '"evaluations"',
         '"text"',
         '"reason"',
     ):
         assert expected in rendered
+    assert "**Confidence**" not in rendered
+    assert "Correctness / accuracy: 30 points" in rendered
+    assert "highest-scoring answer must not automatically become the verdict" in rendered
 
 
 def test_strict_referee_excludes_all_direct_non_council_context_and_legacy_rules():

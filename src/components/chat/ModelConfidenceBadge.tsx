@@ -9,12 +9,7 @@ type Props = {
   modelName: string;
 };
 
-export function ModelConfidenceBadge({
-  confidence,
-  isTopPick,
-  strategy,
-  modelName,
-}: Props) {
+export function ModelConfidenceBadge({ confidence, isTopPick, strategy, modelName }: Props) {
   return (
     <div className="ml-auto flex items-center gap-1">
       <span className="text-xs text-muted-foreground">{confidence}%</span>
@@ -31,14 +26,15 @@ export function ModelConfidenceBadge({
         <PopoverContent align="end" className="w-80 text-sm">
           <p className="font-medium text-foreground">Why {confidence}%?</p>
           <p className="mt-2 text-muted-foreground">
-            <strong className="text-foreground">{modelName}</strong> self-rated confidence that its
-            answer is correct and useful for the current question.
+            The Verdict AI scored <strong className="text-foreground">{modelName}</strong>&apos;s
+            overall answer quality for the current question using accuracy, relevance, completeness,
+            reasoning, evidence, clarity, and practical usefulness.
           </p>
           {isTopPick && (
             <p className="mt-3 rounded-lg bg-amber-500/10 px-2.5 py-2 text-xs text-amber-900 dark:text-amber-200">
               {strategy === "Pick Best"
                 ? "Top pick — the Verdict AI named this model as the strongest answer for this question."
-                : "Top pick — highest confidence in the council for this turn (Verdict may still blend all answers)."}
+                : "Top pick — highest Referee score in the council for this turn (Verdict may still blend all answers)."}
             </p>
           )}
         </PopoverContent>

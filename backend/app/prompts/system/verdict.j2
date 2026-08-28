@@ -43,9 +43,26 @@ The user is continuing this chat. The content below is **prior context only** â€
 ## Council Model Responses (evidence only)
 {% include "partials/model_responses.j2" %}
 
+## Per-Answer Quality Evaluation
+Evaluate every successfully completed answer using the same 100-point rubric:
+- Correctness / accuracy: 30 points
+- Relevance: 20 points
+- Completeness: 15 points
+- Reasoning: 15 points
+- Evidence / support: 10 points
+- Clarity: 5 points
+- Practical usefulness: 5 points
+
+Each score means the overall Verdict-AI-assessed quality of that answer for the current user question. It is not a statistical probability that every statement is true. Do not score failed answers.
+
+Scores are evaluation metadata, not winner-selection commands. Preserve the active strategy and synthesize the strongest correct and useful material across all answers. A lower-scoring answer may supply an important unique point or caveat. The highest-scoring answer must not automatically become the verdict.
+
 ## Output Format (strict JSON)
 Respond with **only** valid JSON (no markdown fences):
 {
   "text": "<your verdict answer in Markdown>",
-  "reason": "<1-3 sentences explaining your verdict methodology and key trade-offs>"
+  "reason": "<1-3 sentences explaining your verdict methodology and key trade-offs>",
+  "evaluations": [
+    {"answer_id": "<exact Answer ID from a successfully completed answer>", "score": <integer 0-100>}
+  ]
 }
