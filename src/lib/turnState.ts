@@ -1,6 +1,6 @@
 /** Shared turn state helpers for chat UI and background streaming. */
 
-import type { ApiTurn } from "@/lib/api/types";
+import type { ApiModelAnswer, ApiTurn } from "@/lib/api/types";
 
 const GENERATING_STATUSES = new Set(["pending", "running"]);
 
@@ -12,9 +12,7 @@ export function isAnyTurnGenerating(turns: Array<Pick<ApiTurn, "status">>): bool
   return turns.some(isTurnGenerating);
 }
 
-export function canShowHistoricalTurnDelete(
-  turn: Pick<ApiTurn, "status">,
-): boolean {
+export function canShowHistoricalTurnDelete(turn: Pick<ApiTurn, "status">): boolean {
   return !isTurnGenerating(turn);
 }
 
@@ -44,14 +42,13 @@ export function applyStreamEvent(
           ? {
               ...a,
               text: String(data.text ?? ""),
-              confidence: Number(data.confidence ?? a.confidence),
+              confidence:
+                data.confidence == null ? (a.confidence ?? null) : Number(data.confidence),
               status: "completed",
               tokens_input: Number(data.tokens_input ?? 0),
               tokens_output: Number(data.tokens_output ?? 0),
               cost_usd:
-                data.cost_usd == null || data.cost_usd === ""
-                  ? null
-                  : Number(data.cost_usd),
+                data.cost_usd == null || data.cost_usd === "" ? null : Number(data.cost_usd),
             }
           : a,
       ),
@@ -68,8 +65,30 @@ export function applyStreamEvent(
     };
   }
   if (event === "verdict_completed") {
+    const rawScores = Array.isArray(data.answer_scores) ? data.answer_scores : [];
+    const scoresByModel = new Map<string, number>();
+    for (const raw of rawScores) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const item = raw as Record<string, unknown>;
+      const modelId = typeof item.model_id === "string" ? item.model_id : "";
+      const score = item.score;
+      if (
+        modelId &&
+        typeof score === "number" &&
+        Number.isInteger(score) &&
+        score >= 0 &&
+        score <= 100
+      ) {
+        scoresByModel.set(modelId, score);
+      }
+    }
     return {
       ...turn,
+      model_answers: (turn.model_answers ?? []).map((answer) =>
+        scoresByModel.has(answer.model_id)
+          ? { ...answer, confidence: scoresByModel.get(answer.model_id)! }
+          : answer,
+      ),
       verdict: {
         id: String(data.id ?? ""),
         model_id: String(data.model_id ?? turn.verdict_model),
@@ -79,12 +98,20 @@ export function applyStreamEvent(
         saved: Boolean(data.saved ?? false),
         tokens_input: Number(data.tokens_input ?? 0),
         tokens_output: Number(data.tokens_output ?? 0),
-        cost_usd:
-          data.cost_usd == null || data.cost_usd === "" ? null : Number(data.cost_usd),
+        cost_usd: data.cost_usd == null || data.cost_usd === "" ? null : Number(data.cost_usd),
       },
     };
   }
   return turn;
+}
+
+export function highestScoredModelId(answers: ApiModelAnswer[]): string | null {
+  const scored = answers.filter(
+    (answer) => answer.status === "completed" && answer.confidence != null,
+  );
+  if (!scored.length) return null;
+  return scored.reduce((best, answer) => (answer.confidence! > best.confidence! ? answer : best))
+    .model_id;
 }
 
 export function mergeTurnFromApi(local: ApiTurn, remote: ApiTurn): ApiTurn {

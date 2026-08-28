@@ -106,6 +106,7 @@ import { cn } from "@/lib/utils";
 import { getVerdictBookmarkState, updateVerdictSavedInTurns } from "@/lib/savedVerdicts";
 import {
   canShowHistoricalTurnDelete,
+  highestScoredModelId,
   isAnyTurnGenerating,
   isHistoricalTurnDeleteDisabled,
   removeTurnFromList,
@@ -1828,9 +1829,6 @@ function inferTopModelId(
   councilModelIds: string[],
   modelById: (id: string) => { name: string },
 ): string | null {
-  const completed = (turn.model_answers ?? []).filter(
-    (a) => a.status === "completed" && a.confidence != null,
-  );
   const strategy = (turn.verdict?.strategy ?? turn.strategy) as Strategy;
 
   if (strategy === "Pick Best" && turn.verdict) {
@@ -1840,10 +1838,7 @@ function inferTopModelId(
     }
   }
 
-  if (!completed.length) return null;
-  return completed.reduce((best, answer) =>
-    (answer.confidence ?? 0) > (best.confidence ?? 0) ? answer : best,
-  ).model_id;
+  return highestScoredModelId(turn.model_answers ?? []);
 }
 
 function AiTurn({

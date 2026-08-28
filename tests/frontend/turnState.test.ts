@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   applyStreamEvent,
   canShowHistoricalTurnDelete,
+  highestScoredModelId,
   isAnyTurnGenerating,
   isHistoricalTurnDeleteDisabled,
   removeTurnFromList,
@@ -77,6 +78,116 @@ test("unrelated newer turn is not overwritten by old turn events", () => {
   assert.equal(list[0].user_message, "New prompt");
 });
 
+test("answer completion preserves unresolved confidence as null", () => {
+  const turn = apiTurn({
+    model_answers: [{ ...apiTurn().model_answers[0], confidence: null, status: "running" }],
+  });
+
+  const updated = applyStreamEvent(turn, "model_answer_completed", {
+    model_id: "gpt-4.1",
+    text: "Completed without a Referee score",
+    confidence: null,
+  });
+
+  assert.equal(updated.model_answers[0].confidence, null);
+});
+
+test("top pick ignores null confidence while retaining zero as a real score", () => {
+  const answers = [
+    { ...apiTurn().model_answers[0], model_id: "unscored", confidence: null },
+    { ...apiTurn().model_answers[0], model_id: "zero", confidence: 0 },
+  ];
+
+  assert.equal(highestScoredModelId([answers[0]]), null);
+  assert.equal(highestScoredModelId(answers), "zero");
+  assert.equal(
+    highestScoredModelId([
+      { ...answers[1], model_id: "score-97", confidence: 97 },
+      { ...answers[1], model_id: "score-98", confidence: 98 },
+    ]),
+    "score-98",
+  );
+});
+
+test("verdict completion applies Referee scores without changing answer content", () => {
+  const turn = apiTurn({
+    model_answers: [
+      {
+        model_id: "gpt-4.1",
+        model_name: "GPT-4.1",
+        text: "GPT answer",
+        confidence: null,
+        status: "completed",
+        error_message: null,
+        tokens_input: 1,
+        tokens_output: 2,
+        cost_usd: 0,
+      },
+      {
+        model_id: "claude",
+        model_name: "Claude",
+        text: "Claude answer",
+        confidence: null,
+        status: "completed",
+        error_message: null,
+        tokens_input: 3,
+        tokens_output: 4,
+        cost_usd: 0,
+      },
+    ],
+  });
+
+  const updated = applyStreamEvent(turn, "verdict_completed", {
+    id: "verdict-1",
+    model_id: "gemini",
+    text: "Synthesis",
+    reason: "Combined the strongest material.",
+    answer_scores: [
+      { answer_id: "answer-1", model_id: "gpt-4.1", score: 0 },
+      { answer_id: "answer-2", model_id: "claude", score: 100 },
+    ],
+  });
+
+  assert.deepEqual(
+    updated.model_answers.map((answer) => ({
+      model_id: answer.model_id,
+      text: answer.text,
+      status: answer.status,
+      confidence: answer.confidence,
+    })),
+    [
+      { model_id: "gpt-4.1", text: "GPT answer", status: "completed", confidence: 0 },
+      { model_id: "claude", text: "Claude answer", status: "completed", confidence: 100 },
+    ],
+  );
+});
+
+test("verdict completion ignores unknown and invalid answer scores", () => {
+  const turn = apiTurn({
+    model_answers: [
+      {
+        ...apiTurn().model_answers[0],
+        confidence: null,
+      },
+    ],
+  });
+
+  const updated = applyStreamEvent(turn, "verdict_completed", {
+    id: "verdict-1",
+    model_id: "gemini",
+    text: "Synthesis",
+    reason: "Reason",
+    answer_scores: [
+      { answer_id: "unknown", model_id: "claude", score: 99 },
+      { answer_id: "answer-1", model_id: "gpt-4.1", score: 90.5 },
+      { answer_id: "answer-1", model_id: "gpt-4.1", score: 101 },
+    ],
+  });
+
+  assert.equal(updated.model_answers[0].confidence, null);
+  assert.equal(updated.model_answers[0].text, "Done");
+});
+
 test("historical turn shows delete action and active generating turn does not", () => {
   assert.equal(canShowHistoricalTurnDelete(apiTurn({ status: "completed" })), true);
   assert.equal(canShowHistoricalTurnDelete(apiTurn({ status: "partial" })), true);
@@ -113,10 +224,13 @@ test("canceling historical deletion leaves the turn list unchanged", () => {
 test("confirming deletion targets the exact chat id and turn id", () => {
   const target = apiTurn({ id: "turn-2", chat_id: "chat-1" });
 
-  assert.deepEqual({ chatId: target.chat_id, turnId: target.id }, {
-    chatId: "chat-1",
-    turnId: "turn-2",
-  });
+  assert.deepEqual(
+    { chatId: target.chat_id, turnId: target.id },
+    {
+      chatId: "chat-1",
+      turnId: "turn-2",
+    },
+  );
 });
 
 test("turn remains visible while delete request is pending", () => {
@@ -125,7 +239,10 @@ test("turn remains visible while delete request is pending", () => {
     apiTurn({ id: "turn-2", user_message: "Pending delete" }),
   ];
 
-  assert.equal(turns.some((turn) => turn.id === "turn-2"), true);
+  assert.equal(
+    turns.some((turn) => turn.id === "turn-2"),
+    true,
+  );
 });
 
 test("successful historical deletion removes only selected middle turn", () => {
@@ -149,7 +266,10 @@ test("failed historical deletion keeps the turn visible", () => {
     apiTurn({ id: "turn-2", user_message: "Keep me" }),
   ];
 
-  assert.equal(turns.some((turn) => turn.id === "turn-2"), true);
+  assert.equal(
+    turns.some((turn) => turn.id === "turn-2"),
+    true,
+  );
 });
 
 test("duplicate confirmation clicks are prevented while deletion is pending", () => {
@@ -194,5 +314,8 @@ test("reloaded state keeps deleted turn absent when backend omits it", () => {
     apiTurn({ id: "turn-3", user_message: "After" }),
   ];
 
-  assert.equal(backendTurns.some((turn) => turn.id === "turn-2"), false);
+  assert.equal(
+    backendTurns.some((turn) => turn.id === "turn-2"),
+    false,
+  );
 });

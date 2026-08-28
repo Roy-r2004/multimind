@@ -4,9 +4,9 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
+from sqlalchemy import String, cast, exists, func, select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import exists, select, update
-from sqlalchemy.exc import IntegrityError
 from tenacity import RetryError
 
 from app.core.logging import get_logger
@@ -95,8 +95,8 @@ def format_llm_error(exc: Exception) -> str:
     return str(exc)
 
 
-def _verdict_fields(provider: Any, raw_text: str) -> tuple[str, str]:
-    """Extract ``(text, reason)`` from a verdict response.
+def _verdict_fields(provider: Any, raw_text: str) -> tuple[str, str, dict[str, Any] | None]:
+    """Extract verdict fields while preserving its structured evaluation payload.
 
     Strict JSON is preferred, but a verdict that arrives wrapped in prose or
     truncated by the token cap still carries the answer the user asked for.
@@ -105,7 +105,7 @@ def _verdict_fields(provider: Any, raw_text: str) -> tuple[str, str]:
     parsed = provider.parse_json_object_lenient(raw_text)
     fallback = (raw_text or "").strip()
     if not isinstance(parsed, dict):
-        return fallback, VERDICT_DEFAULT_REASON
+        return fallback, VERDICT_DEFAULT_REASON, None
 
     text = parsed.get("text")
     text = text.strip() if isinstance(text, str) else ""
@@ -118,7 +118,76 @@ def _verdict_fields(provider: Any, raw_text: str) -> tuple[str, str]:
         text = fallback
     if not reason:
         reason = VERDICT_DEFAULT_REASON
-    return text, reason
+    return text, reason, parsed
+
+
+def _validated_answer_scores(
+    parsed: dict[str, Any] | None,
+    answer_rows: list[ModelAnswer],
+) -> list[dict[str, Any]]:
+    """Return valid Referee scores mapped to completed rows by persisted answer ID."""
+    if not parsed:
+        return []
+    evaluations = parsed.get("evaluations")
+    if not isinstance(evaluations, list):
+        return []
+
+    completed_by_id = {
+        str(row.id): row for row in answer_rows if row.status == ModelAnswerStatus.COMPLETED
+    }
+    identifier_counts: dict[str, int] = {}
+    for item in evaluations:
+        if isinstance(item, dict) and isinstance(item.get("answer_id"), str):
+            answer_id = item["answer_id"].strip()
+            if answer_id:
+                identifier_counts[answer_id] = identifier_counts.get(answer_id, 0) + 1
+
+    valid: list[dict[str, Any]] = []
+    for item in evaluations:
+        if not isinstance(item, dict):
+            logger.warning("verdict_evaluation_malformed")
+            continue
+        raw_answer_id = item.get("answer_id")
+        answer_id = raw_answer_id.strip() if isinstance(raw_answer_id, str) else ""
+        if not answer_id:
+            logger.warning("verdict_evaluation_missing_answer_id")
+            continue
+        if identifier_counts.get(answer_id, 0) != 1:
+            logger.warning("verdict_evaluation_duplicate_answer_id", answer_id=answer_id)
+            continue
+        row = completed_by_id.get(answer_id)
+        if row is None:
+            logger.warning("verdict_evaluation_unknown_or_ineligible_answer", answer_id=answer_id)
+            continue
+        score = item.get("score")
+        if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= 100:
+            logger.warning(
+                "verdict_evaluation_invalid_score",
+                answer_id=answer_id,
+                score=score,
+            )
+            continue
+        valid.append(
+            {"answer_id": answer_id, "model_id": row.model_id, "score": score}
+        )
+    return valid
+
+
+def _answer_score_update_statement(
+    turn_id: str,
+    evaluation: dict[str, Any],
+):
+    """Build the score update with VARCHAR semantics for legacy status columns."""
+    return (
+        update(ModelAnswer)
+        .where(
+            ModelAnswer.id == evaluation["answer_id"],
+            ModelAnswer.turn_id == turn_id,
+            func.lower(cast(ModelAnswer.status, String))
+            == ModelAnswerStatus.COMPLETED.value,
+        )
+        .values(confidence=evaluation["score"])
+    )
 
 
 class TurnOrchestrator:
@@ -197,6 +266,35 @@ class TurnOrchestrator:
         turn_id: str,
     ) -> bool:
         return await is_turn_deleted(db, turn_id)
+
+    async def _persist_answer_scores(
+        self,
+        db: AsyncSession,
+        turn_id: str,
+        answer_scores: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Persist optional Referee scores without poisoning verdict persistence."""
+        persisted: list[dict[str, Any]] = []
+        for evaluation in answer_scores:
+            try:
+                async with db.begin_nested():
+                    updated = await db.execute(
+                        _answer_score_update_statement(turn_id, evaluation)
+                    )
+                    if updated.rowcount != 1:
+                        raise RuntimeError("validated answer score did not update one row")
+                persisted.append(evaluation)
+            except (SQLAlchemyError, RuntimeError) as exc:
+                logger.error(
+                    "verdict_answer_score_persistence_failed",
+                    turn_id=turn_id,
+                    answer_id=evaluation["answer_id"],
+                    score=evaluation["score"],
+                    operation="update_model_answer_confidence",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+        return persisted
 
     async def run(
         self,
@@ -358,7 +456,7 @@ class TurnOrchestrator:
                 )
                 .values(
                     text=response.text,
-                    confidence=response.confidence or 85,
+                    confidence=None,
                     tokens_input=response.tokens_input,
                     tokens_output=response.tokens_output,
                     cost_usd=stored_cost,
@@ -399,7 +497,7 @@ class TurnOrchestrator:
                     "model_id": call_result.model_id,
                     "model_name": call_result.model_name,
                     "text": response.text,
-                    "confidence": response.confidence or 85,
+                    "confidence": None,
                     "tokens_input": response.tokens_input,
                     "tokens_output": response.tokens_output,
                     "cost_usd": reported_cost,
@@ -446,10 +544,10 @@ class TurnOrchestrator:
             model = get_model(model_id)
             answer_context.append(
                 {
+                    "answer_id": str(row.id),
                     "model_id": model_id,
                     "model_name": model.name,
                     "text": row.text or "",
-                    "confidence": row.confidence or 0,
                     "failed": row.status != ModelAnswerStatus.COMPLETED,
                     "error_message": row.error_message,
                 }
@@ -538,13 +636,25 @@ class TurnOrchestrator:
                 raise last_error or RuntimeError("Verdict model returned no response")
 
             await self._ensure_not_deleted(db, ctx.turn_id)
-            verdict_text, verdict_reason = _verdict_fields(provider, verdict_response.text)
+            verdict_text, verdict_reason, parsed_verdict = _verdict_fields(
+                provider, verdict_response.text
+            )
             if not verdict_text:
                 raise ValueError("Verdict model returned an empty response")
+
+            answer_scores = _validated_answer_scores(
+                parsed_verdict,
+                list(answer_rows.values()),
+            )
 
             failed_count = sum(1 for a in answer_context if a["failed"])
             final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
             await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+            persisted_answer_scores = await self._persist_answer_scores(
+                db,
+                ctx.turn_id,
+                answer_scores,
+            )
             reported_verdict_cost = verdict_response.cost_usd
             stored_verdict_cost = (
                 float(reported_verdict_cost) if reported_verdict_cost is not None else 0.0
@@ -598,6 +708,7 @@ class TurnOrchestrator:
                     "strategy": ctx.strategy.value,
                     "text": verdict_row.text,
                     "reason": verdict_row.reason,
+                    "answer_scores": persisted_answer_scores,
                     "tokens_input": verdict_row.tokens_input,
                     "tokens_output": verdict_row.tokens_output,
                     "cost_usd": reported_verdict_cost,
@@ -609,11 +720,20 @@ class TurnOrchestrator:
             await rollback_quietly()
             return result
         except Exception as exc:
-            if await is_turn_deleted(db, ctx.turn_id):
-                await rollback_quietly()
-                return result
             message = format_llm_error(exc)
-            logger.error("verdict_failed", error=message)
+            logger.error(
+                "verdict_failed",
+                turn_id=ctx.turn_id,
+                operation="persist_verdict",
+                error_type=type(exc).__name__,
+                error=message,
+            )
+            # PostgreSQL leaves the transaction unusable after a statement
+            # failure. Roll back before issuing deletion or status queries so
+            # the original error is not masked by InFailedSQLTransactionError.
+            await rollback_quietly()
+            if await is_turn_deleted(db, ctx.turn_id):
+                return result
             try:
                 await self._lock_active_turn_for_persistence(db, ctx.turn_id)
             except TurnNoLongerWritable:

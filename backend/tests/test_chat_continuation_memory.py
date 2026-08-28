@@ -556,6 +556,7 @@ async def test_prompts_receive_rolling_memory_and_recent_history():
         user_message="What next?",
         model_answers=[
             {
+                "answer_id": "answer-gpt",
                 "model_id": "gpt-4.1",
                 "model_name": "GPT",
                 "vendor": "OpenAI",
