@@ -23,37 +23,41 @@ import { ScrapingDreamSky } from "@/components/scraping/ScrapingDreamSky";
 import { ChatSidebarContent } from "@/components/sidebar/ChatSidebarContent";
 import { ScrapingSidebarContent } from "@/components/sidebar/ScrapingSidebarContent";
 import { useAuth } from "@/lib/auth";
-import { getTenantRoutes } from "@/lib/pathUtils";
 import { cn } from "@/lib/utils";
+
+const NAV = [
+  { to: "/model-sets", label: "Model Sets", icon: LayoutGrid },
+  { to: "/projects", label: "Projects", icon: FolderKanban },
+  { to: "/brain", label: "Brain", icon: Brain },
+  { to: "/playbooks", label: "My Playbooks", icon: NotebookTabs },
+  { to: "/lessons", label: "Lessons", icon: BookOpen },
+  { to: "/saved-documents", label: "Saved Documents", icon: FileText },
+  { to: "/saved-prompts", label: "Saved Prompts", icon: MessageSquareText },
+  { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
+  { to: "/library", label: "Library", icon: Library },
+];
+
+const ALL_WORKSPACES = [
+  { to: "/chat", label: "Chat Council", icon: MessageSquare },
+  { to: "/maps", label: "Maps Census", icon: MapIcon },
+];
+
+// Orgs that don't get the Maps Census workspace. Every org shares one route
+// tree and the same feature set otherwise; data is isolated by org_id.
+const ORGS_WITHOUT_MAPS = new Set(["datacenter"]);
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const path = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
-  const { session, signOut, orgPath } = useAuth();
+  const { session, signOut } = useAuth();
   const initials = session?.user.full_name?.slice(0, 1).toUpperCase() ?? "?";
 
-  // Build dynamic nav based on org path
-  const routes = useMemo(() => getTenantRoutes(orgPath || ""), [orgPath]);
-
-  const NAV = useMemo(
-    () => [
-      { to: routes.modelSets, label: "Model Sets", icon: LayoutGrid },
-      { to: routes.projects, label: "Projects", icon: FolderKanban },
-      { to: routes.brain, label: "Brain", icon: Brain },
-      { to: routes.playbooks, label: "My Playbooks", icon: NotebookTabs },
-      { to: routes.lessons, label: "Lessons", icon: BookOpen },
-      { to: routes.savedDocuments, label: "Saved Documents", icon: FileText },
-      { to: routes.savedPrompts, label: "Saved Prompts", icon: MessageSquareText },
-      { to: routes.savedVerdicts, label: "Saved Verdicts", icon: Bookmark },
-      { to: routes.library, label: "Library", icon: Library },
-    ],
-    [routes],
-  );
-
+  const orgSlug = session?.organization.slug ?? "";
+  const showMaps = !ORGS_WITHOUT_MAPS.has(orgSlug);
   const WORKSPACES = useMemo(
-    () => [{ to: routes.chat, label: "Chat Council", icon: MessageSquare }],
-    [routes],
+    () => (showMaps ? ALL_WORKSPACES : ALL_WORKSPACES.filter((w) => w.to !== "/maps")),
+    [showMaps],
   );
 
   const isScraping = path.startsWith("/scraping");
