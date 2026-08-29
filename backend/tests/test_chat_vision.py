@@ -353,12 +353,12 @@ async def test_council_receives_image_context_not_raw_images(monkeypatch):
         verdict_model_id="gpt-4.1",
         strategy=Strategy.SYNTHESIZE,
         model_set_name="mixed",
-        custom_instructions=merge_image_context_into_instructions(None, SAMPLE_CONTEXT),
+        council_runtime_context=merge_image_context_into_instructions(None, SAMPLE_CONTEXT),
         skip_answer_seed=True,
     )
     assert getattr(ctx, "vision_images", None) in (None, [])
-    assert "IMAGE CONTEXT" in (ctx.custom_instructions or "")
-    assert "red circle" in (ctx.custom_instructions or "").lower()
+    assert "IMAGE CONTEXT" in (ctx.council_runtime_context or "")
+    assert "red circle" in (ctx.council_runtime_context or "").lower()
 
 
 @pytest.mark.asyncio

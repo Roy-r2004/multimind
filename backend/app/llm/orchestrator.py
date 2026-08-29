@@ -62,7 +62,8 @@ class TurnContext:
     verdict_model_id: str
     strategy: Strategy
     model_set_name: str
-    custom_instructions: str | None = None
+    council_runtime_context: str | None = None
+    referee_instructions: str | None = None
     template_instructions: str | None = None
     user_brain_context: str | None = None
     rolling_chat_memory: str | None = None
@@ -381,8 +382,7 @@ class TurnOrchestrator:
                 model_name=model.name,
                 vendor=model.vendor,
                 model_set_name=ctx.model_set_name,
-                custom_instructions=ctx.custom_instructions,
-                template_instructions=ctx.template_instructions,
+                council_runtime_context=ctx.council_runtime_context,
                 user_brain_context=ctx.user_brain_context,
                 rolling_chat_memory=ctx.rolling_chat_memory,
                 recent_conversation_context=ctx.recent_conversation_context,
@@ -588,7 +588,8 @@ class TurnOrchestrator:
             strategy=ctx.strategy.value,
             user_message=ctx.user_message,
             model_answers=answer_context,
-            custom_instructions=ctx.custom_instructions,
+            referee_instructions=ctx.referee_instructions,
+            custom_instructions=ctx.referee_instructions,
             template_instructions=ctx.template_instructions,
             user_brain_context=ctx.user_brain_context,
             rolling_chat_memory=ctx.rolling_chat_memory,

@@ -61,7 +61,7 @@ SYSTEM_MODEL_SETS = [
         "verdict_model": "gpt-4.1",
         "strategy": Strategy.REFEREE,
         "best_for": "General questions, everyday use, authoritative synthesis",
-        "custom_instructions": REFEREE_CUSTOM_INSTRUCTIONS,
+        "custom_instructions": None,
     },
     {
         # Stable slug preserved from the locally created UI set (not a row UUID).
@@ -77,7 +77,7 @@ SYSTEM_MODEL_SETS = [
         "strategy": Strategy.REFEREE,
         "best_for": "Custom model set.",
         "template_name": "Chafiq Referee",
-        "custom_instructions": REFEREE_CUSTOM_INSTRUCTIONS,
+        "custom_instructions": None,
     },
     {
         "slug": "balanced",

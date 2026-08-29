@@ -9,11 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.db.base import Base
 from app.db.models import ModelSet, Organization, OrgMembership, OrgRole, Strategy, User
 from app.llm.catalog import model_id_to_slug
-from scripts.seed import (
-    REFEREE_CUSTOM_INSTRUCTIONS,
-    SYSTEM_MODEL_SETS,
-    ensure_system_model_sets,
-)
+from scripts.seed import SYSTEM_MODEL_SETS, ensure_system_model_sets
 
 ULTIMATE_SLUG = "set-7edaefc8"
 ULTIMATE_NAME = "Chafic ultimate model set"
@@ -69,7 +65,7 @@ async def test_seed_creates_exact_models_order_and_verdict(db: AsyncSession) -> 
     assert row.verdict_model == ULTIMATE_VERDICT
     assert row.strategy == Strategy.REFEREE
     assert row.template_name == "Chafiq Referee"
-    assert row.custom_instructions == REFEREE_CUSTOM_INSTRUCTIONS
+    assert row.custom_instructions is None
     assert row.description == "Custom model set."
     assert row.best_for == "Custom model set."
 
@@ -173,7 +169,7 @@ async def test_seed_still_updates_other_system_sets(db: AsyncSession) -> None:
     assert row.strategy == Strategy.REFEREE
     assert row.is_system is True
     assert row.org_id is None
-    assert row.custom_instructions == REFEREE_CUSTOM_INSTRUCTIONS
+    assert row.custom_instructions is None
 
 
 @pytest.mark.asyncio

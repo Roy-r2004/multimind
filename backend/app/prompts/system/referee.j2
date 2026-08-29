@@ -1,5 +1,10 @@
 {{ strict_referee_behavior }}
 
+{% if referee_instructions %}
+## Custom Verdict Instructions
+{{ referee_instructions }}
+{% endif %}
+
 ## Original User Question (orientation only)
 The question below identifies what the supplied AI agents were responding to. Do not answer it independently.
 

@@ -97,9 +97,8 @@ def test_strict_referee_receives_question_answers_metadata_and_json_protocol():
     assert "highest-scoring answer must not automatically become the verdict" in rendered
 
 
-def test_strict_referee_excludes_all_direct_non_council_context_and_legacy_rules():
+def test_strict_referee_includes_custom_verdict_instructions_but_excludes_runtime_context():
     excluded = (
-        "CHAFIC_LEGACY_CUSTOM_SENTINEL",
         "REFERENCE_HANDOFF_SENTINEL",
         "ATTACHMENT_EXCERPT_SENTINEL",
         "IMAGE_CONTEXT_SENTINEL",
@@ -112,12 +111,14 @@ def test_strict_referee_excludes_all_direct_non_council_context_and_legacy_rules
         strategy="Referee",
         user_message="ORIGINAL_QUESTION_SENTINEL",
         model_answers=_answers(),
-        custom_instructions="\n".join(excluded[:4]),
-        user_brain_context=excluded[4],
-        rolling_chat_memory=excluded[5],
-        recent_conversation_context=excluded[6],
-        playbook_context=excluded[7],
+        referee_instructions="CUSTOM_VERDICT_SENTINEL",
+        user_brain_context=excluded[3],
+        rolling_chat_memory=excluded[4],
+        recent_conversation_context=excluded[5],
+        playbook_context=excluded[6],
     )
+    assert "## Custom Verdict Instructions" in rendered
+    assert "CUSTOM_VERDICT_SENTINEL" in rendered
     for sentinel in excluded:
         assert sentinel not in rendered
     assert "Verdict AI (Chief Synthesizer)" not in rendered
@@ -128,7 +129,9 @@ def test_strict_referee_excludes_all_direct_non_council_context_and_legacy_rules
 
 def test_council_prompt_keeps_all_existing_context_sources():
     sentinels = {
-        "custom_instructions": "CHAFIC_REFERENCE_ATTACHMENT_IMAGE_SENTINEL",
+        "council_runtime_context": (
+            "ATTACHMENT_SENTINEL\nREFERENCE_SENTINEL\nREQUEST_RUNTIME_SENTINEL"
+        ),
         "user_brain_context": "BRAIN_CONTEXT_SENTINEL",
         "rolling_chat_memory": "ROLLING_MEMORY_SENTINEL",
         "recent_conversation_context": "RECENT_HISTORY_SENTINEL",
@@ -143,9 +146,33 @@ def test_council_prompt_keeps_all_existing_context_sources():
         **sentinels,
     )
     assert "Independent Expert Responder" in rendered
+    assert "## Runtime Context" in rendered
     assert "ORIGINAL_QUESTION_SENTINEL" in rendered
     for sentinel in sentinels.values():
         assert sentinel in rendered
+
+
+def test_custom_verdict_instructions_can_never_enter_council_prompt():
+    rendered = PromptEngine().model_answer_prompt(
+        user_message="ORIGINAL_QUESTION_SENTINEL",
+        model_id="gpt-4.1",
+        model_name="GPT-4.1",
+        vendor="OpenAI",
+        model_set_name="Council",
+        council_runtime_context="ATTACHMENT_SENTINEL\nREFERENCE_SENTINEL",
+    )
+    assert "CUSTOM_VERDICT_SENTINEL" not in rendered
+    assert "User / Organization Instructions" not in rendered
+
+
+def test_empty_referee_instructions_omit_custom_section():
+    rendered = PromptEngine().verdict_prompt(
+        strategy="Referee",
+        user_message="ORIGINAL_QUESTION_SENTINEL",
+        model_answers=_answers(),
+        referee_instructions=None,
+    )
+    assert "## Custom Verdict Instructions" not in rendered
 
 
 def test_non_referee_verdict_strategy_remains_on_existing_template():

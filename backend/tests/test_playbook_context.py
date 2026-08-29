@@ -214,7 +214,7 @@ def test_playbook_coexists_with_attachment_reference_and_history_context():
     prompt = engine.model_answer_prompt(
         user_message="What changed?", model_id="gpt-4.1", model_name="GPT",
         vendor="OpenAI", model_set_name="Council",
-        custom_instructions="ATTACHMENT CONTEXT: migrated to MySQL.\nREFERENCED CHAT: prior design.",
+        council_runtime_context="ATTACHMENT CONTEXT: migrated to MySQL.\nREFERENCED CHAT: prior design.",
         rolling_chat_memory="Older memory.", recent_conversation_context="Recent verdict.",
         playbook_context="## USER PLAYBOOK CONTEXT\nOlder PostgreSQL context.",
     )
