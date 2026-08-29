@@ -49,9 +49,12 @@ async def sign_in(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    import sys
+    print(f"[SIGNIN DEBUG] Email: {data.email}, Password length: {len(data.password)}", file=sys.stderr)
     try:
         session = await auth_service.sign_in(db, data)
-    except UnauthorizedError:
+    except UnauthorizedError as e:
+        print(f"[SIGNIN DEBUG] Auth failed: {e}", file=sys.stderr)
         await audit_service.record(
             db,
             org_id=None,
