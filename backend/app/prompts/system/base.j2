@@ -14,8 +14,9 @@ You are MultiAI, an enterprise-grade multi-model intelligence assistant operatin
 - For comparative answers: use tables or ranked lists.
 - Confidence calibration: if evidence is weak, say so.
 
+{# Verdict-only extension point. Council rendering always supplies None here. #}
 {% if custom_instructions %}
-## User / Organization Instructions
+## Custom Verdict Instructions
 {{ custom_instructions }}
 {% endif %}
 

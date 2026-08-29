@@ -657,13 +657,6 @@ class ChatService:
                     db, auth.org_id, superseded_pinned_verdict_ids
                 )
 
-            set_instructions = (model_set.custom_instructions or "").strip()
-            target_instructions = (target.custom_instructions or "").strip()
-            if target_instructions and target_instructions != set_instructions:
-                merged_instructions = target_instructions
-            else:
-                merged_instructions = set_instructions or None
-
             new_turn = Turn(
                 chat_id=locked_chat.id,
                 user_message=prompt,
@@ -671,7 +664,8 @@ class ChatService:
                 strategy=model_set.strategy,
                 verdict_model=model_set.verdict_model,
                 status=TurnStatus.PENDING,
-                custom_instructions=merged_instructions,
+                # Compatibility column: stores Council runtime context only.
+                custom_instructions=(target.custom_instructions or "").strip() or None,
                 decision_insurance_enabled=False,
             )
             db.add(new_turn)
@@ -800,7 +794,6 @@ class ChatService:
         instruction_parts = [
             part.strip()
             for part in (
-                model_set.custom_instructions,
                 reference_context,
                 data.custom_instructions,
                 attachment_instructions,
@@ -1145,7 +1138,8 @@ class ChatService:
             verdict_model_id=turn.verdict_model,
             strategy=turn.strategy,
             model_set_name=model_set.name,
-            custom_instructions=turn.custom_instructions,
+            council_runtime_context=turn.custom_instructions,
+            referee_instructions=model_set.custom_instructions,
             user_brain_context=user_brain_context or None,
             rolling_chat_memory=rolling_chat_memory,
             recent_conversation_context=recent_conversation_context,

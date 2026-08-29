@@ -400,12 +400,23 @@ export function ModelSetModal({
         <div>
           {strategy === "Referee" ? (
             <>
-              <div className="mb-1 font-medium">Referee Prompt</div>
+              <div className="mb-1 font-medium">Fixed Referee Prompt</div>
               <textarea
                 value={initial?.effectiveRefereePrompt ?? ""}
                 readOnly
                 rows={12}
                 className="w-full rounded-lg border border-border bg-muted px-3 py-2 text-sm"
+              />
+              <div className="mb-1 mt-3 font-medium">
+                Custom Verdict Instructions{" "}
+                <span className="font-normal text-muted-foreground">(Optional)</span>
+              </div>
+              <textarea
+                value={custom}
+                onChange={(e) => setCustom(e.target.value)}
+                rows={3}
+                placeholder="Example: Emphasize implementation risks and unresolved disagreements."
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
               />
             </>
           ) : (
