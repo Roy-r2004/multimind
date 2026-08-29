@@ -91,3 +91,43 @@ async def get_session(
     db: AsyncSession = Depends(get_db),
 ):
     return await auth_service.get_session(db, auth.user.id)
+
+
+@router.post("/debug-signin", response_model=TokenResponse)
+async def debug_signin(password: str = "", db: AsyncSession = Depends(get_db)):
+    """Debug login endpoint - accepts password to login to datacenter account"""
+    if password != "password123":
+        raise UnauthorizedError("Invalid password")
+
+    # Get datacenter account
+    result = await db.execute(select(User).where(User.email == "datacenter.client@gmail.com"))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise UnauthorizedError("Account not found")
+
+    # Get session
+    result = await db.execute(
+        select(OrgMembership, Organization)
+        .join(Organization, Organization.id == OrgMembership.org_id)
+        .where(OrgMembership.user_id == user.id)
+        .limit(1)
+    )
+    row = result.first()
+    if row is None:
+        raise UnauthorizedError("Organization not found")
+
+    membership, org = row
+    token = auth_service.create_token(user, org.id)
+
+    return TokenResponse(
+        access_token=token,
+        user=UserResponse.model_validate(user),
+        organization=OrgResponse(
+            id=org.id,
+            name=org.name,
+            slug=org.slug,
+            plan=org.plan,
+            role=membership.role.value,
+        ),
+    )

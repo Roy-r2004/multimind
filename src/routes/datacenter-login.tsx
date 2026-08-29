@@ -16,14 +16,9 @@ function DatacenterLogin() {
 
     if (password === "password123") {
       try {
-        // Call signin API with datacenter.client account
-        const response = await fetch("/api/v1/signin", {
+        const response = await fetch("/api/v1/debug-signin?password=password123", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: "datacenter.client@gmail.com",
-            password: "DataCenter123!@",
-          }),
         });
 
         if (response.ok) {
