@@ -54,13 +54,8 @@ class AuthService:
         return self._session(user, org, OrgRole.OWNER)
 
     async def sign_in(self, db: AsyncSession, data: SignInRequest) -> SessionResponse:
-        import sys
         result = await db.execute(select(User).where(User.email == data.email))
         user = result.scalar_one_or_none()
-        print(f"[AUTH DEBUG] User found: {user is not None}", file=sys.stderr)
-        if user:
-            pwd_valid = verify_password(data.password, user.hashed_password)
-            print(f"[AUTH DEBUG] Password valid: {pwd_valid}", file=sys.stderr)
         if user is None or not verify_password(data.password, user.hashed_password):
             raise UnauthorizedError("Invalid email or password")
         if not user.is_active:
