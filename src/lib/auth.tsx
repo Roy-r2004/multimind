@@ -15,10 +15,13 @@ import type { ApiSession } from "@/lib/api/types";
 
 const TOKEN_KEY = "multiai_token";
 const ORG_KEY = "multiai_org_id";
+const ORG_SLUG_KEY = "multiai_org_slug";
+const ORG_PATH_KEY = "multiai_org_path";
 
 type AuthState = {
   token: string | null;
   orgId: string | null;
+  orgPath: string | null;
   session: ApiSession | null;
   isLoading: boolean;
   isAuthenticated: boolean;
@@ -26,6 +29,7 @@ type AuthState = {
   signOut: () => void;
   refreshSession: () => Promise<void>;
   authHeaders: () => { token: string; orgId: string } | null;
+  getOrgPath: (path: string) => string;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -57,9 +61,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [orgId, setOrgId] = useState<string | null>(() =>
     resolveOrgId(readStorage(ORG_KEY), readStorage(TOKEN_KEY)),
   );
+  const [orgSlug, setOrgSlug] = useState<string | null>(() => readStorage(ORG_SLUG_KEY));
+  const [orgPath, setOrgPath] = useState<string | null>(() => readStorage(ORG_PATH_KEY));
   const [session, setSession] = useState<ApiSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const refreshGenRef = useRef(0);
+
+  // Determine path based on org slug (e.g., "datacenter" → "/datacenter")
+  const getOrgPath = (slug: string): string => {
+    return slug === "multiai" || slug === "default" ? "" : `/${slug}`;
+  };
 
   const authHeaders = useCallback((): { token: string; orgId: string } | null => {
     if (!token) return null;
@@ -81,9 +92,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const s = await api.auth.session(auth);
       if (gen !== refreshGenRef.current) return;
+      const slug = s.organization.slug;
+      const path = getOrgPath(slug);
       setSession(s);
       setOrgId(s.organization.id);
+      setOrgSlug(slug);
+      setOrgPath(path);
       localStorage.setItem(ORG_KEY, s.organization.id);
+      localStorage.setItem(ORG_SLUG_KEY, slug);
+      localStorage.setItem(ORG_PATH_KEY, path);
     } catch {
       if (gen !== refreshGenRef.current) return;
       setToken(null);
@@ -118,12 +135,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
     }
 
+    const slug = sessionData.organization.slug;
+    const path = getOrgPath(slug);
+
     setToken(result.access_token);
     setOrgId(sessionData.organization.id);
+    setOrgSlug(slug);
+    setOrgPath(path);
     setSession(sessionData);
     setIsLoading(false);
     localStorage.setItem(TOKEN_KEY, result.access_token);
     localStorage.setItem(ORG_KEY, sessionData.organization.id);
+    localStorage.setItem(ORG_SLUG_KEY, slug);
+    localStorage.setItem(ORG_PATH_KEY, path);
     return sessionData;
   }, [orgId]);
 
@@ -131,15 +155,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refreshGenRef.current += 1;
     setToken(null);
     setOrgId(null);
+    setOrgSlug(null);
+    setOrgPath(null);
     setSession(null);
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(ORG_KEY);
+    localStorage.removeItem(ORG_SLUG_KEY);
+    localStorage.removeItem(ORG_PATH_KEY);
   }, []);
 
   const value = useMemo<AuthState>(
     () => ({
       token,
       orgId,
+      orgPath,
       session,
       isLoading,
       isAuthenticated: Boolean(token && session),
@@ -147,8 +176,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOut,
       refreshSession,
       authHeaders,
+      getOrgPath,
     }),
-    [token, orgId, session, isLoading, signIn, signOut, refreshSession, authHeaders],
+    [token, orgId, orgPath, session, isLoading, signIn, signOut, refreshSession, authHeaders, getOrgPath],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

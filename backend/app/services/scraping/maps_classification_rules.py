@@ -81,7 +81,7 @@ def apply_deterministic_classification(place: Any) -> DeterministicClassificatio
         return None
     types = " ".join(getattr(place, "place_types", None) or []).casefold()
 
-    if _PUBLIC_NAME.search(name) or "hospital" in types and "government" in types:
+    if (_PUBLIC_NAME.search(name) or "hospital" in types and "government" in types) and not _ADDICTION_SIGNAL.search(name):
         return DeterministicClassification(
             lifecycle_status=MapsLifecycleStatus.CONFIRMED_PUBLIC.value,
             client_eligibility=MapsClientEligibility.EXCLUDED.value,

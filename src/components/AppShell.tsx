@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, useMemo } from "react";
 import {
   BookOpen,
   Brain,
@@ -23,33 +23,41 @@ import { ScrapingDreamSky } from "@/components/scraping/ScrapingDreamSky";
 import { ChatSidebarContent } from "@/components/sidebar/ChatSidebarContent";
 import { ScrapingSidebarContent } from "@/components/sidebar/ScrapingSidebarContent";
 import { useAuth } from "@/lib/auth";
+import { getTenantRoutes } from "@/lib/pathUtils";
 import { cn } from "@/lib/utils";
-
-const NAV = [
-  { to: "/model-sets", label: "Model Sets", icon: LayoutGrid },
-  { to: "/projects", label: "Projects", icon: FolderKanban },
-  { to: "/brain", label: "Brain", icon: Brain },
-  { to: "/playbooks", label: "My Playbooks", icon: NotebookTabs },
-  { to: "/lessons", label: "Lessons", icon: BookOpen },
-  { to: "/saved-documents", label: "Saved Documents", icon: FileText },
-  { to: "/saved-prompts", label: "Saved Prompts", icon: MessageSquareText },
-  { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
-  { to: "/library", label: "Library", icon: Library },
-];
-
-const WORKSPACES = [
-  { to: "/chat", label: "Chat Council", icon: MessageSquare },
-  { to: "/maps", label: "Maps Census", icon: MapIcon },
-];
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const path = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
-  const { session, signOut } = useAuth();
+  const { session, signOut, orgPath } = useAuth();
+  const initials = session?.user.full_name?.slice(0, 1).toUpperCase() ?? "?";
+
+  // Build dynamic nav based on org path
+  const routes = useMemo(() => getTenantRoutes(orgPath || ""), [orgPath]);
+
+  const NAV = useMemo(
+    () => [
+      { to: routes.modelSets, label: "Model Sets", icon: LayoutGrid },
+      { to: routes.projects, label: "Projects", icon: FolderKanban },
+      { to: routes.brain, label: "Brain", icon: Brain },
+      { to: routes.playbooks, label: "My Playbooks", icon: NotebookTabs },
+      { to: routes.lessons, label: "Lessons", icon: BookOpen },
+      { to: routes.savedDocuments, label: "Saved Documents", icon: FileText },
+      { to: routes.savedPrompts, label: "Saved Prompts", icon: MessageSquareText },
+      { to: routes.savedVerdicts, label: "Saved Verdicts", icon: Bookmark },
+      { to: routes.library, label: "Library", icon: Library },
+    ],
+    [routes],
+  );
+
+  const WORKSPACES = useMemo(
+    () => [{ to: routes.chat, label: "Chat Council", icon: MessageSquare }],
+    [routes],
+  );
+
   const isScraping = path.startsWith("/scraping");
   const isMaps = path.startsWith("/maps");
-  const initials = session?.user.full_name?.slice(0, 1).toUpperCase() ?? "?";
 
   function closeSidebar() {
     setOpen(false);
