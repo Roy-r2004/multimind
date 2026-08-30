@@ -257,7 +257,7 @@ async def test_turn_eleven_expires_oldest_into_window_slide(memory_env):
 
 
 @pytest.mark.asyncio
-async def test_deleted_challenge_and_verdictless_turns_excluded(memory_env):
+async def test_single_answer_history_included_but_broken_verdictless_turns_excluded(memory_env):
     base = datetime(2026, 4, 1, tzinfo=UTC)
     async with memory_env.Session() as db:
         keep = await _add_completed_turn(
@@ -277,19 +277,35 @@ async def test_deleted_challenge_and_verdictless_turns_excluded(memory_env):
             created_at=base + timedelta(minutes=2),
             error_message=CHALLENGE_TURN_MARKER,
         )
-        await _add_completed_turn(
+        single = await _add_completed_turn(
             db,
             chat_id=memory_env.chat_id,
             index=4,
             created_at=base + timedelta(minutes=3),
             with_verdict=False,
-            status=TurnStatus.FAILED,
+            status=TurnStatus.COMPLETED,
         )
-        current = await _add_completed_turn(
+        broken_multi = await _add_completed_turn(
             db,
             chat_id=memory_env.chat_id,
             index=5,
             created_at=base + timedelta(minutes=4),
+            with_verdict=False,
+            status=TurnStatus.COMPLETED,
+        )
+        db.add(
+            ModelAnswer(
+                turn_id=broken_multi.id,
+                model_id="claude",
+                text="A second answer without a verdict",
+                status=ModelAnswerStatus.COMPLETED,
+            )
+        )
+        current = await _add_completed_turn(
+            db,
+            chat_id=memory_env.chat_id,
+            index=6,
+            created_at=base + timedelta(minutes=5),
             status=TurnStatus.PENDING,
             with_verdict=False,
             council_text=None,
@@ -302,13 +318,14 @@ async def test_deleted_challenge_and_verdictless_turns_excluded(memory_env):
             db, memory_env.chat_id, current.id, current.created_at
         )
 
-    assert [e.turn_id for e in entries] == [keep.id]
+    assert [e.turn_id for e in entries] == [keep.id, single.id]
     assert context is not None
     assert "Prompt 1" in context
     assert "Prompt 2" not in context
     assert "Prompt 3" not in context
-    assert "Prompt 4" not in context
-    assert "SECRET_COUNCIL_ANSWER" not in (context or "")
+    assert "Prompt 4" in context
+    assert "Assistant answer:\nSECRET_COUNCIL_ANSWER_4" in context
+    assert "Prompt 5" not in context
 
 
 @pytest.mark.asyncio
@@ -402,6 +419,7 @@ async def test_rolling_memory_merges_expired_once_and_is_idempotent(memory_env, 
                 chat_id=memory_env.chat_id,
                 index=i,
                 created_at=base + timedelta(minutes=i),
+                with_verdict=i != 1,
             )
         await db.commit()
 
@@ -436,9 +454,8 @@ async def test_rolling_memory_merges_expired_once_and_is_idempotent(memory_env, 
     assert chat.rolling_memory_through_turn_id == through_1
     assert chat.rolling_memory_updated_at is not None
     assert len(costs) == 1
-    assert "SECRET_COUNCIL" not in calls[0]
     assert "Prompt 1" in calls[0]
-    assert "Verdict 1" in calls[0]
+    assert "SECRET_COUNCIL_ANSWER_1" in calls[0]
 
 
 @pytest.mark.asyncio

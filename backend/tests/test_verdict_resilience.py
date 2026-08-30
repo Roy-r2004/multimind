@@ -21,6 +21,7 @@ from app.core.dependencies import AuthContext
 from app.db.base import Base
 from app.db.models import (
     Chat,
+    CostRecord,
     ModelAnswer,
     ModelAnswerStatus,
     OrgMembership,
@@ -29,6 +30,7 @@ from app.db.models import (
     Strategy,
     Turn,
     TurnStatus,
+    UsageKind,
     User,
     Verdict,
 )
@@ -51,6 +53,7 @@ class ScriptedProvider:
     def __init__(self, verdict_script: list[object]) -> None:
         self._verdict_script = list(verdict_script)
         self.verdict_calls = 0
+        self.answer_calls = 0
 
     async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096, **_kwargs):
         if user == VERDICT_USER_PROMPT:
@@ -65,6 +68,7 @@ class ScriptedProvider:
             if callable(step):
                 step = step(system)
             return LLMResponse(text=step, tokens_input=10, tokens_output=5)
+        self.answer_calls += 1
         return LLMResponse(
             text=f"Answer from {model}", tokens_input=10, tokens_output=5, confidence=90
         )
@@ -121,7 +125,13 @@ async def env(tmp_path):
         await engine.dispose()
 
 
-async def _run(Session, ids, provider: ScriptedProvider, events: list | None = None):
+async def _run(
+    Session,
+    ids,
+    provider: ScriptedProvider,
+    events: list | None = None,
+    model_ids: list[str] | None = None,
+):
     org_id, _user_id, chat_id, turn_id = ids
     orchestrator = TurnOrchestrator()
     orchestrator._providers = ScriptedRegistry(provider)
@@ -138,7 +148,7 @@ async def _run(Session, ids, provider: ScriptedProvider, events: list | None = N
                 org_id=org_id,
                 project_id=None,
                 user_message="Should we ship it?",
-                model_ids=["gpt-4.1", "claude"],
+                model_ids=model_ids or ["gpt-4.1", "claude"],
                 verdict_model_id="gemini",
                 strategy=Strategy.SYNTHESIZE,
                 model_set_name="Test Set",
@@ -157,6 +167,126 @@ async def _run(Session, ids, provider: ScriptedProvider, events: list | None = N
             .all()
         )
         return turn, verdict, answers
+
+
+@pytest.mark.asyncio
+async def test_single_model_completes_without_referee_verdict_or_verdict_cost(env):
+    Session, ids, _auth = env
+    events: list[tuple[str, dict]] = []
+    provider = ScriptedProvider([])
+
+    turn, verdict, answers = await _run(
+        Session,
+        ids,
+        provider,
+        events,
+        model_ids=["gpt-4.1"],
+    )
+
+    assert provider.answer_calls == 1
+    assert provider.verdict_calls == 0
+    assert turn.status == TurnStatus.COMPLETED
+    assert len(answers) == 1
+    assert answers[0].status == ModelAnswerStatus.COMPLETED
+    assert verdict is None
+    assert "verdict_started" not in [event for event, _ in events]
+    assert "verdict_completed" not in [event for event, _ in events]
+    assert [event for event, _ in events].count("turn_completed") == 1
+
+    async with Session() as db:
+        verdict_costs = (
+            await db.execute(
+                select(CostRecord).where(
+                    CostRecord.turn_id == ids[3],
+                    CostRecord.kind == UsageKind.VERDICT,
+                )
+            )
+        ).scalars().all()
+    assert verdict_costs == []
+
+
+@pytest.mark.asyncio
+async def test_multi_model_still_calls_referee_and_persists_verdict_cost(env):
+    Session, ids, _auth = env
+    provider = ScriptedProvider(['{"text":"Use the plan","reason":"Agreement."}'])
+
+    turn, verdict, answers = await _run(Session, ids, provider)
+
+    assert provider.answer_calls == 2
+    assert provider.verdict_calls == 1
+    assert turn.status == TurnStatus.COMPLETED
+    assert len(answers) == 2
+    assert verdict is not None
+    async with Session() as db:
+        verdict_costs = (
+            await db.execute(
+                select(CostRecord).where(
+                    CostRecord.turn_id == ids[3],
+                    CostRecord.kind == UsageKind.VERDICT,
+                )
+            )
+        ).scalars().all()
+    assert len(verdict_costs) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_chat_can_switch_single_multi_single_without_rewriting_turns(env):
+    Session, ids, _auth = env
+    org_id, user_id, chat_id, first_turn_id = ids
+    first_provider = ScriptedProvider([])
+    first, first_verdict, _ = await _run(
+        Session, ids, first_provider, model_ids=["gpt-4.1"]
+    )
+
+    async def add_pending(message: str) -> str:
+        async with Session() as db:
+            turn = Turn(
+                chat_id=chat_id,
+                user_message=message,
+                status=TurnStatus.PENDING,
+                strategy=Strategy.SYNTHESIZE,
+                model_set_id="test-set",
+                verdict_model="gemini",
+            )
+            db.add(turn)
+            await db.commit()
+            return turn.id
+
+    second_turn_id = await add_pending("Compare options")
+    second_provider = ScriptedProvider(['{"text":"Choose B","reason":"Stronger."}'])
+    second, second_verdict, _ = await _run(
+        Session,
+        (org_id, user_id, chat_id, second_turn_id),
+        second_provider,
+        model_ids=["gpt-4.1", "claude"],
+    )
+
+    third_turn_id = await add_pending("Follow up")
+    third_provider = ScriptedProvider([])
+    third, third_verdict, _ = await _run(
+        Session,
+        (org_id, user_id, chat_id, third_turn_id),
+        third_provider,
+        model_ids=["claude"],
+    )
+
+    assert [first.status, second.status, third.status] == [
+        TurnStatus.COMPLETED,
+        TurnStatus.COMPLETED,
+        TurnStatus.COMPLETED,
+    ]
+    assert [first_verdict is not None, second_verdict is not None, third_verdict is not None] == [
+        False,
+        True,
+        False,
+    ]
+    async with Session() as db:
+        persisted_first = await db.get(Turn, first_turn_id)
+        persisted_first_verdict = await db.scalar(
+            select(Verdict).where(Verdict.turn_id == first_turn_id)
+        )
+    assert persisted_first.status == TurnStatus.COMPLETED
+    assert persisted_first_verdict is None
 
 
 # --- lenient parser units -------------------------------------------------

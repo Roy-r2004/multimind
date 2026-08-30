@@ -181,6 +181,41 @@ async def test_owner_can_regenerate_and_reuse_model_set(db_setup):
 
 
 @pytest.mark.asyncio
+async def test_regenerate_one_model_set_seeds_one_answer_for_common_orchestrator(db_setup):
+    Session = db_setup.Session
+    original = await _complete_turn(Session, chat_id=db_setup.chat_id, user_message="Original")
+    async with Session() as db:
+        model_set = await db.scalar(select(ModelSet).where(ModelSet.slug == "regen-set"))
+        model_set.models = ["gpt-4.1"]
+        await db.commit()
+
+    async with Session() as db:
+        result = await chat_service.regenerate_turn(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            original.id,
+            TurnRegenerateRequest(prompt="Single-model retry"),
+        )
+
+    async with Session() as db:
+        answers = list(
+            (
+                await db.execute(
+                    select(ModelAnswer).where(ModelAnswer.turn_id == result.new_turn.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        verdict = await db.scalar(
+            select(Verdict).where(Verdict.turn_id == result.new_turn.id)
+        )
+    assert [answer.model_id for answer in answers] == ["gpt-4.1"]
+    assert verdict is None
+
+
+@pytest.mark.asyncio
 async def test_later_turns_are_superseded(db_setup):
     Session = db_setup.Session
     base = datetime.now(UTC)

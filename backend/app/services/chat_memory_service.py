@@ -7,9 +7,17 @@ from typing import NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
-from app.db.models import Chat, CostRecord, Turn, UsageKind, Verdict
+from app.db.models import (
+    Chat,
+    CostRecord,
+    ModelAnswerStatus,
+    Turn,
+    TurnStatus,
+    UsageKind,
+)
 from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
@@ -38,16 +46,26 @@ class TurnHistoryEntry(NamedTuple):
     verdict_text: str
     verdict_reason: str | None
     created_at: datetime | None
+    is_verdict: bool = True
+
+
+class TurnAssistantResult(NamedTuple):
+    text: str
+    reason: str | None
+    is_verdict: bool
 
 
 def format_turn_history_block(
     user_message: str,
     verdict_text: str,
     verdict_reason: str | None = None,
+    *,
+    is_verdict: bool = True,
 ) -> str:
+    result_label = "Final verdict" if is_verdict else "Assistant answer"
     parts = [
         f"User question:\n{(user_message or '').strip()}",
-        f"Final verdict:\n{(verdict_text or '').strip()}",
+        f"{result_label}:\n{(verdict_text or '').strip()}",
     ]
     reason = (verdict_reason or "").strip()
     if reason:
@@ -93,7 +111,12 @@ def format_recent_conversation_context(
     max_chars: int = RECENT_HISTORY_MAX_CHARS,
 ) -> str | None:
     blocks = [
-        format_turn_history_block(e.user_message, e.verdict_text, e.verdict_reason)
+        format_turn_history_block(
+            e.user_message,
+            e.verdict_text,
+            e.verdict_reason,
+            is_verdict=e.is_verdict,
+        )
         for e in entries_oldest_first
     ]
     text = select_recent_history_under_budget(blocks, max_chars=max_chars)
@@ -150,7 +173,12 @@ def build_continuation_handoff_text(
     recent_budget = remaining() - 2  # account for upcoming \n\n
     if recent_budget > 64 and recent_entries_oldest_first:
         blocks = [
-            format_turn_history_block(e.user_message, e.verdict_text, e.verdict_reason)
+            format_turn_history_block(
+                e.user_message,
+                e.verdict_text,
+                e.verdict_reason,
+                is_verdict=e.is_verdict,
+            )
             for e in recent_entries_oldest_first
         ]
         recent_text = select_recent_history_under_budget(blocks, max_chars=recent_budget)
@@ -204,7 +232,7 @@ def eligible_prior_turn_filters(
     current_turn_id: str,
     current_turn_created_at: datetime | None,
 ):
-    """Shared SQLAlchemy filter clauses for prior completed turns with verdicts."""
+    """Shared SQLAlchemy filters for prior candidate conversation turns."""
     filters = [
         Turn.chat_id == chat_id,
         Turn.id != current_turn_id,
@@ -217,6 +245,26 @@ def eligible_prior_turn_filters(
 
 
 class ChatMemoryService:
+    @staticmethod
+    def _assistant_result(turn: Turn) -> TurnAssistantResult | None:
+        """Resolve an intentional final assistant output without fabricating a verdict."""
+        if turn.status not in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
+            return None
+        if turn.verdict is not None and (turn.verdict.text or "").strip():
+            return TurnAssistantResult(
+                text=turn.verdict.text,
+                reason=(turn.verdict.reason or "").strip() or None,
+                is_verdict=True,
+            )
+        answers = list(turn.model_answers or [])
+        if len(answers) != 1:
+            return None
+        answer = answers[0]
+        text = (answer.text or "").strip()
+        if answer.status != ModelAnswerStatus.COMPLETED or not text:
+            return None
+        return TurnAssistantResult(text=text, reason=None, is_verdict=False)
+
     async def load_recent_history_entries(
         self,
         db: AsyncSession,
@@ -228,24 +276,29 @@ class ChatMemoryService:
     ) -> list[TurnHistoryEntry]:
         filters = eligible_prior_turn_filters(chat_id, current_turn_id, current_turn_created_at)
         result = await db.execute(
-            select(Turn, Verdict)
-            .join(Verdict, Verdict.turn_id == Turn.id)
+            select(Turn)
             .where(*filters)
+            .options(selectinload(Turn.verdict), selectinload(Turn.model_answers))
             .order_by(Turn.created_at.desc())
-            .limit(limit)
         )
-        rows = list(result.all())
+        rows: list[tuple[Turn, TurnAssistantResult]] = []
+        for turn in result.scalars().all():
+            assistant_result = self._assistant_result(turn)
+            if assistant_result is not None:
+                rows.append((turn, assistant_result))
+            if len(rows) >= limit:
+                break
         rows.reverse()  # chronological oldest → newest
         entries: list[TurnHistoryEntry] = []
-        for turn, verdict in rows:
-            reason = (verdict.reason or "").strip() or None
+        for turn, assistant_result in rows:
             entries.append(
                 TurnHistoryEntry(
                     turn_id=turn.id,
                     user_message=turn.user_message,
-                    verdict_text=verdict.text,
-                    verdict_reason=reason,
+                    verdict_text=assistant_result.text,
+                    verdict_reason=assistant_result.reason,
                     created_at=turn.created_at,
+                    is_verdict=assistant_result.is_verdict,
                 )
             )
         return entries
@@ -280,26 +333,31 @@ class ChatMemoryService:
 
     async def list_eligible_turns_oldest_first(
         self, db: AsyncSession, chat_id: str
-    ) -> list[tuple[Turn, Verdict]]:
+    ) -> list[tuple[Turn, TurnAssistantResult]]:
         result = await db.execute(
-            select(Turn, Verdict)
-            .join(Verdict, Verdict.turn_id == Turn.id)
+            select(Turn)
             .where(
                 Turn.chat_id == chat_id,
                 Turn.deleted_at.is_(None),
                 (Turn.error_message.is_(None)) | (Turn.error_message != CHALLENGE_TURN_MARKER),
             )
+            .options(selectinload(Turn.verdict), selectinload(Turn.model_answers))
             .order_by(Turn.created_at.asc())
         )
-        return list(result.all())
+        eligible: list[tuple[Turn, TurnAssistantResult]] = []
+        for turn in result.scalars().all():
+            assistant_result = self._assistant_result(turn)
+            if assistant_result is not None:
+                eligible.append((turn, assistant_result))
+        return eligible
 
     def newly_expired_turns(
         self,
-        eligible_oldest_first: list[tuple[Turn, Verdict]],
+        eligible_oldest_first: list[tuple[Turn, TurnAssistantResult]],
         *,
         through_turn_id: str | None,
         recent_window: int = RECENT_HISTORY_MAX_TURNS,
-    ) -> list[tuple[Turn, Verdict]]:
+    ) -> list[tuple[Turn, TurnAssistantResult]]:
         if len(eligible_oldest_first) <= recent_window:
             return []
         expired = eligible_oldest_first[:-recent_window]
@@ -338,12 +396,12 @@ class ChatMemoryService:
             return 0
 
         merged = 0
-        for turn, verdict in to_merge:
+        for turn, assistant_result in to_merge:
             await self._merge_one_turn(
                 db,
                 chat=chat,
                 turn=turn,
-                verdict=verdict,
+                assistant_result=assistant_result,
                 org_id=org_id,
                 project_id=project_id,
             )
@@ -356,7 +414,7 @@ class ChatMemoryService:
         *,
         chat: Chat,
         turn: Turn,
-        verdict: Verdict,
+        assistant_result: TurnAssistantResult,
         org_id: str,
         project_id: str | None,
     ) -> None:
@@ -367,8 +425,8 @@ class ChatMemoryService:
         system = get_prompt_engine().chat_memory_update_prompt(
             current_rolling_memory=(chat.rolling_memory or "").strip(),
             user_message=turn.user_message,
-            verdict_text=verdict.text,
-            verdict_reason=(verdict.reason or "").strip() or None,
+            verdict_text=assistant_result.text,
+            verdict_reason=assistant_result.reason,
         )
         model = get_model(DEFAULT_CHAT_MEMORY_MODEL)
         provider = get_provider_registry().get_provider(model.provider)
@@ -426,11 +484,12 @@ class ChatMemoryService:
             TurnHistoryEntry(
                 turn_id=turn.id,
                 user_message=turn.user_message,
-                verdict_text=verdict.text,
-                verdict_reason=(verdict.reason or "").strip() or None,
+                verdict_text=assistant_result.text,
+                verdict_reason=assistant_result.reason,
                 created_at=turn.created_at,
+                is_verdict=assistant_result.is_verdict,
             )
-            for turn, verdict in recent_pairs
+            for turn, assistant_result in recent_pairs
         ]
         handoff = build_continuation_handoff_text(
             source_title=source_chat.title,

@@ -575,6 +575,37 @@ class TurnOrchestrator:
             await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
             return result
 
+        # A one-member Council is a normal single-AI turn. Its persisted answer
+        # is final, so do not invoke or account for a Referee. This deliberately
+        # uses selected membership rather than the number of successful calls.
+        if len(ctx.model_ids) == 1:
+            failed_count = sum(1 for answer in answer_context if answer["failed"])
+            final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
+            try:
+                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+            except TurnNoLongerWritable:
+                await rollback_quietly()
+                return result
+            turn_updated = await db.execute(
+                update(Turn)
+                .where(Turn.id == ctx.turn_id)
+                .values(status=final_status, error_message=None)
+            )
+            if turn_updated.rowcount != 1:
+                await rollback_quietly()
+                return result
+            await db.commit()
+            try:
+                await self._ensure_not_deleted(db, ctx.turn_id)
+            except TurnNoLongerWritable:
+                await rollback_quietly()
+                return result
+            await emit(
+                "turn_completed",
+                {"turn_id": str(ctx.turn_id), "status": final_status.value},
+            )
+            return result
+
         # Phase 2: Verdict
         try:
             await self._ensure_not_deleted(db, ctx.turn_id)
