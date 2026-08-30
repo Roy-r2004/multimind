@@ -1,14 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import {
-  Loader2,
-  Heart,
-  ThumbsDown,
-  Zap,
-  Sparkles,
-  BookOpen,
-  Brain,
-} from "lucide-react";
+import { Loader2, Heart, ThumbsDown, Zap, Sparkles, BookOpen, Brain } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { BrainVisualization } from "@/components/cinematic/BrainVisualization";
 import { GlassCard } from "@/components/cinematic/PageChrome";
@@ -16,6 +8,7 @@ import { SkeletonReveal } from "@/components/cinematic/SkeletonReveal";
 import { api } from "@/lib/api";
 import type { ApiBrain } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
+import { brainProfilePresentation, COGNITIVE_BARS } from "@/lib/brainUi";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/brain")({
@@ -24,7 +17,7 @@ export const Route = createFileRoute("/brain")({
 });
 
 function BrainPage() {
-  const { authHeaders, session } = useAuth();
+  const { authHeaders } = useAuth();
   const [brain, setBrain] = useState<ApiBrain | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,14 +57,8 @@ function BrainPage() {
   }
 
   const knowledgeItems = brain.knowledge_items ?? [];
-  const knowledgeCount = brain.knowledge_count ?? knowledgeItems.length;
   const memoriesIndexed = brain.memories.length;
-  const styleTags = parseStyleTags(brain.thinking_style);
-  const quote =
-    brain.summary?.trim() || "I don't collect information. I refine what's useful.";
-  const bio = session?.user.full_name
-    ? "Systems thinker. Builder. Clarity over noise."
-    : "Personal memory. Structured intelligence.";
+  const profile = brainProfilePresentation(brain);
 
   return (
     <AppShell>
@@ -84,7 +71,7 @@ function BrainPage() {
             Your Third Brain
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Personal memory. Structured intelligence.
+            Knowledge and preferences learned from your MultiMind activity.
           </p>
         </div>
 
@@ -101,8 +88,8 @@ function BrainPage() {
               icon={<Sparkles className="size-4" />}
               tone="violet"
               label="Knowledge"
-              value={String(knowledgeCount)}
-              hint="Pinned sources & docs"
+              value={String(profile.knowledgeCount)}
+              hint="Indexed knowledge"
             />
             <StatCard
               icon={<Heart className="size-4" />}
@@ -134,18 +121,21 @@ function BrainPage() {
             <BrainVisualization
               name={brain.user_name}
               lessonCount={memoriesIndexed}
+              positiveChip={profile.positiveChip}
+              negativeChip={profile.negativeChip}
+              styleChip={profile.styleChip}
               className="max-w-lg"
             />
           </GlassCard>
 
           <GlassCard className="p-5">
-            <div className="flex items-center gap-3">
-              <span className="grid size-14 place-items-center rounded-full bg-primary/15 text-lg font-semibold text-primary">
+            <div className="flex items-start gap-3">
+              <span className="grid size-10 shrink-0 place-items-center rounded-full bg-primary/15 text-sm font-semibold text-primary">
                 {brain.user_name.slice(0, 1).toUpperCase()}
               </span>
               <div>
                 <div className="font-medium">{brain.user_name}</div>
-                <p className="text-xs text-muted-foreground">{bio}</p>
+                <p className="text-xs text-muted-foreground">{profile.description}</p>
               </div>
             </div>
 
@@ -158,13 +148,13 @@ function BrainPage() {
               ))}
             </div>
 
-            {styleTags.length > 0 && (
+            {profile.styleTags.length > 0 && (
               <>
                 <p className="mt-5 text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/80">
                   Thinking style
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {styleTags.map((tag) => (
+                  {profile.styleTags.map((tag) => (
                     <span
                       key={tag}
                       className="rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[11px]"
@@ -175,10 +165,6 @@ function BrainPage() {
                 </div>
               </>
             )}
-
-            <blockquote className="mt-5 rounded-xl border border-border bg-muted/30 px-3 py-3 text-sm italic text-muted-foreground">
-              “{quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}”
-            </blockquote>
           </GlassCard>
         </div>
 
@@ -286,32 +272,6 @@ function BrainPage() {
   );
 }
 
-const COGNITIVE_BARS = [
-  { label: "Reasoning Depth", value: 96 },
-  { label: "Pattern Recognition", value: 92 },
-  { label: "Strategic Foresight", value: 94 },
-  { label: "Structured Thinking", value: 91 },
-  { label: "Adaptability", value: 88 },
-];
-
-function parseStyleTags(style: string): string[] {
-  if (!style?.trim()) {
-    return [
-      "First Principles",
-      "Long-term",
-      "Framework Driven",
-      "Evidence-seeking",
-      "High Standards",
-    ];
-  }
-  const parts = style
-    .split(/[,;·|/]/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 2 && s.length < 40);
-  if (parts.length >= 2) return parts.slice(0, 6);
-  return ["First Principles", "Long-term", "Framework Driven", "Evidence-seeking"];
-}
-
 function ProgressRow({ label, value }: { label: string; value: number }) {
   return (
     <div>
@@ -320,10 +280,7 @@ function ProgressRow({ label, value }: { label: string; value: number }) {
         <span className="tabular-nums text-muted-foreground">{value}%</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full rounded-full bg-primary"
-          style={{ width: `${value}%` }}
-        />
+        <div className="h-full rounded-full bg-primary" style={{ width: `${value}%` }} />
       </div>
     </div>
   );
