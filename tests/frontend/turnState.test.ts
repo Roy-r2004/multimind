@@ -40,6 +40,34 @@ function apiTurn(overrides = {}) {
   };
 }
 
+test("completed single-answer turn with no verdict ends loading normally", () => {
+  const running = apiTurn({
+    model_answers: [
+      {
+        ...apiTurn().model_answers[0],
+        status: "running",
+        text: null,
+      },
+    ],
+  });
+  const completed = {
+    ...running,
+    status: "completed",
+    verdict: null,
+    model_answers: running.model_answers.map((answer) => ({
+      ...answer,
+      status: "completed",
+      text: "Final single-AI answer",
+    })),
+  };
+
+  const [updated] = upsertTurn([running], completed);
+  assert.equal(updated.status, "completed");
+  assert.equal(updated.verdict, null);
+  assert.equal(updated.model_answers[0].text, "Final single-AI answer");
+  assert.equal(isAnyTurnGenerating([updated]), false);
+});
+
 test("removeTurnFromList removes only the selected active turn", () => {
   const first = apiTurn({ id: "turn-1", user_message: "Before" });
   const active = apiTurn({ id: "turn-2", user_message: "Remove me" });
