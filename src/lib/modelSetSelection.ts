@@ -14,6 +14,17 @@ export type TurnModelSetRef = {
   created_at?: string;
 };
 
+export function modelSetRequestPayload(modelSetId: string): { model_set_id: string } {
+  return { model_set_id: modelSetId };
+}
+
+export function modelSetRegenerateRequestPayload(
+  prompt: string,
+  modelSetId: string,
+): { prompt: string; model_set_id: string } {
+  return { prompt, model_set_id: modelSetId };
+}
+
 /** Trim, collapse whitespace, and lowercase for exact title matching. */
 export function normalizeModelSetTitle(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
@@ -53,10 +64,7 @@ export function findDefaultModelSetId(sets: readonly ModelSetRef[]): string | nu
  * - Else prefer exact title {@link DEFAULT_MODEL_SET_TITLE}.
  * - Else legacy referee slug / name, then first set.
  */
-export function selectExistingModelSetId(
-  sets: readonly ModelSetRef[],
-  currentId: string,
-): string {
+export function selectExistingModelSetId(sets: readonly ModelSetRef[], currentId: string): string {
   if (currentId && sets.some((set) => set.id === currentId)) return currentId;
 
   const preferred = findDefaultModelSetId(sets);
@@ -72,9 +80,7 @@ export function selectExistingModelSetId(
  * Model set associated with a chat from its turns (newest by `created_at`).
  * Empty turns → null (caller keeps current / default selection).
  */
-export function resolveModelSetIdFromTurns(
-  turns: readonly TurnModelSetRef[],
-): string | null {
+export function resolveModelSetIdFromTurns(turns: readonly TurnModelSetRef[]): string | null {
   if (!turns.length) return null;
 
   const sorted = turns.slice().sort((a, b) => {
@@ -109,4 +115,35 @@ export function resolveNextModelSetId(options: {
   const fromTurns = resolveModelSetIdFromTurns(options.turns);
   if (fromTurns && available.has(fromTurns)) return fromTurns;
   return null;
+}
+
+/** A load may restore selection only when no newer explicit pick has occurred. */
+export function shouldApplyModelSetRestore(options: {
+  requestedChatId: string;
+  activeChatId: string | null;
+  selectionGenerationAtStart: number;
+  currentSelectionGeneration: number;
+}): boolean {
+  return (
+    options.requestedChatId === options.activeChatId &&
+    options.selectionGenerationAtStart === options.currentSelectionGeneration
+  );
+}
+
+export type ModelSetPersistenceQueues = Map<string, Promise<void>>;
+
+/** Serialize chat selection writes so an older request cannot persist after a newer one. */
+export function enqueueModelSetPersistence(
+  queues: ModelSetPersistenceQueues,
+  chatId: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  const previous = queues.get(chatId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  queues.set(chatId, current);
+  const cleanup = () => {
+    if (queues.get(chatId) === current) queues.delete(chatId);
+  };
+  void current.then(cleanup, cleanup);
+  return current;
 }

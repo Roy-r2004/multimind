@@ -114,7 +114,14 @@ import {
 import { canEditUserPrompt, countLaterTurns, LATER_TURNS_EDIT_WARNING } from "@/lib/promptEdit";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
-import { resolveModelSetIdFromTurns } from "@/lib/modelSetSelection";
+import {
+  enqueueModelSetPersistence,
+  modelSetRegenerateRequestPayload,
+  modelSetRequestPayload,
+  resolveNextModelSetId,
+  selectExistingModelSetId,
+  shouldApplyModelSetRestore,
+} from "@/lib/modelSetSelection";
 import { chatAnswerCardsClassName } from "@/lib/chatTurnLayout";
 import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
 import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
@@ -276,10 +283,27 @@ export function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const restoredChatIdFromUrlRef = useRef(false);
   const modelSetRestoredForChatRef = useRef<string | null>(null);
+  const turnsLoadedForChatRef = useRef<string | null>(null);
+  const modelSetSelectionGenerationRef = useRef(0);
+  const modelSetPersistenceQueuesRef = useRef(new Map<string, Promise<void>>());
+  const modelSetActivationRef = useRef({
+    chatId: activeChatId,
+    selectionGeneration: modelSetSelectionGenerationRef.current,
+  });
   const modelSetsRef = useRef(modelSets);
   const sendInFlightRef = useRef(false);
   modelSetsRef.current = modelSets;
   const activeChat = chats.find((c) => c.id === activeChatId);
+  const activeChatRef = useRef(activeChat);
+  activeChatRef.current = activeChat;
+  if (modelSetActivationRef.current.chatId !== activeChatId) {
+    modelSetActivationRef.current = {
+      chatId: activeChatId,
+      selectionGeneration: modelSetSelectionGenerationRef.current,
+    };
+    modelSetRestoredForChatRef.current = null;
+    turnsLoadedForChatRef.current = null;
+  }
   const draftStorageKey = `multimind:draft:${activeChatId ?? "new"}`;
   const pinnedVerdicts = activeChat?.pinnedVerdicts ?? [];
   const pinnedVerdictMenuItems = buildPinnedVerdictMenuItems(pinnedVerdicts, apiTurns);
@@ -462,6 +486,24 @@ export function ChatPage() {
   }
 
   useEffect(() => {
+    if (!activeChatId || !activeChat?.modelSetId || !modelSets.length) return;
+    const activation = modelSetActivationRef.current;
+    if (
+      !shouldApplyModelSetRestore({
+        requestedChatId: activeChatId,
+        activeChatId: activeChatIdRef.current,
+        selectionGenerationAtStart: activation.selectionGeneration,
+        currentSelectionGeneration: modelSetSelectionGenerationRef.current,
+      })
+    ) {
+      return;
+    }
+    if (!modelSets.some((item) => item.id === activeChat.modelSetId)) return;
+    modelSetRestoredForChatRef.current = activeChatId;
+    setActiveModelSetId(activeChat.modelSetId);
+  }, [activeChatId, activeChat?.modelSetId, modelSets, setActiveModelSetId]);
+
+  useEffect(() => {
     if (!isApiMode || !activeChatId) {
       setApiTurns([]);
       setLoading(false);
@@ -475,6 +517,7 @@ export function ChatPage() {
         setAttachmentTranscriptions({});
       }
       modelSetRestoredForChatRef.current = null;
+      turnsLoadedForChatRef.current = null;
       return;
     }
     const auth = authHeaders();
@@ -482,6 +525,7 @@ export function ChatPage() {
 
     let cancelled = false;
     const chatId = activeChatId;
+    const selectionGenerationAtLoad = modelSetSelectionGenerationRef.current;
     if (
       shouldClearComposerFilesOnChatChange({
         nextChatId: chatId,
@@ -503,16 +547,27 @@ export function ChatPage() {
       const merged = mergeWithCachedTurns(chatId, turns);
       seedChatTurns(chatId, merged);
       setApiTurns(merged);
+      turnsLoadedForChatRef.current = chatId;
 
       if (modelSetRestoredForChatRef.current !== chatId) {
-        const fromChat = resolveModelSetIdFromTurns(merged);
         const sets = modelSetsRef.current;
-        if (fromChat && sets.some((item) => item.id === fromChat)) {
+        const restored =
+          resolveNextModelSetId({
+            chatModelSetId: activeChatRef.current?.modelSetId,
+            turns: merged,
+            availableSetIds: sets.map((item) => item.id),
+          }) ?? selectExistingModelSetId(sets, "");
+        if (
+          restored &&
+          shouldApplyModelSetRestore({
+            requestedChatId: chatId,
+            activeChatId: activeChatIdRef.current,
+            selectionGenerationAtStart: selectionGenerationAtLoad,
+            currentSelectionGeneration: modelSetSelectionGenerationRef.current,
+          })
+        ) {
           modelSetRestoredForChatRef.current = chatId;
-          setActiveModelSetId(fromChat);
-        } else if (!fromChat) {
-          // Empty chat: keep current selection (default or manual).
-          modelSetRestoredForChatRef.current = chatId;
+          setActiveModelSetId(restored);
         }
       }
 
@@ -553,14 +608,74 @@ export function ChatPage() {
   }, [isApiMode, activeChatId, authHeaders, setActiveModelSetId]);
 
   useEffect(() => {
-    if (!activeChatId || !apiTurns.length || !modelSets.length) return;
+    if (!activeChatId || turnsLoadedForChatRef.current !== activeChatId || !modelSets.length)
+      return;
     if (modelSetRestoredForChatRef.current === activeChatId) return;
-    const fromChat = resolveModelSetIdFromTurns(apiTurns);
-    if (fromChat && modelSets.some((item) => item.id === fromChat)) {
+    const activation = modelSetActivationRef.current;
+    const restored =
+      resolveNextModelSetId({
+        chatModelSetId: activeChat?.modelSetId,
+        turns: apiTurns,
+        availableSetIds: modelSets.map((item) => item.id),
+      }) ?? selectExistingModelSetId(modelSets, "");
+    if (
+      restored &&
+      shouldApplyModelSetRestore({
+        requestedChatId: activeChatId,
+        activeChatId: activeChatIdRef.current,
+        selectionGenerationAtStart: activation.selectionGeneration,
+        currentSelectionGeneration: modelSetSelectionGenerationRef.current,
+      })
+    ) {
       modelSetRestoredForChatRef.current = activeChatId;
-      setActiveModelSetId(fromChat);
+      setActiveModelSetId(restored);
     }
-  }, [activeChatId, apiTurns, modelSets, setActiveModelSetId]);
+  }, [activeChatId, activeChat?.modelSetId, apiTurns, modelSets, setActiveModelSetId]);
+
+  async function selectModelSet(id: string): Promise<void> {
+    const previous = activeModelSetId;
+    const selectionGeneration = ++modelSetSelectionGenerationRef.current;
+    modelSetRestoredForChatRef.current = activeChatId;
+    setActiveModelSetId(id);
+    if (!activeChatId) return;
+
+    const selectedChatId = activeChatId;
+    const auth = authHeaders();
+    if (!auth) {
+      if (
+        selectionGeneration === modelSetSelectionGenerationRef.current &&
+        activeChatIdRef.current === selectedChatId
+      ) {
+        setActiveModelSetId(previous);
+      }
+      return;
+    }
+    try {
+      await enqueueModelSetPersistence(
+        modelSetPersistenceQueuesRef.current,
+        selectedChatId,
+        async () => {
+          const updated = await api.chats.update(auth, selectedChatId, modelSetRequestPayload(id));
+          applyChatUpdate(updated);
+        },
+      );
+      if (
+        selectionGeneration === modelSetSelectionGenerationRef.current &&
+        activeChatIdRef.current === selectedChatId
+      ) {
+        setActiveModelSetId(id);
+      }
+    } catch (error) {
+      if (
+        selectionGeneration === modelSetSelectionGenerationRef.current &&
+        activeChatIdRef.current === selectedChatId
+      ) {
+        modelSetSelectionGenerationRef.current += 1;
+        setActiveModelSetId(previous);
+      }
+      toast.error(apiErrorMessage(error, "Failed to save Council selection"));
+    }
+  }
 
   function insertTranscriptIntoComposer(transcriptValue: string): boolean {
     const transcript = transcriptValue.trim();
@@ -694,7 +809,7 @@ export function ChatPage() {
     try {
       let chatId = activeChatId;
       if (!chatId) {
-        chatId = await createChat();
+        chatId = await createChat({ modelSetId: set.id });
         createdChatId = chatId;
       }
       if (!chatId) {
@@ -717,6 +832,7 @@ export function ChatPage() {
           id: chatId,
           title: pending.chat_title ?? activeChat?.title ?? question.slice(0, 80),
           project_id: activeChat?.projectId ?? null,
+          model_set_id: set.id,
           pinned_verdicts:
             activeChat?.pinnedVerdicts.map((pin) => ({
               verdict_id: pin.verdictId,
@@ -834,7 +950,13 @@ export function ChatPage() {
 
     setRegeneratingTurnId(turn.id);
     try {
-      const result = await api.chats.regenerateTurn(auth, activeChatId, turn.id, { prompt });
+      if (!set) throw new Error("No Council selected");
+      const result = await api.chats.regenerateTurn(
+        auth,
+        activeChatId,
+        turn.id,
+        modelSetRegenerateRequestPayload(prompt, set.id),
+      );
       for (const supersededId of result.superseded_turn_ids) {
         removeTurn(activeChatId, supersededId);
       }
@@ -1535,7 +1657,7 @@ export function ChatPage() {
           sets={modelSets}
           modelById={modelById}
           onPick={(id) => {
-            setActiveModelSetId(id);
+            void selectModelSet(id);
             setShowSet(false);
           }}
           onCreate={() => {
@@ -1552,14 +1674,14 @@ export function ChatPage() {
         onSave={async (next) => {
           if (set && modelSets.some((s) => s.id === set.id) && !SYSTEM_MODEL_SETS.has(set.id)) {
             await updateModelSet({ ...next, id: set.id });
-            setActiveModelSetId(set.id);
+            await selectModelSet(set.id);
             return;
           }
           const created = await createModelSet({
             ...next,
             name: next.name === set?.name ? "My Council" : next.name,
           });
-          setActiveModelSetId(created.id);
+          await selectModelSet(created.id);
         }}
       />
 

@@ -284,11 +284,17 @@ class ChatService:
     async def create_chat(
         self, db: AsyncSession, auth: AuthContext, data: ChatCreateRequest
     ) -> ChatResponse:
+        model_set = (
+            await self._resolve_model_set(db, auth, data.model_set_id)
+            if data.model_set_id is not None
+            else None
+        )
         chat = Chat(
             org_id=auth.org_id,
             project_id=data.project_id,
             created_by=auth.user.id,
             title=data.title,
+            model_set_id=model_set.slug if model_set is not None else None,
         )
         db.add(chat)
         await db.flush()
@@ -318,6 +324,13 @@ class ChatService:
             chat.title = data.title.strip()
         if data.project_id is not None:
             chat.project_id = data.project_id
+        if "model_set_id" in data.model_fields_set:
+            model_set_id = (data.model_set_id or "").strip() or None
+            if model_set_id is None:
+                chat.model_set_id = None
+            else:
+                model_set = await self._resolve_model_set(db, auth, model_set_id)
+                chat.model_set_id = model_set.slug
         if "active_referenced_chat_id" in data.model_fields_set:
             reference_id = (data.active_referenced_chat_id or "").strip() or None
             if reference_id == chat.id:
@@ -623,9 +636,16 @@ class ChatService:
                 tid: _orchestration_tasks.get(tid) for tid in superseded_ids
             }
 
-            model_set, used_fallback = await self._resolve_model_set_for_regenerate(
-                db, auth, target.model_set_id
-            )
+            if data.model_set_id is not None:
+                model_set = await self._resolve_model_set(db, auth, data.model_set_id)
+                used_fallback = False
+            elif locked_chat.model_set_id is not None:
+                model_set = await self._resolve_model_set(db, auth, locked_chat.model_set_id)
+                used_fallback = False
+            else:
+                model_set, used_fallback = await self._resolve_model_set_for_regenerate(
+                    db, auth, target.model_set_id
+                )
 
             now = datetime.now(UTC)
             await db.execute(
@@ -669,6 +689,7 @@ class ChatService:
                 decision_insurance_enabled=False,
             )
             db.add(new_turn)
+            locked_chat.model_set_id = model_set.slug
             # User regenerate is a conversation action — bump recency once.
             locked_chat.updated_at = datetime.now(UTC)
             await db.flush()
@@ -811,6 +832,9 @@ class ChatService:
             decision_insurance_enabled=False,
         )
         db.add(turn)
+
+        # Keep the next-message selection synchronized with this accepted normal turn.
+        chat.model_set_id = model_set.slug
 
         # Recency: every new user turn bumps the parent chat (not streaming/verdict).
         chat.updated_at = datetime.now(UTC)
@@ -1558,6 +1582,7 @@ class ChatService:
             id=chat.id,  # type: ignore[arg-type]
             title=chat.title,
             project_id=chat.project_id,
+            model_set_id=chat.model_set_id,
             pinned_verdict_id=legacy_pin.verdict_id if legacy_pin else None,
             pinned_turn_id=legacy_pin.turn_id if legacy_pin else None,
             pinned_verdicts=pins,

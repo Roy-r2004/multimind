@@ -100,6 +100,7 @@ export type ApiChat = {
   id: string;
   title: string;
   project_id?: string | null;
+  model_set_id?: string | null;
   pinned_verdict_id?: string | null;
   pinned_turn_id?: string | null;
   pinned_verdicts: Array<{

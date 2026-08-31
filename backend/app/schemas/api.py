@@ -1246,6 +1246,7 @@ class ChatResponse(BaseModel):
     id: str
     title: str
     project_id: str | None = None
+    model_set_id: str | None = None
     pinned_verdict_id: str | None = None
     pinned_turn_id: str | None = None
     pinned_verdicts: list[PinnedVerdictResponse] = Field(default_factory=list)
@@ -1266,11 +1267,13 @@ class ProjectDetailResponse(BaseModel):
 class ChatCreateRequest(BaseModel):
     title: str = "New chat"
     project_id: str | None = None
+    model_set_id: str | None = None
 
 
 class ChatUpdateRequest(BaseModel):
     title: str | None = None
     project_id: str | None = None
+    model_set_id: str | None = None
     active_referenced_chat_id: str | None = None
 
 
@@ -1380,6 +1383,7 @@ class TurnCreateRequest(BaseModel):
 
 class TurnRegenerateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=100_000)
+    model_set_id: str | None = None
 
 
 class TurnDeleteResponse(BaseModel):
