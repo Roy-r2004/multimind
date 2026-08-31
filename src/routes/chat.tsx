@@ -63,6 +63,7 @@ import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
 import { api } from "@/lib/api";
 import type { ApiTranscriptionResponse, ApiTurn } from "@/lib/api/types";
+import { composerValueAfterStop } from "@/lib/chatStop";
 import {
   COMPOSER_FILE_ACCEPT,
   apiErrorMessage,
@@ -899,11 +900,21 @@ export function ChatPage() {
   async function stopGenerating() {
     const auth = authHeaders();
     if (!auth || !activeChatId || !activeTurnId || stoppingTurnId === activeTurnId) return;
-    setStoppingTurnId(activeTurnId);
+    const chatId = activeChatId;
+    const turnId = activeTurnId;
+    const activeTurn = apiTurns.find((turn) => turn.id === turnId);
+    if (!activeTurn) return;
+
+    const restoredInput = composerValueAfterStop(input, activeTurn.user_message);
+    if (restoredInput !== input) {
+      updateComposerInput(restoredInput);
+    }
+
+    setStoppingTurnId(turnId);
     setLoading(false);
     setSending(false);
     try {
-      await stopActiveTurn(auth, activeChatId);
+      await stopActiveTurn(auth, chatId, turnId);
     } catch (error) {
       console.error(error);
       alert(error instanceof Error ? error.message : "Failed to stop generating");
