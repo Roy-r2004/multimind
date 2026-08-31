@@ -182,8 +182,10 @@ export const api = {
   chats: {
     list: (auth: Auth) => apiRequest<ApiChat[]>("/chats", { token: auth.token, orgId: auth.orgId }),
 
-    create: (auth: Auth, data: { title?: string; project_id?: string | null }) =>
-      apiRequest<ApiChat>("/chats", { body: data, token: auth.token, orgId: auth.orgId }),
+    create: (
+      auth: Auth,
+      data: { title?: string; project_id?: string | null; model_set_id?: string | null },
+    ) => apiRequest<ApiChat>("/chats", { body: data, token: auth.token, orgId: auth.orgId }),
 
     update: (
       auth: Auth,
@@ -191,6 +193,7 @@ export const api = {
       data: {
         title?: string;
         project_id?: string | null;
+        model_set_id?: string | null;
         active_referenced_chat_id?: string | null;
       },
     ) =>
@@ -250,7 +253,12 @@ export const api = {
         orgId: auth.orgId,
       }),
 
-    regenerateTurn: (auth: Auth, chatId: string, turnId: string, data: { prompt: string }) =>
+    regenerateTurn: (
+      auth: Auth,
+      chatId: string,
+      turnId: string,
+      data: { prompt: string; model_set_id?: string },
+    ) =>
       apiRequest<{
         old_turn_id: string;
         new_turn: ApiTurn;

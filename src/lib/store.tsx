@@ -21,7 +21,7 @@ import {
 } from "@/lib/chatHistory";
 import { shouldApplyRefreshResult } from "@/lib/chatStoreRefresh";
 import type { Chat, ModelSet, Project } from "@/lib/mock";
-import { selectExistingModelSetId } from "@/lib/modelSetSelection";
+import { modelSetRequestPayload, selectExistingModelSetId } from "@/lib/modelSetSelection";
 
 type CreateProjectInput = { name: string; description?: string };
 
@@ -30,6 +30,7 @@ type CreateChatOptions = {
   onChatCreated?: (chatId: string) => void;
   /** Optional project association for create (e.g. project page). */
   projectId?: string | null;
+  modelSetId?: string | null;
 };
 
 type ChatStore = {
@@ -371,6 +372,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
             const chat = await api.chats.create(auth, {
               title: "New chat",
               project_id: options?.projectId ?? undefined,
+              ...(options?.modelSetId ? modelSetRequestPayload(options.modelSetId) : {}),
             });
             const mapped = mapApiChat(chat);
             setChats((prev) => upsertChatToTop(prev, mapped));

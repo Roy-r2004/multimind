@@ -69,6 +69,18 @@ async def db_setup(tmp_path, monkeypatch):
             best_for="",
             is_system=False,
         )
+        current_set = ModelSet(
+            org_id=org.id,
+            slug="current-set",
+            name="Current Set",
+            description="",
+            models=["gemini"],
+            verdict_model="claude",
+            strategy=Strategy.REFEREE,
+            best_for="",
+            custom_instructions="Current referee configuration",
+            is_system=False,
+        )
         referee = ModelSet(
             org_id=None,
             slug="referee",
@@ -82,7 +94,7 @@ async def db_setup(tmp_path, monkeypatch):
         )
         chat = Chat(org_id=org.id, created_by=user.id, title="Regen chat")
         other_chat = Chat(org_id=other_org.id, created_by=outsider.id, title="Other")
-        db.add_all([model_set, referee, chat, other_chat])
+        db.add_all([model_set, current_set, referee, chat, other_chat])
         await db.commit()
         ids = SimpleNamespace(
             org_id=org.id,
@@ -178,6 +190,90 @@ async def test_owner_can_regenerate_and_reuse_model_set(db_setup):
     assert [turn.id for turn in listed] == [result.new_turn.id]
     assert listed[0].user_message == "Edited first"
     assert listed[0].verdict is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_current_set_wins_and_synchronizes_chat(db_setup):
+    Session = db_setup.Session
+    original = await _complete_turn(
+        Session, chat_id=db_setup.chat_id, user_message="Originally A", model_set_id="regen-set"
+    )
+    async with Session() as db:
+        chat = await db.get(Chat, db_setup.chat_id)
+        chat.model_set_id = "regen-set"
+        await db.commit()
+
+    async with Session() as db:
+        result = await chat_service.regenerate_turn(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            original.id,
+            TurnRegenerateRequest(prompt="Use current B", model_set_id="current-set"),
+        )
+
+    async with Session() as db:
+        old = await db.get(Turn, original.id)
+        chat = await db.get(Chat, db_setup.chat_id)
+        answers = list(
+            (
+                await db.execute(
+                    select(ModelAnswer).where(ModelAnswer.turn_id == result.new_turn.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert old.model_set_id == "regen-set"
+    assert result.new_turn.model_set_id == "current-set"
+    assert result.new_turn.strategy == Strategy.REFEREE
+    assert result.new_turn.verdict_model == "claude"
+    assert [answer.model_id for answer in answers] == ["gemini"]
+    assert chat.model_set_id == "current-set"
+
+
+@pytest.mark.asyncio
+async def test_persisted_chat_set_wins_when_request_omits_set(db_setup):
+    Session = db_setup.Session
+    original = await _complete_turn(
+        Session, chat_id=db_setup.chat_id, user_message="Originally A", model_set_id="regen-set"
+    )
+    async with Session() as db:
+        chat = await db.get(Chat, db_setup.chat_id)
+        chat.model_set_id = "current-set"
+        await db.commit()
+
+    async with Session() as db:
+        result = await chat_service.regenerate_turn(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            original.id,
+            TurnRegenerateRequest(prompt="Use persisted B"),
+        )
+    assert result.new_turn.model_set_id == "current-set"
+
+
+@pytest.mark.asyncio
+async def test_invalid_explicit_set_does_not_fall_back_or_supersede(db_setup):
+    Session = db_setup.Session
+    original = await _complete_turn(
+        Session, chat_id=db_setup.chat_id, user_message="Keep historical A"
+    )
+    async with Session() as db:
+        with pytest.raises(NotFoundError):
+            await chat_service.regenerate_turn(
+                db,
+                db_setup.auth,
+                db_setup.chat_id,
+                original.id,
+                TurnRegenerateRequest(prompt="Invalid B", model_set_id="inaccessible-set"),
+            )
+
+    async with Session() as db:
+        unchanged = await db.get(Turn, original.id)
+    assert unchanged.deleted_at is None
+    assert unchanged.model_set_id == "regen-set"
 
 
 @pytest.mark.asyncio

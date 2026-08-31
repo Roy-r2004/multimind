@@ -3,12 +3,26 @@ import test from "node:test";
 
 import {
   DEFAULT_MODEL_SET_TITLE,
+  enqueueModelSetPersistence,
   findDefaultModelSetId,
+  modelSetRegenerateRequestPayload,
+  modelSetRequestPayload,
   normalizeModelSetTitle,
   resolveModelSetIdFromTurns,
   resolveNextModelSetId,
   selectExistingModelSetId,
+  shouldApplyModelSetRestore,
 } from "../../src/lib/modelSetSelection.ts";
+
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function set(id: string, name: string) {
   return { id, name };
@@ -39,10 +53,7 @@ test("new chat / empty current id selects default for any org-visible list", () 
 });
 
 test("manual current selection is not overwritten when still present", () => {
-  const sets = [
-    set("ultimate-1", "chafic ultimate model set"),
-    set("coding", "Coding Set"),
-  ];
+  const sets = [set("ultimate-1", "chafic ultimate model set"), set("coding", "Coding Set")];
   assert.equal(selectExistingModelSetId(sets, "coding"), "coding");
 });
 
@@ -74,6 +85,133 @@ test("next-message selection prefers chat.model_set_id over older turns", () => 
   );
 });
 
+test("an old turns response cannot overwrite a newer explicit selection", () => {
+  assert.equal(
+    shouldApplyModelSetRestore({
+      requestedChatId: "chat-1",
+      activeChatId: "chat-1",
+      selectionGenerationAtStart: 3,
+      currentSelectionGeneration: 4,
+    }),
+    false,
+  );
+});
+
+test("a load for another chat cannot overwrite the active chat selection", () => {
+  assert.equal(
+    shouldApplyModelSetRestore({
+      requestedChatId: "chat-1",
+      activeChatId: "chat-2",
+      selectionGenerationAtStart: 4,
+      currentSelectionGeneration: 4,
+    }),
+    false,
+  );
+});
+
+test("the current chat load may restore when no explicit selection is newer", () => {
+  assert.equal(
+    shouldApplyModelSetRestore({
+      requestedChatId: "chat-1",
+      activeChatId: "chat-1",
+      selectionGenerationAtStart: 4,
+      currentSelectionGeneration: 4,
+    }),
+    true,
+  );
+});
+
+test("existing and new chat persistence use the selected model_set_id payload", () => {
+  assert.deepEqual(modelSetRequestPayload("council-b"), { model_set_id: "council-b" });
+});
+
+test("regeneration explicitly carries the current selected Council", () => {
+  assert.deepEqual(modelSetRegenerateRequestPayload("Retry this", "council-b"), {
+    prompt: "Retry this",
+    model_set_id: "council-b",
+  });
+});
+
+test("immediate regeneration uses B without waiting for B chat persistence", () => {
+  const optimisticSelection = "council-b";
+  assert.deepEqual(modelSetRegenerateRequestPayload("Retry now", optimisticSelection), {
+    prompt: "Retry now",
+    model_set_id: "council-b",
+  });
+});
+
+test("switching chats restores each persisted chat Council", () => {
+  const availableSetIds = ["council-a", "council-b"];
+  const restore = (chatModelSetId: string) =>
+    resolveNextModelSetId({ chatModelSetId, turns: [], availableSetIds });
+  assert.equal(restore("council-a"), "council-a");
+  assert.equal(restore("council-b"), "council-b");
+  assert.equal(restore("council-a"), "council-a");
+});
+
+test("a sent B selection remains B when an older A load later becomes ineligible", () => {
+  const selectionAfterSend = "council-b";
+  assert.equal(
+    shouldApplyModelSetRestore({
+      requestedChatId: "chat-1",
+      activeChatId: "chat-1",
+      selectionGenerationAtStart: 7,
+      currentSelectionGeneration: 8,
+    }),
+    false,
+  );
+  assert.equal(selectionAfterSend, "council-b");
+  assert.equal(modelSetRequestPayload(selectionAfterSend).model_set_id, "council-b");
+});
+
+test("a B result after navigation cannot apply to the other chat", () => {
+  assert.equal(
+    shouldApplyModelSetRestore({
+      requestedChatId: "chat-1",
+      activeChatId: "chat-2",
+      selectionGenerationAtStart: 2,
+      currentSelectionGeneration: 2,
+    }),
+    false,
+  );
+});
+
+test("B then C persists in order so the final chat selection is C", async () => {
+  const queues = new Map<string, Promise<void>>();
+  const b = deferred();
+  const persisted: string[] = [];
+  const bRequest = enqueueModelSetPersistence(queues, "chat-1", async () => {
+    await b.promise;
+    persisted.push("B");
+  });
+  const cRequest = enqueueModelSetPersistence(queues, "chat-1", async () => {
+    persisted.push("C");
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(persisted, []);
+  b.resolve();
+  await Promise.all([bRequest, cRequest]);
+  assert.deepEqual(persisted, ["B", "C"]);
+  assert.equal(persisted.at(-1), "C");
+});
+
+test("an old failed B request cannot roll back a newer C selection", async () => {
+  const queues = new Map<string, Promise<void>>();
+  const b = deferred();
+  let selection = "C";
+  const bGeneration = 10;
+  const currentGeneration = 11;
+  const bRequest = enqueueModelSetPersistence(queues, "chat-1", () => b.promise);
+  const cRequest = enqueueModelSetPersistence(queues, "chat-1", async () => undefined);
+
+  b.reject(new Error("B failed"));
+  await assert.rejects(bRequest, /B failed/);
+  await cRequest;
+  if (bGeneration === currentGeneration) selection = "A";
+  assert.equal(selection, "C");
+});
+
 test("next-message selection falls back to newest turn when chat has no set", () => {
   assert.equal(
     resolveNextModelSetId({
@@ -100,10 +238,7 @@ test("next-message selection ignores unavailable chat model set", () => {
 });
 
 test("missing target set falls back to legacy referee then first set", () => {
-  const withReferee = [
-    set("balanced", "Balanced Set"),
-    set("referee", "Chafiq Referee"),
-  ];
+  const withReferee = [set("balanced", "Balanced Set"), set("referee", "Chafiq Referee")];
   assert.equal(selectExistingModelSetId(withReferee, ""), "referee");
 
   const nameOnly = [set("x", "My Referee Clone"), set("y", "Other")];
