@@ -47,10 +47,16 @@ const SYNAPSES: Array<[number, number, number, number]> = [
 export function BrainVisualization({
   name,
   lessonCount,
+  positiveChip,
+  negativeChip,
+  styleChip,
   className,
 }: {
   name: string;
   lessonCount: number;
+  positiveChip?: string;
+  negativeChip?: string;
+  styleChip?: string;
   className?: string;
 }) {
   const firstName = name.split(" ")[0];
@@ -138,15 +144,21 @@ export function BrainVisualization({
       </div>
 
       {/* Orbiting memory chips */}
-      <div className="brain-orbit brain-orbit-1">
-        <span className="brain-chip">+ velocity</span>
-      </div>
-      <div className="brain-orbit brain-orbit-2">
-        <span className="brain-chip">− vague advice</span>
-      </div>
-      <div className="brain-orbit brain-orbit-3">
-        <span className="brain-chip">90-day lens</span>
-      </div>
+      {positiveChip && (
+        <div className="brain-orbit brain-orbit-1">
+          <span className="brain-chip">+ {positiveChip}</span>
+        </div>
+      )}
+      {negativeChip && (
+        <div className="brain-orbit brain-orbit-2">
+          <span className="brain-chip">− {negativeChip}</span>
+        </div>
+      )}
+      {styleChip && (
+        <div className="brain-orbit brain-orbit-3">
+          <span className="brain-chip">{styleChip}</span>
+        </div>
+      )}
     </div>
   );
 }
