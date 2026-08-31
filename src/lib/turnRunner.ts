@@ -190,11 +190,9 @@ export function runTurnInBackground(auth: Auth, chatId: string, pending: ApiTurn
   return promise;
 }
 
-export async function stopActiveTurn(auth: Auth, chatId: string): Promise<void> {
-  const turnId = getActiveTurnId(chatId);
-  if (!turnId) return;
+export async function stopActiveTurn(auth: Auth, chatId: string, turnId: string): Promise<void> {
   const job = activeJobs.get(turnId);
-  if (!job || job.stopping) return;
+  if (!job || job.chatId !== chatId || job.stopping) return;
 
   job.stopping = true;
   try {

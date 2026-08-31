@@ -6,7 +6,9 @@ import {
   getChatTurns,
   removeTurn,
   resumeRunningTurns,
+  runTurnInBackground,
   seedChatTurns,
+  stopActiveTurn,
 } from "../../src/lib/turnRunner.ts";
 
 const auth = { token: "token", orgId: "org-1" };
@@ -157,4 +159,77 @@ test("confirmed local deletion blocks resume", async () => {
   ]);
 
   assert.deepEqual(getChatTurns("chat-resume"), []);
+});
+
+test("stopActiveTurn deletes the explicitly captured turn ID", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; method: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    requests.push({ url, method });
+    if (method === "DELETE") {
+      return new Response(JSON.stringify({ turn_id: "turn-exact", deleted: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("Aborted", "AbortError")),
+      );
+    });
+  };
+  try {
+    const pending = turn({ id: "turn-exact", chat_id: "chat-exact" });
+    const running = runTurnInBackground(auth, "chat-exact", pending);
+
+    await stopActiveTurn(auth, "chat-exact", "turn-exact");
+    await running;
+
+    assert.equal(
+      requests.some(
+        ({ url, method }) =>
+          method === "DELETE" && url.endsWith("/chats/chat-exact/turns/turn-exact"),
+      ),
+      true,
+    );
+    assert.deepEqual(getChatTurns("chat-exact"), []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("duplicate stops issue only one delete request", async () => {
+  const originalFetch = globalThis.fetch;
+  let deleteCalls = 0;
+  globalThis.fetch = async (_input, init) => {
+    if (init?.method === "DELETE") {
+      deleteCalls += 1;
+      await Promise.resolve();
+      return new Response(JSON.stringify({ turn_id: "turn-duplicate", deleted: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("Aborted", "AbortError")),
+      );
+    });
+  };
+  try {
+    const pending = turn({ id: "turn-duplicate", chat_id: "chat-duplicate" });
+    const running = runTurnInBackground(auth, "chat-duplicate", pending);
+
+    await Promise.all([
+      stopActiveTurn(auth, "chat-duplicate", "turn-duplicate"),
+      stopActiveTurn(auth, "chat-duplicate", "turn-duplicate"),
+    ]);
+    await running;
+
+    assert.equal(deleteCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
