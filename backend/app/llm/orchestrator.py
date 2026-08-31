@@ -398,7 +398,7 @@ class TurnOrchestrator:
                         system=system,
                         user=ctx.user_message,
                         model=model.provider_model,
-                        max_tokens=10000,
+                        max_tokens=20000,
                     ),
                 )
                 await self._ensure_not_deleted(db, ctx.turn_id)
