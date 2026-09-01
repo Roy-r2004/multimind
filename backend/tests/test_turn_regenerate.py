@@ -30,7 +30,9 @@ from app.db.models import (
     Verdict,
 )
 from app.schemas.api import TurnCreateRequest, TurnRegenerateRequest
+from app.services import chat_memory_service as chat_memory_module
 from app.services import chat_service as chat_service_module
+from app.services.chat_memory_service import chat_memory_service
 from app.services.chat_service import chat_service
 
 
@@ -111,9 +113,7 @@ async def db_setup(tmp_path, monkeypatch):
         engine=engine,
         auth=AuthContext(user=user, org_id=ids.org_id, role=OrgRole.MEMBER),
         viewer_auth=AuthContext(user=viewer, org_id=ids.org_id, role=OrgRole.VIEWER),
-        outsider_auth=AuthContext(
-            user=outsider, org_id=ids.other_org_id, role=OrgRole.OWNER
-        ),
+        outsider_auth=AuthContext(user=outsider, org_id=ids.other_org_id, role=OrgRole.OWNER),
         chat_id=ids.chat_id,
         other_chat_id=ids.other_chat_id,
     )
@@ -167,6 +167,10 @@ async def test_owner_can_regenerate_and_reuse_model_set(db_setup):
     Session = db_setup.Session
     t1 = await _complete_turn(Session, chat_id=db_setup.chat_id, user_message="First")
     async with Session() as db:
+        chat = await db.get(Chat, db_setup.chat_id)
+        chat.rolling_memory = "STALE FACT FROM SUPERSEDED TURN"
+        chat.rolling_memory_through_turn_id = t1.id
+        await db.commit()
         result = await chat_service.regenerate_turn(
             db,
             db_setup.auth,
@@ -182,14 +186,143 @@ async def test_owner_can_regenerate_and_reuse_model_set(db_setup):
     assert result.model_set_fallback is False
 
     async with Session() as db:
-        old = (
-            await db.execute(select(Turn).where(Turn.id == t1.id))
-        ).scalar_one()
+        old = (await db.execute(select(Turn).where(Turn.id == t1.id))).scalar_one()
+        chat = await db.get(Chat, db_setup.chat_id)
         assert old.deleted_at is not None
+        assert chat.rolling_memory is None
+        assert chat.rolling_memory_through_turn_id is None
         listed = await chat_service.list_turns(db, db_setup.auth, db_setup.chat_id)
     assert [turn.id for turn in listed] == [result.new_turn.id]
     assert listed[0].user_message == "Edited first"
     assert listed[0].verdict is None
+
+
+@pytest.mark.asyncio
+async def test_regenerate_genuinely_summarized_turn_rebuilds_only_surviving_history(
+    db_setup, monkeypatch
+):
+    class MemoryProvider:
+        calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                text=f"genuine memory through call {self.calls}",
+                tokens_input=2,
+                tokens_output=2,
+                cost_usd=0,
+            )
+
+    provider = MemoryProvider()
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(get_provider=lambda _provider: provider),
+    )
+    base = datetime(2025, 7, 1, tzinfo=UTC)
+    turns = [
+        await _complete_turn(
+            db_setup.Session,
+            chat_id=db_setup.chat_id,
+            user_message=f"GENUINE_FACT_{index}",
+            created_at=base + timedelta(minutes=index),
+        )
+        for index in range(13)
+    ]
+    async with db_setup.Session() as db:
+        merged = await chat_memory_service.merge_expired_turns(
+            db, chat_id=db_setup.chat_id, org_id=db_setup.auth.org_id
+        )
+        compacted = await db.get(Chat, db_setup.chat_id, populate_existing=True)
+        assert merged == 3
+        assert compacted.rolling_memory
+        assert compacted.rolling_memory_through_turn_id == turns[2].id
+
+        result = await chat_service.regenerate_turn(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            turns[1].id,
+            TurnRegenerateRequest(prompt="REPLACEMENT_FACT"),
+        )
+        context = await chat_memory_service.build_recent_conversation_context(
+            db,
+            db_setup.chat_id,
+            result.new_turn.id,
+            result.new_turn.created_at,
+        )
+        chat = await db.get(Chat, db_setup.chat_id, populate_existing=True)
+        stored = (
+            (await db.execute(select(Turn).where(Turn.id.in_([turn.id for turn in turns]))))
+            .scalars()
+            .all()
+        )
+
+    assert next(turn for turn in stored if turn.id == turns[0].id).deleted_at is None
+    assert all(turn.deleted_at is not None for turn in stored if turn.id != turns[0].id)
+    assert chat.rolling_memory is None
+    assert chat.rolling_memory_through_turn_id is None
+    assert "GENUINE_FACT_0" in (context or "")
+    assert "GENUINE_FACT_1" not in (context or "")
+    assert "genuine memory through call 3" not in (context or "")
+
+
+@pytest.mark.asyncio
+async def test_regenerate_raw_only_turn_with_older_real_memory_rebuilds_cleanly(
+    db_setup, monkeypatch
+):
+    class MemoryProvider:
+        calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                text=f"older compact memory {self.calls}",
+                tokens_input=2,
+                tokens_output=2,
+                cost_usd=0,
+            )
+
+    provider = MemoryProvider()
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(get_provider=lambda _provider: provider),
+    )
+    base = datetime(2025, 8, 1, tzinfo=UTC)
+    turns = [
+        await _complete_turn(
+            db_setup.Session,
+            chat_id=db_setup.chat_id,
+            user_message=f"RAW_REGEN_{index}",
+            created_at=base + timedelta(minutes=index),
+        )
+        for index in range(13)
+    ]
+    async with db_setup.Session() as db:
+        await chat_memory_service.merge_expired_turns(
+            db, chat_id=db_setup.chat_id, org_id=db_setup.auth.org_id
+        )
+        before = await db.get(Chat, db_setup.chat_id, populate_existing=True)
+        assert before.rolling_memory_through_turn_id == turns[2].id
+
+        result = await chat_service.regenerate_turn(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            turns[9].id,
+            TurnRegenerateRequest(prompt="RAW_REPLACEMENT"),
+        )
+        context = await chat_memory_service.build_recent_conversation_context(
+            db, db_setup.chat_id, result.new_turn.id, result.new_turn.created_at
+        )
+        after = await db.get(Chat, db_setup.chat_id, populate_existing=True)
+
+    assert after.rolling_memory is None
+    assert "RAW_REGEN_0" in (context or "")
+    assert "RAW_REGEN_8" in (context or "")
+    assert "RAW_REGEN_9" not in (context or "")
+    assert "older compact memory" not in (context or "")
 
 
 @pytest.mark.asyncio
@@ -216,11 +349,7 @@ async def test_explicit_current_set_wins_and_synchronizes_chat(db_setup):
         old = await db.get(Turn, original.id)
         chat = await db.get(Chat, db_setup.chat_id)
         answers = list(
-            (
-                await db.execute(
-                    select(ModelAnswer).where(ModelAnswer.turn_id == result.new_turn.id)
-                )
-            )
+            (await db.execute(select(ModelAnswer).where(ModelAnswer.turn_id == result.new_turn.id)))
             .scalars()
             .all()
         )
@@ -296,17 +425,11 @@ async def test_regenerate_one_model_set_seeds_one_answer_for_common_orchestrator
 
     async with Session() as db:
         answers = list(
-            (
-                await db.execute(
-                    select(ModelAnswer).where(ModelAnswer.turn_id == result.new_turn.id)
-                )
-            )
+            (await db.execute(select(ModelAnswer).where(ModelAnswer.turn_id == result.new_turn.id)))
             .scalars()
             .all()
         )
-        verdict = await db.scalar(
-            select(Verdict).where(Verdict.turn_id == result.new_turn.id)
-        )
+        verdict = await db.scalar(select(Verdict).where(Verdict.turn_id == result.new_turn.id))
     assert [answer.model_id for answer in answers] == ["gpt-4.1"]
     assert verdict is None
 
@@ -369,11 +492,9 @@ async def test_regeneration_removes_only_superseded_verdict_pins(db_setup):
 
     async with Session() as db:
         verdicts = list(
-            (
-                await db.execute(
-                    select(Verdict).where(Verdict.turn_id.in_([t1.id, t2.id, t3.id]))
-                )
-            ).scalars().all()
+            (await db.execute(select(Verdict).where(Verdict.turn_id.in_([t1.id, t2.id, t3.id]))))
+            .scalars()
+            .all()
         )
         verdict_by_turn = {verdict.turn_id: verdict for verdict in verdicts}
         for turn in (t1, t2, t3):
@@ -399,7 +520,9 @@ async def test_regeneration_removes_only_superseded_verdict_pins(db_setup):
                         ChatVerdictPin.chat_id == db_setup.chat_id
                     )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         assert pinned_ids == {verdict_by_turn[t1.id].id}
 

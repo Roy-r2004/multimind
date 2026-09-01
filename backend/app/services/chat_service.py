@@ -163,6 +163,22 @@ async def _run_chat_memory_update_best_effort(
         )
 
 
+async def _rebuild_chat_memory_after_history_mutation(
+    db: AsyncSession,
+    *,
+    chat_id: str,
+    org_id: str,
+    project_id: str | None,
+) -> None:
+    """Rebuild only from surviving history; invalidation was committed first."""
+    await chat_memory_service.rebuild_memory_best_effort(
+        db,
+        chat_id=chat_id,
+        org_id=org_id,
+        project_id=project_id,
+    )
+
+
 async def _seed_continuation_memory_after_success(
     db: AsyncSession,
     *,
@@ -495,6 +511,7 @@ class ChatService:
                 .where(Turn.id == turn_id, Turn.chat_id == chat_id)
                 .values(deleted_at=datetime.now(UTC))
             )
+            await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
             await db.flush()
             await db.commit()
         except Exception:
@@ -502,6 +519,12 @@ class ChatService:
             raise
 
         await _cancel_orchestration_task_after_commit(turn_id, captured_task)
+        await _rebuild_chat_memory_after_history_mutation(
+            db,
+            chat_id=chat_id,
+            org_id=auth.org_id,
+            project_id=chat.project_id,
+        )
         return TurnDeleteResponse(turn_id=turn_id, deleted=True)
 
     async def restore_turn(
@@ -527,7 +550,14 @@ class ChatService:
             raise NotFoundError("Turn", str(turn_id))
 
         turn.deleted_at = None
+        await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
         await db.commit()
+        await _rebuild_chat_memory_after_history_mutation(
+            db,
+            chat_id=chat_id,
+            org_id=auth.org_id,
+            project_id=chat.project_id,
+        )
 
         result = await db.execute(
             select(Turn)
@@ -653,6 +683,7 @@ class ChatService:
                 .where(Turn.id.in_(superseded_ids), Turn.chat_id == chat_id)
                 .values(deleted_at=now)
             )
+            await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
 
             superseded_pinned_verdict_ids = list(
                 (
@@ -710,6 +741,13 @@ class ChatService:
 
         for tid, task in captured_tasks.items():
             await _cancel_orchestration_task_after_commit(tid, task)
+
+        await _rebuild_chat_memory_after_history_mutation(
+            db,
+            chat_id=chat_id,
+            org_id=auth.org_id,
+            project_id=chat.project_id,
+        )
 
         loaded = await db.execute(
             select(Turn)
