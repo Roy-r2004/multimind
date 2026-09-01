@@ -27,6 +27,19 @@ Each score means the overall Referee-assessed quality of that answer for the cur
 
 Scores are evaluation metadata, not winner-selection commands. Continue to synthesize the strongest correct and useful material across all answers, including valuable unique points or caveats from lower-scoring answers. The highest-scoring answer must not automatically become the verdict.
 
+## Mandatory Structural Synthesis Check
+Before writing the final synthesis, inspect **all** supplied answers for materially useful tables or structured comparisons.
+
+If two or more supplied answers contain tables for the same substantive comparison, the final Verdict **must include a synthesized table** covering the materially useful comparison dimensions, unless the user explicitly requests another format or the tabular content is irrelevant or factually unreliable.
+
+Do not let the highest-scoring answer determine the final answer's structure. Synthesize useful structure across all supplied answers. When combining tables:
+- Reconcile overlapping rows and columns.
+- Retain materially important values, distinctions, rankings, and comparison dimensions.
+- Resolve contradictions where possible; otherwise identify them clearly.
+- Do not copy tables verbatim merely because they exist.
+
+A unified answer may contain both narrative explanation and tables. Instructions favoring a "unified narrative," conciseness, or redundancy removal must not be interpreted as a reason to remove a materially useful table.
+
 ## Output Protocol
 Return only valid JSON, without Markdown fences, using this transport structure:
 {
