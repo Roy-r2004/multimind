@@ -53,11 +53,14 @@ from app.services.chat_attachment_storage import (
     stream_upload_to_temp_file,
 )
 from app.services.chat_attachment_text import (
-    ATTACHMENT_TEXT_EXCERPT_MAX,
     extract_attachment_text_from_path,
 )
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
-from app.services.library_service import ITEM_TYPE_DOCUMENT, ITEM_TYPE_FILE
+from app.services.library_service import (
+    ITEM_TYPE_DOCUMENT,
+    ITEM_TYPE_FILE,
+    library_document_excerpt,
+)
 from app.services.share_service import share_service
 from app.services.transcription_service import transcription_service
 
@@ -426,7 +429,24 @@ async def attach_library_item(
     if library_item is None:
         raise NotFoundError("LibraryItem", data.library_item_id)
 
-    # Idempotent: reuse an existing pending chip for the same library item.
+    if library_item.item_type == ITEM_TYPE_DOCUMENT:
+        body = library_item.content_text or ""
+        text_excerpt, excerpt_status = library_document_excerpt(body)
+        filename = f"{library_item.title}.txt"[:255]
+        content_type = "text/plain"
+        size_bytes = len(body.encode("utf-8"))
+        stored_name = f"{library_item.id}.txt"
+    elif library_item.item_type == ITEM_TYPE_FILE:
+        text_excerpt = library_item.text_excerpt
+        excerpt_status = library_item.excerpt_status or "failed"
+        filename = (library_item.original_filename or library_item.title)[:255]
+        content_type = library_item.content_type or "application/octet-stream"
+        size_bytes = int(library_item.size_bytes or 0)
+        stored_name = library_item.stored_name or f"{library_item.id}"
+    else:
+        raise ValidationError("Unsupported library item type")
+
+    # Preserve one pending chip per Library item, but refresh its content snapshot.
     existing = (
         await db.execute(
             select(ChatAttachment).where(
@@ -438,6 +458,13 @@ async def attach_library_item(
         )
     ).scalar_one_or_none()
     if existing is not None:
+        existing.filename = filename
+        existing.stored_name = stored_name[:255]
+        existing.content_type = content_type
+        existing.size_bytes = size_bytes
+        existing.text_excerpt = text_excerpt
+        existing.excerpt_status = excerpt_status
+        await db.flush()
         return _attachment_response(existing)
 
     pending_count = (
@@ -453,25 +480,6 @@ async def attach_library_item(
         raise ValidationError(
             f"A chat can have at most {_MAX_PENDING_ATTACHMENTS} pending attachments."
         )
-
-    if library_item.item_type == ITEM_TYPE_DOCUMENT:
-        body = library_item.content_text or ""
-        excerpt = body[:ATTACHMENT_TEXT_EXCERPT_MAX]
-        text_excerpt = excerpt or None
-        excerpt_status = "ready" if (excerpt and excerpt.strip()) else "empty"
-        filename = f"{library_item.title}.txt"[:255]
-        content_type = "text/plain"
-        size_bytes = len(body.encode("utf-8"))
-        stored_name = f"{library_item.id}.txt"
-    elif library_item.item_type == ITEM_TYPE_FILE:
-        text_excerpt = library_item.text_excerpt
-        excerpt_status = library_item.excerpt_status or "failed"
-        filename = (library_item.original_filename or library_item.title)[:255]
-        content_type = library_item.content_type or "application/octet-stream"
-        size_bytes = int(library_item.size_bytes or 0)
-        stored_name = library_item.stored_name or f"{library_item.id}"
-    else:
-        raise ValidationError("Unsupported library item type")
 
     attachment_id = str(uuid.uuid4())
     row = ChatAttachment(

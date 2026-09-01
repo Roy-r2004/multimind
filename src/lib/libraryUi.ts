@@ -32,6 +32,23 @@ export function formatLibraryUpdatedAt(iso: string): string {
 
 export type LibraryFolderNode = ApiLibraryFolder & { children: LibraryFolderNode[] };
 
+export type LibraryViewMode =
+  | { kind: "all" }
+  | { kind: "favorites" }
+  | { kind: "recent" }
+  | { kind: "folder"; folderId: string }
+  | { kind: "unfiled" }
+  | { kind: "label"; labelId: string };
+
+/** Preserve an unrelated view, or leave a deleted active folder for its parent/root. */
+export function libraryViewAfterFolderDelete(
+  current: LibraryViewMode,
+  deleted: Pick<ApiLibraryFolder, "id" | "parent_id">,
+): LibraryViewMode {
+  if (current.kind !== "folder" || current.folderId !== deleted.id) return current;
+  return deleted.parent_id ? { kind: "folder", folderId: deleted.parent_id } : { kind: "all" };
+}
+
 export function buildLibraryFolderTree(folders: ApiLibraryFolder[]): LibraryFolderNode[] {
   const byId = new Map<string, LibraryFolderNode>();
   for (const folder of folders) {
@@ -77,9 +94,7 @@ export type LibraryFolderOption = {
 };
 
 /** Depth-first folder options with path labels for dropdowns. */
-export function flattenLibraryFolderOptions(
-  folders: ApiLibraryFolder[],
-): LibraryFolderOption[] {
+export function flattenLibraryFolderOptions(folders: ApiLibraryFolder[]): LibraryFolderOption[] {
   const tree = buildLibraryFolderTree(folders);
   const options: LibraryFolderOption[] = [];
 

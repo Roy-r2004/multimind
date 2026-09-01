@@ -9,6 +9,7 @@ import {
   FolderInput,
   FolderPlus,
   Loader2,
+  MoreHorizontal,
   Paperclip,
   Pencil,
   Plus,
@@ -20,8 +21,19 @@ import {
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard } from "@/components/cinematic/PageChrome";
+import { LibraryDocumentEditor } from "@/components/library/LibraryDocumentEditor";
 import { LibraryFolderSelect } from "@/components/library/LibraryFolderSelect";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -31,7 +43,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api";
 import type { ApiLibraryFolder, ApiLibraryItem, ApiLibraryLabel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
@@ -43,6 +60,8 @@ import {
   formatLibraryUpdatedAt,
   libraryFolderPath,
   libraryItemTypeLabel,
+  libraryViewAfterFolderDelete,
+  type LibraryViewMode,
   type LibraryFolderNode,
 } from "@/lib/libraryUi";
 import { useChatStore } from "@/lib/store";
@@ -52,14 +71,6 @@ export const Route = createFileRoute("/library/")({
   head: () => ({ meta: [{ title: "Library — MultiAI" }] }),
   component: LibraryPage,
 });
-
-type ViewMode =
-  | { kind: "all" }
-  | { kind: "favorites" }
-  | { kind: "recent" }
-  | { kind: "folder"; folderId: string }
-  | { kind: "unfiled" }
-  | { kind: "label"; labelId: string };
 
 function LibraryPage() {
   const { authHeaders } = useAuth();
@@ -71,7 +82,7 @@ function LibraryPage() {
   const [folders, setFolders] = useState<ApiLibraryFolder[]>([]);
   const [labels, setLabels] = useState<ApiLibraryLabel[]>([]);
   const [items, setItems] = useState<ApiLibraryItem[]>([]);
-  const [view, setView] = useState<ViewMode>({ kind: "all" });
+  const [view, setView] = useState<LibraryViewMode>({ kind: "all" });
   const [query, setQuery] = useState("");
   const [fileTypeFilter, setFileTypeFilter] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -90,6 +101,12 @@ function LibraryPage() {
   const [moveItemTarget, setMoveItemTarget] = useState<ApiLibraryItem | null>(null);
   const [moveFolderId, setMoveFolderId] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+
+  const [renameFolderTarget, setRenameFolderTarget] = useState<ApiLibraryFolder | null>(null);
+  const [renameFolderName, setRenameFolderName] = useState("");
+  const [renamingFolder, setRenamingFolder] = useState(false);
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<ApiLibraryFolder | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState(false);
 
   const folderTree = useMemo(() => buildLibraryFolderTree(folders), [folders]);
 
@@ -164,6 +181,52 @@ function LibraryPage() {
       toast.success("Folder created");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create folder");
+    }
+  }
+
+  function openRenameFolder(folder: ApiLibraryFolder) {
+    setRenameFolderTarget(folder);
+    setRenameFolderName(folder.name);
+  }
+
+  async function submitRenameFolder() {
+    const auth = authHeaders();
+    const name = renameFolderName.trim();
+    if (!auth || !renameFolderTarget || renamingFolder) return;
+    if (!name) {
+      toast.error("Folder name is required");
+      return;
+    }
+    setRenamingFolder(true);
+    try {
+      await api.library.updateFolder(auth, renameFolderTarget.id, { name });
+      await reloadMeta();
+      setRenameFolderTarget(null);
+      setRenameFolderName("");
+      toast.success("Folder renamed");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not rename folder");
+    } finally {
+      setRenamingFolder(false);
+    }
+  }
+
+  async function submitDeleteFolder() {
+    const auth = authHeaders();
+    if (!auth || !deleteFolderTarget || deletingFolder) return;
+    const target = deleteFolderTarget;
+    setDeletingFolder(true);
+    try {
+      await api.library.deleteFolder(auth, target.id);
+      setView((current) => libraryViewAfterFolderDelete(current, target));
+      await reloadMeta();
+      setDeleteFolderTarget(null);
+      toast.success("Folder deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete folder");
+      setDeleteFolderTarget(null);
+    } finally {
+      setDeletingFolder(false);
     }
   }
 
@@ -389,7 +452,10 @@ function LibraryPage() {
               <SideLink active={view.kind === "recent"} onClick={() => setView({ kind: "recent" })}>
                 Recent
               </SideLink>
-              <SideLink active={view.kind === "unfiled"} onClick={() => setView({ kind: "unfiled" })}>
+              <SideLink
+                active={view.kind === "unfiled"}
+                onClick={() => setView({ kind: "unfiled" })}
+              >
                 Unfiled
               </SideLink>
             </nav>
@@ -417,6 +483,8 @@ function LibraryPage() {
                     activeId={view.kind === "folder" ? view.folderId : null}
                     onSelect={(id) => setView({ kind: "folder", folderId: id })}
                     onAddChild={(id) => void createFolder(id)}
+                    onRename={openRenameFolder}
+                    onDelete={setDeleteFolderTarget}
                   />
                 ))}
                 {folderTree.length === 0 && (
@@ -505,7 +573,11 @@ function LibraryPage() {
 
             {breadcrumb.length > 0 && (
               <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
-                <button type="button" className="hover:text-foreground" onClick={() => setView({ kind: "all" })}>
+                <button
+                  type="button"
+                  className="hover:text-foreground"
+                  onClick={() => setView({ kind: "all" })}
+                >
                   Library
                 </button>
                 {breadcrumb.map((folder) => (
@@ -553,7 +625,9 @@ function LibraryPage() {
                             </Link>
                             <p className="mt-0.5 text-xs text-muted-foreground">
                               {libraryItemTypeLabel(item)}
-                              {item.size_bytes != null ? ` · ${formatLibraryBytes(item.size_bytes)}` : ""}
+                              {item.size_bytes != null
+                                ? ` · ${formatLibraryBytes(item.size_bytes)}`
+                                : ""}
                               {item.original_filename && item.original_filename !== item.title
                                 ? ` · ${item.original_filename}`
                                 : ""}
@@ -667,10 +741,10 @@ function LibraryPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="library-create-body">Body</Label>
-              <Textarea
+              <LibraryDocumentEditor
                 id="library-create-body"
                 value={createBody}
-                onChange={(e) => setCreateBody(e.target.value)}
+                onChange={setCreateBody}
                 placeholder="Write your document..."
                 rows={10}
                 className="min-h-40 resize-y"
@@ -743,7 +817,11 @@ function LibraryPage() {
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
             >
-              {uploading ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+              {uploading ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Upload className="size-4" />
+              )}
               Choose files
             </Button>
           </DialogFooter>
@@ -770,9 +848,7 @@ function LibraryPage() {
               disabled={moving}
             />
             {moveItemTarget ? (
-              <p className="text-sm text-muted-foreground">
-                Moving “{moveItemTarget.title}”
-              </p>
+              <p className="text-sm text-muted-foreground">Moving “{moveItemTarget.title}”</p>
             ) : null}
           </div>
           <DialogFooter>
@@ -791,6 +867,88 @@ function LibraryPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={renameFolderTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !renamingFolder) {
+            setRenameFolderTarget(null);
+            setRenameFolderName("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitRenameFolder();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>Rename folder</DialogTitle>
+            </DialogHeader>
+            <div className="py-4">
+              <Label htmlFor="library-folder-rename">Folder name</Label>
+              <Input
+                id="library-folder-rename"
+                value={renameFolderName}
+                onChange={(event) => setRenameFolderName(event.target.value)}
+                autoFocus
+                disabled={renamingFolder}
+                className="mt-2"
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={renamingFolder}
+                onClick={() => {
+                  setRenameFolderTarget(null);
+                  setRenameFolderName("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={renamingFolder || !renameFolderName.trim()}>
+                {renamingFolder ? <Loader2 className="size-4 animate-spin" /> : null}
+                Save
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={deleteFolderTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !deletingFolder) setDeleteFolderTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete folder?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete “{deleteFolderTarget?.name}”? Only empty folders can be deleted. If this folder
+              contains files, documents, or subfolders, move or delete them first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingFolder}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deletingFolder}
+              onClick={(event) => {
+                event.preventDefault();
+                void submitDeleteFolder();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingFolder ? <Loader2 className="size-4 animate-spin" /> : null}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppShell>
   );
 }
@@ -824,12 +982,16 @@ function FolderTree({
   activeId,
   onSelect,
   onAddChild,
+  onRename,
+  onDelete,
 }: {
   node: LibraryFolderNode;
   depth: number;
   activeId: string | null;
   onSelect: (id: string) => void;
   onAddChild: (id: string) => void;
+  onRename: (folder: ApiLibraryFolder) => void;
+  onDelete: (folder: ApiLibraryFolder) => void;
 }) {
   return (
     <div>
@@ -848,6 +1010,31 @@ function FolderTree({
           <Folder className="size-3.5 shrink-0" />
           <span className="truncate">{node.name}</span>
         </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="rounded p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 hover:bg-background"
+              title="Folder actions"
+              aria-label={`Actions for ${node.name}`}
+            >
+              <MoreHorizontal className="size-3" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-36">
+            <DropdownMenuItem onSelect={() => onRename(node)}>
+              <Pencil className="size-4" />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => onDelete(node)}
+              className="text-destructive focus:text-destructive"
+            >
+              <Trash2 className="size-4" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           type="button"
           className="rounded p-1 opacity-0 group-hover:opacity-100 hover:bg-background"
@@ -865,6 +1052,8 @@ function FolderTree({
           activeId={activeId}
           onSelect={onSelect}
           onAddChild={onAddChild}
+          onRename={onRename}
+          onDelete={onDelete}
         />
       ))}
     </div>

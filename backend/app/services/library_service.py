@@ -43,6 +43,12 @@ from app.services.chat_attachment_text import (
 
 logger = get_logger(__name__)
 
+
+def library_document_excerpt(content_text: str | None) -> tuple[str | None, str]:
+    """Derive the single Markdown-readable text projection used by Library and chat."""
+    excerpt = (content_text or "")[:ATTACHMENT_TEXT_EXCERPT_MAX]
+    return (excerpt or None, "ready" if excerpt.strip() else "empty")
+
 ITEM_TYPE_FILE = "file"
 ITEM_TYPE_DOCUMENT = "document"
 _LABEL_NAME_RE = re.compile(r"\s+")
@@ -134,8 +140,32 @@ class LibraryService:
         self, db: AsyncSession, auth: AuthContext, folder_id: str
     ) -> None:
         folder = await self._get_folder(db, auth, folder_id)
-        # Items in this folder (and nested via CASCADE on subfolders) become unfiled
-        # via SET NULL on folder_id; nested folders CASCADE-delete.
+        direct_item = (
+            await db.execute(
+                select(LibraryItem.id)
+                .where(
+                    LibraryItem.folder_id == folder.id,
+                    LibraryItem.org_id == auth.org_id,
+                    LibraryItem.user_id == auth.user.id,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        direct_child = (
+            await db.execute(
+                select(LibraryFolder.id)
+                .where(
+                    LibraryFolder.parent_id == folder.id,
+                    LibraryFolder.org_id == auth.org_id,
+                    LibraryFolder.user_id == auth.user.id,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if direct_item is not None or direct_child is not None:
+            raise ConflictError(
+                "This folder is not empty. Move or delete its contents before deleting it."
+            )
         await db.delete(folder)
         await db.flush()
         await db.commit()
@@ -350,6 +380,7 @@ class LibraryService:
         labels = await self._resolve_labels(
             db, auth, label_ids=label_ids or [], label_names=label_names or []
         )
+        text_excerpt, excerpt_status = library_document_excerpt(content_text)
         item = LibraryItem(
             org_id=auth.org_id,
             user_id=auth.user.id,
@@ -358,8 +389,8 @@ class LibraryService:
             folder_id=folder.id if folder else None,
             is_favorite=is_favorite,
             content_text=content_text or "",
-            excerpt_status="ready",
-            text_excerpt=(content_text or "")[:ATTACHMENT_TEXT_EXCERPT_MAX] or None,
+            excerpt_status=excerpt_status,
+            text_excerpt=text_excerpt,
         )
         db.add(item)
         await db.flush()
@@ -469,9 +500,7 @@ class LibraryService:
             if item.item_type != ITEM_TYPE_DOCUMENT:
                 raise ValidationError("Only MultiMind Documents have editable content")
             item.content_text = content_text
-            excerpt = content_text[:ATTACHMENT_TEXT_EXCERPT_MAX]
-            item.text_excerpt = excerpt or None
-            item.excerpt_status = "ready" if excerpt.strip() else "empty"
+            item.text_excerpt, item.excerpt_status = library_document_excerpt(content_text)
         if clear_folder:
             item.folder_id = None
         elif folder_id is not None:
