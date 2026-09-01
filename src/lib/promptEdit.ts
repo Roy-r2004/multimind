@@ -35,3 +35,11 @@ export function canSubmitEditedPrompt(
   if (submitting) return false;
   return Boolean(draft.trim());
 }
+
+export function appendTranscriptToPrompt(current: string, transcriptValue: string): string {
+  const transcript = transcriptValue.trim();
+  if (!transcript) return current;
+
+  const existing = current.trimEnd();
+  return existing ? `${existing}\n\n${transcript}` : transcript;
+}
