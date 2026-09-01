@@ -2056,8 +2056,9 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class ChatAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """Uploaded composer file for a chat.
 
-    Pending composer chips are rows with ``turn_id IS NULL``. Soft-deleting a turn
-    leaves ``turn_id`` set, so linked attachments do not reappear as pending.
+    Active sticky composer chips are rows with ``turn_id IS NULL``. Each accepted
+    turn receives a separate snapshot row with ``turn_id`` set, so removing the
+    active row never rewrites historical attachment associations.
 
     When ``library_item_id`` is set, the row references a Library item: text/Office
     attachments still use ``text_excerpt`` for council context. Images store binary

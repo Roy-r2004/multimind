@@ -73,7 +73,6 @@ import {
   markComposerFileDeleting,
   mergePendingAttachments,
   removeComposerFileByLocalId,
-  removeSubmittedComposerFiles,
   runComposerUploads,
   setComposerFileDeleteError,
   shouldApplyPendingAttachmentRestore,
@@ -846,7 +845,6 @@ export function ChatPage() {
       if (shouldClearReferenceAfterSend(true, refChats.length)) {
         setRefChats([]);
       }
-      setFiles((prev) => removeSubmittedComposerFiles(prev, uploadedIds));
       setAttachmentTranscriptions((current) => {
         const next = { ...current };
         uploadedIds.forEach((id) => delete next[id]);

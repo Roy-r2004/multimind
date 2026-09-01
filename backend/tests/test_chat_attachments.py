@@ -12,12 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context
 from app.core.exceptions import (
-    ConflictError,
     InvalidAudioError,
     NotFoundError,
     SilentAudioError,
     TranscriptionBusyError,
     TranscriptionTimeoutError,
+    ValidationError,
 )
 from app.db.models import Chat, ChatAttachment, Turn
 from app.db.session import get_db
@@ -204,22 +204,22 @@ async def test_turn_creation_links_attachments_and_builds_context(
     )
     await db.commit()
 
-    assert {
-        (attachment.id, attachment.filename, attachment.content_type)
-        for attachment in turn.attachments
-    } == {
-        (first.json()["id"], "alpha.txt", "text/plain"),
-        (second.json()["id"], "beta.md", "text/plain"),
+    assert {(attachment.filename, attachment.content_type) for attachment in turn.attachments} == {
+        ("alpha.txt", "text/plain"),
+        ("beta.md", "text/plain"),
     }
+    assert {attachment.id for attachment in turn.attachments}.isdisjoint(
+        {first.json()["id"], second.json()["id"]}
+    )
 
     reloaded_turns = await chat_service.list_turns(db, auth, chat.id)
     reloaded = next(item for item in reloaded_turns if item.id == turn.id)
-    assert {
-        (attachment.id, attachment.filename, attachment.content_type)
-        for attachment in reloaded.attachments
-    } == {
-        (first.json()["id"], "alpha.txt", "text/plain"),
-        (second.json()["id"], "beta.md", "text/plain"),
+    reloaded_attachment_details = {
+        (attachment.filename, attachment.content_type) for attachment in reloaded.attachments
+    }
+    assert reloaded_attachment_details == {
+        ("alpha.txt", "text/plain"),
+        ("beta.md", "text/plain"),
     }
 
     stored = (await db.execute(select(Turn).where(Turn.id == turn.id))).scalar_one()
@@ -235,7 +235,7 @@ async def test_turn_creation_links_attachments_and_builds_context(
     rows = (
         await db.execute(select(ChatAttachment).where(ChatAttachment.id.in_(attachment_ids)))
     ).scalars().all()
-    assert {row.turn_id for row in rows} == {turn.id}
+    assert {row.turn_id for row in rows} == {None}
 
 
 @pytest.mark.asyncio
@@ -294,7 +294,38 @@ async def test_attachment_from_different_chat_rejected(
 
 
 @pytest.mark.asyncio
-async def test_already_linked_attachment_rejected(
+async def test_duplicate_active_attachment_id_is_rejected_without_snapshot(
+    db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(tmp_path / "attachments"))
+    await create_model_set(db, auth, slug="research-set")
+    chat = await _create_chat(db, auth)
+    async with await _client_for(db, auth) as client:
+        uploaded = await _upload(client, chat.id, content=b"only once")
+    attachment_id = uploaded.json()["id"]
+
+    with pytest.raises(ValidationError, match="Duplicate attachment IDs"):
+        await chat_service.start_turn(
+            db,
+            auth,
+            chat.id,
+            TurnCreateRequest(
+                user_message="Duplicate",
+                model_set_id="research-set",
+                attachment_ids=[attachment_id, attachment_id],
+            ),
+        )
+
+    rows = (
+        await db.execute(select(ChatAttachment).where(ChatAttachment.chat_id == chat.id))
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].id == attachment_id
+    assert rows[0].turn_id is None
+
+
+@pytest.mark.asyncio
+async def test_active_attachment_can_be_reused_for_multiple_turns(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(tmp_path / "attachments"))
@@ -304,7 +335,7 @@ async def test_already_linked_attachment_rejected(
     async with await _client_for(db, auth) as client:
         uploaded = await _upload(client, chat.id, content=b"once")
 
-    await chat_service.start_turn(
+    first_turn = await chat_service.start_turn(
         db,
         auth,
         chat.id,
@@ -316,17 +347,65 @@ async def test_already_linked_attachment_rejected(
     )
     await db.flush()
 
-    with pytest.raises(ConflictError):
-        await chat_service.start_turn(
-            db,
-            auth,
-            chat.id,
-            TurnCreateRequest(
-                user_message="Second",
-                model_set_id="research-set",
-                attachment_ids=[uploaded.json()["id"]],
-            ),
+    second_turn = await chat_service.start_turn(
+        db,
+        auth,
+        chat.id,
+        TurnCreateRequest(
+            user_message="Second",
+            model_set_id="research-set",
+            attachment_ids=[uploaded.json()["id"]],
+        ),
+    )
+    third_turn = await chat_service.start_turn(
+        db,
+        auth,
+        chat.id,
+        TurnCreateRequest(
+            user_message="Third",
+            model_set_id="research-set",
+            attachment_ids=[uploaded.json()["id"]],
+        ),
+    )
+    await db.flush()
+
+    active = await db.get(ChatAttachment, uploaded.json()["id"])
+    snapshots = (
+        await db.execute(
+            select(ChatAttachment).where(
+                ChatAttachment.turn_id.in_([first_turn.id, second_turn.id, third_turn.id])
+            )
         )
+    ).scalars().all()
+    assert active is not None and active.turn_id is None
+    assert len(snapshots) == 3
+    assert {row.turn_id for row in snapshots} == {
+        first_turn.id,
+        second_turn.id,
+        third_turn.id,
+    }
+    assert len({row.id for row in snapshots}) == 3
+    assert all(row.id != active.id for row in snapshots)
+    assert all(row.text_excerpt == active.text_excerpt for row in snapshots)
+
+    stored_path = tmp_path / "attachments" / active.relative_path
+    async with await _client_for(db, auth) as client:
+        removed = await client.delete(f"/api/v1/chats/{chat.id}/attachments/{active.id}")
+        pending = await client.get(f"/api/v1/chats/{chat.id}/attachments")
+    assert removed.status_code == 200
+    assert pending.json()["items"] == []
+    assert await db.get(ChatAttachment, active.id) is None
+    assert stored_path.is_file()
+    for snapshot in snapshots:
+        assert await db.get(ChatAttachment, snapshot.id) is not None
+
+    fourth_turn = await chat_service.start_turn(
+        db,
+        auth,
+        chat.id,
+        TurnCreateRequest(user_message="Fourth", model_set_id="research-set"),
+    )
+    assert fourth_turn.attachments == []
 
 
 @pytest.mark.asyncio
@@ -733,7 +812,7 @@ async def test_delete_linked_attachment_returns_conflict(
         uploaded = await _upload(client, chat.id, content=b"linked")
         attachment_id = uploaded.json()["id"]
 
-    await chat_service.start_turn(
+    turn = await chat_service.start_turn(
         db,
         auth,
         chat.id,
@@ -744,10 +823,13 @@ async def test_delete_linked_attachment_returns_conflict(
         ),
     )
     await db.commit()
+    historical = (
+        await db.execute(select(ChatAttachment).where(ChatAttachment.turn_id == turn.id))
+    ).scalar_one()
 
     async with await _client_for(db, auth) as client:
         response = await client.delete(
-            f"/api/v1/chats/{chat.id}/attachments/{attachment_id}"
+            f"/api/v1/chats/{chat.id}/attachments/{historical.id}"
         )
     assert response.status_code == 409
     assert response.json()["error"] == "CONFLICT"
@@ -878,7 +960,7 @@ async def test_delete_chat_succeeds_when_one_attachment_file_missing(
 
 
 @pytest.mark.asyncio
-async def test_soft_deleted_turn_keeps_linked_attachment_out_of_pending(
+async def test_soft_deleted_turn_keeps_snapshot_out_of_pending_but_active_row_visible(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(tmp_path / "attachments"))
@@ -902,15 +984,17 @@ async def test_soft_deleted_turn_keeps_linked_attachment_out_of_pending(
 
     await chat_service.delete_turn(db, auth, chat.id, turn.id)
 
-    row = (
-        await db.execute(select(ChatAttachment).where(ChatAttachment.id == attachment_id))
+    active = await db.get(ChatAttachment, attachment_id)
+    historical = (
+        await db.execute(select(ChatAttachment).where(ChatAttachment.turn_id == turn.id))
     ).scalar_one()
-    assert row.turn_id == turn.id
+    assert active is not None and active.turn_id is None
+    assert historical.id != active.id
 
     async with await _client_for(db, auth) as client:
         listed = await client.get(f"/api/v1/chats/{chat.id}/attachments")
     assert listed.status_code == 200
-    assert listed.json()["items"] == []
+    assert [item["id"] for item in listed.json()["items"]] == [attachment_id]
 
 
 @pytest.mark.asyncio
@@ -1167,7 +1251,7 @@ async def test_duplicate_display_names_create_distinct_records(
 
 
 @pytest.mark.asyncio
-async def test_conditional_link_prevents_double_claim(
+async def test_repeated_submission_creates_distinct_snapshots_without_consuming_active_row(
     db: AsyncSession, auth: AuthContext, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(get_settings(), "chat_attachment_dir", str(tmp_path / "attachments"))
@@ -1189,22 +1273,28 @@ async def test_conditional_link_prevents_double_claim(
     )
     await db.flush()
 
-    with pytest.raises(ConflictError):
-        await chat_service.start_turn(
-            db,
-            auth,
-            chat.id,
-            TurnCreateRequest(
-                user_message="Second claim",
-                model_set_id="research-set",
-                attachment_ids=[attachment_id],
-            ),
-        )
+    second = await chat_service.start_turn(
+        db,
+        auth,
+        chat.id,
+        TurnCreateRequest(
+            user_message="Second claim",
+            model_set_id="research-set",
+            attachment_ids=[attachment_id],
+        ),
+    )
 
     row = (
         await db.execute(select(ChatAttachment).where(ChatAttachment.id == attachment_id))
     ).scalar_one()
-    assert row.turn_id == first.id
+    assert row.turn_id is None
+    snapshots = (
+        await db.execute(
+            select(ChatAttachment).where(ChatAttachment.turn_id.in_([first.id, second.id]))
+        )
+    ).scalars().all()
+    assert len(snapshots) == 2
+    assert {snapshot.turn_id for snapshot in snapshots} == {first.id, second.id}
 
 
 PDF_MIME = "application/pdf"

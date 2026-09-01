@@ -172,17 +172,6 @@ export function submittedAttachmentIds(files: ComposerFileChip[]): string[] {
     .map((file) => file.attachmentId as string);
 }
 
-export function removeSubmittedComposerFiles(
-  files: ComposerFileChip[],
-  submittedIds: string[],
-): ComposerFileChip[] {
-  if (submittedIds.length === 0) return files;
-  const remove = new Set(submittedIds);
-  return files.filter(
-    (file) => !(file.attachmentId && remove.has(file.attachmentId) && file.state === "uploaded"),
-  );
-}
-
 export type PendingAttachmentItem = {
   id: string;
   filename: string;

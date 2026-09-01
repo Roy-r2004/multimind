@@ -24,7 +24,6 @@ import {
   mergeRestoredComposerFiles,
   openComposerFilePicker,
   removeComposerFileByLocalId,
-  removeSubmittedComposerFiles,
   runComposerUploads,
   setComposerFileDeleteError,
   shouldApplyPendingAttachmentRestore,
@@ -201,30 +200,22 @@ test("keyboard send is blocked conceptually when uploading", () => {
   assert.equal(hasUploadingComposerFiles(files), true);
 });
 
-test("successful send removes only submitted uploaded ids", () => {
+test("sticky attachment ids remain available for repeated sends", () => {
   const files = [
     { localId: "1", name: "a.txt", state: "uploaded" as const, attachmentId: "att-a" },
     { localId: "2", name: "b.txt", state: "uploaded" as const, attachmentId: "att-b" },
     { localId: "3", name: "c.txt", state: "error" as const, errorMessage: "nope" },
     { localId: "4", name: "d.txt", state: "uploading" as const },
-    { localId: "5", name: "e.txt", state: "uploaded" as const, attachmentId: "att-new" },
   ];
-  const next = removeSubmittedComposerFiles(files, ["att-a", "att-b"]);
-  assert.deepEqual(
-    next.map((f) => f.localId),
-    ["3", "4", "5"],
-  );
+  assert.deepEqual(submittedAttachmentIds(files), ["att-a", "att-b"]);
+  assert.deepEqual(submittedAttachmentIds(files), ["att-a", "att-b"]);
 });
 
-test("failed chips remain after send cleanup", () => {
-  const files = [
-    { localId: "1", name: "ok.txt", state: "uploaded" as const, attachmentId: "att-1" },
-    { localId: "2", name: "bad.txt", state: "error" as const, errorMessage: "Failed" },
-  ];
-  const next = removeSubmittedComposerFiles(files, ["att-1"]);
-  assert.equal(next.length, 1);
-  assert.equal(next[0]?.state, "error");
-  assert.equal(next[0]?.errorMessage, "Failed");
+test("successful chat send does not clear sticky attachment chips", () => {
+  const chatSource = readFileSync(new URL("../../src/routes/chat.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(chatSource, /removeSubmittedComposerFiles/);
+  assert.match(chatSource, /attachment_ids: uploadedIds/);
+  assert.match(chatSource, /setInput\(""\)/);
 });
 
 test("pending restore does not duplicate and keeps local busy chips", () => {

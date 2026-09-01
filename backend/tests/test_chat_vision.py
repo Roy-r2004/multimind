@@ -258,11 +258,16 @@ async def test_ensure_image_context_analyzes_once_and_caches(
     assert second == SAMPLE_CONTEXT
     assert calls == [1]
 
-    row = (
-        await db.execute(select(ChatAttachment).where(ChatAttachment.id == att_id))
+    active = await db.get(ChatAttachment, att_id)
+    historical = (
+        await db.execute(select(ChatAttachment).where(ChatAttachment.turn_id == turn.id))
     ).scalar_one()
-    assert row.excerpt_status == "ready"
-    assert row.text_excerpt == SAMPLE_CONTEXT
+    assert active is not None and active.turn_id is None
+    assert active.excerpt_status == "image"
+    assert active.text_excerpt is None
+    assert historical.id != active.id
+    assert historical.excerpt_status == "ready"
+    assert historical.text_excerpt == SAMPLE_CONTEXT
 
 
 @pytest.mark.asyncio
@@ -441,11 +446,14 @@ async def test_png_upload_and_turn_link(
             attachment_ids=[body["id"]],
         ),
     )
-    row = (
-        await db.execute(select(ChatAttachment).where(ChatAttachment.id == body["id"]))
+    active = await db.get(ChatAttachment, body["id"])
+    historical = (
+        await db.execute(select(ChatAttachment).where(ChatAttachment.turn_id == turn.id))
     ).scalar_one()
-    assert row.turn_id == turn.id
-    assert (attach_dir / row.relative_path).read_bytes() == PNG_BYTES
+    assert active is not None and active.turn_id is None
+    assert historical.id != active.id
+    assert historical.relative_path == active.relative_path
+    assert (attach_dir / historical.relative_path).read_bytes() == PNG_BYTES
 
     images = await load_vision_images_for_turn(db, turn_id=turn.id, org_id=auth.org_id)
     assert len(images) == 1
