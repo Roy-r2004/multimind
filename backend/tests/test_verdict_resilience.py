@@ -36,6 +36,7 @@ from app.db.models import (
 )
 from app.llm.orchestrator import (
     VERDICT_DEFAULT_REASON,
+    VERDICT_MAX_TOKENS,
     TurnContext,
     TurnOrchestrator,
     _answer_score_update_statement,
@@ -54,10 +55,13 @@ class ScriptedProvider:
         self._verdict_script = list(verdict_script)
         self.verdict_calls = 0
         self.answer_calls = 0
+        self.answer_max_tokens: list[int] = []
+        self.verdict_max_tokens: list[int] = []
 
     async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 4096, **_kwargs):
         if user == VERDICT_USER_PROMPT:
             self.verdict_calls += 1
+            self.verdict_max_tokens.append(max_tokens)
             step = (
                 self._verdict_script.pop(0)
                 if self._verdict_script
@@ -69,6 +73,7 @@ class ScriptedProvider:
                 step = step(system)
             return LLMResponse(text=step, tokens_input=10, tokens_output=5)
         self.answer_calls += 1
+        self.answer_max_tokens.append(max_tokens)
         return LLMResponse(
             text=f"Answer from {model}", tokens_input=10, tokens_output=5, confidence=90
         )
@@ -214,6 +219,9 @@ async def test_multi_model_still_calls_referee_and_persists_verdict_cost(env):
 
     assert provider.answer_calls == 2
     assert provider.verdict_calls == 1
+    assert VERDICT_MAX_TOKENS == 15000
+    assert provider.answer_max_tokens == [20000, 20000]
+    assert provider.verdict_max_tokens == [15000]
     assert turn.status == TurnStatus.COMPLETED
     assert len(answers) == 2
     assert verdict is not None

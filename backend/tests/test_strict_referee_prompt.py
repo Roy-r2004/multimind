@@ -15,6 +15,8 @@ EXPECTED_STRICT_REFEREE_BEHAVIOR = """You are the **Referee AI** embedded within
   - Reflects the strongest, most relevant, and well-supported points from each AI response.
   - Resolves contradictions, highlights areas of consensus, and faithfully incorporates important nuances or minority viewpoints where relevant.
   - Presents the unified answer in a logically structured, clear, and unambiguous manner, avoiding unnecessary repetition.
+  - When one or more supplied answers contain a materially useful table or structured comparison, preserve that information in the final answer using a table whenever a table remains an effective way to present it, even if the user did not explicitly request one. If multiple answers contain overlapping tables, reconcile and synthesize them into a single coherent table where practical. Do not collapse materially important comparative rows, columns, values, distinctions, or rankings into prose merely for brevity.
+  - If multiple supplied answers independently use tables for the same comparison, treat that as strong evidence that tabular presentation is useful and include an appropriate table in the final answer. You may omit a source table only when it is redundant, irrelevant, factually unreliable, or genuinely clearer in another structure. Never copy tables merely verbatim; synthesize their useful information into the unified answer.
   - **Do NOT** provide a summary, a resume, or a concise answer. Your output must be fully explicit and elaborate, spelling out all reasoning, details, and supporting logic from the provided AI responses. Every component of your output should be as detailed and explicit as possible, leaving no reasoning or nuance implicit or abbreviated.
 - **Do NOT** answer the original prompt independently, nor inject new content or reasoning not present in the AI responses.
 
@@ -95,6 +97,67 @@ def test_strict_referee_receives_question_answers_metadata_and_json_protocol():
     assert "**Confidence**" not in rendered
     assert "Correctness / accuracy: 30 points" in rendered
     assert "highest-scoring answer must not automatically become the verdict" in rendered
+    assert '"text": "<the fully explicit and exhaustive synthesis in Markdown>"' in rendered
+    assert (
+        '"reason": "<1-3 sentences identifying how the supplied answers were synthesized '
+        'and any unresolved conflicts>"' in rendered
+    )
+    assert '"evaluations": [' in rendered
+
+
+def test_strict_referee_preserves_useful_structure_without_blind_copying():
+    rendered = PromptEngine().verdict_prompt(
+        strategy="Referee",
+        user_message="Compare the options",
+        model_answers=_answers(),
+    )
+
+    assert "preserve that information in the final answer using a table" in rendered
+    assert "even if the user did not explicitly request one" in rendered
+    assert "reconcile and synthesize them into a single coherent table" in rendered
+    assert "multiple supplied answers independently use tables" in rendered
+    assert "treat that as strong evidence that tabular presentation is useful" in rendered
+    assert "Do not collapse materially important comparative rows, columns, values" in rendered
+    assert "merely for brevity" in rendered
+    assert "redundant, irrelevant, factually unreliable" in rendered
+    assert "Never copy tables merely verbatim" in rendered
+
+
+def test_mandatory_structural_check_is_late_and_overrides_narrative_conciseness():
+    custom = "CUSTOM_CONCISENESS_SENTINEL: use a unified narrative and be concise."
+    rendered = PromptEngine().verdict_prompt(
+        strategy="Referee",
+        user_message="Compare the options",
+        model_answers=_answers(),
+        referee_instructions=custom,
+    )
+
+    custom_index = rendered.index(custom)
+    answers_index = rendered.index("## Supplied AI Agent Answers")
+    scoring_index = rendered.index("## Per-Answer Quality Evaluation")
+    structural_index = rendered.index("## Mandatory Structural Synthesis Check")
+    output_index = rendered.index("## Output Protocol")
+
+    assert custom_index < answers_index < scoring_index < structural_index < output_index
+    assert "two or more supplied answers contain tables for the same substantive comparison" in rendered
+    assert "final Verdict **must include a synthesized table**" in rendered
+    assert "Do not let the highest-scoring answer determine the final answer's structure" in rendered
+    assert "unified narrative" in rendered
+    assert "conciseness, or redundancy removal must not be interpreted" in rendered
+
+
+def test_mandatory_structural_check_preserves_exceptions_and_requires_synthesis():
+    rendered = PromptEngine().verdict_prompt(
+        strategy="Referee",
+        user_message="Compare the options",
+        model_answers=_answers(),
+    )
+
+    assert "unless the user explicitly requests another format" in rendered
+    assert "tabular content is irrelevant or factually unreliable" in rendered
+    assert "Reconcile overlapping rows and columns" in rendered
+    assert "Retain materially important values, distinctions, rankings" in rendered
+    assert "Do not copy tables verbatim merely because they exist" in rendered
 
 
 def test_strict_referee_includes_custom_verdict_instructions_but_excludes_runtime_context():

@@ -2257,7 +2257,7 @@ function AiTurn({
           </div>
         </div>
         <div className="mt-5 space-y-3">
-          <MessageContent>{turn.verdict.text}</MessageContent>
+          <MessageContent variant="verdict">{turn.verdict.text}</MessageContent>
           {turn.verdict.reason && (
             <MessageContent
               muted
