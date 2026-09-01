@@ -4,10 +4,38 @@ import test from "node:test";
 
 import {
   LATER_TURNS_EDIT_WARNING,
+  appendTranscriptToPrompt,
   canEditUserPrompt,
   canSubmitEditedPrompt,
   countLaterTurns,
 } from "../../src/lib/promptEdit.ts";
+
+test("voice transcript appends to an existing prompt with one blank line", () => {
+  assert.equal(
+    appendTranscriptToPrompt("Make it shorter.", "Add a table."),
+    "Make it shorter.\n\nAdd a table.",
+  );
+});
+
+test("voice transcript becomes the prompt when the draft is empty", () => {
+  assert.equal(appendTranscriptToPrompt("", "  Add a table.  "), "Add a table.");
+  assert.equal(appendTranscriptToPrompt("   ", "Add a table."), "Add a table.");
+});
+
+test("empty voice transcript leaves the current draft unchanged", () => {
+  assert.equal(appendTranscriptToPrompt("Keep this exactly.  ", "   "), "Keep this exactly.  ");
+});
+
+test("functional voice append uses the latest prompt draft", () => {
+  let draft = "Hello";
+  const applyTranscript = (transcript: string) => {
+    draft = appendTranscriptToPrompt(draft, transcript);
+  };
+
+  draft = "Hello world";
+  applyTranscript("Add examples");
+  assert.equal(draft, "Hello world\n\nAdd examples");
+});
 
 test("Edit helpers allow completed prompts when nothing is generating", () => {
   assert.equal(canEditUserPrompt({ status: "completed" }, [{ status: "completed" }]), true);
@@ -66,7 +94,39 @@ test("save forwards the trimmed unchanged draft through the existing regenerate 
   );
   const chatSource = readFileSync(new URL("../../src/routes/chat.tsx", import.meta.url), "utf8");
   assert.match(bubbleSource, /await onSubmit\(draft\.trim\(\)\)/);
-  assert.match(chatSource, /regenerateTurn\(auth, activeChatId, turn\.id, \{ prompt \}\)/);
+  assert.match(
+    chatSource,
+    /regenerateTurn\([\s\S]*modelSetRegenerateRequestPayload\(prompt, set\.id\)/,
+  );
+});
+
+test("prompt edit voice only appends draft text and never submits automatically", () => {
+  const bubbleSource = readFileSync(
+    new URL("../../src/components/chat/UserPromptBubble.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    bubbleSource,
+    /setDraft\(\(current\) => appendTranscriptToPrompt\(current, result\.text\)\)/,
+  );
+  assert.doesNotMatch(
+    bubbleSource,
+    /onTranscript=\{[^}]*\b(?:onSubmit|save|requestPromptEdit|regenerateEditedPrompt)\b/,
+  );
+});
+
+test("voice activity blocks button, keyboard save path, and edit cancellation", () => {
+  const bubbleSource = readFileSync(
+    new URL("../../src/components/chat/UserPromptBubble.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(bubbleSource, /if \(isVoiceActive \|\| !canSubmitEditedPrompt/);
+  assert.match(bubbleSource, /void save\(\)/);
+  assert.match(bubbleSource, /disabled=\{submitting \|\| isVoiceActive\}/);
+  assert.match(bubbleSource, /const canSave = !isVoiceActive && canSubmitEditedPrompt/);
+  assert.match(bubbleSource, /onRecordingStateChange=\{setIsVoiceActive\}/);
 });
 
 test("shared/public chat stays read-only by not importing edit UI helpers into shared route", () => {

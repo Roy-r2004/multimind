@@ -1308,6 +1308,8 @@ export function ChatPage() {
                             : promptDisabledReason
                         }
                         submitting={regeneratingTurnId === turn.id}
+                        voiceAuth={voiceAuth}
+                        voiceDisabled={voiceDisabled || isVoiceActive}
                         onSubmit={(prompt) => requestPromptEdit(turn, prompt)}
                         onSavePrompt={() =>
                           setSavePromptTarget({
