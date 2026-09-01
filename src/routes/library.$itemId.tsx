@@ -1,29 +1,18 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ArrowLeft,
-  Download,
-  Loader2,
-  Paperclip,
-  Save,
-  Star,
-  Trash2,
-} from "lucide-react";
+import { ArrowLeft, Download, Loader2, Paperclip, Save, Star, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard } from "@/components/cinematic/PageChrome";
+import { LibraryDocumentEditor } from "@/components/library/LibraryDocumentEditor";
 import { LibraryFolderSelect } from "@/components/library/LibraryFolderSelect";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
 import type { ApiLibraryFolder, ApiLibraryItem, ApiLibraryLabel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
-import { attachLibraryItemViaApi } from "@/lib/libraryAttach";
+import { attachLibraryItemViaApi, saveLibraryDocumentBeforeAttach } from "@/lib/libraryAttach";
 import { libraryFileContentView, libraryItemOpensDetail } from "@/lib/libraryContent";
-import {
-  formatLibraryBytes,
-  formatLibraryUpdatedAt,
-  libraryItemTypeLabel,
-} from "@/lib/libraryUi";
+import { formatLibraryBytes, formatLibraryUpdatedAt, libraryItemTypeLabel } from "@/lib/libraryUi";
 import { useChatStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -90,8 +79,7 @@ function LibraryItemPage() {
       setLabels(labelList);
       setDirty(false);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to load Library item";
+      const message = error instanceof Error ? error.message : "Failed to load Library item";
       toast.error(message);
       setItem(null);
       setLoadError(message);
@@ -105,9 +93,9 @@ function LibraryItemPage() {
     void load();
   }, [load]);
 
-  async function save() {
+  async function save(): Promise<boolean> {
     const auth = authHeaders();
-    if (!auth || !item) return;
+    if (!auth || !item) return false;
     setSaving(true);
     try {
       let labelIds = selectedLabelIds;
@@ -134,8 +122,10 @@ function LibraryItemPage() {
       setSelectedLabelIds(updated.labels.map((label) => label.id));
       setDirty(false);
       toast.success("Saved");
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Save failed");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -200,9 +190,7 @@ function LibraryItemPage() {
     if (!auth || !item) return;
     setAttaching(true);
     try {
-      if (dirty) {
-        await save();
-      }
+      if (!(await saveLibraryDocumentBeforeAttach(dirty, save))) return;
       const result = await attachLibraryItemViaApi({
         libraryItemId: item.id,
         activeChatId,
@@ -408,15 +396,15 @@ function LibraryItemPage() {
 
           {isDocument ? (
             <>
-              <textarea
+              <LibraryDocumentEditor
                 value={content}
-                onChange={(e) => {
-                  setContent(e.target.value);
+                onChange={(next) => {
+                  setContent(next);
                   setDirty(true);
                 }}
                 rows={22}
                 placeholder="Write your document…"
-                className="w-full resize-y rounded-lg border border-border bg-background/60 px-3 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-2 focus:ring-ring"
+                className="min-h-[32rem]"
               />
               <p className="text-[11px] text-muted-foreground">
                 {dirty ? "Unsaved changes" : "All changes saved"} · MultiMind Document

@@ -24,6 +24,14 @@ export type AttachLibraryItemDeps = {
   onError?: (message: string) => void;
 };
 
+/** Gate an attach behind persistence when the editor has unsaved content. */
+export async function saveLibraryDocumentBeforeAttach(
+  dirty: boolean,
+  save: () => Promise<boolean>,
+): Promise<boolean> {
+  return dirty ? save() : true;
+}
+
 /**
  * Attach a Library item to the current chat composer.
  * Creates a chat (with retention) when none is active. Does not send a turn.
@@ -32,13 +40,17 @@ export async function attachLibraryItemToComposer(
   libraryItemId: string,
   displayName: string,
   deps: AttachLibraryItemDeps,
-): Promise<{ chatId: string | null; attachment: ApiChatAttachment | null; createdNewChat: boolean }> {
-  const existing = deps.getFiles().find(
-    (file) =>
-      file.state === "uploaded" &&
-      file.attachmentId &&
-      file.libraryItemId === libraryItemId,
-  );
+): Promise<{
+  chatId: string | null;
+  attachment: ApiChatAttachment | null;
+  createdNewChat: boolean;
+}> {
+  const existing = deps
+    .getFiles()
+    .find(
+      (file) =>
+        file.state === "uploaded" && file.attachmentId && file.libraryItemId === libraryItemId,
+    );
   if (existing) {
     return {
       chatId: deps.activeChatId,
@@ -156,7 +168,11 @@ export async function attachLibraryItemViaApi(options: {
   activateChat: (chatId: string) => void;
   retainRef: { current: string | null };
   attachFromLibrary: (chatId: string, libraryItemId: string) => Promise<ApiChatAttachment>;
-}): Promise<{ chatId: string | null; attachment: ApiChatAttachment | null; createdNewChat: boolean }> {
+}): Promise<{
+  chatId: string | null;
+  attachment: ApiChatAttachment | null;
+  createdNewChat: boolean;
+}> {
   let targetChatId = options.activeChatId;
   let createdNewChat = false;
   if (!targetChatId) {

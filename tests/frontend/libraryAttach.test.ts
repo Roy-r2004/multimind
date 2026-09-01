@@ -13,6 +13,7 @@ import {
   attachLibraryItemToComposer,
   attachLibraryItemViaApi,
   findDuplicateLibraryAttachment,
+  saveLibraryDocumentBeforeAttach,
 } from "../../src/lib/libraryAttach.ts";
 import { buildLibraryFolderTree, flattenLibraryFolderOptions } from "../../src/lib/libraryUi.ts";
 
@@ -24,6 +25,23 @@ test("findDuplicateLibraryAttachment detects uploading or uploaded library chips
   assert.equal(findDuplicateLibraryAttachment(files, "lib-1")?.localId, "1");
   assert.equal(findDuplicateLibraryAttachment(files, "lib-2")?.localId, "2");
   assert.equal(findDuplicateLibraryAttachment(files, "lib-3"), undefined);
+});
+
+test("save-before-attach stops when saving dirty document fails", async () => {
+  let saves = 0;
+  const allowed = await saveLibraryDocumentBeforeAttach(true, async () => {
+    saves += 1;
+    return false;
+  });
+  assert.equal(allowed, false);
+  assert.equal(saves, 1);
+
+  const cleanAllowed = await saveLibraryDocumentBeforeAttach(false, async () => {
+    saves += 1;
+    return false;
+  });
+  assert.equal(cleanAllowed, true);
+  assert.equal(saves, 1);
 });
 
 test("attachLibraryItemToComposer attaches to an active chat without creating another", async () => {
@@ -123,11 +141,14 @@ test("attachLibraryItemToComposer retains chips across new-chat creation", async
   assert.equal(files.length, 2);
   assert.equal(files[0]?.attachmentId, "att-old");
   assert.equal(files[1]?.libraryItemId, "lib-new");
-  assert.equal(shouldSkipAutoDiscardUnusedChat({
-    chatId: "chat-created",
-    retainForChatId: null,
-    files,
-  }), true);
+  assert.equal(
+    shouldSkipAutoDiscardUnusedChat({
+      chatId: "chat-created",
+      retainForChatId: null,
+      files,
+    }),
+    true,
+  );
 });
 
 test("attachLibraryItemToComposer skips duplicate library item", async () => {
