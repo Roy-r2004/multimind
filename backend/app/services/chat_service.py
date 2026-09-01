@@ -843,19 +843,23 @@ class ChatService:
 
         await db.flush()
 
-        if attachments:
-            link_result = await db.execute(
-                update(ChatAttachment)
-                .where(
-                    ChatAttachment.id.in_([item.id for item in attachments]),
-                    ChatAttachment.org_id == auth.org_id,
-                    ChatAttachment.chat_id == chat.id,
-                    ChatAttachment.turn_id.is_(None),
+        for attachment in attachments:
+            db.add(
+                ChatAttachment(
+                    org_id=attachment.org_id,
+                    chat_id=attachment.chat_id,
+                    uploaded_by_user_id=attachment.uploaded_by_user_id,
+                    turn_id=turn.id,
+                    library_item_id=attachment.library_item_id,
+                    filename=attachment.filename,
+                    stored_name=attachment.stored_name,
+                    content_type=attachment.content_type,
+                    size_bytes=attachment.size_bytes,
+                    relative_path=attachment.relative_path,
+                    text_excerpt=attachment.text_excerpt,
+                    excerpt_status=attachment.excerpt_status,
                 )
-                .values(turn_id=turn.id)
             )
-            if link_result.rowcount != len(attachments):
-                raise ConflictError("Attachment is already linked to a turn")
 
         for model_id in model_set.models:
             db.add(

@@ -532,9 +532,26 @@ async def delete_attachment(
     await db.delete(row)
     await db.flush()
 
+    # Historical snapshots may share the active row's chat-owned binary. Keep it
+    # until the final DB reference is gone; chat deletion remains the usual cleanup.
+    remaining_file_reference = None
+    if not library_owned:
+        remaining_file_reference = (
+            await db.execute(
+                select(ChatAttachment.id)
+                .where(
+                    ChatAttachment.org_id == auth.org_id,
+                    ChatAttachment.chat_id == str(chat_id),
+                    ChatAttachment.library_item_id.is_(None),
+                    ChatAttachment.relative_path == relative_path,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
     # Prefer DB removal first to avoid orphaned references; missing files are OK.
     # Library-referenced rows do not own a chat-storage file.
-    if not library_owned:
+    if not library_owned and remaining_file_reference is None:
         try:
             safe_delete_attachment_file(relative_path)
         except UnsafeAttachmentPathError:
