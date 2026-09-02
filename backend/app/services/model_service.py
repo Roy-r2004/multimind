@@ -14,12 +14,13 @@ from app.llm.catalog import (
     slug_to_model_id,
 )
 from app.llm.pricing import get_pricing_service, vendor_from_slug
-from app.schemas.api import ModelAddRequest, ModelResponse, ModelSearchResult, ModelPricingResponse
+from app.schemas.api import ModelAddRequest, ModelPricingResponse, ModelResponse, ModelSearchResult
 
 
 def _to_response(model_id: str, *, name: str, vendor: str, color: str, blurb: str, is_custom: bool) -> ModelResponse:
     pricing_svc = get_pricing_service()
     p = pricing_svc.get_pricing(model_id)
+    metadata = pricing_svc.get_slug_metadata(p.openrouter_slug or "") or {}
     return ModelResponse(
         id=model_id,
         name=name,
@@ -34,6 +35,7 @@ def _to_response(model_id: str, *, name: str, vendor: str, color: str, blurb: st
             source=p.source,
             openrouter_slug=p.openrouter_slug,
         ),
+        context_length=metadata.get("context_length"),
     )
 
 

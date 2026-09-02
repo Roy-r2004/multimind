@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import AuthContext, get_auth_context
 from app.db.session import get_db
 from app.schemas.api import (
+    PromptBuilderContextResponse,
     PromptBuilderImproveRequest,
     PromptBuilderImproveResponse,
     PromptBuilderRefineRequest,
@@ -12,6 +13,18 @@ from app.schemas.api import (
 from app.services.prompt_builder_service import prompt_builder_service
 
 router = APIRouter()
+
+
+@router.post("/context", response_model=PromptBuilderContextResponse)
+async def prompt_builder_context(
+    data: PromptBuilderRefineRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Estimate the next lossless Builder request against real model limits."""
+    return await prompt_builder_service.context(
+        db, auth, messages=data.messages, model_set_id=data.model_set_id
+    )
 
 
 @router.post("/improve", response_model=PromptBuilderImproveResponse)
