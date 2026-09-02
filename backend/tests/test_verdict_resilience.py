@@ -346,9 +346,8 @@ def test_referee_score_validation_accepts_integer_boundaries_and_partial_results
     rows = [_row("a", "gpt-4.1"), _row("b", "claude"), _row("failed", status=ModelAnswerStatus.FAILED)]
     parsed = {
         "evaluations": [
-            {"answer_id": "a", "score": 0},
-            {"answer_id": "b", "score": 100},
-            {"answer_id": "failed", "score": 80},
+            {"model_name": "GPT-4.1", "score": 0},
+            {"model_name": "Claude Sonnet 4", "score": 100},
         ]
     }
 
@@ -362,11 +361,11 @@ def test_referee_score_validation_rejects_invalid_duplicate_and_unknown_entries(
     rows = [_row("a"), _row("b", "claude")]
     parsed = {
         "evaluations": [
-            {"answer_id": "a", "score": 90},
-            {"answer_id": "a", "score": 80},
-            {"answer_id": "b", "score": 50.5},
-            {"answer_id": "b", "score": -1},
-            {"answer_id": "unknown", "score": 75},
+            {"model_name": "GPT-4.1", "score": 90},
+            {"model_name": "GPT-4.1", "score": 80},
+            {"model_name": "Claude Sonnet 4", "score": 50.5},
+            {"model_name": "Claude Sonnet 4", "score": -1},
+            {"model_name": "Unknown", "score": 75},
             {"answer_id": "missing-score"},
             "malformed",
         ]
@@ -379,9 +378,9 @@ def test_referee_score_validation_rejects_boolean_and_out_of_range_scores():
     rows = [_row("a"), _row("b", "claude"), _row("c", "gemini")]
     parsed = {
         "evaluations": [
-            {"answer_id": "a", "score": True},
-            {"answer_id": "b", "score": 101},
-            {"answer_id": "c", "score": -10},
+            {"model_name": "GPT-4.1", "score": True},
+            {"model_name": "Claude Sonnet 4", "score": 101},
+            {"model_name": "Gemini 2.5 Pro", "score": -10},
         ]
     }
 
@@ -409,16 +408,18 @@ async def test_referee_scores_overwrite_null_confidence_and_stream_live_updates(
     Session, ids, auth = env
 
     def scored_verdict(system: str) -> str:
-        answer_ids = re.findall(r"\*\*Answer ID\*\*: ([^\r\n]+)", system)
-        assert len(answer_ids) == 2
+        assert "Model: GPT-4.1" in system
+        assert "Model: Claude Sonnet 4" in system
+        assert "**Answer ID**" not in system
+        assert not re.search(r"[0-9a-f]{8}-[0-9a-f-]{27}", system, re.IGNORECASE)
         assert "**Confidence**" not in system
         return json.dumps(
             {
                 "text": "Ship it in stages.",
                 "reason": "Combined both answers.",
                 "evaluations": [
-                    {"answer_id": answer_ids[0], "score": 98},
-                    {"answer_id": answer_ids[1], "score": 100},
+                    {"model_name": "GPT-4.1", "score": 98},
+                    {"model_name": "Claude Sonnet 4", "score": 100},
                 ],
             }
         )
@@ -451,14 +452,13 @@ async def test_valid_verdict_with_bad_or_missing_scores_keeps_confidence_null(en
     Session, ids, _auth = env
 
     def malformed_scores(system: str) -> str:
-        answer_ids = re.findall(r"\*\*Answer ID\*\*: ([^\r\n]+)", system)
         return json.dumps(
             {
                 "text": "Usable verdict",
                 "reason": "Scores were malformed.",
                 "evaluations": [
-                    {"answer_id": answer_ids[0], "score": 90.5},
-                    {"answer_id": "not-from-this-turn", "score": 85},
+                    {"model_name": "GPT-4.1", "score": 90.5},
+                    {"model_name": "Not From This Turn", "score": 85},
                 ],
             }
         )
@@ -496,14 +496,13 @@ async def test_score_database_failure_rolls_back_savepoint_and_preserves_verdict
     monkeypatch.setattr(AsyncSession, "execute", fail_one_score_update)
 
     def scored_verdict(system: str) -> str:
-        answer_ids = re.findall(r"\*\*Answer ID\*\*: ([^\r\n]+)", system)
         return json.dumps(
             {
                 "text": "Verdict survives optional score failure.",
                 "reason": "The score write is isolated.",
                 "evaluations": [
-                    {"answer_id": answer_ids[0], "score": 0},
-                    {"answer_id": answer_ids[1], "score": 100},
+                    {"model_name": "GPT-4.1", "score": 0},
+                    {"model_name": "Claude Sonnet 4", "score": 100},
                 ],
             }
         )

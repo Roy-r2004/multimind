@@ -82,9 +82,7 @@ def test_strict_referee_receives_question_answers_metadata_and_json_protocol():
     for expected in (
         "ORIGINAL_QUESTION_SENTINEL",
         "GPT-4.1",
-        "gpt-4.1",
         "COUNCIL_ANSWER_ALPHA",
-        "answer-alpha",
         "Gemini 2.5 Pro",
         "COUNCIL_ANSWER_BETA",
         "Grok 4",
@@ -94,6 +92,11 @@ def test_strict_referee_receives_question_answers_metadata_and_json_protocol():
         '"reason"',
     ):
         assert expected in rendered
+    for internal_id in ("answer-alpha", "answer-beta", "answer-failed", "gpt-4.1"):
+        assert internal_id not in rendered
+    assert "COUNCIL ANSWER 1" in rendered
+    assert "Model: GPT-4.1" in rendered
+    assert "Never expose internal answer IDs, UUIDs, database IDs" in rendered
     assert "**Confidence**" not in rendered
     assert "Correctness / accuracy: 30 points" in rendered
     assert "highest-scoring answer must not automatically become the verdict" in rendered
