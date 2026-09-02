@@ -18,6 +18,7 @@ export type ApiModel = {
   is_custom?: boolean;
   openrouter_slug?: string | null;
   pricing?: ApiModelPricing | null;
+  context_length?: number | null;
 };
 
 export type ApiModelSearchResult = {
@@ -289,9 +290,26 @@ export type ApiPromptBuilderRefineRequest = {
   model_set_id: string;
 };
 
+export type ApiPromptBuilderContextUsage = {
+  estimated_input_tokens: number;
+  actual_input_tokens?: number | null;
+  context_limit: number;
+  reserved_output_tokens: number;
+  remaining_tokens: number;
+  limiting_model_id: string;
+  limiting_model_name: string;
+  limiting_call: string;
+  is_estimate: boolean;
+};
+
+export type ApiPromptBuilderContextResponse = {
+  context_usage: ApiPromptBuilderContextUsage;
+};
+
 export type ApiPromptBuilderRefineResponse = {
   assistant_message: string;
   improved_prompt: string;
+  context_usage: ApiPromptBuilderContextUsage;
 };
 
 export type ApiSession = {
