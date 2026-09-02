@@ -11,6 +11,11 @@ type Props = {
   expanded: boolean;
   onToggle: () => void;
   className?: string;
+  /**
+   * Stable content identity (usually the answer text). Used instead of `children`
+   * so recreating the same Markdown element does not retrigger measurement.
+   */
+  contentKey?: string;
 };
 
 /**
@@ -23,6 +28,7 @@ export function ExpandableAnswer({
   expanded,
   onToggle,
   className,
+  contentKey,
 }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
@@ -37,8 +43,7 @@ export function ExpandableAnswer({
     if (!node) return;
 
     const measure = () => {
-      const rootFont =
-        Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const rootFont = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
       const clampPx = COLLAPSED_MAX_REM * rootFont;
       setOverflows(node.scrollHeight > clampPx + 1);
     };
@@ -47,7 +52,7 @@ export function ExpandableAnswer({
     const observer = new ResizeObserver(measure);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [children, collapsible]);
+  }, [collapsible, contentKey]);
 
   // Only long (overflowing) answers get a control — short ones stay fully visible
   // even when a parent syncs `expanded` (Horizontal mode).

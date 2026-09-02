@@ -168,6 +168,7 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
                   collapsible={hasVerdict}
                   expanded={expanded}
                   onToggle={() => toggleAnswerExpansion(a.model_id)}
+                  contentKey={a.text ?? "-"}
                 >
                   <MessageContent>{a.text ?? "-"}</MessageContent>
                 </ExpandableAnswer>

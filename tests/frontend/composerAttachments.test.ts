@@ -215,7 +215,7 @@ test("successful chat send does not clear sticky attachment chips", () => {
   const chatSource = readFileSync(new URL("../../src/routes/chat.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(chatSource, /removeSubmittedComposerFiles/);
   assert.match(chatSource, /attachment_ids: uploadedIds/);
-  assert.match(chatSource, /setInput\(""\)/);
+  assert.match(chatSource, /replaceValue\(""\)/);
 });
 
 test("pending restore does not duplicate and keeps local busy chips", () => {

@@ -9,13 +9,24 @@ function isGeneratingStatus(status: string): boolean {
   return GENERATING_STATUSES.has(String(status).toLowerCase());
 }
 
+export function conversationHasGeneratingTurn(turns: Array<{ status: string }>): boolean {
+  return turns.some((item) => isGeneratingStatus(item.status));
+}
+
+export function canEditUserPromptWhen(
+  turn: { status: string },
+  conversationGenerating: boolean,
+): boolean {
+  if (isGeneratingStatus(turn.status)) return false;
+  if (conversationGenerating) return false;
+  return true;
+}
+
 export function canEditUserPrompt(
   turn: { status: string },
   turns: Array<{ status: string }>,
 ): boolean {
-  if (isGeneratingStatus(turn.status)) return false;
-  if (turns.some((item) => isGeneratingStatus(item.status))) return false;
-  return true;
+  return canEditUserPromptWhen(turn, conversationHasGeneratingTurn(turns));
 }
 
 export function countLaterTurns(

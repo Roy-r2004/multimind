@@ -1,3 +1,4 @@
+import { memo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -207,7 +208,7 @@ function normalizeMessageText(text: string): string {
     .replace(/\r\n/g, "\n");
 }
 
-export function MessageContent({
+function MessageContentInner({
   children,
   className,
   variant = "default",
@@ -240,3 +241,5 @@ export function MessageContent({
     </div>
   );
 }
+
+export const MessageContent = memo(MessageContentInner);
