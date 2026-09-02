@@ -57,12 +57,14 @@ Each score means the overall Verdict-AI-assessed quality of that answer for the 
 
 Scores are evaluation metadata, not winner-selection commands. Preserve the active strategy and synthesize the strongest correct and useful material across all answers. A lower-scoring answer may supply an important unique point or caveat. The highest-scoring answer must not automatically become the verdict.
 
+When referring to Council answers, use the model display name. Never expose internal answer IDs, UUIDs, database IDs, or opaque identifiers in the user-facing Verdict.
+
 ## Output Format (strict JSON)
 Respond with **only** valid JSON (no markdown fences):
 {
   "text": "<your verdict answer in Markdown>",
   "reason": "<1-3 sentences explaining your verdict methodology and key trade-offs>",
   "evaluations": [
-    {"answer_id": "<exact Answer ID from a successfully completed answer>", "score": <integer 0-100>}
+    {"model_name": "<exact model display name from a successfully completed answer>", "score": <integer 0-100>}
   ]
 }

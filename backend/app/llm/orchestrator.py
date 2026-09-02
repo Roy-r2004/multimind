@@ -126,50 +126,56 @@ def _validated_answer_scores(
     parsed: dict[str, Any] | None,
     answer_rows: list[ModelAnswer],
 ) -> list[dict[str, Any]]:
-    """Return valid Referee scores mapped to completed rows by persisted answer ID."""
+    """Map Referee scores from display names back to persisted answer IDs."""
     if not parsed:
         return []
     evaluations = parsed.get("evaluations")
     if not isinstance(evaluations, list):
         return []
 
-    completed_by_id = {
-        str(row.id): row for row in answer_rows if row.status == ModelAnswerStatus.COMPLETED
-    }
+    completed_by_name: dict[str, ModelAnswer] = {}
+    duplicate_names: set[str] = set()
+    for row in answer_rows:
+        if row.status != ModelAnswerStatus.COMPLETED:
+            continue
+        model_name = get_model(row.model_id).name
+        if model_name in completed_by_name:
+            duplicate_names.add(model_name)
+        completed_by_name[model_name] = row
     identifier_counts: dict[str, int] = {}
     for item in evaluations:
-        if isinstance(item, dict) and isinstance(item.get("answer_id"), str):
-            answer_id = item["answer_id"].strip()
-            if answer_id:
-                identifier_counts[answer_id] = identifier_counts.get(answer_id, 0) + 1
+        if isinstance(item, dict) and isinstance(item.get("model_name"), str):
+            model_name = item["model_name"].strip()
+            if model_name:
+                identifier_counts[model_name] = identifier_counts.get(model_name, 0) + 1
 
     valid: list[dict[str, Any]] = []
     for item in evaluations:
         if not isinstance(item, dict):
             logger.warning("verdict_evaluation_malformed")
             continue
-        raw_answer_id = item.get("answer_id")
-        answer_id = raw_answer_id.strip() if isinstance(raw_answer_id, str) else ""
-        if not answer_id:
-            logger.warning("verdict_evaluation_missing_answer_id")
+        raw_model_name = item.get("model_name")
+        model_name = raw_model_name.strip() if isinstance(raw_model_name, str) else ""
+        if not model_name:
+            logger.warning("verdict_evaluation_missing_model_name")
             continue
-        if identifier_counts.get(answer_id, 0) != 1:
-            logger.warning("verdict_evaluation_duplicate_answer_id", answer_id=answer_id)
+        if identifier_counts.get(model_name, 0) != 1 or model_name in duplicate_names:
+            logger.warning("verdict_evaluation_duplicate_model_name", model_name=model_name)
             continue
-        row = completed_by_id.get(answer_id)
+        row = completed_by_name.get(model_name)
         if row is None:
-            logger.warning("verdict_evaluation_unknown_or_ineligible_answer", answer_id=answer_id)
+            logger.warning("verdict_evaluation_unknown_or_ineligible_model", model_name=model_name)
             continue
         score = item.get("score")
         if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= 100:
             logger.warning(
                 "verdict_evaluation_invalid_score",
-                answer_id=answer_id,
+                model_name=model_name,
                 score=score,
             )
             continue
         valid.append(
-            {"answer_id": answer_id, "model_id": row.model_id, "score": score}
+            {"answer_id": str(row.id), "model_id": row.model_id, "score": score}
         )
     return valid
 
@@ -544,7 +550,6 @@ class TurnOrchestrator:
             model = get_model(model_id)
             answer_context.append(
                 {
-                    "answer_id": str(row.id),
                     "model_id": model_id,
                     "model_name": model.name,
                     "text": row.text or "",

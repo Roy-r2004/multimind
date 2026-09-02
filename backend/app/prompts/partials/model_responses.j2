@@ -1,12 +1,12 @@
 {# Renders all model answers for verdict prompts #}
 {% for answer in model_answers %}
 ---
-**Answer ID**: {{ answer.answer_id }}
-### Model: {{ answer.model_name }} ({{ answer.model_id }})
+## COUNCIL ANSWER {{ loop.index }}
+Model: {{ answer.model_name }}
 {% if answer.failed %}
 **Status**: FAILED — {{ answer.error_message or "Model did not respond" }}
 {% else %}
-**Response**:
+Answer:
 {{ answer.text }}
 {% endif %}
 {% endfor %}
