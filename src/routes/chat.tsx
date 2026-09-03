@@ -1,14 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type KeyboardEvent,
-} from "react";
-import {
-  Send,
   Gavel,
   ChevronDown,
   X,
@@ -28,7 +20,6 @@ import {
   Swords,
   BookOpen,
   Trophy,
-  Square,
   Bookmark,
   MoreHorizontal,
   ArrowDown,
@@ -54,6 +45,7 @@ import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { CallCostLabel, TurnCostSummary } from "@/components/chat/CallCostLabel";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
+import { ChatComposer, type ChatComposerHandle } from "@/components/chat/ChatComposer";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
 import { SaveTurnDialog } from "@/components/chat/SaveTurnDialog";
 import { SavePromptDialog } from "@/components/chat/SavePromptDialog";
@@ -63,7 +55,7 @@ import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
 import { api } from "@/lib/api";
 import type { ApiTranscriptionResponse, ApiTurn } from "@/lib/api/types";
-import { composerValueAfterStop } from "@/lib/chatStop";
+import { composerDraftStorageKey } from "@/lib/composerInput";
 import {
   COMPOSER_FILE_ACCEPT,
   apiErrorMessage,
@@ -111,7 +103,12 @@ import {
   isHistoricalTurnDeleteDisabled,
   removeTurnFromList,
 } from "@/lib/turnState";
-import { canEditUserPrompt, countLaterTurns, LATER_TURNS_EDIT_WARNING } from "@/lib/promptEdit";
+import {
+  canEditUserPrompt,
+  canEditUserPromptWhen,
+  countLaterTurns,
+  LATER_TURNS_EDIT_WARNING,
+} from "@/lib/promptEdit";
 import { MAX_COUNCIL_MODELS } from "@/lib/modelIds";
 import { deriveTurnAnswerCards } from "@/lib/turnCards";
 import {
@@ -154,46 +151,6 @@ type ComposerFile = {
   deleting?: boolean;
 };
 
-const TEXTAREA_MAX_HEIGHT_PX = 280;
-
-function transcriptInsertion(
-  current: string,
-  transcript: string,
-  selectionStart: number | null,
-  selectionEnd: number | null,
-): { value: string; cursor: number } {
-  const hasSelection =
-    selectionStart !== null &&
-    selectionEnd !== null &&
-    selectionStart >= 0 &&
-    selectionEnd >= selectionStart &&
-    selectionEnd <= current.length;
-
-  if (!hasSelection) {
-    const prefix = current.trim() ? `${current}\n\n` : "";
-    return { value: `${prefix}${transcript}`, cursor: prefix.length + transcript.length };
-  }
-
-  const before = current.slice(0, selectionStart);
-  const after = current.slice(selectionEnd);
-  const replacing = selectionEnd > selectionStart;
-  const beforeNeedsParagraph = before.endsWith(":") && after.trim().length === 0;
-  const afterStartsWithBoundary = after.length === 0 || /^[\s.,!?;:)\]}]/.test(after);
-  const prefix =
-    replacing || before.length === 0 || /\s$/.test(before)
-      ? ""
-      : beforeNeedsParagraph
-        ? "\n\n"
-        : " ";
-  const suffix = replacing || afterStartsWithBoundary ? "" : " ";
-  const insertion = `${prefix}${transcript}${suffix}`;
-
-  return {
-    value: `${before}${insertion}${after}`,
-    cursor: before.length + prefix.length + transcript.length,
-  };
-}
-
 const SYSTEM_MODEL_SETS = new Set([
   "referee",
   "set-7edaefc8",
@@ -226,7 +183,8 @@ export function ChatPage() {
   const set = modelSets.find((s) => s.id === activeModelSetId) ?? modelSets[0];
   const [apiTurns, setApiTurns] = useState<ApiTurn[]>([]);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
-  const [input, setInput] = useState("");
+  const [promptBuilderSeed, setPromptBuilderSeed] = useState("");
+  const composerRef = useRef<ChatComposerHandle>(null);
   const [isComposerVoiceActive, setIsComposerVoiceActive] = useState(false);
   const [isPromptVoiceActive, setIsPromptVoiceActive] = useState(false);
   const isVoiceActive = isComposerVoiceActive || isPromptVoiceActive;
@@ -280,7 +238,6 @@ export function ChatPage() {
   const threadEndRef = useRef<HTMLDivElement | null>(null);
   const shouldPinToBottomRef = useRef(true);
   const showScrollToLatestRef = useRef(false);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const restoredChatIdFromUrlRef = useRef(false);
   const modelSetRestoredForChatRef = useRef<string | null>(null);
   const turnsLoadedForChatRef = useRef<string | null>(null);
@@ -304,7 +261,7 @@ export function ChatPage() {
     modelSetRestoredForChatRef.current = null;
     turnsLoadedForChatRef.current = null;
   }
-  const draftStorageKey = `multimind:draft:${activeChatId ?? "new"}`;
+  const draftStorageKey = composerDraftStorageKey(activeChatId);
   const pinnedVerdicts = activeChat?.pinnedVerdicts ?? [];
   const pinnedVerdictMenuItems = buildPinnedVerdictMenuItems(pinnedVerdicts, apiTurns);
 
@@ -462,28 +419,6 @@ export function ChatPage() {
       updateThreadScrollState();
     });
   }, [apiTurns, loading, scrollThreadToLatest, updateThreadScrollState]);
-
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`;
-  }, [input]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setInput(window.localStorage.getItem(draftStorageKey) ?? "");
-  }, [draftStorageKey]);
-
-  function updateComposerInput(value: string) {
-    setInput(value);
-    if (typeof window === "undefined") return;
-    if (value === "") {
-      window.localStorage.removeItem(draftStorageKey);
-    } else {
-      window.localStorage.setItem(draftStorageKey, value);
-    }
-  }
 
   useEffect(() => {
     if (!activeChatId || !activeChat?.modelSetId || !modelSets.length) return;
@@ -678,32 +613,7 @@ export function ChatPage() {
   }
 
   function insertTranscriptIntoComposer(transcriptValue: string): boolean {
-    const transcript = transcriptValue.trim();
-    if (!transcript) return false;
-
-    const textarea = textareaRef.current;
-    const selectionStart = textarea ? textarea.selectionStart : null;
-    const selectionEnd = textarea ? textarea.selectionEnd : null;
-    let cursorPosition: number | null = null;
-
-    setInput((current) => {
-      const next = transcriptInsertion(current, transcript, selectionStart, selectionEnd);
-      cursorPosition = next.cursor;
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(draftStorageKey, next.value);
-      }
-      return next.value;
-    });
-
-    if (typeof window !== "undefined") {
-      window.requestAnimationFrame(() => {
-        const currentTextarea = textareaRef.current;
-        if (!currentTextarea || cursorPosition === null) return;
-        currentTextarea.focus();
-        currentTextarea.setSelectionRange(cursorPosition, cursorPosition);
-      });
-    }
-    return true;
+    return composerRef.current?.insertTranscript(transcriptValue) ?? false;
   }
 
   function handleVoiceTranscript(result: ApiTranscriptionResponse) {
@@ -789,12 +699,12 @@ export function ChatPage() {
 
   async function send() {
     if (sendInFlightRef.current) return;
-    if (isVoiceActive || !input.trim() || !set) return;
+    const question = composerRef.current?.getValue().trim() ?? "";
+    if (isVoiceActive || !question || !set) return;
     if (hasUploadingComposerFiles(filesRef.current)) {
       toast.error("Wait for file uploads to finish before sending.");
       return;
     }
-    const question = input.trim();
     const auth = authHeaders();
     if (!auth) {
       void navigate({ to: "/login" });
@@ -804,7 +714,7 @@ export function ChatPage() {
     const uploadedIds = submittedAttachmentIds(filesRef.current);
     const hadActiveChat = Boolean(activeChatId);
     let createdChatId: string | null = null;
-    setInput("");
+    composerRef.current?.replaceValue("");
     setSending(true);
     try {
       let chatId = activeChatId;
@@ -813,7 +723,7 @@ export function ChatPage() {
         createdChatId = chatId;
       }
       if (!chatId) {
-        setInput(question);
+        composerRef.current?.replaceValue(question);
         return;
       }
       const pending = await api.chats.createTurn(auth, chatId, {
@@ -856,7 +766,7 @@ export function ChatPage() {
       });
     } catch (error) {
       console.error(error);
-      setInput(question);
+      composerRef.current?.replaceValue(question);
       alert(error instanceof Error ? error.message : "Failed to run turn");
       // Only discard a chat this send() created, and only if still unused and
       // not owned by an in-flight / retained upload on the same chat.
@@ -877,24 +787,6 @@ export function ChatPage() {
     }
   }
 
-  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      if (
-        !input.trim() ||
-        sending ||
-        loading ||
-        !isAuthenticated ||
-        !set ||
-        isVoiceActive ||
-        hasUploadingComposerFiles(filesRef.current)
-      ) {
-        return;
-      }
-      void send();
-    }
-  }
-
   async function stopGenerating() {
     const auth = authHeaders();
     if (!auth || !activeChatId || !activeTurnId || stoppingTurnId === activeTurnId) return;
@@ -903,10 +795,7 @@ export function ChatPage() {
     const activeTurn = apiTurns.find((turn) => turn.id === turnId);
     if (!activeTurn) return;
 
-    const restoredInput = composerValueAfterStop(input, activeTurn.user_message);
-    if (restoredInput !== input) {
-      updateComposerInput(restoredInput);
-    }
+    composerRef.current?.restoreAfterStop(activeTurn.user_message);
 
     setStoppingTurnId(turnId);
     setLoading(false);
@@ -1097,7 +986,9 @@ export function ChatPage() {
   const empty = isAuthenticated && apiTurns.length === 0 && !loading;
   const voiceAuth = authHeaders();
   const voiceDisabled = !voiceAuth || !set || sending || loading;
-  const anyTurnGenerating = isAnyTurnGenerating(apiTurns) || loading;
+  const generatingTurnPresent = isAnyTurnGenerating(apiTurns);
+  const anyTurnGenerating = generatingTurnPresent || loading;
+  const conversationGenerating = generatingTurnPresent;
   const turnDeleteDisabled = isHistoricalTurnDeleteDisabled(anyTurnGenerating);
   const uploadsInProgress = hasUploadingComposerFiles(files);
   const [turnLayout, setTurnLayout] = useChatTurnLayout();
@@ -1301,7 +1192,7 @@ export function ChatPage() {
                         attachments={turn.attachments}
                         editable={showPromptEdit}
                         disabledReason={
-                          canEditUserPrompt(turn, apiTurns) && !regeneratingTurnId
+                          canEditUserPromptWhen(turn, conversationGenerating) && !regeneratingTurnId
                             ? undefined
                             : promptDisabledReason
                         }
@@ -1523,136 +1414,105 @@ export function ChatPage() {
                 ))}
               </div>
             )}
-            <div className="rounded-[1.35rem] border border-border/90 bg-card/95 shadow-[0_8px_28px_oklch(0.45_0.04_240/0.08)] ring-1 ring-primary/5">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => updateComposerInput(e.target.value)}
-                onKeyDown={onComposerKeyDown}
-                rows={2}
-                disabled={!isAuthenticated || !set}
-                spellCheck={true}
-                autoCorrect="on"
-                autoCapitalize="sentences"
-                placeholder={
-                  isAuthenticated
-                    ? "Ask your model council anything… (Enter for new line; ⌘↵ / Ctrl+Enter to send)"
-                    : "Log in to chat"
-                }
-                className="block max-h-[280px] min-h-[3.5rem] w-full resize-none overflow-y-auto rounded-[1.35rem] bg-transparent px-4 pt-3 pb-2 text-lg outline-none placeholder:text-muted-foreground disabled:opacity-50"
-              />
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept={COMPOSER_FILE_ACCEPT}
-                className="hidden"
-                onChange={(e) => {
-                  const selected = captureComposerFileInputFiles(e.currentTarget);
-                  void uploadComposerFiles(selected);
-                }}
-              />
-              <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-                <div className="relative">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={COMPOSER_FILE_ACCEPT}
+              className="hidden"
+              onChange={(e) => {
+                const selected = captureComposerFileInputFiles(e.currentTarget);
+                void uploadComposerFiles(selected);
+              }}
+            />
+            <ChatComposer
+              ref={composerRef}
+              draftStorageKey={draftStorageKey}
+              disabled={!isAuthenticated || !set}
+              placeholder={
+                isAuthenticated
+                  ? "Ask your model council anything… (Enter for new line; ⌘↵ / Ctrl+Enter to send)"
+                  : "Log in to chat"
+              }
+              submitBlocked={
+                sending || loading || !isAuthenticated || !set || isVoiceActive || uploadsInProgress
+              }
+              showStop={Boolean(loading && activeTurnId)}
+              stopBusy={stoppingTurnId === activeTurnId}
+              onSend={() => void send()}
+              onStop={() => void stopGenerating()}
+              startActions={
+                <>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowPlus((v) => !v)}
+                      disabled={!isAuthenticated}
+                      className="rounded-lg p-2 text-muted-foreground hover:bg-accent disabled:opacity-40"
+                      title="Attach"
+                    >
+                      <Plus className="size-4" />
+                    </button>
+                    {showPlus && (
+                      <div className="absolute bottom-11 left-0 z-30 w-52 rounded-xl border border-border bg-popover p-1 shadow-xl">
+                        <ComposerMenuItem
+                          icon={Upload}
+                          label="Upload file"
+                          onClick={() => {
+                            triggerComposerUploadFromMenu(fileInputRef.current, () =>
+                              setShowPlus(false),
+                            );
+                          }}
+                        />
+                        <ComposerMenuItem
+                          icon={Link2}
+                          label="Continue from chat"
+                          onClick={() => {
+                            setShowPlus(false);
+                            setShowRef(true);
+                          }}
+                        />
+                        <ComposerMenuItem
+                          icon={FileSpreadsheet}
+                          label="Generate Excel"
+                          onClick={() => {
+                            setShowPlus(false);
+                            setShowExcel(true);
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
                   <button
                     type="button"
-                    onClick={() => setShowPlus((v) => !v)}
+                    onClick={() => {
+                      setPromptBuilderSeed(composerRef.current?.getValue() ?? "");
+                      setShowPrompt(true);
+                    }}
                     disabled={!isAuthenticated}
-                    className="rounded-lg p-2 text-muted-foreground hover:bg-accent disabled:opacity-40"
-                    title="Attach"
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-40"
                   >
-                    <Plus className="size-4" />
+                    <Wand2 className="size-3.5" /> Prompt Builder
                   </button>
-                  {showPlus && (
-                    <div className="absolute bottom-11 left-0 z-30 w-52 rounded-xl border border-border bg-popover p-1 shadow-xl">
-                      <ComposerMenuItem
-                        icon={Upload}
-                        label="Upload file"
-                        onClick={() => {
-                          triggerComposerUploadFromMenu(fileInputRef.current, () =>
-                            setShowPlus(false),
-                          );
-                        }}
-                      />
-                      <ComposerMenuItem
-                        icon={Link2}
-                        label="Continue from chat"
-                        onClick={() => {
-                          setShowPlus(false);
-                          setShowRef(true);
-                        }}
-                      />
-                      <ComposerMenuItem
-                        icon={FileSpreadsheet}
-                        label="Generate Excel"
-                        onClick={() => {
-                          setShowPlus(false);
-                          setShowExcel(true);
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowPrompt(true)}
-                  disabled={!isAuthenticated}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-40"
-                >
-                  <Wand2 className="size-3.5" /> Prompt Builder
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowRef(true)}
-                  disabled={!isAuthenticated}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-40"
-                >
-                  <Link2 className="size-3.5" /> Reference
-                </button>
-                <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
-                  <VoiceRecorderButton
-                    auth={voiceAuth}
-                    disabled={voiceDisabled || isPromptVoiceActive}
-                    onTranscript={handleVoiceTranscript}
-                    onRecordingStateChange={setIsComposerVoiceActive}
-                  />
-                  {loading && activeTurnId ? (
-                    <button
-                      type="button"
-                      onClick={() => void stopGenerating()}
-                      disabled={stoppingTurnId === activeTurnId}
-                      aria-label="Stop generating"
-                      className="inline-flex items-center gap-2 rounded-xl bg-destructive px-3.5 py-2 text-sm font-medium text-destructive-foreground shadow-sm hover:bg-destructive/90 disabled:opacity-40"
-                    >
-                      {stoppingTurnId === activeTurnId ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <Square className="size-3.5 fill-current" />
-                      )}
-                      {stoppingTurnId === activeTurnId ? "Stopping..." : "Stop generating"}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => void send()}
-                      disabled={
-                        !input.trim() ||
-                        sending ||
-                        loading ||
-                        !isAuthenticated ||
-                        !set ||
-                        isVoiceActive ||
-                        uploadsInProgress
-                      }
-                      className="inline-flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-40"
-                    >
-                      <Send className="size-3.5" />
-                      Send
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowRef(true)}
+                    disabled={!isAuthenticated}
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-40"
+                  >
+                    <Link2 className="size-3.5" /> Reference
+                  </button>
+                </>
+              }
+              endActions={
+                <VoiceRecorderButton
+                  auth={voiceAuth}
+                  disabled={voiceDisabled || isPromptVoiceActive}
+                  onTranscript={handleVoiceTranscript}
+                  onRecordingStateChange={setIsComposerVoiceActive}
+                />
+              }
+            />
             <p className="mt-2 text-center text-[11px] text-muted-foreground">
               MultiAI may produce inaccurate information. Review important outputs before acting.
             </p>
@@ -1723,10 +1583,10 @@ export function ChatPage() {
       <PromptBuilderModal
         open={showPrompt}
         onClose={() => setShowPrompt(false)}
-        onUse={updateComposerInput}
+        onUse={(text) => composerRef.current?.setValue(text)}
         modelSetId={set?.id ?? activeModelSetId}
         sessionIdentity={activeChatId ?? "new"}
-        initialComposerText={input}
+        initialComposerText={promptBuilderSeed}
         voiceDisabled={isComposerVoiceActive}
         onVoiceRecordingStateChange={setIsPromptVoiceActive}
       />
@@ -2124,6 +1984,7 @@ function AiTurn({
                     collapsible={hasVerdict}
                     expanded={expanded}
                     onToggle={() => toggleAnswerExpansion(id)}
+                    contentKey={a?.text ?? ""}
                   >
                     <MessageContent>{a?.text ?? ""}</MessageContent>
                   </ExpandableAnswer>

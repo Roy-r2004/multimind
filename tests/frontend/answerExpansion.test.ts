@@ -222,6 +222,15 @@ test("chat and shared turns share useTurnAnswerExpansion; Verdict stays outside 
   assert.match(chatSrc, /verdictBlock/);
   assert.doesNotMatch(sharedSrc, /UserPromptBubble/);
   assert.doesNotMatch(sharedSrc, /canEditUserPrompt/);
+  assert.match(chatSrc, /contentKey=\{a\?\.text \?\? ""\}/);
+  assert.match(sharedSrc, /contentKey=\{a\.text \?\? "-"\}/);
+});
+
+test("ExpandableAnswer remeasures on contentKey, not children identity", () => {
+  const src = readFileSync(join(root, "src/components/chat/ExpandableAnswer.tsx"), "utf8");
+  assert.match(src, /contentKey\?: string/);
+  assert.match(src, /}, \[collapsible, contentKey\]/);
+  assert.doesNotMatch(src, /\[children, collapsible\]/);
 });
 
 test("controlled ExpandableAnswer API remains expanded + onToggle", () => {

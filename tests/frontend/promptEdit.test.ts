@@ -6,7 +6,9 @@ import {
   LATER_TURNS_EDIT_WARNING,
   appendTranscriptToPrompt,
   canEditUserPrompt,
+  canEditUserPromptWhen,
   canSubmitEditedPrompt,
+  conversationHasGeneratingTurn,
   countLaterTurns,
 } from "../../src/lib/promptEdit.ts";
 
@@ -48,6 +50,30 @@ test("Edit helpers hide edit while a turn is streaming", () => {
     canEditUserPrompt({ status: "completed" }, [{ status: "completed" }, { status: "pending" }]),
     false,
   );
+});
+
+test("precomputed generating flag matches whole-array canEditUserPrompt", () => {
+  const cases: Array<{ turn: { status: string }; turns: Array<{ status: string }> }> = [
+    { turn: { status: "completed" }, turns: [{ status: "completed" }] },
+    { turn: { status: "partial" }, turns: [{ status: "failed" }] },
+    { turn: { status: "running" }, turns: [{ status: "running" }] },
+    {
+      turn: { status: "completed" },
+      turns: [{ status: "completed" }, { status: "pending" }],
+    },
+    {
+      turn: { status: "COMPLETED" },
+      turns: [{ status: "Running" }, { status: "completed" }],
+    },
+    { turn: { status: "failed" }, turns: [{ status: "failed" }, { status: "partial" }] },
+  ];
+  for (const { turn, turns } of cases) {
+    assert.equal(
+      canEditUserPromptWhen(turn, conversationHasGeneratingTurn(turns)),
+      canEditUserPrompt(turn, turns),
+      `${turn.status} / ${turns.map((item) => item.status).join(",")}`,
+    );
+  }
 });
 
 test("unchanged non-empty prompts can be submitted for regeneration", () => {
@@ -127,6 +153,13 @@ test("voice activity blocks button, keyboard save path, and edit cancellation", 
   assert.match(bubbleSource, /disabled=\{submitting \|\| isVoiceActive\}/);
   assert.match(bubbleSource, /const canSave = !isVoiceActive && canSubmitEditedPrompt/);
   assert.match(bubbleSource, /onRecordingStateChange=\{setIsVoiceActive\}/);
+});
+
+test("chat turn list uses a precomputed generating flag instead of scanning per turn", () => {
+  const chatSource = readFileSync(new URL("../../src/routes/chat.tsx", import.meta.url), "utf8");
+  assert.match(chatSource, /canEditUserPromptWhen\(turn, conversationGenerating\)/);
+  assert.match(chatSource, /const conversationGenerating = generatingTurnPresent/);
+  assert.equal((chatSource.match(/canEditUserPrompt\(turn, apiTurns\)/g) ?? []).length, 1);
 });
 
 test("shared/public chat stays read-only by not importing edit UI helpers into shared route", () => {
