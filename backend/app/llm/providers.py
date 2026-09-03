@@ -37,6 +37,7 @@ class LLMResponse:
     cost_usd: float | None = None
     confidence: int | None = None
     raw: dict[str, Any] | None = None
+    finish_reason: str | None = None
 
 
 class LLMProvider(ABC):
@@ -50,6 +51,8 @@ class LLMProvider(ABC):
         max_tokens: int = 4096,
         response_format: dict[str, Any] | None = None,
         temperature: float | None = None,
+        preserve_whitespace: bool = False,
+        timeout: float | None = None,
     ) -> LLMResponse:
         pass
 
@@ -173,6 +176,8 @@ class OpenRouterProvider(LLMProvider):
         max_tokens: int = 4096,
         response_format: dict[str, Any] | None = None,
         temperature: float | None = None,
+        preserve_whitespace: bool = False,
+        timeout: float | None = None,
     ) -> LLMResponse:
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
@@ -187,6 +192,8 @@ class OpenRouterProvider(LLMProvider):
                     max_tokens=max_tokens,
                     response_format=response_format,
                     temperature=temperature,
+                    preserve_whitespace=preserve_whitespace,
+                    timeout=timeout,
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -206,8 +213,10 @@ class OpenRouterProvider(LLMProvider):
         max_tokens: int,
         response_format: dict[str, Any] | None,
         temperature: float | None = None,
+        preserve_whitespace: bool = False,
+        timeout: float | None = None,
     ) -> LLMResponse:
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout if timeout is not None else self._timeout) as client:
             payload = build_openrouter_chat_payload(
                 model=model,
                 system=system,
@@ -231,10 +240,16 @@ class OpenRouterProvider(LLMProvider):
             data = resp.json()
 
         content = _content_to_text(data["choices"][0]["message"].get("content", ""))
+        finish_reason = data["choices"][0].get("finish_reason") or data["choices"][0].get(
+            "native_finish_reason"
+        )
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         cost_usd = _parse_reported_cost(usage.get("cost"))
         _record_maps_quota_cost(cost_usd)
-        text, confidence = self.parse_confidence(content)
+        if preserve_whitespace:
+            text, confidence = content, None
+        else:
+            text, confidence = self.parse_confidence(content)
         return LLMResponse(
             text=text,
             tokens_input=usage.get("prompt_tokens", len(system) // 4),
@@ -242,6 +257,7 @@ class OpenRouterProvider(LLMProvider):
             cost_usd=cost_usd,
             confidence=confidence,
             raw=data,
+            finish_reason=str(finish_reason) if finish_reason is not None else None,
         )
 
 

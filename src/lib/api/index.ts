@@ -56,6 +56,7 @@ import type {
   ApiSession,
   ApiPromptBuilderImproveRequest,
   ApiPromptBuilderImproveResponse,
+  ApiPromptBuilderContextResponse,
   ApiPlaybook,
   ApiPlaybookPending,
   ApiPlaybookObservation,
@@ -75,6 +76,11 @@ import type {
 } from "@/lib/api/types";
 
 export { streamTurn } from "@/lib/api/stream";
+
+export const PROMPT_BUILDER_REQUEST_TIMEOUT_MS = 300_000;
+export const PROMPT_BUILDER_REFINE_TIMEOUT_MS = 660_000;
+export const PROMPT_BUILDER_TIMEOUT_MESSAGE =
+  "Prompt Builder is taking longer than expected. Your Builder session is saved. You can try again.";
 
 type Auth = { token: string; orgId?: string | null };
 
@@ -771,9 +777,19 @@ export const api = {
         body: data,
         token: auth.token,
         orgId: auth.orgId,
+        timeoutMs: PROMPT_BUILDER_REQUEST_TIMEOUT_MS,
+        timeoutMessage: PROMPT_BUILDER_TIMEOUT_MESSAGE,
       }),
     refine: (auth: Auth, data: ApiPromptBuilderRefineRequest) =>
       apiRequest<ApiPromptBuilderRefineResponse>("/prompt-builder/refine", {
+        body: data,
+        token: auth.token,
+        orgId: auth.orgId,
+        timeoutMs: PROMPT_BUILDER_REFINE_TIMEOUT_MS,
+        timeoutMessage: PROMPT_BUILDER_TIMEOUT_MESSAGE,
+      }),
+    context: (auth: Auth, data: ApiPromptBuilderRefineRequest) =>
+      apiRequest<ApiPromptBuilderContextResponse>("/prompt-builder/context", {
         body: data,
         token: auth.token,
         orgId: auth.orgId,

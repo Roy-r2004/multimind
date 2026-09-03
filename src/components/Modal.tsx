@@ -10,6 +10,8 @@ export function Modal({
   children,
   size = "md",
   tone = "default",
+  className,
+  bodyClassName,
 }: {
   open: boolean;
   onClose: () => void;
@@ -18,6 +20,8 @@ export function Modal({
   size?: "sm" | "md" | "lg" | "xl";
   /** Use dream for Scraping Council surfaces */
   tone?: "default" | "dream";
+  className?: string;
+  bodyClassName?: string;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -55,6 +59,7 @@ export function Modal({
           size === "md" && "max-w-lg",
           size === "lg" && "max-w-2xl",
           size === "xl" && "max-w-4xl",
+          className,
         )}
       >
         {title && (
@@ -64,12 +69,7 @@ export function Modal({
               "border-border",
             )}
           >
-            <h3
-              className={cn(
-                "text-base font-semibold",
-                dream && "font-display tracking-tight",
-              )}
-            >
+            <h3 className={cn("text-base font-semibold", dream && "font-display tracking-tight")}>
               {title}
             </h3>
             <button
@@ -86,7 +86,9 @@ export function Modal({
             </button>
           </div>
         )}
-        <div className="max-h-[min(75vh,640px)] overflow-y-auto p-5">{children}</div>
+        <div className={cn("max-h-[min(75vh,640px)] overflow-y-auto p-5", bodyClassName)}>
+          {children}
+        </div>
       </div>
     </div>,
     document.body,

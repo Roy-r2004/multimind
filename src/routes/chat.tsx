@@ -1585,6 +1585,7 @@ export function ChatPage() {
         onClose={() => setShowPrompt(false)}
         onUse={(text) => composerRef.current?.setValue(text)}
         modelSetId={set?.id ?? activeModelSetId}
+        sessionIdentity={activeChatId ?? "new"}
         initialComposerText={promptBuilderSeed}
         voiceDisabled={isComposerVoiceActive}
         onVoiceRecordingStateChange={setIsPromptVoiceActive}
