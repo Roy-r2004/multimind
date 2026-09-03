@@ -33,6 +33,7 @@ export function formatLibraryUpdatedAt(iso: string): string {
 export type LibraryFolderNode = ApiLibraryFolder & { children: LibraryFolderNode[] };
 
 export type LibraryViewMode =
+  | { kind: "home" }
   | { kind: "all" }
   | { kind: "favorites" }
   | { kind: "recent" }
@@ -40,13 +41,16 @@ export type LibraryViewMode =
   | { kind: "unfiled" }
   | { kind: "label"; labelId: string };
 
+export const LIBRARY_SIDEBAR_FOLDER_LIMIT = 7;
+export const LIBRARY_HOME_RECENT_LIMIT = 5;
+
 /** Preserve an unrelated view, or leave a deleted active folder for its parent/root. */
 export function libraryViewAfterFolderDelete(
   current: LibraryViewMode,
   deleted: Pick<ApiLibraryFolder, "id" | "parent_id">,
 ): LibraryViewMode {
   if (current.kind !== "folder" || current.folderId !== deleted.id) return current;
-  return deleted.parent_id ? { kind: "folder", folderId: deleted.parent_id } : { kind: "all" };
+  return deleted.parent_id ? { kind: "folder", folderId: deleted.parent_id } : { kind: "home" };
 }
 
 export function buildLibraryFolderTree(folders: ApiLibraryFolder[]): LibraryFolderNode[] {
@@ -112,4 +116,96 @@ export function flattenLibraryFolderOptions(folders: ApiLibraryFolder[]): Librar
 
   walk(tree, []);
   return options;
+}
+
+export function libraryTopLevelFolderId(
+  folders: ApiLibraryFolder[],
+  folderId: string | null,
+): string | null {
+  const path = libraryFolderPath(folders, folderId);
+  return path[0]?.id ?? null;
+}
+
+/** Folder ids on the active path, including the selected folder. */
+export function libraryExpandedPathIds(
+  folders: ApiLibraryFolder[],
+  folderId: string | null,
+): string[] {
+  return libraryFolderPath(folders, folderId).map((folder) => folder.id);
+}
+
+export function visibleTopLevelFolders(
+  roots: LibraryFolderNode[],
+  options: {
+    showAll: boolean;
+    limit?: number;
+    pinnedTopLevelId?: string | null;
+  },
+): { nodes: LibraryFolderNode[]; hiddenCount: number } {
+  const limit = options.limit ?? LIBRARY_SIDEBAR_FOLDER_LIMIT;
+  if (options.showAll || roots.length <= limit) {
+    return { nodes: roots, hiddenCount: 0 };
+  }
+
+  const keep = new Set(roots.slice(0, limit).map((node) => node.id));
+  if (options.pinnedTopLevelId) keep.add(options.pinnedTopLevelId);
+
+  const nodes = roots.filter((node) => keep.has(node.id));
+  return { nodes, hiddenCount: roots.length - nodes.length };
+}
+
+export function filterFolderTreeByQuery(
+  nodes: LibraryFolderNode[],
+  query: string,
+): LibraryFolderNode[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return nodes;
+
+  const walk = (list: LibraryFolderNode[]): LibraryFolderNode[] => {
+    const result: LibraryFolderNode[] = [];
+    for (const node of list) {
+      const selfMatch = node.name.toLowerCase().includes(needle);
+      const childMatches = walk(node.children);
+      if (selfMatch) {
+        result.push(node);
+      } else if (childMatches.length > 0) {
+        result.push({ ...node, children: childMatches });
+      }
+    }
+    return result;
+  };
+
+  return walk(nodes);
+}
+
+/** Expand every ancestor so search matches stay visible in the tree. */
+export function folderIdsToExpandInTree(nodes: LibraryFolderNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: LibraryFolderNode[]) => {
+    for (const node of list) {
+      if (node.children.length > 0) {
+        ids.push(node.id);
+        walk(node.children);
+      }
+    }
+  };
+  walk(nodes);
+  return ids;
+}
+
+export function libraryViewHeading(
+  view: LibraryViewMode,
+  folders: ApiLibraryFolder[],
+  labels: { id: string; name: string }[] = [],
+): string {
+  if (view.kind === "home") return "Library";
+  if (view.kind === "all") return "All Items";
+  if (view.kind === "favorites") return "Favorites";
+  if (view.kind === "recent") return "Recent";
+  if (view.kind === "unfiled") return "Unfiled";
+  if (view.kind === "label") {
+    return labels.find((label) => label.id === view.labelId)?.name ?? "Label";
+  }
+  const current = folders.find((folder) => folder.id === view.folderId);
+  return current?.name ?? "Folder";
 }

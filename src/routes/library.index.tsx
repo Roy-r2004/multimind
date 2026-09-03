@@ -1,28 +1,15 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  Download,
-  File,
-  FileSpreadsheet,
-  FileText,
-  Folder,
-  FolderInput,
-  FolderPlus,
-  Loader2,
-  MoreHorizontal,
-  Paperclip,
-  Pencil,
-  Plus,
-  Search,
-  Star,
-  Trash2,
-  Upload,
-} from "lucide-react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Plus, Search, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard } from "@/components/cinematic/PageChrome";
+import { LibraryBreadcrumb } from "@/components/library/LibraryBreadcrumb";
 import { LibraryDocumentEditor } from "@/components/library/LibraryDocumentEditor";
 import { LibraryFolderSelect } from "@/components/library/LibraryFolderSelect";
+import { LibraryHome } from "@/components/library/LibraryHome";
+import { LibraryItemRow } from "@/components/library/LibraryItemRow";
+import { LibrarySidebar } from "@/components/library/LibrarySidebar";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -43,29 +30,20 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api";
 import type { ApiLibraryFolder, ApiLibraryItem, ApiLibraryLabel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 import { COMPOSER_FILE_ACCEPT } from "@/lib/composerAttachments";
 import { attachLibraryItemViaApi } from "@/lib/libraryAttach";
 import {
+  LIBRARY_HOME_RECENT_LIMIT,
   buildLibraryFolderTree,
-  formatLibraryBytes,
-  formatLibraryUpdatedAt,
   libraryFolderPath,
-  libraryItemTypeLabel,
   libraryViewAfterFolderDelete,
+  libraryViewHeading,
   type LibraryViewMode,
-  type LibraryFolderNode,
 } from "@/lib/libraryUi";
 import { useChatStore } from "@/lib/store";
-import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/library/")({
   head: () => ({ meta: [{ title: "Library — MultiAI" }] }),
@@ -82,8 +60,10 @@ function LibraryPage() {
   const [folders, setFolders] = useState<ApiLibraryFolder[]>([]);
   const [labels, setLabels] = useState<ApiLibraryLabel[]>([]);
   const [items, setItems] = useState<ApiLibraryItem[]>([]);
-  const [view, setView] = useState<LibraryViewMode>({ kind: "all" });
+  const [view, setView] = useState<LibraryViewMode>({ kind: "home" });
   const [query, setQuery] = useState("");
+  const [folderQuery, setFolderQuery] = useState("");
+  const [foldersExpanded, setFoldersExpanded] = useState(false);
   const [fileTypeFilter, setFileTypeFilter] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [attachingId, setAttachingId] = useState<string | null>(null);
@@ -133,23 +113,32 @@ function LibraryPage() {
     }
     setLoading(true);
     try {
-      const params: Parameters<typeof api.library.listItems>[1] = {
-        q: query.trim() || undefined,
-      };
+      const params: Parameters<typeof api.library.listItems>[1] = {};
+      if (view.kind === "home" || view.kind === "recent") params.recent = true;
+      if (view.kind !== "home") {
+        params.q = query.trim() || undefined;
+        if (fileTypeFilter === "document") params.item_type = "document";
+        if (fileTypeFilter === "file") params.item_type = "file";
+      }
       if (view.kind === "favorites") params.favorites = true;
-      if (view.kind === "recent") params.recent = true;
       if (view.kind === "folder") params.folder_id = view.folderId;
       if (view.kind === "unfiled") params.unfiled = true;
       if (view.kind === "label") params.label_id = view.labelId;
-      if (fileTypeFilter === "document") params.item_type = "document";
-      if (fileTypeFilter === "file") params.item_type = "file";
 
       let list = await api.library.listItems(auth, params);
-      if (fileTypeFilter && fileTypeFilter !== "document" && fileTypeFilter !== "file") {
+      if (
+        view.kind !== "home" &&
+        fileTypeFilter &&
+        fileTypeFilter !== "document" &&
+        fileTypeFilter !== "file"
+      ) {
         const ext = fileTypeFilter.toLowerCase();
         list = list.filter((item) =>
           (item.original_filename || item.title || "").toLowerCase().endsWith(ext),
         );
+      }
+      if (view.kind === "home") {
+        list = list.slice(0, LIBRARY_HOME_RECENT_LIMIT);
       }
       setItems(list);
     } catch (error) {
@@ -405,7 +394,18 @@ function LibraryPage() {
     }
   }
 
-  const breadcrumb = view.kind === "folder" ? libraryFolderPath(folders, view.folderId) : [];
+  const folderPath = view.kind === "folder" ? libraryFolderPath(folders, view.folderId) : [];
+  const heading = libraryViewHeading(view, folders, labels);
+  const itemCountLabel = `${items.length} ${items.length === 1 ? "item" : "items"}`;
+
+  const itemRowHandlers = {
+    onToggleFavorite: (item: ApiLibraryItem) => void toggleFavorite(item),
+    onRename: (item: ApiLibraryItem) => void renameItem(item),
+    onMove: openMoveItem,
+    onDownload: (item: ApiLibraryItem) => void downloadItem(item),
+    onAttach: (item: ApiLibraryItem) => void attachToChat(item),
+    onDelete: (item: ApiLibraryItem) => void deleteItem(item),
+  };
 
   return (
     <AppShell>
@@ -437,287 +437,132 @@ function LibraryPage() {
           </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <GlassCard className="h-fit space-y-4 p-4">
-            <nav className="space-y-1 text-sm">
-              <SideLink active={view.kind === "all"} onClick={() => setView({ kind: "all" })}>
-                All Items
-              </SideLink>
-              <SideLink
-                active={view.kind === "favorites"}
-                onClick={() => setView({ kind: "favorites" })}
-              >
-                Favorites
-              </SideLink>
-              <SideLink active={view.kind === "recent"} onClick={() => setView({ kind: "recent" })}>
-                Recent
-              </SideLink>
-              <SideLink
-                active={view.kind === "unfiled"}
-                onClick={() => setView({ kind: "unfiled" })}
-              >
-                Unfiled
-              </SideLink>
-            </nav>
-
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Folders
-                </p>
-                <button
-                  type="button"
-                  className="rounded p-1 text-muted-foreground hover:bg-muted"
-                  title="New root folder"
-                  onClick={() => void createFolder(null)}
-                >
-                  <FolderPlus className="size-3.5" />
-                </button>
-              </div>
-              <div className="space-y-0.5">
-                {folderTree.map((node) => (
-                  <FolderTree
-                    key={node.id}
-                    node={node}
-                    depth={0}
-                    activeId={view.kind === "folder" ? view.folderId : null}
-                    onSelect={(id) => setView({ kind: "folder", folderId: id })}
-                    onAddChild={(id) => void createFolder(id)}
-                    onRename={openRenameFolder}
-                    onDelete={setDeleteFolderTarget}
-                  />
-                ))}
-                {folderTree.length === 0 && (
-                  <p className="px-2 text-xs text-muted-foreground">No folders yet</p>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Labels
-                </p>
-                <button
-                  type="button"
-                  className="rounded p-1 text-muted-foreground hover:bg-muted"
-                  title="New label"
-                  onClick={() => {
-                    void (async () => {
-                      const auth = authHeaders();
-                      if (!auth) return;
-                      const name = window.prompt("Label name");
-                      if (!name?.trim()) return;
-                      try {
-                        await api.library.createLabel(auth, name.trim());
-                        await reloadMeta();
-                      } catch (error) {
-                        toast.error(
-                          error instanceof Error ? error.message : "Could not create label",
-                        );
-                      }
-                    })();
-                  }}
-                >
-                  <Plus className="size-3.5" />
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {labels.map((label) => (
-                  <button
-                    key={label.id}
-                    type="button"
-                    onClick={() => setView({ kind: "label", labelId: label.id })}
-                    className={cn(
-                      "rounded-full border px-2.5 py-0.5 text-xs",
-                      view.kind === "label" && view.labelId === label.id
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border text-muted-foreground hover:bg-muted",
-                    )}
-                  >
-                    {label.name}
-                  </button>
-                ))}
-                {labels.length === 0 && (
-                  <p className="text-xs text-muted-foreground">No labels yet</p>
-                )}
-              </div>
-            </div>
+        <div className="grid items-start gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+          <GlassCard className="flex max-h-[min(70vh,calc(100vh-10rem))] flex-col overflow-hidden p-3 lg:sticky lg:top-4">
+            <LibrarySidebar
+              view={view}
+              folders={folders}
+              folderTree={folderTree}
+              labels={labels}
+              folderQuery={folderQuery}
+              foldersExpanded={foldersExpanded}
+              onFolderQueryChange={setFolderQuery}
+              onToggleFoldersExpanded={() => setFoldersExpanded((open) => !open)}
+              onView={setView}
+              onSelectFolder={(folderId) => setView({ kind: "folder", folderId })}
+              onCreateRootFolder={() => void createFolder(null)}
+              onAddChild={(id) => void createFolder(id)}
+              onRename={openRenameFolder}
+              onDelete={setDeleteFolderTarget}
+              onCreateLabel={() => {
+                void (async () => {
+                  const auth = authHeaders();
+                  if (!auth) return;
+                  const name = window.prompt("Label name");
+                  if (!name?.trim()) return;
+                  try {
+                    await api.library.createLabel(auth, name.trim());
+                    await reloadMeta();
+                  } catch (error) {
+                    toast.error(error instanceof Error ? error.message : "Could not create label");
+                  }
+                })();
+              }}
+            />
           </GlassCard>
 
-          <div className="space-y-4">
-            <div className="flex flex-wrap gap-3">
-              <div className="relative min-w-[220px] flex-1">
-                <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search title, filename, labels, content…"
-                  className="w-full rounded-lg border border-border bg-background/70 py-2 pr-3 pl-9 text-sm outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-              <select
-                value={fileTypeFilter}
-                onChange={(e) => setFileTypeFilter(e.target.value)}
-                className="rounded-lg border border-border bg-background/70 px-3 py-2 text-sm"
-              >
-                <option value="">All types</option>
-                <option value="document">MultiMind Document</option>
-                <option value="file">Uploaded files</option>
-                <option value=".pdf">PDF</option>
-                <option value=".docx">Word</option>
-                <option value=".xlsx">Excel</option>
-                <option value=".txt">Text</option>
-              </select>
-            </div>
+          <div className="min-w-0 space-y-3">
+            <LibraryBreadcrumb
+              view={view}
+              folderPath={folderPath}
+              labelName={
+                view.kind === "label"
+                  ? labels.find((label) => label.id === view.labelId)?.name
+                  : undefined
+              }
+              onHome={() => setView({ kind: "home" })}
+              onFolder={(folderId) => setView({ kind: "folder", folderId })}
+              onView={(kind) => setView({ kind })}
+            />
 
-            {breadcrumb.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
-                <button
-                  type="button"
-                  className="hover:text-foreground"
-                  onClick={() => setView({ kind: "all" })}
-                >
-                  Library
-                </button>
-                {breadcrumb.map((folder) => (
-                  <span key={folder.id} className="flex items-center gap-1">
-                    <span>/</span>
-                    <button
-                      type="button"
-                      className="hover:text-foreground"
-                      onClick={() => setView({ kind: "folder", folderId: folder.id })}
-                    >
-                      {folder.name}
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-
-            <GlassCard className="overflow-hidden">
-              {loading ? (
+            {view.kind === "home" ? (
+              loading ? (
                 <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
                   <Loader2 className="size-4 animate-spin" />
                   Loading…
                 </div>
-              ) : items.length === 0 ? (
-                <div className="px-6 py-16 text-center text-sm text-muted-foreground">
-                  Nothing here yet. Create a document or upload a file.
-                </div>
               ) : (
-                <ul className="divide-y divide-border">
-                  {items.map((item) => (
-                    <li
-                      key={item.id}
-                      className="flex flex-wrap items-start justify-between gap-3 px-4 py-3 hover:bg-muted/40"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start gap-3">
-                          <ItemIcon item={item} />
-                          <div className="min-w-0">
-                            <Link
-                              to="/library/$itemId"
-                              params={{ itemId: item.id }}
-                              className="truncate font-medium hover:underline"
-                            >
-                              {item.title}
-                            </Link>
-                            <p className="mt-0.5 text-xs text-muted-foreground">
-                              {libraryItemTypeLabel(item)}
-                              {item.size_bytes != null
-                                ? ` · ${formatLibraryBytes(item.size_bytes)}`
-                                : ""}
-                              {item.original_filename && item.original_filename !== item.title
-                                ? ` · ${item.original_filename}`
-                                : ""}
-                            </p>
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {item.labels.map((label) => (
-                                <span
-                                  key={label.id}
-                                  className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
-                                >
-                                  {label.name}
-                                </span>
-                              ))}
-                            </div>
-                            <p className="mt-1 text-[11px] text-muted-foreground">
-                              Updated {formatLibraryUpdatedAt(item.updated_at)}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1">
-                        <button
-                          type="button"
-                          title={item.is_favorite ? "Unfavorite" : "Favorite"}
-                          onClick={() => void toggleFavorite(item)}
-                          className="rounded-md p-2 hover:bg-muted"
-                        >
-                          <Star
-                            className={cn(
-                              "size-4",
-                              item.is_favorite
-                                ? "fill-amber-400 text-amber-400"
-                                : "text-muted-foreground",
-                            )}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          title="Rename"
-                          onClick={() => void renameItem(item)}
-                          className="rounded-md p-2 text-muted-foreground hover:bg-muted"
-                        >
-                          <Pencil className="size-4" />
-                        </button>
-                        <button
-                          type="button"
-                          title="Move to folder"
-                          onClick={() => openMoveItem(item)}
-                          className="rounded-md p-2 text-muted-foreground hover:bg-muted"
-                        >
-                          <FolderInput className="size-4" />
-                        </button>
-                        {item.item_type === "file" && (
-                          <button
-                            type="button"
-                            title="Download"
-                            onClick={() => void downloadItem(item)}
-                            className="rounded-md p-2 text-muted-foreground hover:bg-muted"
-                          >
-                            <Download className="size-4" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          title="Attach to Current Chat"
-                          disabled={attachingId === item.id}
-                          onClick={() => void attachToChat(item)}
-                          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
-                        >
-                          {attachingId === item.id ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            <Paperclip className="size-3.5" />
-                          )}
-                          Attach to Current Chat
-                        </button>
-                        <button
-                          type="button"
-                          title="Delete"
-                          onClick={() => void deleteItem(item)}
-                          className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive"
-                        >
-                          <Trash2 className="size-4" />
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </GlassCard>
+                <LibraryHome
+                  recentItems={items}
+                  folders={folderTree}
+                  attachingId={attachingId}
+                  onOpenFolder={(folderId) => setView({ kind: "folder", folderId })}
+                  {...itemRowHandlers}
+                />
+              )
+            ) : (
+              <>
+                <div className="min-w-0">
+                  <h2 className="truncate text-xl font-semibold tracking-tight">{heading}</h2>
+                  {!loading && (
+                    <p className="mt-0.5 text-xs text-muted-foreground">{itemCountLabel}</p>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <div className="relative min-w-[180px] flex-1">
+                    <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder={
+                        view.kind === "folder"
+                          ? "Search this folder..."
+                          : "Search title, filename, labels, content…"
+                      }
+                      className="w-full rounded-lg border border-border bg-background/70 py-2 pr-3 pl-9 text-sm outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                  <select
+                    value={fileTypeFilter}
+                    onChange={(e) => setFileTypeFilter(e.target.value)}
+                    className="rounded-lg border border-border bg-background/70 px-3 py-2 text-sm"
+                  >
+                    <option value="">All types</option>
+                    <option value="document">MultiMind Document</option>
+                    <option value="file">Uploaded files</option>
+                    <option value=".pdf">PDF</option>
+                    <option value=".docx">Word</option>
+                    <option value=".xlsx">Excel</option>
+                    <option value=".txt">Text</option>
+                  </select>
+                </div>
+
+                <GlassCard className="overflow-hidden">
+                  {loading ? (
+                    <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      Loading…
+                    </div>
+                  ) : items.length === 0 ? (
+                    <div className="px-6 py-16 text-center text-sm text-muted-foreground">
+                      Nothing here yet. Create a document or upload a file.
+                    </div>
+                  ) : (
+                    <ul className="divide-y divide-border">
+                      {items.map((item) => (
+                        <LibraryItemRow
+                          key={item.id}
+                          item={item}
+                          attaching={attachingId === item.id}
+                          {...itemRowHandlers}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </GlassCard>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -951,121 +796,4 @@ function LibraryPage() {
       </AlertDialog>
     </AppShell>
   );
-}
-
-function SideLink({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex w-full rounded-md px-2 py-1.5 text-left",
-        active ? "bg-primary/10 font-medium text-primary" : "hover:bg-muted",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function FolderTree({
-  node,
-  depth,
-  activeId,
-  onSelect,
-  onAddChild,
-  onRename,
-  onDelete,
-}: {
-  node: LibraryFolderNode;
-  depth: number;
-  activeId: string | null;
-  onSelect: (id: string) => void;
-  onAddChild: (id: string) => void;
-  onRename: (folder: ApiLibraryFolder) => void;
-  onDelete: (folder: ApiLibraryFolder) => void;
-}) {
-  return (
-    <div>
-      <div
-        className={cn(
-          "group flex items-center gap-1 rounded-md pr-1",
-          activeId === node.id ? "bg-primary/10 text-primary" : "hover:bg-muted",
-        )}
-        style={{ paddingLeft: 8 + depth * 12 }}
-      >
-        <button
-          type="button"
-          onClick={() => onSelect(node.id)}
-          className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left text-sm"
-        >
-          <Folder className="size-3.5 shrink-0" />
-          <span className="truncate">{node.name}</span>
-        </button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="rounded p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 hover:bg-background"
-              title="Folder actions"
-              aria-label={`Actions for ${node.name}`}
-            >
-              <MoreHorizontal className="size-3" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-36">
-            <DropdownMenuItem onSelect={() => onRename(node)}>
-              <Pencil className="size-4" />
-              Rename
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => onDelete(node)}
-              className="text-destructive focus:text-destructive"
-            >
-              <Trash2 className="size-4" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <button
-          type="button"
-          className="rounded p-1 opacity-0 group-hover:opacity-100 hover:bg-background"
-          title="New subfolder"
-          onClick={() => onAddChild(node.id)}
-        >
-          <FolderPlus className="size-3" />
-        </button>
-      </div>
-      {node.children.map((child) => (
-        <FolderTree
-          key={child.id}
-          node={child}
-          depth={depth + 1}
-          activeId={activeId}
-          onSelect={onSelect}
-          onAddChild={onAddChild}
-          onRename={onRename}
-          onDelete={onDelete}
-        />
-      ))}
-    </div>
-  );
-}
-
-function ItemIcon({ item }: { item: ApiLibraryItem }) {
-  const className = "mt-0.5 size-5 shrink-0 text-muted-foreground";
-  if (item.item_type === "document") return <FileText className={className} />;
-  const name = (item.original_filename || item.title || "").toLowerCase();
-  if (name.endsWith(".xlsx") || name.endsWith(".csv")) {
-    return <FileSpreadsheet className={className} />;
-  }
-  return <File className={className} />;
 }
