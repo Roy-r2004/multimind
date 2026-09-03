@@ -81,6 +81,7 @@ class ModelResponse(BaseModel):
     is_custom: bool = False
     openrouter_slug: str | None = None
     pricing: ModelPricingResponse | None = None
+    context_length: int | None = None
 
 
 class ModelSearchResult(BaseModel):
@@ -1401,17 +1402,34 @@ class PromptBuilderImproveResponse(BaseModel):
 
 class PromptBuilderRefineMessage(BaseModel):
     role: str = Field(min_length=1, max_length=32)
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(min_length=1)
 
 
 class PromptBuilderRefineRequest(BaseModel):
-    messages: list[PromptBuilderRefineMessage] = Field(min_length=1, max_length=40)
+    messages: list[PromptBuilderRefineMessage] = Field(min_length=1)
     model_set_id: str = Field(min_length=1, max_length=128)
+
+
+class PromptBuilderContextUsage(BaseModel):
+    estimated_input_tokens: int
+    actual_input_tokens: int | None = None
+    context_limit: int
+    reserved_output_tokens: int
+    remaining_tokens: int
+    limiting_model_id: str
+    limiting_model_name: str
+    limiting_call: str
+    is_estimate: bool
+
+
+class PromptBuilderContextResponse(BaseModel):
+    context_usage: PromptBuilderContextUsage
 
 
 class PromptBuilderRefineResponse(BaseModel):
     assistant_message: str
     improved_prompt: str
+    context_usage: PromptBuilderContextUsage
 
 
 class TurnAttachmentResponse(BaseModel):

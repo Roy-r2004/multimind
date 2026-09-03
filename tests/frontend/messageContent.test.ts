@@ -23,6 +23,10 @@ test("Verdict opts into stronger long-form hierarchy while Council keeps the def
   assert.match(chatSrc, /<MessageContent>\{a\?\.text \?\? ""\}<\/MessageContent>/);
 });
 
+test("MessageContent is memoized so unchanged markdown does not reparse", () => {
+  assert.match(messageContentSrc, /export const MessageContent = memo\(MessageContentInner\)/);
+});
+
 test("shared tables scroll, resist crushing, and keep long cell content safe", () => {
   assert.match(messageContentSrc, /overflow-x-auto rounded-lg border/);
   assert.match(messageContentSrc, /min-w-\[36rem\] table-auto/);

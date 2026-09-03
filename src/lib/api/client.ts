@@ -3,7 +3,7 @@ import { normalizeApiErrorBody, resolveFailedResponseMessage } from "@/lib/api/e
 export { ApiClientError } from "@/lib/api/types";
 export { resolveFailedResponseMessage } from "@/lib/api/errorMessage";
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+export const DEFAULT_TIMEOUT_MS = 60_000;
 
 function resolveApiBase(): string {
   return (import.meta.env.VITE_API_URL ?? "/api/v1").replace(/\/$/, "");
@@ -15,6 +15,7 @@ type RequestOptions = {
   token?: string | null;
   orgId?: string | null;
   timeoutMs?: number;
+  timeoutMessage?: string;
   signal?: AbortSignal;
 };
 
@@ -32,6 +33,7 @@ type FetchRequestOptions = {
   headers: Record<string, string>;
   body?: BodyInit;
   timeoutMs: number;
+  timeoutMessage?: string;
   signal?: AbortSignal;
 };
 
@@ -102,10 +104,7 @@ async function parseResponse<T>(res: Response): Promise<T> {
         parsed = rawText;
       }
     }
-    const message = resolveFailedResponseMessage(
-      parsed,
-      res.statusText || "Request failed",
-    );
+    const message = resolveFailedResponseMessage(parsed, res.statusText || "Request failed");
     const body = normalizeApiErrorBody(parsed, message);
     const { ApiClientError } = await import("@/lib/api/types");
     throw new ApiClientError(message, res.status, body, res.headers.get("Retry-After"));
@@ -148,14 +147,17 @@ async function fetchRequest<T>(path: string, options: FetchRequestOptions): Prom
           message: "Request was cancelled.",
         });
       }
-      throw new ApiClientError(
-        "API is taking too long to respond. It may be waking up or redeploying — wait ~30s and try again.",
-        408,
-        {
-          error: abort.wasTimeout() ? "REQUEST_TIMEOUT" : "REQUEST_ABORTED",
-          message: "API is taking too long to respond.",
-        },
-      );
+      const timeoutMessage =
+        abort.wasTimeout() && options.timeoutMessage
+          ? options.timeoutMessage
+          : "API is taking too long to respond. It may be waking up or redeploying — wait ~30s and try again.";
+      throw new ApiClientError(timeoutMessage, 408, {
+        error: abort.wasTimeout() ? "REQUEST_TIMEOUT" : "REQUEST_ABORTED",
+        message:
+          abort.wasTimeout() && options.timeoutMessage
+            ? options.timeoutMessage
+            : "API is taking too long to respond.",
+      });
     }
     throw new ApiClientError(
       "Cannot reach the API. Check that the backend service is running and reachable.",
@@ -183,6 +185,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    timeoutMessage: options.timeoutMessage,
     signal: options.signal,
   });
 }
