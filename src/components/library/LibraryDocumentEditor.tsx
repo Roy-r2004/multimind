@@ -167,7 +167,7 @@ export function LibraryDocumentEditor({
         placeholder={placeholder}
         disabled={disabled}
         className={cn(
-          "w-full resize-y rounded-lg border border-border bg-background/60 px-3 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-2 focus:ring-ring",
+          "w-full resize-y rounded-lg border border-border bg-background/60 px-3 py-3 font-sans text-sm leading-[1.7] outline-none focus:ring-2 focus:ring-ring",
           className,
         )}
       />
