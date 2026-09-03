@@ -1,5 +1,12 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   Gavel,
   ChevronDown,
@@ -123,9 +130,18 @@ import { chatAnswerCardsClassName } from "@/lib/chatTurnLayout";
 import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
 import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
 import {
+  CHAT_SCROLL_RESTORE_SETTLE_MS,
   findVerdictSynthesisElement,
+  getChatScrollMemory,
+  getChatScrollSnapshot,
   isChatNearBottom,
+  isLiveChatThread,
+  persistChatScrollSnapshot,
+  planChatScrollEnter,
+  rememberChatScrollMemory,
+  restoreChatScrollPosition,
   scrollThreadToElement,
+  shouldPinToBottomForPlan,
   shouldShowScrollToLatest,
 } from "@/lib/chatScroll";
 import { buildPinnedVerdictMenuItems, isVerdictPinned } from "@/lib/pinnedVerdicts";
@@ -238,6 +254,9 @@ export function ChatPage() {
   const threadEndRef = useRef<HTMLDivElement | null>(null);
   const shouldPinToBottomRef = useRef(true);
   const showScrollToLatestRef = useRef(false);
+  const restoredForChatIdRef = useRef<string | null>(null);
+  const scrollSessionChatIdRef = useRef<string | null | undefined>(undefined);
+  const urlTurnAppliedForChatRef = useRef<string | null>(null);
   const restoredChatIdFromUrlRef = useRef(false);
   const modelSetRestoredForChatRef = useRef<string | null>(null);
   const turnsLoadedForChatRef = useRef<string | null>(null);
@@ -261,6 +280,23 @@ export function ChatPage() {
     modelSetRestoredForChatRef.current = null;
     turnsLoadedForChatRef.current = null;
   }
+  if (scrollSessionChatIdRef.current !== activeChatId) {
+    const previousId = scrollSessionChatIdRef.current;
+    if (typeof previousId === "string" && previousId) {
+      persistChatScrollSnapshot(previousId, threadRef.current);
+    }
+    scrollSessionChatIdRef.current = activeChatId;
+    restoredForChatIdRef.current = null;
+    urlTurnAppliedForChatRef.current = null;
+    const enterPlan = planChatScrollEnter(
+      activeChatId ? getChatScrollSnapshot(activeChatId) : undefined,
+      typeof window === "undefined"
+        ? null
+        : new URLSearchParams(window.location.search).get("turnId"),
+    );
+    shouldPinToBottomRef.current = shouldPinToBottomForPlan(enterPlan);
+    showScrollToLatestRef.current = !shouldPinToBottomRef.current;
+  }
   const draftStorageKey = composerDraftStorageKey(activeChatId);
   const pinnedVerdicts = activeChat?.pinnedVerdicts ?? [];
   const pinnedVerdictMenuItems = buildPinnedVerdictMenuItems(pinnedVerdicts, apiTurns);
@@ -274,7 +310,7 @@ export function ChatPage() {
     setRefChats(persisted ? [{ chatId: persisted.id, title: persisted.title }] : []);
   }, [activeChatId, activeChat?.activeReferencedChat]);
 
-  const updateThreadScrollState = useCallback(() => {
+  const updateThreadScrollState = useCallback((options?: { holdPinOff?: boolean }) => {
     const thread = threadRef.current;
     if (!thread) return;
     const metrics = {
@@ -284,8 +320,17 @@ export function ChatPage() {
     };
     const nearBottom = isChatNearBottom(metrics);
     const nextShowButton = shouldShowScrollToLatest(metrics);
+    const chatId = activeChatIdRef.current;
+    if (chatId && isLiveChatThread(thread) && !options?.holdPinOff) {
+      const prev = getChatScrollMemory(chatId);
+      rememberChatScrollMemory(chatId, {
+        ...metrics,
+        turnId: prev?.turnId ?? null,
+        offsetPx: prev?.offsetPx ?? 0,
+      });
+    }
 
-    shouldPinToBottomRef.current = nearBottom;
+    shouldPinToBottomRef.current = options?.holdPinOff ? false : nearBottom;
     if (showScrollToLatestRef.current !== nextShowButton) {
       showScrollToLatestRef.current = nextShowButton;
       setShowScrollToLatest(nextShowButton);
@@ -309,21 +354,87 @@ export function ChatPage() {
       });
     };
 
-    updateThreadScrollState();
+    if (shouldPinToBottomRef.current || restoredForChatIdRef.current === activeChatIdRef.current) {
+      updateThreadScrollState();
+    }
     thread.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       thread.removeEventListener("scroll", onScroll);
       if (frame) window.cancelAnimationFrame(frame);
+      const chatId = activeChatIdRef.current;
+      if (chatId) {
+        persistChatScrollSnapshot(chatId, thread);
+      }
     };
   }, [updateThreadScrollState]);
 
+  useLayoutEffect(() => {
+    const thread = threadRef.current;
+    return () => {
+      const chatId = activeChatIdRef.current;
+      if (chatId) {
+        persistChatScrollSnapshot(chatId, thread);
+      }
+    };
+  }, []);
+
   useEffect(() => {
-    shouldPinToBottomRef.current = true;
-    showScrollToLatestRef.current = false;
-    setShowScrollToLatest(false);
     setDeletedTurns([]);
-    window.requestAnimationFrame(() => scrollThreadToLatest("auto"));
+    const enterPlan = planChatScrollEnter(
+      activeChatId ? getChatScrollSnapshot(activeChatId) : undefined,
+      new URLSearchParams(window.location.search).get("turnId"),
+    );
+    shouldPinToBottomRef.current = shouldPinToBottomForPlan(enterPlan);
+    if (enterPlan.action === "pin-latest") {
+      showScrollToLatestRef.current = false;
+      setShowScrollToLatest(false);
+      restoredForChatIdRef.current = activeChatId;
+      window.requestAnimationFrame(() => {
+        if (!shouldPinToBottomRef.current) return;
+        scrollThreadToLatest("auto");
+      });
+      return;
+    }
+    showScrollToLatestRef.current = true;
+    setShowScrollToLatest(true);
   }, [activeChatId, scrollThreadToLatest]);
+
+  const turnListBelongsToActiveChat = Boolean(
+    activeChatId &&
+    apiTurns.length > 0 &&
+    apiTurns[0]?.chat_id === activeChatId &&
+    apiTurns[apiTurns.length - 1]?.chat_id === activeChatId,
+  );
+
+  useLayoutEffect(() => {
+    if (!activeChatId || restoredForChatIdRef.current === activeChatId) return;
+    const enterPlan = planChatScrollEnter(
+      getChatScrollSnapshot(activeChatId),
+      new URLSearchParams(window.location.search).get("turnId"),
+    );
+    if (enterPlan.action !== "restore") {
+      restoredForChatIdRef.current = activeChatId;
+      return;
+    }
+    if (!turnListBelongsToActiveChat) return;
+    const thread = threadRef.current;
+    if (!thread) return;
+
+    restoredForChatIdRef.current = activeChatId;
+    shouldPinToBottomRef.current = false;
+    restoreChatScrollPosition(thread, enterPlan.snapshot);
+    updateThreadScrollState({ holdPinOff: true });
+
+    const settle = window.setTimeout(() => {
+      if (activeChatIdRef.current !== activeChatId) return;
+      if (shouldPinToBottomRef.current) return;
+      const still = threadRef.current;
+      if (!still) return;
+      restoreChatScrollPosition(still, enterPlan.snapshot);
+      updateThreadScrollState({ holdPinOff: true });
+    }, CHAT_SCROLL_RESTORE_SETTLE_MS);
+    return () => window.clearTimeout(settle);
+  }, [activeChatId, turnListBelongsToActiveChat, updateThreadScrollState]);
 
   useEffect(() => {
     if (restoredChatIdFromUrlRef.current) return;
@@ -338,10 +449,15 @@ export function ChatPage() {
   useEffect(() => {
     const turnId = new URLSearchParams(window.location.search).get("turnId");
     if (!turnId || apiTurns.length === 0) return;
+    if (urlTurnAppliedForChatRef.current === activeChatId) return;
     const el = document.getElementById(`turn-${turnId}`);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    if (!el) return;
+    urlTurnAppliedForChatRef.current = activeChatId;
+    restoredForChatIdRef.current = activeChatId;
+    shouldPinToBottomRef.current = false;
+    showScrollToLatestRef.current = true;
+    setShowScrollToLatest(true);
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [apiTurns.length, activeChatId]);
 
   function scrollToPinnedVerdict(verdictId: string, turnId: string) {
@@ -415,6 +531,7 @@ export function ChatPage() {
   useEffect(() => {
     if (!shouldPinToBottomRef.current) return;
     window.requestAnimationFrame(() => {
+      if (!shouldPinToBottomRef.current) return;
       scrollThreadToLatest("auto");
       updateThreadScrollState();
     });
