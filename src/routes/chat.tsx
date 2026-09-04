@@ -1979,6 +1979,7 @@ function AiTurn({
   const [showDisagree, setShowDisagree] = useState(false);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
+  const verdictContentRef = useRef<HTMLDivElement>(null);
   const answerCards = deriveTurnAnswerCards(turn, set.models);
   const cardModelIds = answerCards.map((card) => card.modelId);
 
@@ -2178,7 +2179,10 @@ function AiTurn({
               verdictCost={turn.verdict.cost_usd}
             />
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <VerdictCopyButton text={turn.verdict.text} />
+              <VerdictCopyButton
+                text={turn.verdict.text}
+                getHtml={() => verdictContentRef.current?.innerHTML}
+              />
               <button
                 type="button"
                 aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
@@ -2236,7 +2240,9 @@ function AiTurn({
           </div>
         </div>
         <div className="mt-5 space-y-3">
-          <MessageContent variant="verdict">{turn.verdict.text}</MessageContent>
+          <div ref={verdictContentRef}>
+            <MessageContent variant="verdict">{turn.verdict.text}</MessageContent>
+          </div>
           {turn.verdict.reason && (
             <MessageContent
               muted

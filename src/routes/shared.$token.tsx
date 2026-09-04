@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Copy, ExternalLink, Gavel, Loader2 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { MessageContent } from "@/components/chat/MessageContent";
@@ -105,6 +105,7 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
   const [layout] = useChatTurnLayout();
   const { isExpanded, toggle: toggleAnswerExpansion } = useTurnAnswerExpansion(layout);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
+  const verdictContentRef = useRef<HTMLDivElement>(null);
   const canCollapseAnswers = Boolean(turn.verdict);
   const hasVerdict = Boolean(turn.verdict);
 
@@ -214,12 +215,17 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
               verdictCost={turn.verdict.cost_usd}
             />
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <VerdictCopyButton text={turn.verdict.text} />
+              <VerdictCopyButton
+                text={turn.verdict.text}
+                getHtml={() => verdictContentRef.current?.innerHTML}
+              />
             </div>
           </div>
         </div>
         <div className="mt-5">
-          <MessageContent>{turn.verdict.text}</MessageContent>
+          <div ref={verdictContentRef}>
+            <MessageContent>{turn.verdict.text}</MessageContent>
+          </div>
         </div>
       </div>
     </div>
