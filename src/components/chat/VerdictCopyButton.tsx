@@ -1,11 +1,14 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { toast } from "sonner";
+import { copyRichContent } from "@/lib/richClipboard";
 import { cn } from "@/lib/utils";
 
 type Props = {
   /** Raw Markdown / plain-text verdict source to copy. */
   text: string;
+  /** Rendered Verdict Markdown HTML captured at click time (not the whole card). */
+  getHtml?: () => string | undefined;
   className?: string;
   /** Default button label. */
   label?: string;
@@ -16,11 +19,12 @@ type Props = {
 };
 
 /**
- * Copies the final verdict source text to the clipboard.
+ * Copies the final verdict source text (and rendered HTML when provided).
  * Shows temporary "Copied" feedback and a toast on success/failure.
  */
 export function VerdictCopyButton({
   text,
+  getHtml,
   className,
   label = "Copy",
   copiedLabel = "Copied",
@@ -31,7 +35,7 @@ export function VerdictCopyButton({
 
   async function handleCopy() {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyRichContent({ plainText: text, html: getHtml?.() });
       setCopied(true);
       toast.success(successMessage);
       window.setTimeout(() => setCopied(false), 2000);

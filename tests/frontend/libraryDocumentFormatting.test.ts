@@ -6,6 +6,7 @@ import {
   formatLibraryDocumentInline,
   formatLibraryDocumentList,
   handleLibraryDocumentListKey,
+  insertLibraryDocumentText,
 } from "../../src/lib/libraryDocumentFormatting.ts";
 
 const block = (
@@ -171,4 +172,11 @@ test("block formatting leaves text outside the complete selected lines untouched
   const edit = block(source, "checklist", 8, 10);
   assert.equal(edit.text, "before\n- [ ] Task\nafter");
   assert.equal(edit.text.slice(edit.selectionStart, edit.selectionEnd), "- [ ] Task");
+});
+
+test("insertLibraryDocumentText replaces the selection and parks the caret after", () => {
+  const edit = insertLibraryDocumentText("Hello XX world", 6, 8, "YY");
+  assert.equal(edit.text, "Hello YY world");
+  assert.equal(edit.selectionStart, 8);
+  assert.equal(edit.selectionEnd, 8);
 });

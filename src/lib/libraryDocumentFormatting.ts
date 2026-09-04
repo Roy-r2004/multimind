@@ -198,3 +198,17 @@ export function handleLibraryDocumentListKey(
   const caret = selectionStart + insertion.length;
   return { text: nextText, selectionStart: caret, selectionEnd: caret };
 }
+
+/** Insert or replace at the current textarea selection and place the caret after the insertion. */
+export function insertLibraryDocumentText(
+  text: string,
+  selectionStart: number,
+  selectionEnd: number,
+  insertion: string,
+): TextareaEdit {
+  const start = Math.max(0, Math.min(selectionStart, text.length));
+  const end = Math.max(start, Math.min(selectionEnd, text.length));
+  const nextText = text.slice(0, start) + insertion + text.slice(end);
+  const caret = start + insertion.length;
+  return { text: nextText, selectionStart: caret, selectionEnd: caret };
+}
