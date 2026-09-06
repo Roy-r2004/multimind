@@ -20,6 +20,9 @@ test("Referee model sets expose editable Custom Verdict Instructions", () => {
   assert.match(refereeBranch, /onChange=\{\(e\) => setCustom\(e\.target\.value\)\}/);
 });
 
-test("saving still persists custom instructions on the Model Set", () => {
-  assert.match(source, /customInstructions: custom\.trim\(\) \|\| undefined/);
+test("saving a Referee draft promotes it to refereeSystemPrompt and clears custom", () => {
+  assert.match(source, /refereeSystemPrompt: isReferee && draft \? draft : initial\?\.refereeSystemPrompt/);
+  assert.match(source, /customInstructions: isReferee \? undefined : draft \|\| undefined/);
+  assert.match(source, /setFixedPrompt\(draft\)/);
+  assert.match(source, /setCustom\(""\)/);
 });

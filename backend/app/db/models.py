@@ -426,6 +426,7 @@ class ModelSet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     best_for: Mapped[str] = mapped_column(String(512), default="", nullable=False)
     template_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     custom_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    referee_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     organization: Mapped["Organization | None"] = relationship(back_populates="model_sets")

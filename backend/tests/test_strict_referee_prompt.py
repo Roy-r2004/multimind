@@ -1,6 +1,10 @@
 """Strict synthesis-only Referee prompt isolation."""
 
-from app.llm.prompt_engine import STRICT_REFEREE_BEHAVIOR, PromptEngine
+from app.llm.prompt_engine import (
+    STRICT_REFEREE_BEHAVIOR,
+    PromptEngine,
+    resolve_effective_referee_prompt,
+)
 
 EXPECTED_STRICT_REFEREE_BEHAVIOR = """You are the **Referee AI** embedded within my LLM platform. Your role is strictly limited to the following:
 
@@ -132,7 +136,7 @@ def test_mandatory_structural_check_is_late_and_overrides_narrative_conciseness(
         strategy="Referee",
         user_message="Compare the options",
         model_answers=_answers(),
-        referee_instructions=custom,
+        strict_referee_behavior=custom,
     )
 
     custom_index = rendered.index(custom)
@@ -163,7 +167,37 @@ def test_mandatory_structural_check_preserves_exceptions_and_requires_synthesis(
     assert "Do not copy tables verbatim merely because they exist" in rendered
 
 
-def test_strict_referee_includes_custom_verdict_instructions_but_excludes_runtime_context():
+def test_null_referee_system_prompt_uses_strict_behavior_once():
+    rendered = PromptEngine().verdict_prompt(
+        strategy="Referee",
+        user_message="ORIGINAL_QUESTION_SENTINEL",
+        model_answers=_answers(),
+        strict_referee_behavior=None,
+    )
+    assert rendered.startswith(f"{EXPECTED_STRICT_REFEREE_BEHAVIOR}\n\n")
+    assert rendered.count(EXPECTED_STRICT_REFEREE_BEHAVIOR) == 1
+    assert "## Custom Verdict Instructions" not in rendered
+
+
+def test_saved_referee_system_prompt_replaces_strict_behavior_once():
+    replacement = "MY NEW PROMPT"
+    rendered = PromptEngine().verdict_prompt(
+        strategy="Referee",
+        user_message="ORIGINAL_QUESTION_SENTINEL",
+        model_answers=_answers(),
+        strict_referee_behavior=replacement,
+        referee_instructions="SHOULD_NOT_LAYER_REFEREE_INSTRUCTIONS",
+        custom_instructions="SHOULD_NOT_LAYER_CUSTOM_INSTRUCTIONS",
+    )
+    assert rendered.startswith(f"{replacement}\n\n")
+    assert rendered.count(replacement) == 1
+    assert EXPECTED_STRICT_REFEREE_BEHAVIOR not in rendered
+    assert "## Custom Verdict Instructions" not in rendered
+    assert "SHOULD_NOT_LAYER_REFEREE_INSTRUCTIONS" not in rendered
+    assert "SHOULD_NOT_LAYER_CUSTOM_INSTRUCTIONS" not in rendered
+
+
+def test_strict_referee_excludes_custom_instructions_and_runtime_context():
     excluded = (
         "REFERENCE_HANDOFF_SENTINEL",
         "ATTACHMENT_EXCERPT_SENTINEL",
@@ -178,13 +212,14 @@ def test_strict_referee_includes_custom_verdict_instructions_but_excludes_runtim
         user_message="ORIGINAL_QUESTION_SENTINEL",
         model_answers=_answers(),
         referee_instructions="CUSTOM_VERDICT_SENTINEL",
+        custom_instructions="CUSTOM_VERDICT_SENTINEL",
         user_brain_context=excluded[3],
         rolling_chat_memory=excluded[4],
         recent_conversation_context=excluded[5],
         playbook_context=excluded[6],
     )
-    assert "## Custom Verdict Instructions" in rendered
-    assert "CUSTOM_VERDICT_SENTINEL" in rendered
+    assert "## Custom Verdict Instructions" not in rendered
+    assert "CUSTOM_VERDICT_SENTINEL" not in rendered
     for sentinel in excluded:
         assert sentinel not in rendered
     assert "Verdict AI (Chief Synthesizer)" not in rendered
@@ -239,6 +274,13 @@ def test_empty_referee_instructions_omit_custom_section():
         referee_instructions=None,
     )
     assert "## Custom Verdict Instructions" not in rendered
+
+
+def test_resolve_effective_referee_prompt_falls_back_and_replaces() -> None:
+    assert resolve_effective_referee_prompt("Synthesize", "MY NEW PROMPT") is None
+    assert resolve_effective_referee_prompt("Referee", None) == STRICT_REFEREE_BEHAVIOR
+    assert resolve_effective_referee_prompt("Referee", "   ") == STRICT_REFEREE_BEHAVIOR
+    assert resolve_effective_referee_prompt("Referee", "MY NEW PROMPT") == "MY NEW PROMPT"
 
 
 def test_non_referee_verdict_strategy_remains_on_existing_template():

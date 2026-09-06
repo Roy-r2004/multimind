@@ -45,6 +45,18 @@ STRICT_REFEREE_BEHAVIOR = """You are the **Referee AI** embedded within my LLM p
 
 This prompt strictly prohibits any summarization, resumes, or concise forms. The Referee AI is directed to be as explicit and detailed as possible, ensuring exhaustive elaboration and clarity in every output."""
 
+
+def resolve_effective_referee_prompt(
+    strategy: str | None,
+    referee_system_prompt: str | None,
+) -> str | None:
+    """Return the single active Referee instruction prompt, or None for other strategies."""
+    if strategy != "Referee":
+        return None
+    text = (referee_system_prompt or "").strip()
+    return text or STRICT_REFEREE_BEHAVIOR
+
+
 # Included by base.j2 — must always exist when using StrictUndefined.
 _BASE_CONTEXT_DEFAULTS = {
     "custom_instructions": None,
@@ -120,6 +132,7 @@ class PromptEngine:
         strategy: str,
         user_message: str,
         model_answers: list[dict[str, Any]],
+        strict_referee_behavior: str | None = None,
         referee_instructions: str | None = None,
         custom_instructions: str | None = None,
         template_instructions: str | None = None,
@@ -129,15 +142,22 @@ class PromptEngine:
         playbook_context: str | None = None,
     ) -> str:
         template = STRATEGY_TEMPLATE_MAP.get(strategy, "system/verdict.j2")
+        is_referee = strategy == "Referee"
+        referee_behavior = (
+            (strict_referee_behavior or "").strip() or STRICT_REFEREE_BEHAVIOR
+            if is_referee
+            else STRICT_REFEREE_BEHAVIOR
+        )
         return self.render(
             template,
-            strict_referee_behavior=STRICT_REFEREE_BEHAVIOR,
+            strict_referee_behavior=referee_behavior,
             strategy=strategy,
             user_message=user_message,
             model_answers=model_answers,
-            referee_instructions=referee_instructions,
-            custom_instructions=custom_instructions,
-            template_instructions=template_instructions,
+            # Referee uses exactly one instruction prompt (strict_referee_behavior).
+            referee_instructions=None if is_referee else referee_instructions,
+            custom_instructions=None if is_referee else custom_instructions,
+            template_instructions=None if is_referee else template_instructions,
             user_brain_context=user_brain_context or "",
             rolling_chat_memory=rolling_chat_memory or "",
             recent_conversation_context=recent_conversation_context or "",

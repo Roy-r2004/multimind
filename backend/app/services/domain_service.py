@@ -33,7 +33,7 @@ from app.db.models import (
     Verdict,
 )
 from app.llm.catalog import is_builtin_model_id
-from app.llm.prompt_engine import STRICT_REFEREE_BEHAVIOR
+from app.llm.prompt_engine import resolve_effective_referee_prompt
 from app.schemas.api import (
     ChatResponse,
     CostSummaryResponse,
@@ -228,6 +228,10 @@ class ModelSetService:
                 raise ValidationError(
                     f"template_name must be at most {TEMPLATE_NAME_MAX_LEN} characters"
                 )
+            strategy = Strategy(data.strategy.value)
+            custom_instructions, referee_system_prompt = self._instruction_fields_for_create(
+                strategy, data
+            )
             model_set = ModelSet(
                 org_id=auth.org_id,
                 slug=slug,
@@ -235,10 +239,11 @@ class ModelSetService:
                 description=data.description,
                 models=list(data.models),
                 verdict_model=data.verdict_model,
-                strategy=Strategy(data.strategy.value),
+                strategy=strategy,
                 best_for=best_for,
                 template_name=data.template_name,
-                custom_instructions=data.custom_instructions,
+                custom_instructions=custom_instructions,
+                referee_system_prompt=referee_system_prompt,
                 is_system=False,
             )
             db.add(model_set)
@@ -297,8 +302,7 @@ class ModelSetService:
                         f"template_name must be at most {TEMPLATE_NAME_MAX_LEN} characters"
                     )
                 model_set.template_name = data.template_name
-            if data.custom_instructions is not None:
-                model_set.custom_instructions = data.custom_instructions
+            self._apply_instruction_fields_for_update(model_set, data)
             await db.flush()
             await db.commit()
             return self._response(model_set)
@@ -369,11 +373,46 @@ class ModelSetService:
             best_for=s.best_for,
             template_name=s.template_name,
             custom_instructions=s.custom_instructions,
-            effective_referee_prompt=(
-                STRICT_REFEREE_BEHAVIOR if s.strategy == Strategy.REFEREE else None
+            referee_system_prompt=s.referee_system_prompt,
+            effective_referee_prompt=resolve_effective_referee_prompt(
+                s.strategy.value, s.referee_system_prompt
             ),
             is_system=s.is_system,
         )
+
+    @staticmethod
+    def _nonempty_text(value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
+
+    @classmethod
+    def _referee_draft(cls, data: Any) -> str | None:
+        return cls._nonempty_text(getattr(data, "referee_system_prompt", None)) or cls._nonempty_text(
+            getattr(data, "custom_instructions", None)
+        )
+
+    @classmethod
+    def _instruction_fields_for_create(
+        cls, strategy: Strategy, data: ModelSetCreateRequest
+    ) -> tuple[str | None, str | None]:
+        if strategy == Strategy.REFEREE:
+            return None, cls._referee_draft(data)
+        return data.custom_instructions, None
+
+    @classmethod
+    def _apply_instruction_fields_for_update(
+        cls, model_set: ModelSet, data: ModelSetUpdateRequest
+    ) -> None:
+        if model_set.strategy == Strategy.REFEREE:
+            draft = cls._referee_draft(data)
+            if draft:
+                model_set.referee_system_prompt = draft
+                model_set.custom_instructions = None
+            return
+        if data.custom_instructions is not None:
+            model_set.custom_instructions = data.custom_instructions
 
     @staticmethod
     def _submitted_field_names(data: Any, *, exclude_unset: bool = False) -> list[str]:

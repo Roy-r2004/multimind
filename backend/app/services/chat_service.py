@@ -25,6 +25,7 @@ from app.db.models import (
     ModelSet,
     OrgRole,
     ShareLink,
+    Strategy,
     Turn,
     TurnStatus,
     Verdict,
@@ -37,6 +38,7 @@ from app.llm.orchestrator import (
     get_orchestrator,
     is_turn_deleted,
 )
+from app.llm.prompt_engine import resolve_effective_referee_prompt
 from app.schemas.api import (
     ChatCreateRequest,
     ChatReferenceResponse,
@@ -1194,6 +1196,7 @@ class ChatService:
             chat_id=chat.id,
         )
 
+        is_referee = turn.strategy == Strategy.REFEREE
         ctx = TurnContext(
             turn_id=turn.id,
             chat_id=chat.id,
@@ -1205,7 +1208,14 @@ class ChatService:
             strategy=turn.strategy,
             model_set_name=model_set.name,
             council_runtime_context=turn.custom_instructions,
-            referee_instructions=model_set.custom_instructions,
+            referee_instructions=None if is_referee else model_set.custom_instructions,
+            referee_system_prompt=(
+                resolve_effective_referee_prompt(
+                    turn.strategy.value, model_set.referee_system_prompt
+                )
+                if is_referee
+                else None
+            ),
             user_brain_context=user_brain_context or None,
             rolling_chat_memory=rolling_chat_memory,
             recent_conversation_context=recent_conversation_context,

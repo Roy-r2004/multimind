@@ -20,8 +20,8 @@ export function ModelSetModal({
   open: boolean;
   onClose: () => void;
   initial?: ModelSet | null;
-  onCreate?: (s: ModelSet) => void;
-  onUpdate?: (s: ModelSet) => void;
+  onCreate?: (s: ModelSet) => void | Promise<void>;
+  onUpdate?: (s: ModelSet) => void | Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
@@ -29,6 +29,7 @@ export function ModelSetModal({
   const [verdict, setVerdict] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<Strategy>("Synthesize");
   const [custom, setCustom] = useState("");
+  const [fixedPrompt, setFixedPrompt] = useState("");
   const [selectedTemplateName, setSelectedTemplateName] = useState<string | null>(null);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [templateOptions, setTemplateOptions] = useState<ApiTemplate[]>([]);
@@ -75,6 +76,7 @@ export function ModelSetModal({
       setVerdict(initial.verdictModel);
       setStrategy(initial.strategy);
       setCustom(initial.customInstructions ?? "");
+      setFixedPrompt(initial.effectiveRefereePrompt ?? "");
       setSelectedTemplateName(initial.templateName ?? null);
       setShowTemplateModal(false);
       setError(null);
@@ -85,6 +87,7 @@ export function ModelSetModal({
       setVerdict(null);
       setStrategy("Synthesize");
       setCustom("");
+      setFixedPrompt("");
       setSelectedTemplateName(null);
       setShowTemplateModal(false);
       setError(null);
@@ -115,7 +118,7 @@ export function ModelSetModal({
     setShowTemplateModal(false);
   }
 
-  function submit() {
+  async function submit() {
     if (!name.trim()) {
       setError("Please enter a Model Set name.");
       return;
@@ -128,6 +131,8 @@ export function ModelSetModal({
       setError("Choose a Verdict AI.");
       return;
     }
+    const draft = custom.trim();
+    const isReferee = strategy === "Referee";
     const payload: ModelSet = {
       id: initial?.id ?? `set-${Date.now()}`,
       name: name.trim(),
@@ -136,12 +141,19 @@ export function ModelSetModal({
       verdictModel: verdict,
       strategy,
       bestFor: desc.trim() || "Custom use case",
-      templateName: custom.trim() ? (selectedTemplateName ?? "Custom") : undefined,
-      customInstructions: custom.trim() || undefined,
-      effectiveRefereePrompt: initial?.effectiveRefereePrompt,
+      templateName: draft ? (selectedTemplateName ?? "Custom") : undefined,
+      customInstructions: isReferee ? undefined : draft || undefined,
+      refereeSystemPrompt: isReferee && draft ? draft : initial?.refereeSystemPrompt,
+      effectiveRefereePrompt: isReferee
+        ? draft || initial?.effectiveRefereePrompt
+        : undefined,
     };
-    if (initial && onUpdate) onUpdate(payload);
-    else if (!initial && onCreate) onCreate(payload);
+    if (initial && onUpdate) await onUpdate(payload);
+    else if (!initial && onCreate) await onCreate(payload);
+    if (isReferee && draft) {
+      setFixedPrompt(draft);
+      setCustom("");
+    }
   }
 
   if (!open) return null;
@@ -402,7 +414,7 @@ export function ModelSetModal({
             <>
               <div className="mb-1 font-medium">Fixed Referee Prompt</div>
               <textarea
-                value={initial?.effectiveRefereePrompt ?? ""}
+                value={fixedPrompt}
                 readOnly
                 rows={12}
                 className="w-full rounded-lg border border-border bg-muted px-3 py-2 text-sm"
