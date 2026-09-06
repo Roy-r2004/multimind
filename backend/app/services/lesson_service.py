@@ -15,6 +15,7 @@ from app.db.models import (
     LessonStatus,
     ModelAnswer,
     ModelSet,
+    Strategy,
     Turn,
     TurnStatus,
     UsageKind,
@@ -24,7 +25,7 @@ from app.db.models import (
 from app.services.brain_service import brain_service
 from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.orchestrator import TurnContext, get_orchestrator
-from app.llm.prompt_engine import get_prompt_engine
+from app.llm.prompt_engine import get_prompt_engine, resolve_effective_referee_prompt
 from app.llm.providers import get_provider_registry
 from app.schemas.api import (
     DiscussMessageItem,
@@ -444,6 +445,7 @@ class LessonService:
         db.add(challenge_turn)
         await db.flush()
 
+        is_referee = turn.strategy == Strategy.REFEREE
         ctx = TurnContext(
             turn_id=challenge_turn.id,
             chat_id=turn.chat_id,
@@ -455,7 +457,14 @@ class LessonService:
             strategy=turn.strategy,
             model_set_name=f"{model_set.name} challenge council",
             council_runtime_context=turn.custom_instructions,
-            referee_instructions=model_set.custom_instructions,
+            referee_instructions=None if is_referee else model_set.custom_instructions,
+            referee_system_prompt=(
+                resolve_effective_referee_prompt(
+                    turn.strategy.value, model_set.referee_system_prompt
+                )
+                if is_referee
+                else None
+            ),
             recent_conversation_context=previous_context,
         )
         result = await get_orchestrator().run(db, ctx)

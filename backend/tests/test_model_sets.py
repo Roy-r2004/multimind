@@ -42,7 +42,22 @@ async def test_create_model_set_success(db, auth: AuthContext) -> None:
 
 
 @pytest.mark.asyncio
-async def test_referee_response_exposes_prompt_from_prompt_engine_without_replacing_custom_instructions(
+async def test_referee_response_falls_back_to_strict_behavior_when_override_is_null(
+    db, auth: AuthContext
+) -> None:
+    created = await model_set_service.create(
+        db,
+        auth,
+        _create_request(strategy=StrategyEnum.REFEREE),
+    )
+
+    assert created.referee_system_prompt is None
+    assert created.custom_instructions is None
+    assert created.effective_referee_prompt == STRICT_REFEREE_BEHAVIOR
+
+
+@pytest.mark.asyncio
+async def test_create_referee_promotes_custom_instructions_to_system_prompt(
     db, auth: AuthContext
 ) -> None:
     created = await model_set_service.create(
@@ -50,12 +65,131 @@ async def test_referee_response_exposes_prompt_from_prompt_engine_without_replac
         auth,
         _create_request(
             strategy=StrategyEnum.REFEREE,
-            custom_instructions="legacy council instructions",
+            custom_instructions="MY NEW PROMPT",
         ),
     )
 
-    assert created.effective_referee_prompt == STRICT_REFEREE_BEHAVIOR
+    assert created.referee_system_prompt == "MY NEW PROMPT"
+    assert created.custom_instructions is None
+    assert created.effective_referee_prompt == "MY NEW PROMPT"
+    assert created.effective_referee_prompt != STRICT_REFEREE_BEHAVIOR
+
+
+@pytest.mark.asyncio
+async def test_create_referee_uses_explicit_referee_system_prompt(
+    db, auth: AuthContext
+) -> None:
+    created = await model_set_service.create(
+        db,
+        auth,
+        _create_request(
+            strategy=StrategyEnum.REFEREE,
+            custom_instructions="ignored draft",
+            referee_system_prompt="MY NEW PROMPT",
+        ),
+    )
+
+    assert created.referee_system_prompt == "MY NEW PROMPT"
+    assert created.custom_instructions is None
+    assert created.effective_referee_prompt == "MY NEW PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_update_referee_promotes_draft_and_clears_custom_instructions(
+    db, auth: AuthContext
+) -> None:
+    created = await model_set_service.create(
+        db,
+        auth,
+        _create_request(strategy=StrategyEnum.REFEREE, custom_instructions="OLD PROMPT"),
+    )
+    updated = await model_set_service.update(
+        db,
+        auth,
+        created.id,
+        ModelSetUpdateRequest(custom_instructions="MY NEW PROMPT"),
+    )
+
+    row = (await db.execute(select(ModelSet).where(ModelSet.slug == created.id))).scalar_one()
+    assert updated.referee_system_prompt == "MY NEW PROMPT"
+    assert updated.custom_instructions is None
+    assert updated.effective_referee_prompt == "MY NEW PROMPT"
+    assert row.referee_system_prompt == "MY NEW PROMPT"
+    assert row.custom_instructions is None
+
+
+@pytest.mark.asyncio
+async def test_update_referee_with_empty_draft_preserves_system_prompt(
+    db, auth: AuthContext
+) -> None:
+    created = await model_set_service.create(
+        db,
+        auth,
+        _create_request(
+            strategy=StrategyEnum.REFEREE,
+            referee_system_prompt="MY NEW PROMPT",
+        ),
+    )
+    updated = await model_set_service.update(
+        db,
+        auth,
+        created.id,
+        ModelSetUpdateRequest(custom_instructions=None, name="Still Referee"),
+    )
+
+    row = (await db.execute(select(ModelSet).where(ModelSet.slug == created.id))).scalar_one()
+    assert updated.name == "Still Referee"
+    assert updated.referee_system_prompt == "MY NEW PROMPT"
+    assert updated.effective_referee_prompt == "MY NEW PROMPT"
+    assert row.referee_system_prompt == "MY NEW PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_update_referee_empty_string_does_not_erase_system_prompt(
+    db, auth: AuthContext
+) -> None:
+    created = await model_set_service.create(
+        db,
+        auth,
+        _create_request(
+            strategy=StrategyEnum.REFEREE,
+            referee_system_prompt="MY NEW PROMPT",
+        ),
+    )
+    updated = await model_set_service.update(
+        db,
+        auth,
+        created.id,
+        ModelSetUpdateRequest(custom_instructions="   ", referee_system_prompt=""),
+    )
+
+    assert updated.referee_system_prompt == "MY NEW PROMPT"
+    assert updated.effective_referee_prompt == "MY NEW PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_non_referee_custom_instructions_are_unchanged(db, auth: AuthContext) -> None:
+    created = await model_set_service.create(
+        db,
+        auth,
+        _create_request(
+            strategy=StrategyEnum.SYNTHESIZE,
+            custom_instructions="legacy council instructions",
+        ),
+    )
+    updated = await model_set_service.update(
+        db,
+        auth,
+        created.id,
+        ModelSetUpdateRequest(custom_instructions="updated council instructions"),
+    )
+
+    assert created.effective_referee_prompt is None
+    assert created.referee_system_prompt is None
     assert created.custom_instructions == "legacy council instructions"
+    assert updated.custom_instructions == "updated council instructions"
+    assert updated.referee_system_prompt is None
+    assert updated.effective_referee_prompt is None
 
 
 @pytest.mark.asyncio

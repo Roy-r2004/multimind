@@ -722,6 +722,7 @@ export const api = {
         best_for?: string;
         template_name?: string | null;
         custom_instructions?: string | null;
+        referee_system_prompt?: string | null;
       },
     ) =>
       apiRequest<ApiModelSet>("/model-sets", { body: data, token: auth.token, orgId: auth.orgId }),
@@ -738,6 +739,7 @@ export const api = {
         best_for: string;
         template_name?: string | null;
         custom_instructions: string | null;
+        referee_system_prompt?: string | null;
       }>,
     ) =>
       apiRequest<ApiModelSet>(`/model-sets/${slug}`, {

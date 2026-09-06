@@ -113,6 +113,7 @@ class ModelSetResponse(BaseModel):
     best_for: str
     template_name: str | None = None
     custom_instructions: str | None = None
+    referee_system_prompt: str | None = None
     effective_referee_prompt: str | None = None
     is_system: bool = False
 
@@ -127,6 +128,7 @@ class ModelSetCreateRequest(BaseModel):
     best_for: str = ""
     template_name: str | None = Field(default=None, max_length=255)
     custom_instructions: str | None = None
+    referee_system_prompt: str | None = None
 
 
 class ModelSetUpdateRequest(BaseModel):
@@ -138,6 +140,7 @@ class ModelSetUpdateRequest(BaseModel):
     best_for: str | None = None
     template_name: str | None = Field(default=None, max_length=255)
     custom_instructions: str | None = None
+    referee_system_prompt: str | None = None
 
 
 # --- Projects ---

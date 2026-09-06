@@ -64,6 +64,7 @@ class TurnContext:
     model_set_name: str
     council_runtime_context: str | None = None
     referee_instructions: str | None = None
+    referee_system_prompt: str | None = None
     template_instructions: str | None = None
     user_brain_context: str | None = None
     rolling_chat_memory: str | None = None
@@ -620,13 +621,15 @@ class TurnOrchestrator:
 
         await emit("verdict_started", {"model_id": ctx.verdict_model_id})
 
+        is_referee = ctx.strategy == Strategy.REFEREE
         verdict_system = self._prompts.verdict_prompt(
             strategy=ctx.strategy.value,
             user_message=ctx.user_message,
             model_answers=answer_context,
-            referee_instructions=ctx.referee_instructions,
-            custom_instructions=ctx.referee_instructions,
-            template_instructions=ctx.template_instructions,
+            strict_referee_behavior=ctx.referee_system_prompt if is_referee else None,
+            referee_instructions=None if is_referee else ctx.referee_instructions,
+            custom_instructions=None if is_referee else ctx.referee_instructions,
+            template_instructions=None if is_referee else ctx.template_instructions,
             user_brain_context=ctx.user_brain_context,
             rolling_chat_memory=ctx.rolling_chat_memory,
             recent_conversation_context=ctx.recent_conversation_context,

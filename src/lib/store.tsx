@@ -75,6 +75,7 @@ function mapModelSet(s: ApiModelSet): ModelSet {
     bestFor: s.best_for,
     templateName: s.template_name ?? undefined,
     customInstructions: s.custom_instructions ?? undefined,
+    refereeSystemPrompt: s.referee_system_prompt ?? undefined,
     effectiveRefereePrompt: s.effective_referee_prompt ?? undefined,
   };
 }
@@ -196,6 +197,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         best_for: set.bestFor,
         template_name: set.templateName,
         custom_instructions: set.customInstructions,
+        referee_system_prompt: set.refereeSystemPrompt,
       });
       const mapped = mapModelSet(created);
       setModelSets((prev) => [mapped, ...prev]);
@@ -220,6 +222,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         best_for: set.bestFor,
         template_name: set.templateName ?? null,
         custom_instructions: set.customInstructions ?? null,
+        referee_system_prompt: set.refereeSystemPrompt ?? null,
       });
       setModelSets((prev) =>
         prev.map((item) => (item.id === set.id ? mapModelSet(updated) : item)),

@@ -10,7 +10,7 @@ def test_model_set_modal_displays_effective_referee_prompt_read_only() -> None:
 
     assert 'strategy === "Referee"' in source
     assert ">Fixed Referee Prompt<" in source
-    assert 'value={initial?.effectiveRefereePrompt ?? ""}' in source
+    assert "value={fixedPrompt}" in source
     assert "readOnly" in source
     assert "REFEREE_CUSTOM_INSTRUCTIONS" not in source
 
@@ -29,6 +29,8 @@ def test_frontend_model_set_mapping_uses_api_field_without_prompt_copy() -> None
     api_types = (ROOT / "src/lib/api/types.ts").read_text(encoding="utf-8")
 
     assert "effective_referee_prompt?: string | null" in api_types
+    assert "referee_system_prompt?: string | null" in api_types
     assert "effectiveRefereePrompt: s.effective_referee_prompt ?? undefined" in store
+    assert "refereeSystemPrompt: s.referee_system_prompt ?? undefined" in store
     assert "You are the **Referee AI**" not in api_types
     assert "You are the **Referee AI**" not in store

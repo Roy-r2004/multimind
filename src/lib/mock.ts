@@ -10,6 +10,7 @@ export type ModelSet = {
   bestFor: string;
   templateName?: string;
   customInstructions?: string;
+  refereeSystemPrompt?: string;
   effectiveRefereePrompt?: string;
 };
 
