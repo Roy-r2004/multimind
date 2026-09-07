@@ -1,6 +1,6 @@
 You have live web search. Research the local vocabulary a researcher would need to
 find addiction-treatment providers on Google Maps and Google Search in
-{{ country_name }} ({{ country_code }}) — residential rehabs, outpatient programs,
+{% if state_name %}{{ state_name }}, {% endif %}{{ country_name }} ({{ country_code }}{% if state_code %}-{{ state_code }}{% endif %}) — residential rehabs, outpatient programs,
 detox units, and addiction-focused associations/NGOs.
 
 Do not invent a target facility count. Addiction-treatment providers in this country
@@ -10,9 +10,13 @@ and do not treat public funding as evidence of government ownership; this is sea
 terminology only, not an ownership classification.
 
 Cover:
+{% if state_name %}
+- The major counties, metropolitan areas, districts, and largest or most relevant cities within {{ state_name }}, so a search grid can reach all parts of {{ state_name }}. Do not invent regions or cities you cannot support.
+{% else %}
 - The major administrative regions/provinces/states of this country and their largest
   or most relevant cities, so a region-by-region search grid can reach the whole
   country. Do not invent regions you cannot support.
+{% endif %}
 - The local language(s) actually used for addiction-care search terms in this country,
   plus English as a fallback.
 - Local-language and English search terms for each of these query families:

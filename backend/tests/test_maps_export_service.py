@@ -13,6 +13,7 @@ from app.services.scraping.maps_export_service import (
     ELIGIBLE_CENTERS_SHEET,
     EXPORT_HEADERS,
     MIME_XLSX,
+    PHASE_1_SHEET,
     maps_export_service,
 )
 
@@ -60,6 +61,8 @@ def _eligible_place(run: MapsCensusRun, **overrides) -> MapsPlace:
         "care_setting": "residential",
         "organization_scope": "facility",
         "addiction_focus_confirmed": True,
+        "international_phone_number": "+213 21 00 00 00",
+        "official_website": "https://rehab.dz",
     }
     payload.update(overrides)
     return MapsPlace(**payload)
@@ -86,7 +89,7 @@ async def test_export_xlsx_single_keep_sheet_only(db, auth):
     content, filename = await maps_export_service.build_workbook(db, auth, run.id)
     workbook = _workbook(content)
 
-    assert filename == "dz-maps-census-export.xlsx"
+    assert filename == "dz-maps-census-eligible-centers.xlsx"
     assert workbook.sheetnames == [ELIGIBLE_CENTERS_SHEET]
     assert _sheet_names(workbook[ELIGIBLE_CENTERS_SHEET]) == ["Eligible Rehab"]
 
@@ -113,8 +116,6 @@ async def test_export_xlsx_uses_placeholders_for_missing_values(db, auth):
             canonical_name="Bare Rehab",
             raw_name="Bare Rehab",
             operator_name=None,
-            official_website=None,
-            international_phone_number=None,
             addictions_treated=None,
             languages_spoken=None,
             verification_source_url=None,
@@ -126,8 +127,8 @@ async def test_export_xlsx_uses_placeholders_for_missing_values(db, auth):
     )
     await db.commit()
 
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    sheet = _workbook(content)[ELIGIBLE_CENTERS_SHEET]
+    content, _ = await maps_export_service.build_workbook(db, auth, run.id, scope="phase1")
+    sheet = _workbook(content)[PHASE_1_SHEET]
     values = [cell.value for cell in sheet[2]]
 
     assert values.count("Not Specified") >= 4
@@ -248,3 +249,24 @@ async def test_export_xlsx_returns_mime_and_rejects_other_orgs(db, auth):
     other = AuthContext(user=auth.user, org_id="different-org", role=auth.role)
     with pytest.raises(NotFoundError):
         await maps_export_service.build_workbook(db, other, run.id)
+
+
+@pytest.mark.asyncio
+async def test_export_xlsx_state_scoped_filename(db, auth):
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="US",
+        country_name="United States",
+        state_code="CA",
+        state_name="California",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.flush()
+    db.add(_eligible_place(run))
+    await db.commit()
+
+    content, filename = await maps_export_service.build_workbook(db, auth, run.id)
+    assert filename == "us-ca-maps-census-eligible-centers.xlsx"
+

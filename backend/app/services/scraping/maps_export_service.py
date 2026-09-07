@@ -114,14 +114,23 @@ class MapsExportService:
         self._write_sheet(
             workbook.create_sheet(sheet_name),
             EXPORT_HEADERS,
-            [self._export_place_row(place, run.country_name) for place in scoped_places],
+            [
+                self._export_place_row(
+                    place,
+                    f"{run.state_name}, {run.country_name}" if run.state_name else run.country_name,
+                )
+                for place in scoped_places
+            ],
             table_name=table_name,
         )
 
         buffer = BytesIO()
         workbook.save(buffer)
         suffix = "phase1-results" if scope == "phase1" else "eligible-centers"
-        filename = f"{run.country_code.lower()}-maps-census-{suffix}.xlsx"
+        if run.state_code:
+            filename = f"{run.country_code.lower()}-{run.state_code.lower()}-maps-census-{suffix}.xlsx"
+        else:
+            filename = f"{run.country_code.lower()}-maps-census-{suffix}.xlsx"
         return buffer.getvalue(), filename
 
     async def get_export_summary(

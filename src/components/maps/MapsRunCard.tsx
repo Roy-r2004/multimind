@@ -76,13 +76,18 @@ export function MapsRunCard({
                   {countryFlagEmoji(run.country_code)}
                 </span>
                 <h2 className="truncate font-display text-xl font-semibold tracking-tight text-white">
-                  {run.country_name}
+                  {run.state_name ? `${run.state_name}, ${run.country_name}` : run.country_name}
                 </h2>
+                {run.state_code && (
+                  <span className="rounded-md border border-white/20 bg-white/10 px-2 py-0.5 text-xs font-semibold text-white/90 backdrop-blur-sm">
+                    {run.state_code}
+                  </span>
+                )}
                 <MapsRunStatusBadge status={run.status} />
               </div>
               <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.2em] text-white/60">
                 <MapPin className="size-3" />
-                {run.country_code}
+                {run.state_code ? `${run.country_code} · ${run.state_name ?? run.state_code}` : run.country_code}
               </p>
             </div>
             <span className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-white px-3.5 py-2 text-sm font-semibold text-slate-900 shadow-sm transition group-hover:gap-2.5">

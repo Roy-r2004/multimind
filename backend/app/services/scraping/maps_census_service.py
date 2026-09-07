@@ -243,17 +243,26 @@ class MapsWebsitePlan(BaseModel):
 
 class MapsCensusService:
     async def create_run(
-        self, db: AsyncSession, auth: AuthContext, country_code: str
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        country_code: str,
+        state_code: str | None = None,
+        state_name: str | None = None,
     ) -> MapsCensusRunDetail:
         settings = get_settings()
         if not settings.google_places_enabled:
             raise ValidationError("Google Places Maps census is disabled.")
         country = resolve_country(country_code)
+        clean_state_code = state_code.strip().upper() if state_code and state_code.strip() else None
+        clean_state_name = state_name.strip() if state_name and state_name.strip() else None
         run = MapsCensusRun(
             organization_id=auth.org_id,
             created_by=auth.user.id,
             country_code=country.code,
             country_name=country.name,
+            state_code=clean_state_code,
+            state_name=clean_state_name,
             status=MapsCensusStatus.QUEUED,
         )
         db.add(run)
@@ -261,16 +270,27 @@ class MapsCensusService:
         run_id = run.id
         await db.commit()
         await self._enqueue(run_id)
-        asyncio.create_task(self._fetch_hero_image(run_id, country.name))
+        asyncio.create_task(
+            self._fetch_hero_image(run_id, country.name, state_name=clean_state_name)
+        )
         return await self.get_run(db, auth, run_id)
 
-    async def _fetch_hero_image(self, run_id: str, country_name: str) -> None:
-        """Best-effort Pexels lookup for a country hero photo — never raises,
+    async def _fetch_hero_image(
+        self, run_id: str, country_name: str, state_name: str | None = None
+    ) -> None:
+        """Best-effort Pexels lookup for a country/state hero photo — never raises,
         never blocks or fails the census run if Pexels is slow or unavailable.
         """
         try:
             client = create_pexels_client()
-            url = await client.search_landscape(f"{country_name} landscape")
+            search_query = (
+                f"{state_name} {country_name} landscape"
+                if state_name
+                else f"{country_name} landscape"
+            )
+            url = await client.search_landscape(search_query)
+            if not url and state_name:
+                url = await client.search_landscape(f"{country_name} landscape")
         except Exception:  # noqa: BLE001
             logger.warning("maps_census_hero_image_failed run_id=%s", run_id, exc_info=True)
             return
@@ -878,6 +898,8 @@ class MapsCensusService:
             await start_db.commit()
             country_code = run.country_code
             country_name = run.country_name
+            state_code = run.state_code
+            state_name = run.state_name
             resume_existing = existing_cells > 0
 
         try:
@@ -934,6 +956,8 @@ class MapsCensusService:
                     country_name=country_name,
                     max_cells=seed_max,
                     country_profile=country_profile,
+                    state_code=state_code,
+                    state_name=state_name,
                 )
             except MapsGridPlanningError as exc:
                 async with session_factory() as fail_db:
@@ -1103,6 +1127,8 @@ class MapsCensusService:
                     max_cells=expand_batch_size,
                     country_profile=country_profile,
                     focus_region_names=expanding_names,
+                    state_code=state_code,
+                    state_name=state_name,
                 )
             except MapsGridPlanningError as exc:
                 logger.warning(
@@ -1165,6 +1191,8 @@ class MapsCensusService:
             run_id=run_id,
             country_code=country_code,
             country_name=country_name,
+            state_code=state_code,
+            state_name=state_name,
         )
         summary.update({f"keep_drop_{key}": value for key, value in keep_drop_summary.items()})
 
@@ -2965,6 +2993,8 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
         id=run.id,
         country_code=run.country_code,
         country_name=run.country_name,
+        state_code=run.state_code,
+        state_name=run.state_name,
         status=run.status.value if hasattr(run.status, "value") else str(run.status),
         error_message=run.error_message,
         cells_total=run.cells_total,

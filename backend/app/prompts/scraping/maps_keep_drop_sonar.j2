@@ -1,11 +1,11 @@
-You have live web search (low context). Verify ONE facility candidate in {{ country_name }} ({{ country_code }}) for a client delivery list of addiction-treatment facilities.
+You have live web search (low context). Verify ONE facility candidate in {% if state_name %}{{ state_name }}, {% endif %}{{ country_name }} ({{ country_code }}{% if state_code %}-{{ state_code }}{% endif %}) for a client delivery list of addiction-treatment facilities.
 
 Facility (JSON):
 {{ facility_json }}
 
-KEEP only if web evidence clearly confirms a private, nonprofit, or NGO addiction-TREATMENT facility offering inpatient / residential care (rehab / detox / therapeutic community) where addiction treatment is a primary, formal program.
+KEEP only if web evidence clearly confirms a private, nonprofit, or NGO addiction-TREATMENT facility offering inpatient / residential care (rehab / detox / therapeutic community) where addiction treatment is a primary, formal program{% if state_name %}, located in {{ state_name }}{% endif %}.
 
-DROP if it is a public/government hospital or publicly funded, outpatient-only, telehealth/virtual-only, referral-only, a solo practitioner or cabinet, a general psychiatric/mental health clinic without addiction as the primary program, a general clinic without clear addiction treatment, sober living / wellness / coaching without a formal treatment program, a smoking-cessation/laser service, an awareness- or prevention-only association, an unrelated business — or if you cannot confirm inpatient treatment with confidence.
+DROP if it is {% if state_name %}located outside {{ state_name }}, {% endif %}a public/government hospital or publicly funded, outpatient-only, telehealth/virtual-only, referral-only, a solo practitioner or cabinet, a general psychiatric/mental health clinic without addiction as the primary program, a general clinic without clear addiction treatment, sober living / wellness / coaching without a formal treatment program, a smoking-cessation/laser service, an awareness- or prevention-only association, an unrelated business — or if you cannot confirm inpatient treatment with confidence.
 
 When in doubt, DROP.
 

@@ -61,6 +61,8 @@ class MapsGridPlanner:
         max_cells: int,
         country_profile: dict[str, Any] | None = None,
         focus_region_names: list[str] | None = None,
+        state_code: str | None = None,
+        state_name: str | None = None,
     ) -> list[MapsGridCell]:
         """Plan a search grid, or — when ``focus_region_names`` is given — an
         expansion batch of *additional* cells for those already-productive
@@ -76,6 +78,8 @@ class MapsGridPlanner:
             country_name=(country_name or "Unknown")[:120],
             country_profile_json=json.dumps(country_profile or {}, ensure_ascii=False),
             focus_region_names=list(focus_region_names or []),
+            state_code=(state_code or "").strip()[:10],
+            state_name=(state_name or "").strip()[:120],
         )
         try:
             response = await provider.complete(

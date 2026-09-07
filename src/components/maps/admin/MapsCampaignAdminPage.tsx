@@ -346,7 +346,18 @@ export function MapsCampaignAdminPage({ runId }: { runId: string }) {
                   {countryFlagEmoji(dashboard.country_code)}
                 </span>
                 <div>
-                  <h1 className="font-display text-2xl font-semibold">{dashboard.country_name}</h1>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h1 className="font-display text-2xl font-semibold">
+                      {dashboard.state_name
+                        ? `${dashboard.state_name}, ${dashboard.country_name}`
+                        : dashboard.country_name}
+                    </h1>
+                    {dashboard.state_code && (
+                      <Badge variant="outline" className="font-semibold">
+                        {dashboard.state_code}
+                      </Badge>
+                    )}
+                  </div>
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                     <MapsRunStatusBadge status={dashboard.status} />
                     <Badge variant="outline" className="capitalize">

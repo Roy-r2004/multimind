@@ -143,6 +143,8 @@ async def classify_place_keep_drop(
     *,
     country_code: str,
     country_name: str,
+    state_code: str | None = None,
+    state_name: str | None = None,
 ) -> tuple[KeepDropDecision, str]:
     """Return (decision, source). Uncertain or failed judgments become drop."""
     settings = get_settings()
@@ -168,6 +170,8 @@ async def classify_place_keep_drop(
             max_tokens=800,
             country_code=(country_code or "XX")[:2].upper(),
             country_name=(country_name or "Unknown")[:120],
+            state_code=(state_code or "").strip()[:10],
+            state_name=(state_name or "").strip()[:120],
             facility_json=json.dumps(payload, ensure_ascii=False),
             crawl_excerpt=crawl_excerpt or "",
         )
@@ -198,6 +202,8 @@ async def classify_place_keep_drop(
                 max_tokens=800,
                 country_code=(country_code or "XX")[:2].upper(),
                 country_name=(country_name or "Unknown")[:120],
+                state_code=(state_code or "").strip()[:10],
+                state_name=(state_name or "").strip()[:120],
                 facility_json=json.dumps(payload, ensure_ascii=False),
             )
             if sonar_decision.confidence >= threshold:
@@ -355,6 +361,8 @@ async def run_keep_drop_pass(
     run_id: str,
     country_code: str | None = None,
     country_name: str | None = None,
+    state_code: str | None = None,
+    state_name: str | None = None,
     candidates_only: bool = True,
 ) -> dict[str, int]:
     """Resumable keep/drop sweep.
@@ -374,6 +382,8 @@ async def run_keep_drop_pass(
             return {"error": 1}
         country_code = country_code or run.country_code
         country_name = country_name or run.country_name
+        state_code = state_code or run.state_code
+        state_name = state_name or run.state_name
         state = dict(run.processing_state or {})
         state["keep_drop_status"] = "running"
         state["keep_drop_heartbeat_at"] = datetime.now(UTC).isoformat()
@@ -418,12 +428,20 @@ async def run_keep_drop_pass(
                         place = await session.get(MapsPlace, place_id)
                         if place is None or place.keep_drop_decision is not None:
                             return None
+                        classify_kwargs: dict[str, Any] = {
+                            "country_code": country_code or "XX",
+                            "country_name": country_name or "Unknown",
+                        }
+                        if state_code:
+                            classify_kwargs["state_code"] = state_code
+                        if state_name:
+                            classify_kwargs["state_name"] = state_name
+
                         decision, source = await asyncio.wait_for(
                             classify_place_keep_drop(
                                 session,
                                 place,
-                                country_code=country_code or "XX",
-                                country_name=country_name or "Unknown",
+                                **classify_kwargs,
                             ),
                             timeout=place_timeout,
                         )

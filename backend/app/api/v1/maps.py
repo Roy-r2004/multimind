@@ -35,7 +35,13 @@ async def create_maps_census_run(
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    return await maps_census_service.create_run(db, auth, data.country_code)
+    return await maps_census_service.create_run(
+        db,
+        auth,
+        country_code=data.country_code,
+        state_code=data.state_code,
+        state_name=data.state_name,
+    )
 
 
 @router.get("/runs", response_model=list[MapsCensusRunSummary])

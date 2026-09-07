@@ -26,6 +26,7 @@ backend/**/*.egg-info
 backend/.pytest_cache
 backend/.ruff_cache
 backend/*.db
+*.db
 .env
 
 # Wrangler / Cloudflare

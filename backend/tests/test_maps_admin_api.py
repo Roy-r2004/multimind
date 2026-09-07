@@ -428,3 +428,32 @@ async def test_admin_disabled_returns_forbidden(db: AsyncSession, auth: AuthCont
         response = await client.get(f"/api/v1/maps/runs/{run.id}/dashboard")
 
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_create_and_get_state_scoped_run(db: AsyncSession, auth: AuthContext):
+    app = _admin_client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_resp = await client.post(
+            "/api/v1/maps/runs",
+            json={
+                "country_code": "US",
+                "state_code": "CA",
+                "state_name": "California",
+            },
+        )
+        assert create_resp.status_code == 201
+        data = create_resp.json()
+        assert data["country_code"] == "US"
+        assert data["state_code"] == "CA"
+        assert data["state_name"] == "California"
+
+        run_id = data["id"]
+        get_resp = await client.get(f"/api/v1/maps/runs/{run_id}")
+        assert get_resp.status_code == 200
+        get_data = get_resp.json()
+        assert get_data["country_code"] == "US"
+        assert get_data["state_code"] == "CA"
+        assert get_data["state_name"] == "California"
+

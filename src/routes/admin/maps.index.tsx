@@ -81,8 +81,12 @@ function AdminMapsIndexPage() {
               <div className="flex items-center gap-2">
                 <span aria-hidden="true">{countryFlagEmoji(run.country_code)}</span>
                 <div>
-                  <div className="font-medium">{run.country_name}</div>
-                  <div className="text-xs text-muted-foreground">{run.country_code}</div>
+                  <div className="font-medium">
+                    {run.state_name ? `${run.state_name}, ${run.country_name}` : run.country_name}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {run.state_code ? `${run.country_code}-${run.state_code}` : run.country_code}
+                  </div>
                 </div>
               </div>
             ),

@@ -17,6 +17,8 @@ export type MapsCensusRunAdminDetail = {
   id: string;
   country_code: string;
   country_name: string;
+  state_code?: string | null;
+  state_name?: string | null;
   status: MapsCensusRunStatus;
   error_message: string | null;
   cells_total: number;
@@ -157,6 +159,7 @@ export type MapsPlaceItem = {
   addictions_treated: string[];
   languages_spoken: string[];
   treatment_price: string | null;
+  bed_count: number | null;
   verification_verdict: string | null;
   verification_reason: string | null;
   verification_source_url: string | null;

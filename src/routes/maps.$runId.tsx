@@ -240,10 +240,12 @@ function MapsRunDetailPage() {
     }
   }
 
+  const locationScope = run?.state_name ? `${run.state_name}, ${run.country_name}` : run?.country_name;
+
   const phase1Rows = useMemo(() => {
     if (!run) return [];
-    return sortPlacesForExport(phase1Places).map((place) => placeToExportRow(place, run.country_name));
-  }, [phase1Places, run]);
+    return sortPlacesForExport(phase1Places).map((place) => placeToExportRow(place, locationScope));
+  }, [phase1Places, run, locationScope]);
 
   const phase2ContactablePlaces = useMemo(
     () => phase2Places.filter((place) => hasPhoneAndWebsite(place)),
@@ -252,9 +254,9 @@ function MapsRunDetailPage() {
   const phase2Rows = useMemo(() => {
     if (!run) return [];
     return sortPlacesForExport(phase2ContactablePlaces).map((place) =>
-      placeToExportRow(place, run.country_name),
+      placeToExportRow(place, locationScope),
     );
-  }, [phase2ContactablePlaces, run]);
+  }, [phase2ContactablePlaces, run, locationScope]);
 
   return (
     <AppShell>
@@ -686,8 +688,13 @@ function MapsRunHero({
                 {countryFlagEmoji(run.country_code)}
               </span>
               <h1 className="font-display text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-                {run.country_name}
+                {run.state_name ? `${run.state_name}, ${run.country_name}` : run.country_name}
               </h1>
+              {run.state_code && (
+                <span className="rounded-md border border-white/20 bg-white/10 px-2.5 py-1 text-sm font-semibold text-white/90 backdrop-blur-sm">
+                  {run.state_code}
+                </span>
+              )}
             </div>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/75">
               Non-government inpatient addiction rehab census — private/NGO centers and

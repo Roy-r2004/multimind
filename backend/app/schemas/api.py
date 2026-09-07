@@ -690,12 +690,16 @@ class MapsCensusRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     country_code: str
+    state_code: str | None = None
+    state_name: str | None = None
 
 
 class MapsCensusRunSummary(BaseModel):
     id: str
     country_code: str
     country_name: str
+    state_code: str | None = None
+    state_name: str | None = None
     status: str
     error_message: str | None = None
     cells_total: int

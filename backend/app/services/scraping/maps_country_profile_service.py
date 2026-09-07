@@ -83,10 +83,15 @@ class MapsCountryProfileService:
             await start_db.commit()
             country_code = run.country_code
             country_name = run.country_name
+            state_code = run.state_code
+            state_name = run.state_name
 
         try:
             profile = await self._discover_profile(
-                country_code=country_code, country_name=country_name
+                country_code=country_code,
+                country_name=country_name,
+                state_code=state_code,
+                state_name=state_name,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -114,7 +119,12 @@ class MapsCountryProfileService:
         return profile_dict
 
     async def _discover_profile(
-        self, *, country_code: str, country_name: str
+        self,
+        *,
+        country_code: str,
+        country_name: str,
+        state_code: str | None = None,
+        state_name: str | None = None,
     ) -> MapsCountryDiscoveryProfile:
         settings = get_settings()
         model = get_model(settings.maps_census_country_profile_model)
@@ -123,6 +133,8 @@ class MapsCountryProfileService:
             "scraping/maps_country_profile.j2",
             country_code=(country_code or "XX")[:2].upper(),
             country_name=(country_name or "Unknown")[:120],
+            state_code=(state_code or "").strip()[:10],
+            state_name=(state_name or "").strip()[:120],
         )
         timeout_seconds = (
             settings.maps_census_country_profile_timeout_seconds

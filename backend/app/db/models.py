@@ -2694,6 +2694,8 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     created_by: Mapped[str] = UuidFK("users")
     country_code: Mapped[str] = mapped_column(String(2), nullable=False)
     country_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    state_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    state_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[MapsCensusStatus] = mapped_column(
         Enum(
             MapsCensusStatus,
