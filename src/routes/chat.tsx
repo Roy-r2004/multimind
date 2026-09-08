@@ -51,6 +51,7 @@ import { UserPromptBubble } from "@/components/chat/UserPromptBubble";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
 import { CallCostLabel, TurnCostSummary } from "@/components/chat/CallCostLabel";
 import { MessageContent } from "@/components/chat/MessageContent";
+import { getVerdictBodyCopyHtml } from "@/lib/verdictTableCopy";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
 import { ChatComposer, type ChatComposerHandle } from "@/components/chat/ChatComposer";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
@@ -2181,7 +2182,7 @@ function AiTurn({
             <div className="flex flex-wrap items-center justify-end gap-2">
               <VerdictCopyButton
                 text={turn.verdict.text}
-                getHtml={() => verdictContentRef.current?.innerHTML}
+                getHtml={() => getVerdictBodyCopyHtml(verdictContentRef.current)}
               />
               <button
                 type="button"

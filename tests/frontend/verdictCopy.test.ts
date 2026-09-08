@@ -171,11 +171,11 @@ test("missing ClipboardItem falls back to writeText", async () => {
   }
 });
 
-test("Verdict Copy captures only primary MessageContent innerHTML", () => {
+test("Verdict Copy captures only primary MessageContent HTML without table-copy controls", () => {
   assert.match(chatSrc, /const verdictContentRef = useRef<HTMLDivElement>\(null\)/);
   assert.match(
     chatSrc,
-    /<VerdictCopyButton\s+text=\{turn\.verdict\.text\}\s+getHtml=\{\(\) => verdictContentRef\.current\?\.innerHTML\}/,
+    /<VerdictCopyButton\s+text=\{turn\.verdict\.text\}\s+getHtml=\{\(\) => getVerdictBodyCopyHtml\(verdictContentRef\.current\)\}/,
   );
   assert.match(
     chatSrc,
@@ -189,7 +189,7 @@ test("Verdict Copy captures only primary MessageContent innerHTML", () => {
   assert.doesNotMatch(contentRefBlock, /turn\.verdict\.reason/);
   assert.doesNotMatch(contentRefBlock, /Challenge/);
   assert.doesNotMatch(contentRefBlock, /Judge:/);
-  assert.match(messageContentSrc, /table: \(\{ children \}\) =>/);
+  assert.match(messageContentSrc, /function VerdictMarkdownTable/);
 });
 
 test("Copy success feedback still runs after rich clipboard copy", () => {

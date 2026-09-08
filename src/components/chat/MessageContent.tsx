@@ -1,8 +1,12 @@
-import { memo } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import { memo, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, Copy } from "lucide-react";
+import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
+import { copyRichContent } from "@/lib/richClipboard";
 import { cn } from "@/lib/utils";
+import { verdictTablePlainText } from "@/lib/verdictTableCopy";
 
 type MessageContentProps = {
   children: string;
@@ -199,7 +203,71 @@ function buildComponents(compact: boolean, variant: "default" | "verdict" = "def
 
 const compactComponents = buildComponents(true);
 const defaultComponents = buildComponents(false);
-const verdictComponents = buildComponents(false, "verdict");
+const verdictBaseComponents = buildComponents(false, "verdict");
+
+type VerdictTableProps = ExtraProps & { children?: ReactNode };
+
+function createVerdictComponents(sourceMarkdown: string): Components {
+  function VerdictMarkdownTable({ children, node }: VerdictTableProps) {
+    const tableRef = useRef<HTMLTableElement>(null);
+    const [copied, setCopied] = useState(false);
+
+    async function handleCopy() {
+      const html = tableRef.current?.outerHTML;
+      const plainText = verdictTablePlainText(sourceMarkdown, node?.position, html);
+      try {
+        await copyRichContent({ plainText, html });
+        setCopied(true);
+        toast.success("Table copied");
+        window.setTimeout(() => setCopied(false), 2000);
+      } catch {
+        toast.error("Could not copy table");
+      }
+    }
+
+    return (
+      <div className="relative mb-5 mt-1 last:mb-0">
+        <div
+          className="mb-1 flex justify-end"
+          data-verdict-table-copy-control=""
+        >
+          <button
+            type="button"
+            title={copied ? "Copied" : "Copy table"}
+            aria-label={copied ? "Copied" : "Copy table"}
+            onClick={() => void handleCopy()}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.6875rem] font-medium transition",
+              copied
+                ? "text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          >
+            {copied ? (
+              <Check className="size-3" aria-hidden />
+            ) : (
+              <Copy className="size-3" aria-hidden />
+            )}
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table
+            ref={tableRef}
+            className="w-full min-w-[36rem] table-auto border-collapse text-left text-[0.8125rem]"
+          >
+            {children}
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  return {
+    ...verdictBaseComponents,
+    table: VerdictMarkdownTable,
+  };
+}
 
 function normalizeMessageText(text: string): string {
   return text
@@ -216,6 +284,11 @@ function MessageContentInner({
   muted = false,
 }: MessageContentProps) {
   const text = normalizeMessageText(children ?? "").trim();
+  const components = useMemo(() => {
+    if (compact) return compactComponents;
+    if (variant === "verdict") return createVerdictComponents(text);
+    return defaultComponents;
+  }, [compact, variant, text]);
   if (!text) return null;
 
   return (
@@ -226,16 +299,7 @@ function MessageContentInner({
         className,
       )}
     >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
-        components={
-          compact
-            ? compactComponents
-            : variant === "verdict"
-              ? verdictComponents
-              : defaultComponents
-        }
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
         {text}
       </ReactMarkdown>
     </div>

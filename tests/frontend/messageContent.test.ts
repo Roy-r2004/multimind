@@ -34,6 +34,7 @@ test("shared tables scroll, resist crushing, and keep long cell content safe", (
   assert.match(messageContentSrc, /\[&_a\]:break-all/);
   assert.match(messageContentSrc, /\[&_code\]:break-all/);
   assert.match(messageContentSrc, /isVerdict \? "mb-5 mt-1" : "mb-3"/);
+  assert.match(messageContentSrc, /relative mb-5 mt-1 last:mb-0/);
 });
 
 test("the existing Markdown parser and long-answer behavior stay in place", () => {
