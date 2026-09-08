@@ -186,6 +186,21 @@ async def test_export_xlsx_website_is_hyperlinked_and_phone_is_text(db, auth):
 
 
 @pytest.mark.asyncio
+async def test_export_xlsx_exports_persisted_bed_count_as_integer(db, auth):
+    run = await _create_run(db, auth)
+    db.add(_eligible_place(run, bed_count=8))
+    await db.commit()
+
+    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
+    sheet = _workbook(content)[ELIGIBLE_CENTERS_SHEET]
+    header = [cell.value for cell in sheet[1]]
+    bed_col = header.index("Bed Count") + 1
+    cell = sheet.cell(row=2, column=bed_col)
+    assert cell.value == 8
+    assert isinstance(cell.value, int)
+
+
+@pytest.mark.asyncio
 async def test_export_xlsx_has_frozen_header_and_autofilter(db, auth):
     run = await _create_run(db, auth)
     db.add(_eligible_place(run))

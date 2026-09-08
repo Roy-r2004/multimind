@@ -826,6 +826,22 @@ class MapsPlaceItem(BaseModel):
     manually_excluded: bool = False
 
 
+class MapsPlaceUpdate(BaseModel):
+    """Partial update of client-facing export fields on a Maps census place."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    canonical_name: str | None = Field(default=None, max_length=512)
+    addictions_treated: list[str] | None = None
+    formatted_address: str | None = Field(default=None, max_length=512)
+    languages_spoken: list[str] | None = None
+    official_website: str | None = Field(default=None, max_length=512)
+    contact_email: str | None = Field(default=None, max_length=320)
+    international_phone_number: str | None = Field(default=None, max_length=64)
+    treatment_price: str | None = Field(default=None, max_length=512)
+    bed_count: int | None = Field(default=None, ge=0, le=100_000)
+
+
 class MapsPlaceReviewActionItem(BaseModel):
     id: str
     place_id: str

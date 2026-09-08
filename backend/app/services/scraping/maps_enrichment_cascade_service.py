@@ -38,6 +38,10 @@ from app.services.scraping.maps_enrichment_selection import (
     should_select_for_expensive_pipeline,
     skip_reason_for_place,
 )
+from app.services.scraping.maps_manual_overrides import (
+    is_manually_overridden,
+    set_unless_overridden,
+)
 from app.services.scraping.maps_place_enrichment_service import (
     MapsPlaceEnrichmentResult,
     maps_place_enrichment_service,
@@ -723,7 +727,11 @@ class MapsEnrichmentCascadeService:
                 country_name=country_name,
                 enable_search=get_settings().maps_census_website_search_enabled,
             )
+            locked_website = is_manually_overridden(place, "official_website")
+            previous_website = place.official_website
             apply_website_resolution(place, resolution)
+            if locked_website:
+                place.official_website = previous_website
             if place.official_website and place.website_relationship in CRAWLABLE_RELATIONSHIPS:
                 place.enrichment_pipeline_state = MapsEnrichmentPipelineState.CRAWL_PENDING.value
             else:
@@ -784,8 +792,16 @@ class MapsEnrichmentCascadeService:
                 if place is None:
                     return 0
                 _apply_structured_fields(place, result)
-                place.addictions_treated = _normalize_addictions(result.addictions_treated)
-                place.languages_spoken = _normalize_languages(result.languages_spoken)
+                set_unless_overridden(
+                    place,
+                    "addictions_treated",
+                    _normalize_addictions(result.addictions_treated),
+                )
+                set_unless_overridden(
+                    place,
+                    "languages_spoken",
+                    _normalize_languages(result.languages_spoken),
+                )
                 place.enrichment_extraction_source = "primary"
                 place.enrichment_pipeline_state = (
                     MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_COMPLETED.value
@@ -858,7 +874,11 @@ class MapsEnrichmentCascadeService:
                         # client_eligibility here could silently reverse an
                         # authoritative keep/drop decision over a side lookup.
                         if sonar_result.contact_email and sonar_result.contact_email.strip():
-                            place.contact_email = sonar_result.contact_email.strip()[:320]
+                            set_unless_overridden(
+                                place,
+                                "contact_email",
+                                sonar_result.contact_email.strip()[:320],
+                            )
                         place.enrichment_pipeline_state = (
                             MapsEnrichmentPipelineState.SONAR_FALLBACK_COMPLETED.value
                         )
@@ -866,8 +886,8 @@ class MapsEnrichmentCascadeService:
                         _apply_structured_fields(place, sonar_result)
                         addictions = _normalize_addictions(sonar_result.addictions_treated)
                         languages = _normalize_languages(sonar_result.languages_spoken)
-                        place.addictions_treated = addictions
-                        place.languages_spoken = languages
+                        set_unless_overridden(place, "addictions_treated", addictions)
+                        set_unless_overridden(place, "languages_spoken", languages)
                         place.enrichment_extraction_source = "sonar"
                         place.enrichment_pipeline_state = (
                             MapsEnrichmentPipelineState.SONAR_FALLBACK_COMPLETED.value
@@ -1244,8 +1264,8 @@ class MapsEnrichmentCascadeService:
             place.enrichment_completed_at = None
             place.enrichment_pipeline_state = default_pipeline_state()
             place.enrichment_extraction_source = None
-            place.addictions_treated = None
-            place.languages_spoken = None
+            set_unless_overridden(place, "addictions_treated", None)
+            set_unless_overridden(place, "languages_spoken", None)
             place.facility_type = None
             place.ownership_status = None
             place.operator_type = None
