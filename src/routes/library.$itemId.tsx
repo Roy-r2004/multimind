@@ -234,7 +234,7 @@ function LibraryItemPage() {
   if (!item) {
     return (
       <AppShell>
-        <div className="mx-auto flex w-full max-w-4xl flex-col items-start gap-4 px-4 py-8 md:px-8">
+        <div className="mx-auto flex w-full max-w-[1100px] flex-col items-start gap-4 px-4 py-8 md:px-8">
           <Link
             to="/library"
             className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
@@ -254,7 +254,7 @@ function LibraryItemPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 py-8 md:px-8">
+      <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 px-4 py-8 md:px-8">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Link
             to="/library"
