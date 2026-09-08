@@ -19,6 +19,7 @@ from app.schemas.api import (
     MapsPlaceItem,
     MapsPlaceListResponse,
     MapsPlaceReviewRequest,
+    MapsPlaceUpdate,
     MapsRegionListResponse,
     MapsRunLiveStats,
 )
@@ -117,6 +118,18 @@ async def exclude_maps_census_place(
 ):
     """Phase 1 'remove row' — available to any user who can view this run."""
     return await maps_census_service.exclude_place(db, auth, run_id, place_id, reason=reason)
+
+
+@router.patch("/runs/{run_id}/places/{place_id}", response_model=MapsPlaceItem)
+async def update_maps_census_place(
+    run_id: str,
+    place_id: str,
+    data: MapsPlaceUpdate,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manual edit of client-facing export fields — any user who can view this run."""
+    return await maps_census_service.update_place(db, auth, run_id, place_id, data)
 
 
 @router.post("/runs/{run_id}/advance-to-phase-2", response_model=MapsCampaignActionResponse)

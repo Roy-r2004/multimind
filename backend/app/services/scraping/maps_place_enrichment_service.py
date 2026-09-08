@@ -39,6 +39,7 @@ from app.services.scraping.maps_eligibility import (
     derive_is_relevant,
     derive_legacy_verification_verdict,
 )
+from app.services.scraping.maps_manual_overrides import set_unless_overridden
 from app.services.scraping.maps_pydantic_utils import TruncatingModel
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_quota_tracker import (
@@ -511,8 +512,8 @@ class MapsPlaceEnrichmentService:
 
                 addictions = _normalize_addictions(result.addictions_treated)
                 languages = _normalize_languages(result.languages_spoken)
-                place.addictions_treated = addictions
-                place.languages_spoken = languages
+                set_unless_overridden(place, "addictions_treated", addictions)
+                set_unless_overridden(place, "languages_spoken", languages)
                 if place.is_relevant and (addictions or languages):
                     enriched += 1
 
@@ -689,11 +690,13 @@ def _apply_structured_fields(place: MapsPlace, result: MapsPlaceEnrichmentResult
     place.classification_evidence = _dump_classification_evidence(result.classification_evidence)
     place.classification_confidence = result.classification_confidence
     if result.treatment_price and result.treatment_price.strip():
-        place.treatment_price = result.treatment_price.strip()[:512]
+        set_unless_overridden(place, "treatment_price", result.treatment_price.strip()[:512])
     if result.contact_phone and result.contact_phone.strip():
-        place.international_phone_number = result.contact_phone.strip()[:64]
+        set_unless_overridden(
+            place, "international_phone_number", result.contact_phone.strip()[:64]
+        )
     if result.contact_email and result.contact_email.strip():
-        place.contact_email = result.contact_email.strip()[:320]
+        set_unless_overridden(place, "contact_email", result.contact_email.strip()[:320])
 
 
 def _derive_lifecycle_status(place: MapsPlace) -> str:

@@ -7,6 +7,7 @@ import type {
   MapsCensusRunSummary,
   MapsPlaceItem,
   MapsPlaceListResponse,
+  MapsPlaceUpdateInput,
   MapsRunLiveStats,
 } from "@/lib/maps/types";
 
@@ -94,6 +95,20 @@ export function excludeMapsCensusPlace(
       orgId: auth.orgId,
     },
   );
+}
+
+export function updateMapsCensusPlace(
+  auth: Auth,
+  runId: string,
+  placeId: string,
+  data: MapsPlaceUpdateInput,
+) {
+  return apiRequest<MapsPlaceItem>(`/maps/runs/${runId}/places/${placeId}`, {
+    method: "PATCH",
+    body: data,
+    token: auth.token,
+    orgId: auth.orgId,
+  });
 }
 
 /** "Proceed to Phase 2" — triggers the strict keep/drop gate over the current

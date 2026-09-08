@@ -99,6 +99,18 @@ export type MapsPlaceItem = {
   manually_excluded: boolean;
 };
 
+export type MapsPlaceUpdateInput = {
+  canonical_name?: string;
+  addictions_treated?: string[] | null;
+  formatted_address?: string | null;
+  languages_spoken?: string[] | null;
+  official_website?: string | null;
+  contact_email?: string | null;
+  international_phone_number?: string | null;
+  treatment_price?: string | null;
+  bed_count?: number | null;
+};
+
 export type MapsPaginatedMeta = {
   total: number;
   limit: number;

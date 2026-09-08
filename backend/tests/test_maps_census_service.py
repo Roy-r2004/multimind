@@ -1255,6 +1255,63 @@ async def test_run_website_refresh_backfills_missing_website_and_completes(db, a
     assert place.website_source == "llm"
 
 
+@pytest.mark.asyncio
+async def test_run_website_refresh_skips_manually_overridden_official_website(
+    db, auth, monkeypatch
+):
+    run = await _create_run(db, auth)
+    run.status = MapsCensusStatus.RUNNING
+    run.cells_total = 1
+    run.cells_completed = 1
+    run.places_found = 2
+    run.places_classified_relevant = 2
+    await db.commit()
+
+    locked = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-locked-site",
+        raw_name="Manual Rehab",
+        canonical_name="Manual Rehab",
+        city_name="Helsinki",
+        is_relevant=True,
+        official_website="https://manual.example",
+        website_source="llm",
+        manual_field_overrides=["official_website"],
+    )
+    unlocked = MapsPlace(
+        run_id=run.id,
+        google_place_id="p-unlocked-site",
+        raw_name="Open Rehab",
+        canonical_name="Open Rehab",
+        city_name="Helsinki",
+        is_relevant=True,
+    )
+    db.add_all([locked, unlocked])
+    await db.commit()
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.website_needs_enrichment",
+        lambda url: bool(url),
+    )
+    _patch_direct_llm_website_finder(monkeypatch, url="https://automatic.example")
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_model",
+        lambda _name: SimpleNamespace(provider="openrouter", provider_model="anthropic/claude-sonnet-4"),
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.get_provider_registry",
+        lambda: _FakeProviderRegistry(_FakeProvider("{}")),
+    )
+
+    await maps_census_service.run_website_refresh(db, run_id=run.id)
+
+    await db.refresh(locked)
+    await db.refresh(unlocked)
+    assert locked.official_website == "https://manual.example"
+    assert locked.manual_field_overrides == ["official_website"]
+    assert unlocked.official_website == "https://automatic.example/"
+
+
 def _tracking_create_task(monkeypatch, *, marker: str):
     """Delegates to the real asyncio.create_task for everything (so SQLAlchemy's own
     internal task scheduling on session close keeps working) but records tasks whose

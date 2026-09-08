@@ -53,6 +53,7 @@ from app.schemas.api import (
     MapsCensusRunSummary,
     MapsPlaceItem,
     MapsPlaceListResponse,
+    MapsPlaceUpdate,
     PaginatedMeta,
 )
 from app.services.scraping.countries import resolve_country
@@ -66,6 +67,11 @@ from app.services.scraping.facility_website_enrichment_service import (
     build_official_website_query,
     select_official_website,
     website_needs_enrichment,
+)
+from app.services.scraping.maps_manual_overrides import (
+    EDITABLE_EXPORT_FIELDS,
+    add_override_fields,
+    set_unless_overridden,
 )
 from app.services.scraping.maps_cell_runner import (
     fail_cell_for_retry,
@@ -484,6 +490,70 @@ class MapsCensusService:
             ),
         )
         return detail
+
+    async def update_place(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        run_id: str,
+        place_id: str,
+        data: MapsPlaceUpdate,
+    ) -> MapsPlaceItem:
+        """Persist manual edits to client-facing export columns on a Maps place."""
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+
+        place = await db.get(MapsPlace, place_id)
+        if place is None or place.run_id != run_id:
+            raise NotFoundError("Maps place", place_id)
+        if place.manually_excluded_at is not None:
+            raise ValidationError("Cannot edit a removed facility")
+
+        updates = data.model_dump(exclude_unset=True)
+        unknown = set(updates) - EDITABLE_EXPORT_FIELDS
+        if unknown:
+            raise ValidationError(f"Field(s) cannot be edited: {', '.join(sorted(unknown))}")
+
+        string_limits = {
+            "canonical_name": 512,
+            "formatted_address": 512,
+            "official_website": 512,
+            "contact_email": 320,
+            "international_phone_number": 64,
+            "treatment_price": 512,
+        }
+        list_fields = {"addictions_treated", "languages_spoken"}
+
+        for field_name, value in updates.items():
+            if field_name == "canonical_name":
+                text = (value or "").strip() if isinstance(value, str) else ""
+                if not text:
+                    raise ValidationError("canonical_name cannot be empty")
+                place.canonical_name = text[:512]
+                continue
+            if field_name == "bed_count":
+                place.bed_count = value
+                continue
+            if field_name in list_fields:
+                if value is None:
+                    setattr(place, field_name, None)
+                    continue
+                cleaned = [str(item).strip() for item in value if str(item).strip()]
+                setattr(place, field_name, cleaned or None)
+                continue
+            if field_name in string_limits:
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    setattr(place, field_name, None)
+                else:
+                    setattr(place, field_name, str(value).strip()[: string_limits[field_name]])
+
+        if updates:
+            add_override_fields(place, updates.keys())
+
+        await db.commit()
+        await db.refresh(place)
+        return _place_item(place)
 
     async def advance_to_phase_2(
         self, db: AsyncSession, auth: AuthContext, run_id: str
@@ -2187,7 +2257,8 @@ class MapsCensusService:
                 if website_needs_enrichment(place.official_website) and not _is_facebook_url(
                     place.official_website
                 ):
-                    place.official_website = None
+                    if not set_unless_overridden(place, "official_website", None):
+                        continue
                     place.website_source = None
                     dropped += 1
             if dropped:
@@ -2234,7 +2305,8 @@ class MapsCensusService:
                 for place in group:
                     if place.official_website:
                         continue
-                    place.official_website = shared_url
+                    if not set_unless_overridden(place, "official_website", shared_url):
+                        continue
                     place.website_source = donor.website_source or "search"
                     changed = True
             if changed:
@@ -2381,8 +2453,8 @@ class MapsCensusService:
                 async with session_factory() as write_db:
                     place = await write_db.get(MapsPlace, item["id"])
                     if place is not None and place.official_website is None:
-                        place.official_website = url
-                        place.website_source = "llm_social" if _is_facebook_url(url) else "llm"
+                        if set_unless_overridden(place, "official_website", url):
+                            place.website_source = "llm_social" if _is_facebook_url(url) else "llm"
                     await write_db.commit()
 
     async def _find_missing_websites_serper(
@@ -2433,8 +2505,8 @@ class MapsCensusService:
                 async with session_factory() as write_db:
                     place = await write_db.get(MapsPlace, item["id"])
                     if place is not None and place.official_website is None:
-                        place.official_website = selected.url
-                        place.website_source = "search"
+                        if set_unless_overridden(place, "official_website", selected.url):
+                            place.website_source = "search"
                     await write_db.commit()
                 continue
 
@@ -2474,8 +2546,8 @@ class MapsCensusService:
                 async with session_factory() as write_db:
                     place = await write_db.get(MapsPlace, item["id"])
                     if place is not None and place.official_website is None:
-                        place.official_website = url
-                        place.website_source = "search"
+                        if set_unless_overridden(place, "official_website", url):
+                            place.website_source = "search"
                     await write_db.commit()
 
     async def _find_websites_llm_batch(

@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-r
 import {
   ArrowLeft,
   Building2,
+  Check,
   ChevronLeft,
   ChevronRight,
   DollarSign,
@@ -9,9 +10,11 @@ import {
   ExternalLink,
   Grid2x2,
   Loader2,
+  Pencil,
   Search,
   Sparkles,
   Trash2,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
@@ -37,7 +40,13 @@ import {
   listMapsCensusCells,
   listMapsCensusPlaces,
   refreshMapsCensusWebsites,
+  updateMapsCensusPlace,
 } from "@/lib/maps/api";
+import {
+  draftFromPlace,
+  payloadFromDraft,
+  type PlaceEditDraft,
+} from "@/lib/maps/placeEdit";
 import type {
   MapsCensusCellItem,
   MapsCensusRunDetail,
@@ -111,6 +120,9 @@ function MapsRunDetailPage() {
   const [phase2Triggered, setPhase2Triggered] = useState(false);
   const [removingPlaceId, setRemovingPlaceId] = useState<string | null>(null);
   const [exportingPhase, setExportingPhase] = useState<"phase1" | "phase2" | null>(null);
+  const [editingPlaceId, setEditingPlaceId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<PlaceEditDraft | null>(null);
+  const [savingPlaceId, setSavingPlaceId] = useState<string | null>(null);
 
   useEffect(() => {
     const auth = authHeaders();
@@ -220,6 +232,38 @@ function MapsRunDetailPage() {
       setError(err instanceof Error ? err.message : "Failed to remove facility");
     } finally {
       setRemovingPlaceId(null);
+    }
+  }
+
+  function handleStartEdit(place: MapsPlaceItem) {
+    setEditingPlaceId(place.id);
+    setEditDraft(draftFromPlace(place));
+  }
+
+  function handleCancelEdit() {
+    setEditingPlaceId(null);
+    setEditDraft(null);
+  }
+
+  async function handleSaveEdit(place: MapsPlaceItem) {
+    const auth = authHeaders();
+    if (!auth || !editDraft) return;
+    setSavingPlaceId(place.id);
+    setError(null);
+    try {
+      const payload = payloadFromDraft(place, editDraft);
+      if (Object.keys(payload).length === 0) {
+        handleCancelEdit();
+        return;
+      }
+      const updated = await updateMapsCensusPlace(auth, runId, place.id, payload);
+      setPhase2Places((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
+      setPhase1Places((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
+      handleCancelEdit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save facility");
+    } finally {
+      setSavingPlaceId(null);
     }
   }
 
@@ -402,6 +446,13 @@ function MapsRunDetailPage() {
                       }
                       title="Phase 2 · Eligible facilities"
                       description="The final client-ready list, after the strict keep/drop gate and AI enrichment."
+                      onEdit={handleStartEdit}
+                      onSave={(place) => void handleSaveEdit(place)}
+                      onCancel={handleCancelEdit}
+                      editingPlaceId={editingPlaceId}
+                      editDraft={editDraft}
+                      onDraftChange={setEditDraft}
+                      savingPlaceId={savingPlaceId}
                       headerExtra={
                         <button
                           type="button"
@@ -484,6 +535,13 @@ function FacilitiesExportTable({
   headerExtra,
   onRemove,
   removingPlaceId,
+  onEdit,
+  onSave,
+  onCancel,
+  editingPlaceId,
+  editDraft,
+  onDraftChange,
+  savingPlaceId,
 }: {
   rows: ReturnType<typeof placeToExportRow>[];
   isRunning: boolean;
@@ -493,9 +551,18 @@ function FacilitiesExportTable({
   headerExtra?: React.ReactNode;
   onRemove?: (placeId: string) => void;
   removingPlaceId?: string | null;
+  onEdit?: (place: MapsPlaceItem) => void;
+  onSave?: (place: MapsPlaceItem) => void;
+  onCancel?: () => void;
+  editingPlaceId?: string | null;
+  editDraft?: PlaceEditDraft | null;
+  onDraftChange?: (draft: PlaceEditDraft) => void;
+  savingPlaceId?: string | null;
 }) {
   const hasRows = rows.length > 0;
-  const columnCount = EXPORT_COLUMNS.length + (onRemove ? 1 : 0);
+  const showActions = Boolean(onRemove || onEdit);
+  const columnCount = EXPORT_COLUMNS.length + (showActions ? 1 : 0);
+  const actionLabel = onRemove && !onEdit ? "Remove" : onEdit && !onRemove ? "Edit" : "Actions";
 
   return (
     <DreamPanel className="p-0 overflow-hidden">
@@ -516,7 +583,9 @@ function FacilitiesExportTable({
                   {column}
                 </th>
               ))}
-              {onRemove && <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Remove</th>}
+              {showActions && (
+                <th className="px-3 py-2.5 font-semibold whitespace-nowrap">{actionLabel}</th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -534,7 +603,10 @@ function FacilitiesExportTable({
                 </td>
               </tr>
             ) : (
-              rows.map(({ place, cells }) => (
+              rows.map(({ place, cells }) => {
+                const isEditing = Boolean(onEdit) && editingPlaceId === place.id;
+                const isSaving = savingPlaceId === place.id;
+                return (
                 <tr
                   key={place.id}
                   className={cn(
@@ -548,27 +620,74 @@ function FacilitiesExportTable({
                       key={`${place.id}-${column}`}
                       column={column}
                       value={cells[column]}
+                      draft={isEditing ? editDraft : null}
+                      disabled={isSaving}
+                      onDraftChange={isEditing ? onDraftChange : undefined}
                     />
                   ))}
-                  {onRemove && (
+                  {showActions && (
                     <td className="px-3 py-2.5 align-top">
-                      <button
-                        type="button"
-                        onClick={() => onRemove(place.id)}
-                        disabled={removingPlaceId === place.id}
-                        aria-label={`Remove ${place.canonical_name}`}
-                        className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted-foreground transition hover:border-rose-300 hover:text-rose-600 disabled:opacity-50"
-                      >
-                        {removingPlaceId === place.id ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <Trash2 className="size-3.5" />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {onEdit && isEditing ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onSave?.(place)}
+                              disabled={isSaving}
+                              aria-label={`Save ${place.canonical_name}`}
+                              className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-foreground transition hover:bg-muted/50 disabled:opacity-50"
+                            >
+                              {isSaving ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Check className="size-3.5" />
+                              )}
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onCancel?.()}
+                              disabled={isSaving}
+                              aria-label="Cancel editing"
+                              className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted-foreground transition hover:bg-muted/50 disabled:opacity-50"
+                            >
+                              <X className="size-3.5" />
+                              Cancel
+                            </button>
+                          </>
+                        ) : onEdit ? (
+                          <button
+                            type="button"
+                            onClick={() => onEdit(place)}
+                            disabled={Boolean(editingPlaceId) || isSaving}
+                            aria-label={`Edit ${place.canonical_name}`}
+                            className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+                          >
+                            <Pencil className="size-3.5" />
+                            Edit
+                          </button>
+                        ) : null}
+                        {onRemove && (
+                          <button
+                            type="button"
+                            onClick={() => onRemove(place.id)}
+                            disabled={removingPlaceId === place.id}
+                            aria-label={`Remove ${place.canonical_name}`}
+                            className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted-foreground transition hover:border-rose-300 hover:text-rose-600 disabled:opacity-50"
+                          >
+                            {removingPlaceId === place.id ? (
+                              <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="size-3.5" />
+                            )}
+                          </button>
                         )}
-                      </button>
+                      </div>
                     </td>
                   )}
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
@@ -577,13 +696,82 @@ function FacilitiesExportTable({
   );
 }
 
+function draftKeyForColumn(column: string): keyof PlaceEditDraft | null {
+  switch (column) {
+    case "Facility Name":
+      return "canonical_name";
+    case "Addictions Treated":
+      return "addictions_treated";
+    case "Location":
+      return "formatted_address";
+    case "Languages Spoken":
+      return "languages_spoken";
+    case "Website":
+      return "official_website";
+    case "Email":
+      return "contact_email";
+    case "Phone Number":
+      return "international_phone_number";
+    case "Treatment Price":
+      return "treatment_price";
+    case "Bed Count":
+      return "bed_count";
+    default:
+      return null;
+  }
+}
+
 function ExportTableCell({
   column,
   value,
+  draft,
+  disabled,
+  onDraftChange,
 }: {
   column: string;
   value: string;
+  draft?: PlaceEditDraft | null;
+  disabled?: boolean;
+  onDraftChange?: (draft: PlaceEditDraft) => void;
 }) {
+  const draftKey = draftKeyForColumn(column);
+  const isEditing = Boolean(draft && onDraftChange && draftKey);
+
+  if (isEditing && draft && onDraftChange && draftKey) {
+    const fieldValue = draft[draftKey];
+    const isMultiline = column === "Addictions Treated" || column === "Languages Spoken";
+    const inputClass =
+      "w-full min-w-[7rem] rounded-md border border-input bg-background px-2 py-1 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
+    return (
+      <td className="min-w-[8rem] max-w-[18rem] px-3 py-2.5 align-top text-foreground">
+        {isMultiline ? (
+          <textarea
+            rows={2}
+            value={fieldValue}
+            disabled={disabled}
+            onChange={(event) =>
+              onDraftChange({ ...draft, [draftKey]: event.target.value })
+            }
+            className={cn(inputClass, "min-h-[2.5rem] resize-y")}
+          />
+        ) : (
+          <input
+            type={column === "Bed Count" ? "number" : "text"}
+            min={column === "Bed Count" ? 0 : undefined}
+            step={column === "Bed Count" ? 1 : undefined}
+            inputMode={column === "Bed Count" ? "numeric" : undefined}
+            value={fieldValue}
+            disabled={disabled}
+            onChange={(event) =>
+              onDraftChange({ ...draft, [draftKey]: event.target.value })
+            }
+            className={inputClass}
+          />
+        )}
+      </td>
+    );
+  }
+
   const isPlaceholder = value === "Not Specified" || value === "Contact for pricing";
   const isWebsiteLink = column === "Website" && !isPlaceholder;
   const isEmailLink = column === "Email" && !isPlaceholder;

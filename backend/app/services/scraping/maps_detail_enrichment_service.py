@@ -21,6 +21,7 @@ from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmen
 from app.services.scraping.maps_enrichment_progress import persist_enrichment_progress
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_enrichment_selection import is_detail_enrichment_candidate
+from app.services.scraping.maps_manual_overrides import set_unless_overridden
 from app.services.scraping.maps_place_enrichment_service import (
     ADDICTION_TAXONOMY,
     maps_place_enrichment_service,
@@ -441,18 +442,25 @@ class MapsDetailEnrichmentService:
                 if result is not None:
                     addictions = _normalize_addictions(result.addictions_treated)
                     languages = _normalize_languages(result.languages_spoken)
-                    place.addictions_treated = addictions or None
-                    place.languages_spoken = languages or None
+                    set_unless_overridden(place, "addictions_treated", addictions or None)
+                    set_unless_overridden(place, "languages_spoken", languages or None)
                     if result.treatment_price and str(result.treatment_price).strip():
-                        place.treatment_price = str(result.treatment_price).strip()[:512]
+                        set_unless_overridden(
+                            place,
+                            "treatment_price",
+                            str(result.treatment_price).strip()[:512],
+                        )
                     candidate_email = str(result.contact_email or "").strip()
                     if candidate_email and _email_belongs_to_facility(candidate_email, place):
-                        place.contact_email = candidate_email[:320]
-                    candidate_phone = str(result.contact_phone or "").strip()
+                        set_unless_overridden(place, "contact_email", candidate_email[:320])
+                    candidate_phone = str(getattr(result, "contact_phone", None) or "").strip()
                     if candidate_phone:
-                        place.international_phone_number = candidate_phone[:64]
-                    if result.bed_count is not None:
-                        place.bed_count = result.bed_count
+                        set_unless_overridden(
+                            place, "international_phone_number", candidate_phone[:64]
+                        )
+                    bed_count = getattr(result, "bed_count", None)
+                    if bed_count is not None:
+                        set_unless_overridden(place, "bed_count", bed_count)
                     if place.enrichment_extraction_source in {
                         None,
                         "structured_classification",
