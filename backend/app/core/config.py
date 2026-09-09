@@ -359,6 +359,10 @@ class Settings(BaseSettings):
     # screenshots, UI, tables, charts, and photos at a reasonable OpenRouter cost.
     # Override with CHAT_IMAGE_ANALYSIS_MODEL (e.g. gpt-4.1, gpt-4.1-mini).
     chat_image_analysis_model: str = "gemini"
+    # Catalog model id for the post-verdict Simple Explanation call.
+    # Independent of council membership and the referee/verdict model.
+    # Override with CHAT_VERDICT_SIMPLIFIER_MODEL.
+    chat_verdict_simplifier_model: str = "gpt-4.1-mini"
     library_file_dir: str = "data/library_files"
     library_file_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
 

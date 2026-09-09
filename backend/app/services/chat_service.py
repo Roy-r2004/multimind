@@ -29,6 +29,7 @@ from app.db.models import (
     Turn,
     TurnStatus,
     Verdict,
+    VerdictSimpleExplanation,
 )
 from app.db.session import AsyncSessionLocal
 from app.llm.catalog import get_model
@@ -54,6 +55,7 @@ from app.schemas.api import (
     TurnRegenerateResponse,
     TurnResponse,
     VerdictResponse,
+    VerdictSimpleExplanationResponse,
 )
 from app.services.brain_service import brain_service
 from app.services.chat_attachment_storage import safe_delete_attachment_files
@@ -137,6 +139,36 @@ def _create_orchestration_task(coroutine: Any) -> asyncio.Task[None]:
 
 def _create_chat_memory_task(coroutine: Any) -> asyncio.Task[None]:
     return asyncio.create_task(coroutine)
+
+
+async def _run_verdict_simplifier_best_effort(
+    *,
+    verdict_id: str,
+    org_id: str,
+    chat_id: str,
+    turn_id: str,
+    project_id: str | None,
+) -> None:
+    """Background Simple Explanation. Isolated from Verdict/turn success."""
+    try:
+        from app.services.verdict_simplifier_service import verdict_simplifier_service
+
+        async with AsyncSessionLocal() as simplifier_db:
+            await verdict_simplifier_service.explain_verdict(
+                simplifier_db,
+                verdict_id=verdict_id,
+                org_id=org_id,
+                chat_id=chat_id,
+                turn_id=turn_id,
+                project_id=project_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "verdict_simplifier_task_failed",
+            verdict_id=verdict_id,
+            turn_id=turn_id,
+            error=str(exc),
+        )
 
 
 async def _run_chat_memory_update_best_effort(
@@ -431,6 +463,13 @@ class ChatService:
             )
             await db.execute(delete(ChatVerdictPin).where(ChatVerdictPin.chat_id == chat_id))
             await self._delete_pinned_brain_sources(db, auth.org_id, pinned_verdict_ids)
+            await db.execute(
+                delete(VerdictSimpleExplanation).where(
+                    VerdictSimpleExplanation.verdict_id.in_(
+                        select(Verdict.id).where(Verdict.turn_id.in_(turn_ids))
+                    )
+                )
+            )
             await db.execute(delete(Verdict).where(Verdict.turn_id.in_(turn_ids)))
             await db.execute(delete(ModelAnswer).where(ModelAnswer.turn_id.in_(turn_ids)))
             await db.execute(delete(ShareLink).where(ShareLink.chat_id == chat_id))
@@ -541,7 +580,7 @@ class ChatService:
             .where(Turn.id == turn_id, Turn.chat_id == chat_id)
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
                 selectinload(Turn.attachments),
@@ -566,7 +605,7 @@ class ChatService:
             .where(Turn.id == turn_id, Turn.chat_id == chat_id, Turn.deleted_at.is_(None))
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
                 selectinload(Turn.attachments),
@@ -756,7 +795,7 @@ class ChatService:
             .where(Turn.id == new_turn.id)
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
                 selectinload(Turn.attachments),
@@ -915,7 +954,7 @@ class ChatService:
             .where(Turn.id == turn.id)
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
                 selectinload(Turn.attachments),
@@ -1136,7 +1175,7 @@ class ChatService:
             .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
                 selectinload(Turn.attachments),
@@ -1239,7 +1278,7 @@ class ChatService:
                 .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
                 .options(
                     selectinload(Turn.model_answers),
-                    selectinload(Turn.verdict),
+                    selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                     selectinload(Turn.decision_insurance),
                     selectinload(Turn.lesson),
                     selectinload(Turn.attachments),
@@ -1309,7 +1348,7 @@ class ChatService:
                             select(Turn)
                             .where(Turn.id == turn_id)
                             .options(
-                                selectinload(Turn.verdict),
+                                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                                 selectinload(Turn.model_answers),
                                 selectinload(Turn.chat),
                             )
@@ -1319,6 +1358,16 @@ class ChatService:
                         TurnStatus.COMPLETED,
                         TurnStatus.PARTIAL,
                     ):
+                        if turn_row.verdict is not None:
+                            _create_chat_memory_task(
+                                _run_verdict_simplifier_best_effort(
+                                    verdict_id=str(turn_row.verdict.id),
+                                    org_id=ctx.org_id,
+                                    chat_id=ctx.chat_id,
+                                    turn_id=turn_row.id,
+                                    project_id=ctx.project_id,
+                                )
+                            )
                         try:
                             from app.services.brain_knowledge_service import brain_knowledge_service
 
@@ -1475,7 +1524,7 @@ class ChatService:
             .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
                 selectinload(Turn.attachments),
@@ -1500,7 +1549,7 @@ class ChatService:
             )
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
                 selectinload(Turn.attachments),
@@ -1712,6 +1761,22 @@ class ChatService:
 
         verdict = None
         if turn.verdict:
+            explanation = None
+            expl = turn.verdict.simple_explanation
+            if expl is not None:
+                explanation = VerdictSimpleExplanationResponse(
+                    id=str(expl.id),
+                    content=expl.content,
+                    model_id=expl.model_id,
+                    status=(
+                        expl.status.value
+                        if hasattr(expl.status, "value")
+                        else str(expl.status)
+                    ),
+                    tokens_input=expl.tokens_input,
+                    tokens_output=expl.tokens_output,
+                    cost_usd=expl.cost_usd,
+                )
             verdict = VerdictResponse(
                 id=str(turn.verdict.id),
                 model_id=turn.verdict.model_id,
@@ -1722,6 +1787,7 @@ class ChatService:
                 tokens_input=turn.verdict.tokens_input,
                 tokens_output=turn.verdict.tokens_output,
                 cost_usd=turn.verdict.cost_usd,
+                simple_explanation=explanation,
             )
 
         insurance = None

@@ -99,6 +99,7 @@ export function applyStreamEvent(
         tokens_input: Number(data.tokens_input ?? 0),
         tokens_output: Number(data.tokens_output ?? 0),
         cost_usd: data.cost_usd == null || data.cost_usd === "" ? null : Number(data.cost_usd),
+        simple_explanation: turn.verdict?.simple_explanation ?? null,
       },
     };
   }

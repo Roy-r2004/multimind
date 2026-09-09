@@ -5,6 +5,10 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { ExpandableAnswer } from "@/components/chat/ExpandableAnswer";
 import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
+import {
+  SimpleExplanationBox,
+  SimpleExplanationLoadingBox,
+} from "@/components/chat/SimpleExplanationBox";
 import { CallCostLabel, TurnCostSummary } from "@/components/chat/CallCostLabel";
 import { ChatTurnLayoutToggle } from "@/components/chat/ChatTurnLayoutToggle";
 import { api } from "@/lib/api";
@@ -13,6 +17,7 @@ import { chatAnswerCardsClassName } from "@/lib/chatTurnLayout";
 import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
 import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
 import { modelColor } from "@/lib/models";
+import { simpleExplanationSurface, visibleSimpleExplanationContent } from "@/lib/simpleExplanation";
 
 export const Route = createFileRoute("/shared/$token")({
   head: () => ({ meta: [{ title: "Shared chat — MultiAI" }] }),
@@ -231,6 +236,15 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
     </div>
   ) : null;
 
+  const explanationSurface = simpleExplanationSurface(turn.verdict);
+  const explanationContent = visibleSimpleExplanationContent(turn.verdict);
+  const simpleExplanationBlock =
+    explanationSurface === "ready" && explanationContent ? (
+      <SimpleExplanationBox content={explanationContent} />
+    ) : explanationSurface === "loading" ? (
+      <SimpleExplanationLoadingBox />
+    ) : null;
+
   return (
     <div className="space-y-6">
       <div className="flex justify-end">
@@ -242,6 +256,7 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
       <div className="space-y-4">
         {responseCards}
         {verdictBlock}
+        {simpleExplanationBlock}
       </div>
     </div>
   );

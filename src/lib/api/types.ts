@@ -125,6 +125,16 @@ export type ApiModelAnswer = {
   cost_usd?: number | null;
 };
 
+export type ApiSimpleExplanation = {
+  id: string;
+  content?: string | null;
+  model_id: string;
+  status: string;
+  tokens_input?: number | null;
+  tokens_output?: number | null;
+  cost_usd?: number | null;
+};
+
 export type ApiVerdict = {
   id: string;
   model_id: string;
@@ -135,6 +145,7 @@ export type ApiVerdict = {
   tokens_input: number;
   tokens_output: number;
   cost_usd?: number | null;
+  simple_explanation?: ApiSimpleExplanation | null;
 };
 
 export type ApiSavedVerdictState = {
@@ -195,6 +206,10 @@ export type ApiTurn = {
   created_at: string;
   chat_title?: string | null;
   chat_updated_at?: string | null;
+  /** Client-only: Simple Explanation poll is in flight after a live Verdict. */
+  simple_explanation_poll_active?: boolean;
+  /** Client-only: live poll window ended without succeeded/failed. */
+  simple_explanation_poll_timed_out?: boolean;
 };
 
 export type ApiTurnAttachment = {

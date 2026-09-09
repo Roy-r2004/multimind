@@ -292,6 +292,9 @@ class PromptEngine:
             what_to_remember=what_to_remember,
         )
 
+    def verdict_simple_explanation_prompt(self) -> str:
+        return self.render("system/verdict_simple_explanation.j2")
+
     def chat_memory_update_prompt(
         self,
         *,

@@ -1320,6 +1320,16 @@ class ModelAnswerResponse(BaseModel):
     cost_usd: float = 0.0
 
 
+class VerdictSimpleExplanationResponse(BaseModel):
+    id: str
+    content: str | None = None
+    model_id: str
+    status: str
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    cost_usd: float | None = None
+
+
 class VerdictResponse(BaseModel):
     id: str
     model_id: str
@@ -1330,6 +1340,7 @@ class VerdictResponse(BaseModel):
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
+    simple_explanation: VerdictSimpleExplanationResponse | None = None
 
 
 class SavedVerdictSaveResponse(BaseModel):

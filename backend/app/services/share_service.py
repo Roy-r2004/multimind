@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError
-from app.db.models import ModelSet, ShareLink, Turn, User
+from app.db.models import ModelSet, ShareLink, Turn, User, Verdict
 from app.schemas.api import ShareLinkResponse, SharedChatResponse
 from app.services.chat_service import CHALLENGE_TURN_MARKER, chat_service
 
@@ -73,7 +73,7 @@ class ShareService:
             )
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
             )
             .order_by(Turn.created_at.asc())
