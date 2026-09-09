@@ -102,12 +102,12 @@ def test_strict_referee_receives_question_answers_metadata_and_json_protocol():
     assert "Model: GPT-4.1" in rendered
     assert "Never expose internal answer IDs, UUIDs, database IDs" in rendered
     assert "**Confidence**" not in rendered
-    assert "Correctness / accuracy: 30 points" in rendered
-    assert "highest-scoring answer must not automatically become the verdict" in rendered
+    assert "Correctness & Accuracy — 30 points" in rendered
+    assert "highest-scoring Panelist answer must not automatically become the final Verdict" in rendered
     assert '"text": "<the fully explicit and exhaustive synthesis in Markdown>"' in rendered
     assert (
-        '"reason": "<1-3 sentences identifying how the supplied answers were synthesized '
-        'and any unresolved conflicts>"' in rendered
+        '"reason": "<1-3 sentences identifying how the supplied Panelist answers were synthesized '
+        'and any materially unresolved conflicts>"' in rendered
     )
     assert '"evaluations": [' in rendered
 
@@ -140,8 +140,8 @@ def test_mandatory_structural_check_is_late_and_overrides_narrative_conciseness(
     )
 
     custom_index = rendered.index(custom)
-    answers_index = rendered.index("## Supplied AI Agent Answers")
-    scoring_index = rendered.index("## Per-Answer Quality Evaluation")
+    answers_index = rendered.index("## Supplied Panelist Answers")
+    scoring_index = rendered.index("## Per-Panelist Quality Evaluation")
     structural_index = rendered.index("## Mandatory Structural Synthesis Check")
     output_index = rendered.index("## Output Protocol")
 
@@ -150,7 +150,7 @@ def test_mandatory_structural_check_is_late_and_overrides_narrative_conciseness(
     assert "final Verdict **must include a synthesized table**" in rendered
     assert "Do not let the highest-scoring answer determine the final answer's structure" in rendered
     assert "unified narrative" in rendered
-    assert "conciseness, or redundancy removal must not be interpreted" in rendered
+    assert "conciseness, unified narrative, or redundancy removal must not be interpreted" in rendered
 
 
 def test_mandatory_structural_check_preserves_exceptions_and_requires_synthesis():
@@ -162,9 +162,9 @@ def test_mandatory_structural_check_preserves_exceptions_and_requires_synthesis(
 
     assert "unless the user explicitly requests another format" in rendered
     assert "tabular content is irrelevant or factually unreliable" in rendered
-    assert "Reconcile overlapping rows and columns" in rendered
-    assert "Retain materially important values, distinctions, rankings" in rendered
-    assert "Do not copy tables verbatim merely because they exist" in rendered
+    assert "reconcile overlapping rows, columns, categories, or dimensions" in rendered
+    assert "retain materially important values, distinctions, rankings" in rendered
+    assert "do not copy a Panelist's table or structure verbatim merely because it exists" in rendered
 
 
 def test_null_referee_system_prompt_uses_strict_behavior_once():
