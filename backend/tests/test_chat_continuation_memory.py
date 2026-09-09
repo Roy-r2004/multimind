@@ -626,11 +626,14 @@ async def test_prompts_receive_rolling_memory_and_recent_history():
     for prompt in (model_prompt, verdict_prompt):
         assert "## Older Chat Memory" in prompt
         assert "Remember: budget is $10k." in prompt
-        assert "## Recent Conversation" in prompt
         assert "Prior?" in prompt
         assert "## Current User Question" in prompt
         assert "What next?" in prompt
         assert "Previous final verdict" not in prompt
+
+    # The two templates label the same recent-history block differently.
+    assert "## Referee Context — Recent Conversation" in model_prompt
+    assert "## Recent Conversation" in verdict_prompt
 
     assert "Current council answer only" in verdict_prompt
     assert "Current council answer only" not in model_prompt

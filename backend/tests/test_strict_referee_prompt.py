@@ -246,7 +246,7 @@ def test_council_prompt_keeps_all_existing_context_sources():
         model_set_name="Chafic ultimate model set",
         **sentinels,
     )
-    assert "Independent Expert Responder" in rendered
+    assert "Independent Panelist" in rendered
     assert "## Runtime Context" in rendered
     assert "ORIGINAL_QUESTION_SENTINEL" in rendered
     for sentinel in sentinels.values():
