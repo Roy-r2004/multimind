@@ -46,6 +46,10 @@ import { createTurnReferenceFields, shouldClearReferenceAfterSend } from "@/lib/
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
+import {
+  SimpleExplanationBox,
+  SimpleExplanationLoadingBox,
+} from "@/components/chat/SimpleExplanationBox";
 import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
 import { UserPromptBubble } from "@/components/chat/UserPromptBubble";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
@@ -146,6 +150,7 @@ import {
   shouldShowScrollToLatest,
 } from "@/lib/chatScroll";
 import { buildPinnedVerdictMenuItems, isVerdictPinned } from "@/lib/pinnedVerdicts";
+import { simpleExplanationSurface, visibleSimpleExplanationContent } from "@/lib/simpleExplanation";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -2257,10 +2262,23 @@ function AiTurn({
     </div>
   ) : null;
 
+  const explanationSurface = simpleExplanationSurface(turn.verdict, {
+    pollActive: Boolean(turn.simple_explanation_poll_active),
+    pollTimedOut: Boolean(turn.simple_explanation_poll_timed_out),
+  });
+  const explanationContent = visibleSimpleExplanationContent(turn.verdict);
+  const simpleExplanationBlock =
+    explanationSurface === "ready" && explanationContent ? (
+      <SimpleExplanationBox content={explanationContent} />
+    ) : explanationSurface === "loading" ? (
+      <SimpleExplanationLoadingBox />
+    ) : null;
+
   return (
     <div className="space-y-4">
       {responseCards}
       {verdictBlock}
+      {simpleExplanationBlock}
 
       <VerdictDisagreeChat
         open={showDisagree}

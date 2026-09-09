@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { isRequestCancelled } from "@/lib/api/client";
 import type { ApiTurn } from "@/lib/api/types";
 import { applyStreamEvent, mergeTurnFromApi, mergeTurnLists } from "@/lib/turnState";
+import { visibleSimpleExplanationContent } from "@/lib/simpleExplanation";
 
 type Auth = { token: string; orgId?: string | null };
 
@@ -14,6 +15,8 @@ const activeJobs = new Map<
   { chatId: string; controller: AbortController; promise: Promise<void>; stopping: boolean }
 >();
 const deletedTurns = new Set<string>();
+const explanationPolling = new Set<string>();
+const explanationPollTimedOut = new Set<string>();
 const chatListeners = new Map<string, Set<(turns: ApiTurn[]) => void>>();
 const runningListeners = new Map<string, Set<(running: boolean) => void>>();
 const activeTurnListeners = new Map<string, Set<(turnId: string | null) => void>>();
@@ -30,7 +33,13 @@ function getChatTurnMap(chatId: string): Map<string, ApiTurn> {
 export function getChatTurns(chatId: string): ApiTurn[] {
   const map = turnsByChat.get(chatId);
   if (!map) return [];
-  return Array.from(map.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return Array.from(map.values())
+    .map((turn) => ({
+      ...turn,
+      simple_explanation_poll_active: explanationPolling.has(turn.id),
+      simple_explanation_poll_timed_out: explanationPollTimedOut.has(turn.id),
+    }))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
 function isChatRunning(chatId: string): boolean {
@@ -65,6 +74,8 @@ function updateTurn(chatId: string, turn: ApiTurn) {
 
 export function removeTurn(chatId: string, turnId: string) {
   deletedTurns.add(turnId);
+  explanationPolling.delete(turnId);
+  explanationPollTimedOut.delete(turnId);
   getChatTurnMap(chatId).delete(turnId);
   const job = activeJobs.get(turnId);
   if (job) {
@@ -134,6 +145,55 @@ function isFullTurnPayload(data: unknown): data is ApiTurn {
   );
 }
 
+function explanationPollComplete(turn: ApiTurn): boolean {
+  if (!turn.verdict) return true;
+  if (visibleSimpleExplanationContent(turn.verdict)) return true;
+  return turn.verdict.simple_explanation?.status === "failed";
+}
+
+function setExplanationPolling(chatId: string, turnId: string, active: boolean) {
+  if (deletedTurns.has(turnId)) {
+    explanationPolling.delete(turnId);
+    return;
+  }
+  if (active) {
+    explanationPolling.add(turnId);
+    explanationPollTimedOut.delete(turnId);
+  } else {
+    explanationPolling.delete(turnId);
+  }
+  emitChat(chatId);
+}
+
+async function refreshSimpleExplanation(auth: Auth, chatId: string, turnId: string) {
+  const pollIntervalMs = 1000;
+  const maxAttempts = 15;
+  try {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (deletedTurns.has(turnId)) return;
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      if (deletedTurns.has(turnId)) return;
+      try {
+        const remote = await api.chats.getTurn(auth, turnId);
+        const current = getChatTurnMap(chatId).get(turnId);
+        if (!current) return;
+        updateTurn(chatId, mergeTurnFromApi(current, remote));
+        if (explanationPollComplete(remote)) return;
+      } catch {
+        if (!deletedTurns.has(turnId)) {
+          explanationPollTimedOut.add(turnId);
+        }
+        return;
+      }
+    }
+    if (!deletedTurns.has(turnId)) {
+      explanationPollTimedOut.add(turnId);
+    }
+  } finally {
+    setExplanationPolling(chatId, turnId, false);
+  }
+}
+
 export function runTurnInBackground(auth: Auth, chatId: string, pending: ApiTurn): Promise<void> {
   const existing = activeJobs.get(pending.id);
   if (existing) return existing.promise;
@@ -167,6 +227,13 @@ export function runTurnInBackground(auth: Auth, chatId: string, pending: ApiTurn
         next = applyStreamEvent(current, event, data as Record<string, unknown>);
       }
       updateTurn(chatId, next);
+      if (event === "verdict_completed" && next.verdict) {
+        setExplanationPolling(chatId, pending.id, true);
+      }
+      if (event === "turn_completed" && next.verdict) {
+        setExplanationPolling(chatId, pending.id, true);
+        void refreshSimpleExplanation(auth, chatId, pending.id);
+      }
     },
     { signal: controller.signal, isTurnDeleted: isTurnDeletedLocally },
   )

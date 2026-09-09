@@ -111,6 +111,13 @@ class UsageKind(str, enum.Enum):
     LESSON = "lesson"
     BRAIN = "brain"
     CHAT_MEMORY = "chat_memory"
+    VERDICT_EXPLAIN = "verdict_explain"
+
+
+class VerdictSimpleExplanationStatus(str, enum.Enum):
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
 
 
 class LessonStatus(str, enum.Enum):
@@ -2230,6 +2237,12 @@ class Verdict(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     chat_pins: Mapped[list["ChatVerdictPin"]] = relationship(
         back_populates="verdict", passive_deletes=True
     )
+    simple_explanation: Mapped["VerdictSimpleExplanation | None"] = relationship(
+        back_populates="verdict",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class ChatVerdictPin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -2249,6 +2262,41 @@ class ChatVerdictPin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     chat: Mapped["Chat"] = relationship(back_populates="verdict_pins")
     verdict: Mapped["Verdict"] = relationship(back_populates="chat_pins")
+
+
+class VerdictSimpleExplanation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Derived readability artifact for one Verdict. Not conversation or memory."""
+
+    __tablename__ = "verdict_simple_explanations"
+    __table_args__ = (
+        UniqueConstraint("verdict_id", name="uq_verdict_simple_explanation_verdict"),
+        Index("ix_verdict_simple_explanations_verdict_id", "verdict_id"),
+        CheckConstraint(
+            "status IN ('pending', 'succeeded', 'failed')",
+            name="ck_verdict_simple_explanation_status",
+        ),
+    )
+
+    verdict_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("verdicts.id", ondelete="CASCADE"), nullable=False
+    )
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[VerdictSimpleExplanationStatus] = mapped_column(
+        Enum(
+            VerdictSimpleExplanationStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=VerdictSimpleExplanationStatus.PENDING,
+        nullable=False,
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    verdict: Mapped["Verdict"] = relationship(back_populates="simple_explanation")
 
 
 class SavedVerdict(Base, UUIDPrimaryKeyMixin):

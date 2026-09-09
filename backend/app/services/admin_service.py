@@ -15,6 +15,7 @@ from app.db.models import (
     Turn,
     User,
     UserBrain,
+    Verdict,
     VerdictLesson,
 )
 from app.services.chat_service import chat_service
@@ -189,7 +190,7 @@ class AdminService:
             .where(Turn.chat_id == chat.id)
             .options(
                 selectinload(Turn.model_answers),
-                selectinload(Turn.verdict),
+                selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                 selectinload(Turn.decision_insurance),
                 selectinload(Turn.lesson),
             )
