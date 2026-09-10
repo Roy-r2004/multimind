@@ -179,12 +179,13 @@ test("Verdict Copy captures only primary MessageContent HTML without table-copy 
   );
   assert.match(
     chatSrc,
-    /<div ref=\{verdictContentRef\}>\s*<MessageContent variant="verdict">\{turn\.verdict\.text\}<\/MessageContent>\s*<\/div>/,
+    /<div ref=\{verdictContentRef\} data-verdict-copy-root="">\s*<MessageContent variant="verdict">\{turn\.verdict\.text\}<\/MessageContent>\s*<\/div>/,
   );
   assert.match(chatSrc, /\{turn\.verdict\.reason && \(/);
+  const contentRefStart = chatSrc.indexOf("<div ref={verdictContentRef}");
   const contentRefBlock = chatSrc.slice(
-    chatSrc.indexOf("<div ref={verdictContentRef}>"),
-    chatSrc.indexOf("</div>", chatSrc.indexOf("<div ref={verdictContentRef}>")) + 6,
+    contentRefStart,
+    chatSrc.indexOf("</div>", contentRefStart) + 6,
   );
   assert.doesNotMatch(contentRefBlock, /turn\.verdict\.reason/);
   assert.doesNotMatch(contentRefBlock, /Challenge/);

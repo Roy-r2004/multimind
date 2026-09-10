@@ -297,7 +297,9 @@ function SavedPromptsPage() {
                               errorMessage="Could not copy the verdict"
                             />
                           </div>
-                          <MessageContent muted>{prompt.verdict_text}</MessageContent>
+                          <div data-verdict-copy-root="">
+                            <MessageContent muted>{prompt.verdict_text}</MessageContent>
+                          </div>
                         </div>
                       ) : null}
                       <p className="text-xs text-muted-foreground">
