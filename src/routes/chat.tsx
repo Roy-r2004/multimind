@@ -2246,7 +2246,7 @@ function AiTurn({
           </div>
         </div>
         <div className="mt-5 space-y-3">
-          <div ref={verdictContentRef}>
+          <div ref={verdictContentRef} data-verdict-copy-root="">
             <MessageContent variant="verdict">{turn.verdict.text}</MessageContent>
           </div>
           {turn.verdict.reason && (

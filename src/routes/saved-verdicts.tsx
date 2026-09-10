@@ -162,7 +162,9 @@ function SavedVerdictsPage() {
                   </div>
 
                   <div className="mt-4 space-y-3">
-                    <MessageContent>{card.verdictText}</MessageContent>
+                    <div data-verdict-copy-root="">
+                      <MessageContent>{card.verdictText}</MessageContent>
+                    </div>
                     {card.verdictReason && (
                       <MessageContent
                         muted

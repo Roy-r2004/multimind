@@ -228,7 +228,7 @@ function SharedTurn({ turn }: { turn: ApiSharedChat["turns"][number] }) {
           </div>
         </div>
         <div className="mt-5">
-          <div ref={verdictContentRef}>
+          <div ref={verdictContentRef} data-verdict-copy-root="">
             <MessageContent>{turn.verdict.text}</MessageContent>
           </div>
         </div>
