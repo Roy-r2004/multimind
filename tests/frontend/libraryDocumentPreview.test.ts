@@ -33,7 +33,7 @@ test("Preview renders live unsaved content, not the last saved snapshot", () => 
   assert.equal(libraryDocumentPreviewContent("unsaved draft"), "unsaved draft");
   assert.notEqual(libraryDocumentPreviewContent("unsaved draft"), "saved from db");
   assert.match(editorSrc, /libraryDocumentPreviewContent\(value\)/);
-  assert.match(editorSrc, /<MessageContent>\{previewText\}<\/MessageContent>/);
+  assert.match(editorSrc, /<MessageContent variant="verdict" showTableCopy=\{false\}>\{previewText\}<\/MessageContent>/);
   assert.match(itemSrc, /value=\{content\}/);
   assert.match(
     itemSrc,
@@ -55,7 +55,7 @@ test("Preview uses MessageContent table markup instead of raw pipes", () => {
     /<pre[^>]*>\{previewText\}/,
   );
   assert.match(TABLE_MARKDOWN, /\| Facility Type \|/);
-  assert.match(editorSrc, /MessageContent>\{\s*previewText\s*\}<\/MessageContent>/);
+  assert.match(editorSrc, /MessageContent[^>]*>\{\s*previewText\s*\}<\/MessageContent>/);
 });
 
 test("switching Preview back to Edit does not mutate Markdown or call onChange", () => {

@@ -213,5 +213,5 @@ test("editor paste uses the existing applyEdit / onChange path", () => {
 test("paste helper falls back to text/plain after a conversion miss", () => {
   const helperSrc = readFileSync(join(root, "src/lib/libraryHtmlTable.ts"), "utf8");
   assert.match(helperSrc, /return \{ action: "insert", markdown: plainText \}/);
-  assert.match(helperSrc, /if \(!htmlContainsUsableTable\(html\)\) return \{ action: "native" \}/);
+  assert.deepEqual(decideLibraryTablePaste("<p>Plain text</p>", "Plain text"), { action: "native" });
 });

@@ -7,12 +7,15 @@ import { toast } from "sonner";
 import { copyRichContent } from "@/lib/richClipboard";
 import { cn } from "@/lib/utils";
 import { verdictTablePlainText } from "@/lib/verdictTableCopy";
+import { preserveOrderedListValues } from "@/lib/preserveOrderedListValues";
 
 type MessageContentProps = {
   children: string;
   className?: string;
   /** Typography and spacing appropriate to the surface rendering the Markdown. */
   variant?: "default" | "verdict";
+  /** Allow document previews to reuse Verdict typography without copy controls. */
+  showTableCopy?: boolean;
   /** Tighter typography for model answer cards */
   compact?: boolean;
   /** Softer color for secondary text (e.g. verdict reasoning) */
@@ -50,8 +53,9 @@ function buildComponents(compact: boolean, variant: "default" | "verdict" = "def
         {children}
       </ul>
     ),
-    ol: ({ children }) => (
+    ol: ({ children, start }) => (
       <ol
+        start={start}
         className={cn(
           isVerdict
             ? "mb-4 list-decimal space-y-2 pl-6 text-[0.9375rem] leading-[1.7] sm:text-base [&_ol]:mt-2 [&_ul]:mt-2"
@@ -63,7 +67,7 @@ function buildComponents(compact: boolean, variant: "default" | "verdict" = "def
         {children}
       </ol>
     ),
-    li: ({ children }) => <li className="pl-0.5 marker:text-muted-foreground">{children}</li>,
+    li: ({ children, value }) => <li value={value} className="pl-0.5 marker:text-muted-foreground">{children}</li>,
     h1: ({ children }) => (
       <h3
         className={cn(
@@ -216,7 +220,7 @@ function createVerdictComponents(sourceMarkdown: string): Components {
       const html = tableRef.current?.outerHTML;
       const plainText = verdictTablePlainText(sourceMarkdown, node?.position, html);
       try {
-        await copyRichContent({ plainText, html });
+        await copyRichContent({ plainText, html, plainTextIsMarkdown: true });
         setCopied(true);
         toast.success("Table copied");
         window.setTimeout(() => setCopied(false), 2000);
@@ -280,15 +284,18 @@ function MessageContentInner({
   children,
   className,
   variant = "default",
+  showTableCopy = true,
   compact = false,
   muted = false,
 }: MessageContentProps) {
   const text = normalizeMessageText(children ?? "").trim();
   const components = useMemo(() => {
     if (compact) return compactComponents;
-    if (variant === "verdict") return createVerdictComponents(text);
+    if (variant === "verdict") {
+      return showTableCopy ? createVerdictComponents(text) : verdictBaseComponents;
+    }
     return defaultComponents;
-  }, [compact, variant, text]);
+  }, [compact, variant, showTableCopy, text]);
   if (!text) return null;
 
   return (
@@ -299,7 +306,7 @@ function MessageContentInner({
         className,
       )}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[preserveOrderedListValues]} components={components}>
         {text}
       </ReactMarkdown>
     </div>

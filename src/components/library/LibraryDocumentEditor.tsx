@@ -245,7 +245,7 @@ export function LibraryDocumentEditor({
           )}
         >
           {previewText.trim() ? (
-            <MessageContent>{previewText}</MessageContent>
+            <MessageContent variant="verdict" showTableCopy={false}>{previewText}</MessageContent>
           ) : (
             <p className="text-sm text-muted-foreground">Nothing to preview yet.</p>
           )}

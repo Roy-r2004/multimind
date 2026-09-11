@@ -194,7 +194,7 @@ test("Verdict Copy captures only primary MessageContent HTML without table-copy 
 });
 
 test("Copy success feedback still runs after rich clipboard copy", () => {
-  assert.match(copyButtonSrc, /await copyRichContent\(\{ plainText: text, html: getHtml\?\.\(\) \}\)/);
+  assert.match(copyButtonSrc, /await copyRichContent\(\{ plainText: text, html: getHtml\?\.\(\), plainTextIsMarkdown: true \}\)/);
   assert.match(copyButtonSrc, /setCopied\(true\)/);
   assert.match(copyButtonSrc, /toast\.success\(successMessage\)/);
   assert.match(copyButtonSrc, /window\.setTimeout\(\(\) => setCopied\(false\), 2000\)/);
