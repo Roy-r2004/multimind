@@ -109,7 +109,8 @@ test("Verdict Markdown tables get a per-instance Copy control; other variants do
   assert.match(messageContentSrc, /createVerdictComponents/);
   assert.match(messageContentSrc, /data-verdict-table-copy-control/);
   assert.match(messageContentSrc, /table: VerdictMarkdownTable/);
-  assert.match(messageContentSrc, /variant === "verdict"\) return createVerdictComponents/);
+  assert.match(messageContentSrc, /showTableCopy = true/);
+  assert.match(messageContentSrc, /return showTableCopy \? createVerdictComponents\(text\) : verdictBaseComponents/);
   assert.match(messageContentSrc, /if \(compact\) return compactComponents/);
   assert.doesNotMatch(
     messageContentSrc.slice(

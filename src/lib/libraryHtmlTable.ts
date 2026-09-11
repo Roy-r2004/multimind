@@ -5,7 +5,7 @@
  * - colspan/rowspan are flattened (each th/td is one cell; no merged-cell layout)
  * - nested tables become readable cell text, not nested Markdown tables
  * - source styling (colors, widths, Word mso-*, Google Docs CSS) is discarded
- * - non-table HTML is reduced to normalized text, not a full HTML→Markdown conversion
+ * - non-table/non-list HTML is reduced to normalized text, not a full HTML→Markdown conversion
  */
 
 import { insertLibraryDocumentText, type TextareaEdit } from "./libraryDocumentFormatting.ts";
@@ -14,7 +14,7 @@ export type LibraryTablePasteDecision =
   | { action: "native" }
   | { action: "insert"; markdown: string };
 
-type MiniEl = { tag: string; children: MiniNode[] };
+type MiniEl = { tag: string; children: MiniNode[]; start?: string; value?: string; href?: string };
 type MiniText = { text: string };
 type MiniNode = MiniEl | MiniText;
 
@@ -51,22 +51,29 @@ export function htmlContainsUsableTable(html: string): boolean {
 
 /**
  * Convert clipboard HTML to Markdown, preserving every top-level table as GFM.
- * Returns null when there is no usable table (caller must not intercept paste).
+ * Also preserves ordered/unordered lists and explicit list numbers.
+ * Returns null when there is no usable table or list.
  */
 export function htmlClipboardToMarkdown(html: string): string | null {
-  if (!htmlContainsUsableTable(html)) return null;
   const tree = parseHtmlTree(html);
+  if (!htmlContainsUsableTable(html) && !containsList(tree)) return null;
   const parts = blocksFromNode(tree).map((part) => part.trim()).filter(Boolean);
   const markdown = parts.join("\n\n").trim();
   return markdown.length > 0 ? markdown : null;
 }
 
 /**
- * Native paste when there is no usable HTML table.
+ * Preserve identified source Markdown verbatim. Otherwise use native paste when
+ * there is no usable HTML table or ordered list.
  * Otherwise insert converted GFM, or plain text if conversion fails.
  */
 export function decideLibraryTablePaste(html: string, plainText: string): LibraryTablePasteDecision {
-  if (!htmlContainsUsableTable(html)) return { action: "native" };
+  // Our rich clipboard's text/plain is the source Markdown, not flattened DOM text.
+  // Never round-trip it through rendered HTML, even when it contains tables.
+  if (plainText && /<div\b[^>]*\bdata-multimind-markdown=["']true["']/i.test(html)) {
+    return { action: "insert", markdown: plainText };
+  }
+  if (!htmlContainsUsableTable(html) && !/<ol[\s>]/i.test(html)) return { action: "native" };
   try {
     const markdown = htmlClipboardToMarkdown(html);
     if (markdown) return { action: "insert", markdown };
@@ -104,11 +111,12 @@ function collectTables(node: MiniEl, into: MiniEl[] = []): MiniEl[] {
 }
 
 function blocksFromNode(node: MiniEl): string[] {
+  if (node.tag === "ol" || node.tag === "ul") return [listToMarkdown(node)];
   if (node.tag === "table") {
     const markdown = tableToGfm(node);
     return markdown ? [markdown] : [];
   }
-  if (!containsTable(node)) {
+  if (!containsTable(node) && !containsList(node)) {
     const text = normalizeCellText(textFromNode(node));
     return text ? [text] : [];
   }
@@ -122,7 +130,7 @@ function blocksFromNode(node: MiniEl): string[] {
   };
 
   for (const child of node.children) {
-    if (isEl(child) && (child.tag === "table" || containsTable(child))) {
+    if (isEl(child) && (child.tag === "table" || containsTable(child) || containsList(child))) {
       flushText();
       parts.push(...blocksFromNode(child));
       continue;
@@ -142,6 +150,48 @@ function blocksFromNode(node: MiniEl): string[] {
 function containsTable(node: MiniEl): boolean {
   if (node.tag === "table") return true;
   return node.children.some((child) => isEl(child) && containsTable(child));
+}
+
+function listToMarkdown(node: MiniEl): string {
+  let number = integerAttribute(node.start) ?? 1;
+  return node.children.filter((child): child is MiniEl => isEl(child) && child.tag === "li")
+    .map((item) => {
+      number = integerAttribute(item.value) ?? number;
+      const marker = node.tag === "ol" ? `${number++}. ` : "- ";
+      const indent = " ".repeat(marker.length);
+      let content = "";
+      for (const child of item.children) {
+        if (isEl(child) && (child.tag === "ol" || child.tag === "ul")) {
+          // CommonMark requires a blank line before a nested ordered list
+          // starting above 1; otherwise it is parsed as paragraph text.
+          const firstItem = child.children.find((entry): entry is MiniEl => isEl(entry) && entry.tag === "li");
+          const firstNumber = integerAttribute(firstItem?.value) ?? integerAttribute(child.start) ?? 1;
+          const separator = child.tag === "ol" && firstNumber !== 1 ? "\n\n" : "\n";
+          content = content.trimEnd() + separator + listToMarkdown(child).split("\n").map((line) => indent + line).join("\n") + "\n";
+        } else {
+          content += listInlineMarkdown(child);
+        }
+      }
+      return marker + content.trim();
+    }).join("\n");
+}
+
+function containsList(node: MiniEl): boolean {
+  return node.tag === "ol" || node.tag === "ul" || node.children.some((child) => isEl(child) && containsList(child));
+}
+
+function listInlineMarkdown(node: MiniNode): string {
+  if (!isEl(node)) return node.text;
+  const content = node.children.map(listInlineMarkdown).join("");
+  if (node.tag === "strong" || node.tag === "b") return `**${content}**`;
+  if (node.tag === "em" || node.tag === "i") return `*${content}*`;
+  if (node.tag === "a" && node.href) return `[${content}](<${node.href}>)`;
+  if (node.tag === "br") return "\n";
+  return content;
+}
+
+function integerAttribute(value: string | undefined): number | undefined {
+  return value != null && /^\s*\d{1,9}\s*$/.test(value) ? Number(value) : undefined;
 }
 
 function isBlockTag(tag: string): boolean {
@@ -250,7 +300,7 @@ function fromDom(element: Element): MiniEl {
       children.push(fromDom(child as Element));
     }
   }
-  return { tag: element.tagName.toLowerCase(), children };
+  return { tag: element.tagName.toLowerCase(), children, start: element.getAttribute("start") ?? undefined, value: element.getAttribute("value") ?? undefined, href: element.getAttribute("href") ?? undefined };
 }
 
 function parseMiniHtml(html: string): MiniEl {
@@ -306,7 +356,11 @@ function parseMiniHtml(html: string): MiniEl {
       i = close === -1 ? input.length : input.indexOf(">", close) + 1;
       continue;
     }
-    const el: MiniEl = { tag, children: [] };
+    const attribute = (name: string) => {
+      const match = rawTag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
+      return match ? decodeEntities(match[1] ?? match[2] ?? match[3]) : undefined;
+    };
+    const el: MiniEl = { tag, children: [], start: attribute("start"), value: attribute("value"), href: attribute("href") };
     stack[stack.length - 1]!.children.push(el);
     if (!selfClosing) stack.push(el);
   }

@@ -35,7 +35,7 @@ export function VerdictCopyButton({
 
   async function handleCopy() {
     try {
-      await copyRichContent({ plainText: text, html: getHtml?.() });
+      await copyRichContent({ plainText: text, html: getHtml?.(), plainTextIsMarkdown: true });
       setCopied(true);
       toast.success(successMessage);
       window.setTimeout(() => setCopied(false), 2000);

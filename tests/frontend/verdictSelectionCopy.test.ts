@@ -211,7 +211,7 @@ test("copy event is intercepted on document, not inside the Copy button", () => 
 });
 
 test("full Verdict Copy still uses copyRichContent with Markdown plus body HTML", () => {
-  assert.match(copyButtonSrc, /await copyRichContent\(\{ plainText: text, html: getHtml\?\.\(\) \}\)/);
+  assert.match(copyButtonSrc, /await copyRichContent\(\{ plainText: text, html: getHtml\?\.\(\), plainTextIsMarkdown: true \}\)/);
   assert.match(
     chatSrc,
     /<VerdictCopyButton\s+text=\{turn\.verdict\.text\}\s+getHtml=\{\(\) => getVerdictBodyCopyHtml\(verdictContentRef\.current\)\}/,
