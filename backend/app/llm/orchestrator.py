@@ -22,7 +22,7 @@ from app.db.models import (
 )
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
-from app.llm.providers import get_provider_registry
+from app.llm.providers import council_fallback_reason, get_provider_registry
 
 logger = get_logger(__name__)
 
@@ -36,6 +36,11 @@ TURN_FAILED_MESSAGE = "Turn failed."
 VERDICT_MAX_ATTEMPTS = 2
 VERDICT_MAX_TOKENS = 15000
 VERDICT_DEFAULT_REASON = "Synthesized from model responses."
+ULTIMATE_MODEL_SET_ID = "set-7edaefc8"
+ULTIMATE_COUNCIL_FALLBACKS = {
+    "openai/gpt-6-astra-pro": ["openai/gpt-6-astra", "openai/gpt-5.1"],
+    "google/gemini-3.7-flash": ["google/gemini-3.6-flash"],
+}
 
 
 class TurnNoLongerWritable(Exception):
@@ -62,6 +67,7 @@ class TurnContext:
     verdict_model_id: str
     strategy: Strategy
     model_set_name: str
+    model_set_id: str | None = None
     council_runtime_context: str | None = None
     referee_instructions: str | None = None
     referee_system_prompt: str | None = None
@@ -398,16 +404,62 @@ class TurnOrchestrator:
 
             try:
                 provider = self._providers.get_provider(model.provider)
-                await self._ensure_not_deleted(db, ctx.turn_id)
-                response = await self._await_provider_complete(
-                    ctx.turn_id,
-                    provider.complete(
-                        system=system,
-                        user=ctx.user_message,
-                        model=model.provider_model,
-                        max_tokens=20000,
-                    ),
-                )
+                fallback_chain = None
+                if ctx.model_set_id == ULTIMATE_MODEL_SET_ID:
+                    fallback_chain = ULTIMATE_COUNCIL_FALLBACKS.get(model.provider_model)
+                if fallback_chain is None:
+                    await self._ensure_not_deleted(db, ctx.turn_id)
+                    response = await self._await_provider_complete(
+                        ctx.turn_id,
+                        provider.complete(
+                            system=system,
+                            user=ctx.user_message,
+                            model=model.provider_model,
+                            max_tokens=20000,
+                        ),
+                    )
+                else:
+                    candidates = [model.provider_model, *fallback_chain]
+                    for index, candidate in enumerate(candidates):
+                        await self._ensure_not_deleted(db, ctx.turn_id)
+                        log_fields = {
+                            "turn_id": ctx.turn_id,
+                            "model_set_id": ctx.model_set_id,
+                            "requested_model": model.provider_model,
+                            "attempted_model": candidate,
+                            "fallback_index": index,
+                            "fallback_used": index > 0,
+                        }
+                        try:
+                            response = await self._await_provider_complete(
+                                ctx.turn_id,
+                                provider.complete(
+                                    system=system,
+                                    user=ctx.user_message,
+                                    model=candidate,
+                                    max_tokens=20000,
+                                    allow_provider_fallbacks=True,
+                                ),
+                            )
+                        except (asyncio.CancelledError, TurnNoLongerWritable):
+                            raise
+                        except Exception as exc:
+                            reason = council_fallback_reason(exc)
+                            logger.warning(
+                                "council_model_attempt_failed",
+                                **log_fields,
+                                failure_reason=reason or "non_fallback_error",
+                                error_type=type(exc).__name__,
+                            )
+                            if reason is None or index == len(candidates) - 1:
+                                raise
+                            continue
+                        raw = response.raw if isinstance(response.raw, dict) else {}
+                        logger.info(
+                            "council_model_completed", **log_fields,
+                            actual_model=raw.get("model"),
+                        )
+                        break
                 await self._ensure_not_deleted(db, ctx.turn_id)
                 return ModelCallResult(model_id=model_id, model_name=model.name, response=response)
             except asyncio.CancelledError:

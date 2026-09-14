@@ -1246,6 +1246,7 @@ class ChatService:
             verdict_model_id=turn.verdict_model,
             strategy=turn.strategy,
             model_set_name=model_set.name,
+            model_set_id=turn.model_set_id,
             council_runtime_context=turn.custom_instructions,
             referee_instructions=None if is_referee else model_set.custom_instructions,
             referee_system_prompt=(
