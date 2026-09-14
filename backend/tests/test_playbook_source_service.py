@@ -1072,6 +1072,69 @@ async def test_batching_preserves_order_and_handles_splits(
 
 
 @pytest.mark.asyncio
+async def test_brain_batches_stay_within_character_budget(db: AsyncSession, auth: AuthContext):
+    from app.services.playbook_source_service import render_brain_snapshot
+
+    await _make_brain(db, auth, summary="s")
+    for index in range(5):
+        await _make_knowledge(
+            db,
+            auth,
+            source_id=f"doc-{index}",
+            title=f"Doc {index}",
+            content=f"chunk-{index}-" + ("k" * 80),
+        )
+    snapshot = await playbook_source_service.build_brain_source_snapshot(db, auth)
+    batches = playbook_source_service.batch_brain_snapshot(snapshot, max_chars=180)
+    assert len(batches) > 1
+    for batch in batches:
+        rendered = len(render_brain_snapshot(batch.snapshot))
+        assert batch.estimated_characters == rendered
+        assert rendered <= 180
+        assert batch.estimated_characters <= batch.max_chars
+    huge = await _make_knowledge(
+        db,
+        auth,
+        source_id="huge",
+        title="Huge",
+        content="H" * 5000,
+    )
+    snapshot = await playbook_source_service.build_brain_source_snapshot(db, auth)
+    batches = playbook_source_service.batch_brain_snapshot(snapshot, max_chars=220)
+    huge_parts = [
+        item.content
+        for batch in batches
+        for item in batch.snapshot.knowledge_items
+        if item.id == huge.id
+    ]
+    assert len(huge_parts) > 1
+    assert "".join(huge_parts) == "H" * 5000
+    assert all(len(render_brain_snapshot(batch.snapshot)) <= 220 for batch in batches)
+
+
+@pytest.mark.asyncio
+async def test_pathological_brain_headers_cannot_exceed_budget(db: AsyncSession, auth: AuthContext):
+    from app.services.playbook_source_service import (
+        PLAYBOOK_SOURCE_BATCH_MAX_CHARS,
+        render_brain_snapshot,
+    )
+
+    await _make_knowledge(
+        db,
+        auth,
+        source_id="T" * 80_000,
+        title="Y" * 80_000,
+        content="body-" + ("Z" * 1000),
+    )
+    snapshot = await playbook_source_service.build_brain_source_snapshot(db, auth)
+    batches = playbook_source_service.batch_brain_snapshot(snapshot)
+    assert batches
+    for batch in batches:
+        assert len(render_brain_snapshot(batch.snapshot)) <= PLAYBOOK_SOURCE_BATCH_MAX_CHARS
+        assert batch.estimated_characters <= PLAYBOOK_SOURCE_BATCH_MAX_CHARS
+
+
+@pytest.mark.asyncio
 async def test_reconstruction_is_read_only(db: AsyncSession, auth: AuthContext):
     playbook = await playbook_service.get_or_create_for_current_user(db, auth)
     playbook.core_summary = "Do not change"

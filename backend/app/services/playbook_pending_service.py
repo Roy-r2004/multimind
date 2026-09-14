@@ -36,6 +36,8 @@ class PendingDiff:
     removed_turn_ids: frozenset[str]
     brain_changed: bool
     brain_changes: int
+    pending_brain_keys: frozenset[tuple[str, str]]
+    removed_brain_keys: frozenset[tuple[str, str]]
     new_chats: int
 
     @property
@@ -156,7 +158,11 @@ class PlaybookPendingService:
             if key[0] in {PLAYBOOK_SOURCE_TYPE_USER_BRAIN, PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE}
         }
         brain_keys = current_brain.keys() | old_brain.keys()
-        brain_changes = sum(1 for key in brain_keys if current_brain.get(key) != old_brain.get(key))
+        pending_brain_keys = frozenset(
+            key for key in current_brain if current_brain.get(key) != old_brain.get(key)
+        )
+        removed_brain_keys = frozenset(old_brain.keys() - current_brain.keys())
+        brain_changes = len(pending_brain_keys) + len(removed_brain_keys)
         return playbook, PendingDiff(
             transcripts,
             brain,
@@ -165,6 +171,8 @@ class PlaybookPendingService:
             removed_ids,
             brain_changes > 0,
             brain_changes,
+            pending_brain_keys,
+            removed_brain_keys,
             new_chats,
         )
 

@@ -78,7 +78,10 @@ async def generate_playbook_job(
     user_id: str,
 ) -> dict:
     """Run first full Playbook generation for a previously queued run."""
-    from app.services.playbook_generation_service import playbook_generation_service
+    from app.services.playbook_generation_service import (
+        _safe_error_message,
+        playbook_generation_service,
+    )
 
     if not isinstance(ctx, dict):
         raise RuntimeError("Playbook worker context is invalid")
@@ -100,11 +103,14 @@ async def generate_playbook_job(
                 org_id=org_id,
                 user_id=user_id,
             )
-    except Exception:
+    except Exception as exc:
         logger.exception("generate_playbook_job_failed", run_id=run_id)
         async with session_factory() as db:
             await playbook_generation_service.mark_run_failed(
-                db, run_id, "Playbook generation failed.", playbook_id=playbook_id
+                db,
+                run_id,
+                _safe_error_message(exc),
+                playbook_id=playbook_id,
             )
         return {"status": "failed", "run_id": run_id, "skipped": False}
 

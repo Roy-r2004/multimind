@@ -109,6 +109,8 @@ from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext
 from app.db.models import (
+    PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE,
+    PLAYBOOK_SOURCE_TYPE_USER_BRAIN,
     BrainKnowledgeItem,
     Chat,
     ChatAttachment,
@@ -132,6 +134,7 @@ USABLE_COUNCIL_STATUSES = (ModelAnswerStatus.COMPLETED,)
 READY_ATTACHMENT_STATUS = "ready"
 
 # Reconstruction estimate default — not the production model context window.
+# Chat and Brain extraction requests share this character budget.
 PLAYBOOK_SOURCE_BATCH_MAX_CHARS = 24_000
 
 _HANDOFF_HEADER_RE = re.compile(
@@ -252,6 +255,9 @@ class PlaybookUserBrainSource:
     updated_at: datetime | None
     is_user_global: bool
     content_hash: str
+    chunk_index: int | None = None
+    chunk_count: int | None = None
+    body_override: str | None = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +271,8 @@ class PlaybookBrainKnowledgeSource:
     created_at: datetime | None
     updated_at: datetime | None
     content_hash: str
+    chunk_index: int | None = None
+    chunk_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -288,6 +296,20 @@ class PlaybookExtractionBatch:
     oversized: bool
     spanning_chat_ids: tuple[str, ...] = ()
     chats: tuple[PlaybookChatTranscript, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlaybookBrainExtractionBatch:
+    """One budgeted Brain extraction request. Never exceeds ``max_chars``."""
+
+    batch_index: int
+    snapshot: PlaybookBrainSnapshot
+    source_keys: tuple[tuple[str, str], ...]
+    chunk_parts: tuple[tuple[tuple[str, str], int, int], ...]
+    estimated_characters: int
+    unit_count: int
+    max_chars: int
+    chunked: bool
 
 
 def canonical_dumps(value: Any) -> str:
@@ -441,6 +463,259 @@ def estimate_rendered_characters(turns: Sequence[PlaybookTurnSource]) -> int:
     if not turns:
         return 0
     return len("\n\n".join(render_turn_for_estimate(turn) for turn in turns))
+
+
+@dataclass(frozen=True)
+class _BrainUnit:
+    key: tuple[str, str]
+    user_brain: PlaybookUserBrainSource | None = None
+    knowledge: PlaybookBrainKnowledgeSource | None = None
+    chunk_index: int = 1
+    chunk_count: int = 1
+
+
+def empty_brain_snapshot() -> PlaybookBrainSnapshot:
+    return PlaybookBrainSnapshot(user_brain=None, knowledge_items=(), user_brain_is_global=True)
+
+
+def render_user_brain_profile(user_brain: PlaybookUserBrainSource | None) -> str:
+    lines = ["## BRAIN PROFILE"]
+    if user_brain is None:
+        lines.append("(no UserBrain row)")
+        return "\n".join(lines)
+    lines.append(f"id={user_brain.id} user_global={user_brain.is_user_global}")
+    if user_brain.chunk_index is not None and user_brain.chunk_count is not None:
+        lines.append(
+            f"chunk={user_brain.chunk_index:03d}/{user_brain.chunk_count:03d}"
+        )
+    if user_brain.body_override is not None:
+        lines.append(user_brain.body_override)
+        return "\n".join(lines)
+    lines.extend(
+        [
+            f"summary: {user_brain.summary}",
+            f"thinking_style: {user_brain.thinking_style}",
+            f"likes: {', '.join(user_brain.likes)}",
+            f"dislikes: {', '.join(user_brain.dislikes)}",
+            f"lesson_count: {user_brain.lesson_count}",
+        ]
+    )
+    for memory in user_brain.memories:
+        lines.append(f"- memory: {canonical_dumps(memory)}")
+    return "\n".join(lines)
+
+
+def render_brain_knowledge_item(item: PlaybookBrainKnowledgeSource) -> str:
+    lines = [
+        f"### BRAIN KNOWLEDGE id={item.id} source_type={item.source_type} source_id={item.source_id}",
+        f"title: {item.title}",
+    ]
+    if item.chunk_index is not None and item.chunk_count is not None:
+        lines.append(f"chunk={item.chunk_index:03d}/{item.chunk_count:03d}")
+    lines.append(item.content)
+    return "\n".join(lines)
+
+
+def render_brain_snapshot(brain: PlaybookBrainSnapshot) -> str:
+    parts = [render_user_brain_profile(brain.user_brain)]
+    knowledge_lines = ["## BRAIN KNOWLEDGE"]
+    if not brain.knowledge_items:
+        knowledge_lines.append("(none)")
+    else:
+        knowledge_lines.extend(render_brain_knowledge_item(item) for item in brain.knowledge_items)
+    parts.append("\n".join(knowledge_lines))
+    return "\n".join(parts)
+
+
+def estimate_brain_snapshot_characters(brain: PlaybookBrainSnapshot) -> int:
+    return len(render_brain_snapshot(brain))
+
+
+def _unit_snapshot_size(unit: _BrainUnit, user_brain_is_global: bool) -> int:
+    return len(render_brain_snapshot(_snapshot_from_units([unit], user_brain_is_global)))
+
+
+def _brain_units(
+    brain: PlaybookBrainSnapshot,
+    *,
+    include_keys: frozenset[tuple[str, str]] | None,
+) -> list[_BrainUnit]:
+    units: list[_BrainUnit] = []
+    if brain.user_brain is not None:
+        key = (PLAYBOOK_SOURCE_TYPE_USER_BRAIN, brain.user_brain.id)
+        if include_keys is None or key in include_keys:
+            units.append(_BrainUnit(key=key, user_brain=brain.user_brain))
+    for item in brain.knowledge_items:
+        key = (PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE, item.id)
+        if include_keys is None or key in include_keys:
+            units.append(_BrainUnit(key=key, knowledge=item))
+    return units
+
+
+def _user_brain_body(user_brain: PlaybookUserBrainSource) -> str:
+    lines = [
+        f"summary: {user_brain.summary}",
+        f"thinking_style: {user_brain.thinking_style}",
+        f"likes: {', '.join(user_brain.likes)}",
+        f"dislikes: {', '.join(user_brain.dislikes)}",
+        f"lesson_count: {user_brain.lesson_count}",
+    ]
+    for memory in user_brain.memories:
+        lines.append(f"- memory: {canonical_dumps(memory)}")
+    return "\n".join(lines)
+
+
+def _clip(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
+def _longest_prefix(text: str, fits: Any) -> int:
+    if fits(text):
+        return len(text)
+    lo, hi, best = 0, len(text), 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if fits(text[:mid]):
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _split_payload(text: str, fits: Any) -> list[str]:
+    if fits(text):
+        return [text]
+    parts: list[str] = []
+    rest = text
+    while rest:
+        take = _longest_prefix(rest, fits)
+        if take <= 0:
+            raise ValueError("Brain extraction skeleton exceeds the character budget")
+        parts.append(rest[:take])
+        rest = rest[take:]
+    return parts or [""]
+
+
+def _bound_knowledge_headers(
+    item: PlaybookBrainKnowledgeSource, max_chars: int, user_brain_is_global: bool
+) -> PlaybookBrainKnowledgeSource:
+    need_body = bool(item.content)
+    title, source_type, source_id = item.title or "", item.source_type or "", item.source_id or ""
+    for cap in (4096, 1024, 256, 64, 16, 4, 1, 0):
+        probe_content = "x" if need_body else ""
+        probe = replace(
+            item,
+            title=_clip(title, cap),
+            source_type=_clip(source_type, cap),
+            source_id=_clip(source_id, cap),
+            content=probe_content,
+            chunk_index=1,
+            chunk_count=999,
+        )
+        if _unit_snapshot_size(_BrainUnit(key=("", ""), knowledge=probe), user_brain_is_global) <= max_chars:
+            return replace(
+                item,
+                title=_clip(title, cap),
+                source_type=_clip(source_type, cap),
+                source_id=_clip(source_id, cap),
+            )
+    return replace(item, title="", source_type="", source_id="")
+
+
+def _chunk_knowledge(
+    item: PlaybookBrainKnowledgeSource, max_chars: int, user_brain_is_global: bool
+) -> list[_BrainUnit]:
+    key = (PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE, item.id)
+    bounded = _bound_knowledge_headers(item, max_chars, user_brain_is_global)
+    payload = item.content or ""
+    count = 1
+    slices = [payload]
+    for _ in range(16):
+        def fits(slice_text: str, current_count: int = count) -> bool:
+            probe = replace(
+                bounded,
+                content=slice_text,
+                chunk_index=current_count,
+                chunk_count=current_count,
+            )
+            return (
+                _unit_snapshot_size(_BrainUnit(key=key, knowledge=probe), user_brain_is_global)
+                <= max_chars
+            )
+
+        slices = _split_payload(payload, fits)
+        if len(slices) == count:
+            break
+        count = len(slices)
+    return [
+        _BrainUnit(
+            key=key,
+            knowledge=replace(
+                bounded, content=slice_text, chunk_index=index, chunk_count=count
+            ),
+            chunk_index=index,
+            chunk_count=count,
+        )
+        for index, slice_text in enumerate(slices, start=1)
+    ]
+
+
+def _chunk_user_brain(
+    user_brain: PlaybookUserBrainSource, max_chars: int, user_brain_is_global: bool
+) -> list[_BrainUnit]:
+    key = (PLAYBOOK_SOURCE_TYPE_USER_BRAIN, user_brain.id)
+    payload = _user_brain_body(user_brain)
+
+    def make(body: str, index: int, count: int) -> _BrainUnit:
+        return _BrainUnit(
+            key=key,
+            user_brain=replace(
+                user_brain,
+                chunk_index=index,
+                chunk_count=count,
+                body_override=body,
+            ),
+            chunk_index=index,
+            chunk_count=count,
+        )
+
+    count = 1
+    slices = [payload]
+    for _ in range(16):
+        def fits(slice_text: str, current_count: int = count) -> bool:
+            return _unit_snapshot_size(make(slice_text, current_count, current_count), user_brain_is_global) <= max_chars
+
+        slices = _split_payload(payload, fits)
+        if len(slices) == count:
+            break
+        count = len(slices)
+    return [make(slice_text, index, count) for index, slice_text in enumerate(slices, start=1)]
+
+
+def _chunk_unit(
+    unit: _BrainUnit, max_chars: int, user_brain_is_global: bool
+) -> list[_BrainUnit]:
+    if unit.knowledge is not None:
+        return _chunk_knowledge(unit.knowledge, max_chars, user_brain_is_global)
+    assert unit.user_brain is not None
+    return _chunk_user_brain(unit.user_brain, max_chars, user_brain_is_global)
+
+
+def _snapshot_from_units(
+    units: Sequence[_BrainUnit], user_brain_is_global: bool
+) -> PlaybookBrainSnapshot:
+    user_brain = next((item.user_brain for item in units if item.user_brain is not None), None)
+    knowledge = tuple(item.knowledge for item in units if item.knowledge is not None)
+    return PlaybookBrainSnapshot(
+        user_brain=user_brain,
+        knowledge_items=knowledge,
+        user_brain_is_global=user_brain_is_global,
+    )
 
 
 class PlaybookSourceService:
@@ -735,6 +1010,73 @@ class PlaybookSourceService:
                     oversized=oversized,
                     spanning_chat_ids=spanning,
                     chats=tuple(group),
+                )
+            )
+        return batches
+
+    def batch_brain_snapshot(
+        self,
+        brain: PlaybookBrainSnapshot,
+        *,
+        max_chars: int = PLAYBOOK_SOURCE_BATCH_MAX_CHARS,
+        include_keys: frozenset[tuple[str, str]] | None = None,
+    ) -> list[PlaybookBrainExtractionBatch]:
+        """Pack Brain units into extraction requests that never exceed ``max_chars``.
+
+        Sources larger than the budget are split into ordered content chunks.
+        ``include_keys`` limits extraction to pending units.
+        """
+        if max_chars <= 0:
+            raise ValueError("max_chars must be a positive character budget")
+        chunks: list[_BrainUnit] = []
+        for unit in _brain_units(brain, include_keys=include_keys):
+            chunks.extend(_chunk_unit(unit, max_chars, brain.user_brain_is_global))
+        packed: list[list[_BrainUnit]] = []
+        current: list[_BrainUnit] = []
+
+        def flush() -> None:
+            nonlocal current
+            if not current:
+                return
+            packed.append(current)
+            current = []
+
+        for unit in chunks:
+            if unit.user_brain is not None and any(item.user_brain is not None for item in current):
+                flush()
+            trial = _snapshot_from_units(current + [unit], brain.user_brain_is_global)
+            if current and len(render_brain_snapshot(trial)) > max_chars:
+                flush()
+            current.append(unit)
+            packed_size = len(
+                render_brain_snapshot(_snapshot_from_units(current, brain.user_brain_is_global))
+            )
+            if packed_size > max_chars:
+                raise ValueError(
+                    "Brain extraction skeleton exceeds the character budget "
+                    f"({packed_size}>{max_chars} keys={[u.key for u in current]} "
+                    f"parts={[(u.chunk_index, u.chunk_count) for u in current]})"
+                )
+        flush()
+
+        batches: list[PlaybookBrainExtractionBatch] = []
+        for index, group in enumerate(packed):
+            snapshot = _snapshot_from_units(group, brain.user_brain_is_global)
+            estimated = len(render_brain_snapshot(snapshot))
+            if estimated > max_chars:
+                raise ValueError("Brain extraction request exceeded the character budget")
+            batches.append(
+                PlaybookBrainExtractionBatch(
+                    batch_index=index,
+                    snapshot=snapshot,
+                    source_keys=tuple(dict.fromkeys(item.key for item in group)),
+                    chunk_parts=tuple(
+                        (item.key, item.chunk_index, item.chunk_count) for item in group
+                    ),
+                    estimated_characters=estimated,
+                    unit_count=len(group),
+                    max_chars=max_chars,
+                    chunked=any(item.chunk_count > 1 for item in group),
                 )
             )
         return batches

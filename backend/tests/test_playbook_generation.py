@@ -1026,8 +1026,7 @@ async def test_brain_retry_after_failed_batch_is_checkpointed_once(
     async def fail_first(batch, brain_snapshot, *, include_brain=True, source_text=None):
         if batch.turn_count > 0:
             brain_calls.append(include_brain)
-        if batch.batch_index == 0:
-            assert include_brain is True
+        if batch.turn_count > 0 and batch.batch_index == 0:
             failed_turn_ids.update(batch.turn_ids)
             return _failed_batch_result()
         return await original(
@@ -1050,7 +1049,7 @@ async def test_brain_retry_after_failed_batch_is_checkpointed_once(
     run = await db.get(PlaybookRun, run_id)
     assert run.processed_count == 3
     assert failed_turn_ids == {first[1].id}
-    assert brain_calls == [True, True]
+    assert brain_calls == [False, False]
     states = await _source_states(db, playbook_id)
     turn_state_ids = {
         row.source_id for row in states if row.source_type == PLAYBOOK_SOURCE_TYPE_TURN
@@ -1200,4 +1199,288 @@ async def test_brain_only_generate_api(
     assert body["total_count"] == expected_total
     assert body["processed_count"] == 0
     assert len(enqueue_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_brain_failure_checkpoints_only_successful_units(
+    db: AsyncSession,
+    auth: AuthContext,
+    monkeypatch: pytest.MonkeyPatch,
+    enqueue_calls: list[dict],
+):
+    _install_default_model(monkeypatch)
+    await _eligible_turn(db, auth)
+    await _make_brain(db, auth)
+    items = [
+        await _make_knowledge(db, auth, source_id=f"k-{index}", title=f"K{index}")
+        for index in range(3)
+    ]
+    real = playbook_source_service.batch_brain_snapshot
+    monkeypatch.setattr(
+        playbook_source_service,
+        "batch_brain_snapshot",
+        lambda brain, **kwargs: real(brain, max_chars=220, **kwargs),
+    )
+    original = playbook_extraction_service.extract_batch
+    failed_ids: set[str] = set()
+
+    async def fail_middle_brain(batch, brain_snapshot, *, include_brain=True, source_text=None):
+        if include_brain and brain_snapshot.knowledge_items:
+            item_id = brain_snapshot.knowledge_items[0].id
+            if item_id == items[1].id:
+                failed_ids.add(item_id)
+                return _failed_batch_result()
+        return await original(
+            batch, brain_snapshot, include_brain=include_brain, source_text=source_text
+        )
+
+    monkeypatch.setattr(playbook_extraction_service, "extract_batch", fail_middle_brain)
+    playbook_id, run_id = await _start_run(db, auth)
+    result = await playbook_generation_service.execute_full_generation(
+        db,
+        playbook_id=playbook_id,
+        run_id=run_id,
+        org_id=auth.org_id,
+        user_id=auth.user.id,
+    )
+    assert result["status"] == "completed_with_warnings"
+    states = await _source_states(db, playbook_id)
+    knowledge_ids = {
+        row.source_id
+        for row in states
+        if row.source_type == PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE
+    }
+    assert items[1].id in failed_ids
+    assert items[1].id not in knowledge_ids
+    assert items[0].id in knowledge_ids
+    assert items[2].id in knowledge_ids
+
+
+@pytest.mark.asyncio
+async def test_oversized_brain_item_chunks_all_reach_model_before_checkpoint(
+    db: AsyncSession,
+    auth: AuthContext,
+    monkeypatch: pytest.MonkeyPatch,
+    enqueue_calls: list[dict],
+):
+    from app.services.playbook_source_service import (
+        PLAYBOOK_SOURCE_BATCH_MAX_CHARS,
+        render_brain_snapshot,
+    )
+
+    _install_default_model(monkeypatch)
+    await _eligible_turn(db, auth)
+    content = "ABCDEFGH" * 4000
+    item = await _make_knowledge(db, auth, source_id="big", title="Big", content=content)
+    seen: list[str] = []
+    original = playbook_extraction_service.extract_batch
+
+    async def capture(batch, brain_snapshot, *, include_brain=True, source_text=None):
+        if include_brain:
+            assert len(render_brain_snapshot(brain_snapshot)) <= PLAYBOOK_SOURCE_BATCH_MAX_CHARS
+            for knowledge in brain_snapshot.knowledge_items:
+                if knowledge.id == item.id:
+                    seen.append(knowledge.content)
+        return await original(
+            batch, brain_snapshot, include_brain=include_brain, source_text=source_text
+        )
+
+    monkeypatch.setattr(playbook_extraction_service, "extract_batch", capture)
+    playbook_id, run_id = await _start_run(db, auth)
+    result = await playbook_generation_service.execute_full_generation(
+        db,
+        playbook_id=playbook_id,
+        run_id=run_id,
+        org_id=auth.org_id,
+        user_id=auth.user.id,
+    )
+    assert result["status"] in {"completed", "completed_with_warnings"}
+    assert len(seen) > 1
+    assert "".join(seen) == content
+    states = await _source_states(db, playbook_id)
+    assert item.id in {
+        row.source_id
+        for row in states
+        if row.source_type == PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE
+    }
+
+
+@pytest.mark.asyncio
+async def test_oversized_brain_final_chunk_failure_stays_pending_then_retries(
+    db: AsyncSession,
+    auth: AuthContext,
+    monkeypatch: pytest.MonkeyPatch,
+    enqueue_calls: list[dict],
+):
+    _install_default_model(monkeypatch)
+    await _eligible_turn(db, auth)
+    content = "XYZW" * 8000
+    item = await _make_knowledge(db, auth, source_id="late", title="Late", content=content)
+    original = playbook_extraction_service.extract_batch
+
+    async def fail_last(batch, brain_snapshot, *, include_brain=True, source_text=None):
+        if include_brain:
+            for knowledge in brain_snapshot.knowledge_items:
+                if (
+                    knowledge.id == item.id
+                    and knowledge.chunk_index
+                    and knowledge.chunk_count
+                    and knowledge.chunk_index == knowledge.chunk_count
+                ):
+                    return _failed_batch_result()
+        return await original(
+            batch, brain_snapshot, include_brain=include_brain, source_text=source_text
+        )
+
+    monkeypatch.setattr(playbook_extraction_service, "extract_batch", fail_last)
+    playbook_id, run_id = await _start_run(db, auth)
+    first = await playbook_generation_service.execute_full_generation(
+        db,
+        playbook_id=playbook_id,
+        run_id=run_id,
+        org_id=auth.org_id,
+        user_id=auth.user.id,
+    )
+    assert first["status"] in {"completed", "completed_with_warnings"}
+    states = await _source_states(db, playbook_id)
+    assert item.id not in {
+        row.source_id
+        for row in states
+        if row.source_type == PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE
+    }
+
+    monkeypatch.setattr(playbook_extraction_service, "extract_batch", original)
+    playbook = await db.get(Playbook, playbook_id)
+    run = PlaybookRun(
+        playbook_id=playbook_id,
+        kind="incremental",
+        status=PLAYBOOK_RUN_STATUS_QUEUED,
+        total_count=1,
+    )
+    db.add(run)
+    await db.commit()
+    second = await playbook_generation_service.execute_incremental_generation(
+        db,
+        playbook_id=playbook_id,
+        run_id=run.id,
+        org_id=auth.org_id,
+        user_id=auth.user.id,
+    )
+    assert second["status"] in {"completed", "completed_with_warnings"}
+    states = await _source_states(db, playbook_id)
+    assert item.id in {
+        row.source_id
+        for row in states
+        if row.source_type == PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE
+    }
+
+
+@pytest.mark.asyncio
+async def test_safe_error_message_keeps_token_limit_and_openrouter_errors():
+    from app.llm.providers import OpenRouterError
+    from app.services.playbook_generation_service import (
+        SAFE_ERROR_GENERIC,
+        _safe_error_message,
+    )
+
+    overflow = OpenRouterError(400, "This model's maximum context length is 128000 tokens")
+    assert "128000 tokens" in _safe_error_message(overflow)
+    assert _safe_error_message(overflow) != SAFE_ERROR_GENERIC
+    assert "token" in _safe_error_message("rate limited: too many tokens")
+    secret = _safe_error_message("api_key=sk-secret value leaked")
+    assert secret == SAFE_ERROR_GENERIC
+
+
+@pytest.mark.asyncio
+async def test_mark_run_failed_does_not_overwrite_specific_error(
+    db: AsyncSession, auth: AuthContext, enqueue_calls: list[dict]
+):
+    from app.services.playbook_generation_service import SAFE_ERROR_GENERIC
+
+    await _eligible_turn(db, auth)
+    playbook_id, run_id = await _start_run(db, auth)
+    run = await db.get(PlaybookRun, run_id)
+    run.status = PLAYBOOK_RUN_STATUS_PROCESSING
+    await db.commit()
+    await playbook_generation_service.mark_run_failed(
+        db, run_id, "OpenRouter error (400): maximum context length is 128000 tokens"
+    )
+    await playbook_generation_service.mark_run_failed(db, run_id, SAFE_ERROR_GENERIC)
+    run = await db.get(PlaybookRun, run_id)
+    assert run.status == PLAYBOOK_RUN_STATUS_FAILED
+    assert "128000 tokens" in (run.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_worker_preserves_specific_error_when_execute_already_failed(
+    db: AsyncSession,
+    auth: AuthContext,
+    monkeypatch: pytest.MonkeyPatch,
+    enqueue_calls: list[dict],
+):
+    from app.llm.providers import OpenRouterError
+    from app.playbooks.worker import generate_playbook_job
+
+    await _eligible_turn(db, auth)
+    playbook_id, run_id = await _start_run(db, auth)
+
+    async def fail_then_raise(db_session, **kwargs):
+        await playbook_generation_service.mark_run_failed(
+            db_session,
+            run_id,
+            OpenRouterError(400, "Prompt exceeds context window (tokens)"),
+        )
+        raise RuntimeError("wrapper")
+
+    monkeypatch.setattr(
+        playbook_generation_service, "execute_full_generation", fail_then_raise
+    )
+    result = await generate_playbook_job(
+        {"session_factory": _SessionCM(db)},
+        playbook_id,
+        run_id,
+        auth.org_id,
+        auth.user.id,
+    )
+    assert result["status"] == "failed"
+    run = await db.get(PlaybookRun, run_id)
+    assert "context window" in (run.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_extraction_logs_request_size_without_source_text(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    logged: list[dict] = []
+
+    def fake_info(event, **kwargs):
+        if event == "playbook_llm_request_size":
+            logged.append(kwargs)
+
+    monkeypatch.setattr("app.services.playbook_extraction_service.logger.info", fake_info)
+
+    async def fake_provider_complete(**kwargs):
+        from app.llm.providers import LLMResponse
+
+        return LLMResponse(text='{"observations":[]}', tokens_input=1, tokens_output=1)
+
+    class _Provider:
+        complete = staticmethod(fake_provider_complete)
+
+    class _Registry:
+        def get_provider(self, _name):
+            return _Provider()
+
+    monkeypatch.setattr(
+        "app.services.playbook_extraction_service.get_provider_registry",
+        lambda: _Registry(),
+    )
+    text = await playbook_extraction_service._complete(
+        system="sys", user="user-context-not-secret", max_tokens=16, json_mode=True
+    )
+    assert text
+    assert logged
+    assert logged[0]["system_characters"] == 3
+    assert logged[0]["user_characters"] == len("user-context-not-secret")
+    assert "user-context-not-secret" not in str(logged)
 

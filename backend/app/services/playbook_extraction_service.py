@@ -20,6 +20,7 @@ from app.services.playbook_source_service import (
     PlaybookExtractionBatch,
     PlaybookTurnSource,
     canonical_dumps,
+    render_brain_snapshot,
 )
 
 logger = get_logger(__name__)
@@ -996,6 +997,18 @@ class PlaybookExtractionService:
     ) -> str:
         settings = get_settings()
         model = get_model(settings.playbook_extraction_model_id)
+        system_characters = len(system or "")
+        user_characters = len(user or "")
+        logger.info(
+            "playbook_llm_request_size",
+            model_id=settings.playbook_extraction_model_id,
+            provider_model=model.provider_model,
+            system_characters=system_characters,
+            user_characters=user_characters,
+            estimated_tokens=max(1, round((system_characters + user_characters) / 4)),
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+        )
         provider = get_provider_registry().get_provider(model.provider)
         response = await provider.complete(
             system=system,
@@ -1081,35 +1094,7 @@ class PlaybookExtractionService:
         return "\n".join(lines)
 
     def _render_brain(self, brain: PlaybookBrainSnapshot) -> str:
-        lines = ["## BRAIN PROFILE"]
-        if brain.user_brain is None:
-            lines.append("(no UserBrain row)")
-        else:
-            profile = brain.user_brain
-            lines.extend(
-                [
-                    f"id={profile.id} user_global={profile.is_user_global}",
-                    f"summary: {profile.summary}",
-                    f"thinking_style: {profile.thinking_style}",
-                    f"likes: {', '.join(profile.likes)}",
-                    f"dislikes: {', '.join(profile.dislikes)}",
-                    f"lesson_count: {profile.lesson_count}",
-                ]
-            )
-            for memory in profile.memories:
-                lines.append(f"- memory: {canonical_dumps(memory)}")
-        lines.append("## BRAIN KNOWLEDGE")
-        if not brain.knowledge_items:
-            lines.append("(none)")
-        for item in brain.knowledge_items:
-            lines.extend(
-                [
-                    f"### BRAIN KNOWLEDGE id={item.id} source_type={item.source_type} source_id={item.source_id}",
-                    f"title: {item.title}",
-                    item.content,
-                ]
-            )
-        return "\n".join(lines)
+        return render_brain_snapshot(brain)
 
 
 class PlaybookExtractionError(RuntimeError):
