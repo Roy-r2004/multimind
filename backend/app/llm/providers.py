@@ -20,6 +20,32 @@ CONFIDENCE_PATTERN = re.compile(r"CONFIDENCE:\s*(\d{1,3})", re.IGNORECASE)
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_LLM_TEMPERATURE = 0.7
 
+
+class OpenRouterError(RuntimeError):
+    """Gateway failure retaining status for narrowly scoped Council failover."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(f"OpenRouter error ({status_code}): {detail}")
+        self.status_code = status_code
+
+
+def council_fallback_reason(exc: Exception) -> str | None:
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.NetworkError):
+        return "provider_connection"
+    if isinstance(exc, OpenRouterError):
+        if exc.status_code == 429:
+            return "rate_limit"
+        if exc.status_code in (408, 504):
+            return "timeout"
+        if exc.status_code == 404:
+            return "model_unavailable"
+        if 500 <= exc.status_code < 600:
+            return "provider_unavailable"
+    return None
+
+
 # Claude Fable 5: prefer OpenRouter Exacto (quality/reliability) over price-weighted
 # load balancing, while keeping same-model provider failover enabled.
 CLAUDE_FABLE_5_SLUG = "anthropic/claude-fable-5"
@@ -53,6 +79,7 @@ class LLMProvider(ABC):
         temperature: float | None = None,
         preserve_whitespace: bool = False,
         timeout: float | None = None,
+        allow_provider_fallbacks: bool = False,
     ) -> LLMResponse:
         pass
 
@@ -178,6 +205,7 @@ class OpenRouterProvider(LLMProvider):
         temperature: float | None = None,
         preserve_whitespace: bool = False,
         timeout: float | None = None,
+        allow_provider_fallbacks: bool = False,
     ) -> LLMResponse:
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
@@ -194,6 +222,7 @@ class OpenRouterProvider(LLMProvider):
                     temperature=temperature,
                     preserve_whitespace=preserve_whitespace,
                     timeout=timeout,
+                    allow_provider_fallbacks=allow_provider_fallbacks,
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -215,6 +244,7 @@ class OpenRouterProvider(LLMProvider):
         temperature: float | None = None,
         preserve_whitespace: bool = False,
         timeout: float | None = None,
+        allow_provider_fallbacks: bool = False,
     ) -> LLMResponse:
         async with httpx.AsyncClient(timeout=timeout if timeout is not None else self._timeout) as client:
             payload = build_openrouter_chat_payload(
@@ -224,6 +254,7 @@ class OpenRouterProvider(LLMProvider):
                 max_tokens=max_tokens,
                 response_format=response_format,
                 temperature=temperature,
+                allow_provider_fallbacks=allow_provider_fallbacks,
             )
             resp = await client.post(
                 OPENROUTER_CHAT_URL,
@@ -236,7 +267,7 @@ class OpenRouterProvider(LLMProvider):
                     detail = resp.json().get("error", {}).get("message", detail)
                 except Exception:
                     pass
-                raise RuntimeError(f"OpenRouter error ({resp.status_code}): {detail}")
+                raise OpenRouterError(resp.status_code, detail)
             data = resp.json()
 
         content = _content_to_text(data["choices"][0]["message"].get("content", ""))
@@ -279,7 +310,7 @@ def resolve_openrouter_model_slug(model: str) -> str:
 
 
 def openrouter_provider_preferences(model: str) -> dict[str, Any] | None:
-    """Optional OpenRouter ``provider`` object for a request model slug."""
+    """Existing per-model routing preferences; custom Council chains opt in separately."""
     if _is_claude_fable_5(model):
         return dict(CLAUDE_FABLE_5_PROVIDER_PREFERENCES)
     return None
@@ -293,6 +324,7 @@ def build_openrouter_chat_payload(
     max_tokens: int,
     response_format: dict[str, Any] | None = None,
     temperature: float | None = None,
+    allow_provider_fallbacks: bool = False,
 ) -> dict[str, Any]:
     """Build the OpenRouter chat/completions JSON body (routing prefs included)."""
     routed_model = resolve_openrouter_model_slug(model)
@@ -307,6 +339,8 @@ def build_openrouter_chat_payload(
         "usage": {"include": True},
     }
     provider = openrouter_provider_preferences(model)
+    if allow_provider_fallbacks:
+        provider = {**(provider or {}), "allow_fallbacks": True}
     if provider is not None:
         payload["provider"] = provider
     if response_format is not None:
