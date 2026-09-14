@@ -26,8 +26,8 @@ in a successful extraction request:
   included Brain (``include_brain`` and ``succeeded``).
 
 ``processed_count`` and the persisted source-state rows describe the same
-successfully processed sources: each successful turn and, at most once, the
-Brain units from a successful Brain-containing extract. Failed-batch turns
+successfully processed sources: each successful turn and each Brain unit from
+a successful budgeted Brain extract. Failed-batch turns and failed Brain units
 remain absent from ``playbook_source_states``.
 
 Batch vs run failure
@@ -42,6 +42,7 @@ kept.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
@@ -87,6 +88,7 @@ from app.services.playbook_source_service import (
     PlaybookChatTranscript,
     PlaybookExtractionBatch,
     PlaybookTranscriptSet,
+    empty_brain_snapshot,
     playbook_source_service,
 )
 
@@ -111,9 +113,25 @@ ERROR_MESSAGE_MAX_CHARS = 500
 GENERATE_PLAYBOOK_JOB = "generate_playbook_job"
 
 _SECRET_IN_ERROR = re.compile(
-    r"(?i)(redis://\S+|postgres(?:ql)?://\S+|mongodb(?:\+srv)?://\S+|"
-    r"api[_-]?key|password|secret|token|bearer\s+\S+)"
+    r"(?i)("
+    r"redis://\S+|postgres(?:ql)?://\S+|mongodb(?:\+srv)?://\S+|"
+    r"api[_-]?key\s*[:=]\s*\S+|"
+    r"password\s*[:=]\s*\S+|"
+    r"(?:access[_-]?token|secret[_-]?key|client[_-]?secret)\s*[:=]\s*\S+|"
+    r"bearer\s+[a-z0-9\-._~+/]+=*"
+    r")"
 )
+GENERIC_ERROR_MESSAGES = frozenset({SAFE_ERROR_GENERIC, SAFE_ERROR_ENQUEUE})
+
+
+@dataclass
+class _BrainBatchOutcome:
+    candidates: list[ExtractedCandidate]
+    extraction_warnings: list[ExtractionWarning]
+    warnings: int
+    processed: int
+    success_count: int
+    successful_keys: set[tuple[str, str]]
 
 
 class PlaybookGenerationService:
@@ -384,7 +402,7 @@ class PlaybookGenerationService:
     ) -> None:
         total = diff.pending_source_items
         warnings = len(diff.transcripts.warnings) + len(diff.brain.warnings)
-        processed = len(diff.removed_turn_ids)
+        processed = len(diff.removed_turn_ids) + len(diff.removed_brain_keys)
         await self._save_progress(
             db, run, processed_count=processed, total_count=total, warning_count=warnings
         )
@@ -404,12 +422,11 @@ class PlaybookGenerationService:
         )
         candidates: list[ExtractedCandidate] = []
         successful_turn_ids: set[str] = set()
-        brain_success = not diff.brain_changed
-        include_brain = diff.brain_changed
+        successful_brain_keys: set[tuple[str, str]] = set()
         success_count = 0
         for batch in playbook_source_service.batch_transcripts(selected_chats):
             result = await playbook_extraction_service.extract_batch(
-                batch, diff.brain, include_brain=include_brain
+                batch, empty_brain_snapshot(), include_brain=False
             )
             warnings += len(result.warnings)
             if result.succeeded:
@@ -417,27 +434,25 @@ class PlaybookGenerationService:
                 candidates.extend(result.candidates)
                 successful_turn_ids.update(batch.turn_ids)
                 processed += batch.turn_count
-                if include_brain:
-                    brain_success = True
-                    processed += diff.brain_changes
-                    include_brain = False
             await self._save_progress(
                 db, run, processed_count=processed, total_count=total, warning_count=warnings
             )
-        if include_brain:
-            result = await playbook_extraction_service.extract_batch(
-                _empty_batch(), diff.brain, include_brain=True
-            )
-            warnings += len(result.warnings)
-            if result.succeeded:
-                success_count += 1
-                candidates.extend(result.candidates)
-                brain_success = True
-                processed += diff.brain_changes
-            await self._save_progress(
-                db, run, processed_count=processed, total_count=total, warning_count=warnings
-            )
-        if success_count == 0 and (selected_ids or diff.brain_changed):
+        brain_result = await self._extract_brain_batches(
+            db,
+            run,
+            diff.brain,
+            include_keys=diff.pending_brain_keys,
+            processed=processed,
+            total=total,
+            warnings=warnings,
+        )
+        candidates.extend(brain_result.candidates)
+        warnings = brain_result.warnings
+        processed = brain_result.processed
+        success_count += brain_result.success_count
+        successful_brain_keys.update(brain_result.successful_keys)
+        needs_extract = bool(selected_ids or diff.pending_brain_keys)
+        if success_count == 0 and needs_extract:
             raise PlaybookExtractionError(SAFE_ERROR_NO_BATCHES)
 
         observations = (
@@ -452,8 +467,9 @@ class PlaybookGenerationService:
             .unique()
             .all()
         )
-        # Replace last-successful evidence only for changed turns whose new
-        # extraction succeeded. Failed changed turns remain safely pending.
+        brain_evidence_invalidated = bool(
+            diff.pending_brain_keys and diff.pending_brain_keys <= successful_brain_keys
+        )
         invalid_turns = frozenset(successful_turn_ids) | diff.removed_turn_ids
         for old in observations:
             evidence = tuple(
@@ -467,7 +483,9 @@ class PlaybookGenerationService:
                 for s in old.sources
                 if s.turn_id not in invalid_turns
                 and not (
-                    diff.brain_changed and brain_success and s.turn_id is None and s.chat_id is None
+                    brain_evidence_invalidated
+                    and s.turn_id is None
+                    and s.chat_id is None
                 )
             )
             if evidence:
@@ -511,23 +529,22 @@ class PlaybookGenerationService:
         }
         for turn_id in successful_turn_ids:
             states[(PLAYBOOK_SOURCE_TYPE_TURN, turn_id)] = current_turns[turn_id].content_hash
-        if diff.brain_changed and brain_success:
-            states = {
-                key: value
-                for key, value in states.items()
-                if key[0]
-                not in {PLAYBOOK_SOURCE_TYPE_USER_BRAIN, PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE}
-            }
-            if diff.brain.user_brain:
-                states[(PLAYBOOK_SOURCE_TYPE_USER_BRAIN, diff.brain.user_brain.id)] = (
-                    diff.brain.user_brain.content_hash
-                )
-            states.update(
-                {
-                    (PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE, item.id): item.content_hash
-                    for item in diff.brain.knowledge_items
-                }
+        for key in diff.removed_brain_keys:
+            states.pop(key, None)
+        if diff.brain.user_brain and (
+            PLAYBOOK_SOURCE_TYPE_USER_BRAIN,
+            diff.brain.user_brain.id,
+        ) in successful_brain_keys:
+            states[(PLAYBOOK_SOURCE_TYPE_USER_BRAIN, diff.brain.user_brain.id)] = (
+                diff.brain.user_brain.content_hash
             )
+        knowledge_by_id = {item.id: item for item in diff.brain.knowledge_items}
+        for source_type, source_id in successful_brain_keys:
+            if source_type != PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE:
+                continue
+            item = knowledge_by_id.get(source_id)
+            if item is not None:
+                states[(PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE, source_id)] = item.content_hash
         await self._persist_final(
             db,
             playbook=playbook,
@@ -537,7 +554,7 @@ class PlaybookGenerationService:
             transcripts=diff.transcripts,
             brain=diff.brain,
             successful_turn_ids=set(),
-            brain_extracted_successfully=False,
+            successful_brain_keys=set(),
             warning_count=warnings,
             processed_count=processed,
             total_count=total,
@@ -564,14 +581,90 @@ class PlaybookGenerationService:
             PLAYBOOK_RUN_STATUS_COMPLETED_WITH_WARNINGS,
         }:
             return
+        incoming = _safe_error_message(message)
+        if run.status == PLAYBOOK_RUN_STATUS_FAILED:
+            existing = (run.error_message or "").strip()
+            if existing and not _is_generic_error(existing) and _is_generic_error(incoming):
+                return
+            if existing and not _is_generic_error(existing):
+                return
         run.status = PLAYBOOK_RUN_STATUS_FAILED
-        run.error_message = _safe_error_message(message)
+        run.error_message = incoming
         run.finished_at = datetime.now(UTC)
         if processed_count is not None:
             run.processed_count = processed_count
         if warning_count is not None:
             run.warning_count = warning_count
         await db.commit()
+
+    async def _extract_brain_batches(
+        self,
+        db: AsyncSession,
+        run: PlaybookRun,
+        brain: PlaybookBrainSnapshot,
+        *,
+        include_keys: frozenset[tuple[str, str]] | None,
+        processed: int,
+        total: int,
+        warnings: int,
+    ) -> _BrainBatchOutcome:
+        candidates: list[ExtractedCandidate] = []
+        extra_warnings: list[ExtractionWarning] = []
+        required_chunks: dict[tuple[str, str], set[int]] = {}
+        succeeded_chunks: dict[tuple[str, str], set[int]] = {}
+        success_count = 0
+        completed_keys: set[tuple[str, str]] = set()
+        batches = playbook_source_service.batch_brain_snapshot(
+            brain, include_keys=include_keys
+        )
+        for batch in batches:
+            for key, index, count in batch.chunk_parts:
+                required_chunks.setdefault(key, set()).update(range(1, count + 1))
+            if batch.chunked:
+                extra_warnings.append(
+                    ExtractionWarning(
+                        code="brain_source_chunked",
+                        message="A Brain source was split across multiple extraction requests.",
+                    )
+                )
+                warnings += 1
+            logger.info(
+                "playbook_brain_extraction_batch",
+                batch_index=batch.batch_index,
+                unit_count=batch.unit_count,
+                estimated_characters=batch.estimated_characters,
+                chunked=batch.chunked,
+                max_chars=batch.max_chars,
+            )
+            result = await playbook_extraction_service.extract_batch(
+                _empty_batch(), batch.snapshot, include_brain=True
+            )
+            extra_warnings.extend(result.warnings)
+            warnings += len(result.warnings)
+            if result.succeeded:
+                success_count += 1
+                candidates.extend(result.candidates)
+                newly_complete = 0
+                for key, index, _count in batch.chunk_parts:
+                    succeeded_chunks.setdefault(key, set()).add(index)
+                    if (
+                        key not in completed_keys
+                        and required_chunks.get(key, set()) <= succeeded_chunks[key]
+                    ):
+                        completed_keys.add(key)
+                        newly_complete += 1
+                processed += newly_complete
+            await self._save_progress(
+                db, run, processed_count=processed, total_count=total, warning_count=warnings
+            )
+        return _BrainBatchOutcome(
+            candidates=candidates,
+            extraction_warnings=extra_warnings,
+            warnings=warnings,
+            processed=processed,
+            success_count=success_count,
+            successful_keys=completed_keys,
+        )
 
     async def _run_pipeline(
         self,
@@ -598,20 +691,15 @@ class PlaybookGenerationService:
         extraction_warnings: list[ExtractionWarning] = []
         successful_batches = 0
         successful_turn_ids: set[str] = set()
-        brain_extracted_successfully = False
-        brain_units = _brain_unit_count(brain)
-        brain_counted = False
-        include_brain_next = True
+        successful_brain_keys: set[tuple[str, str]] = set()
 
         for batch in batches:
-            include_brain = include_brain_next
             result = await playbook_extraction_service.extract_batch(
-                batch, brain, include_brain=include_brain
+                batch, empty_brain_snapshot(), include_brain=False
             )
             extraction_warnings.extend(result.warnings)
             warning_count += len(result.warnings)
             if not result.succeeded:
-                include_brain_next = include_brain or include_brain_next
                 await self._save_progress(
                     db,
                     run,
@@ -624,14 +712,6 @@ class PlaybookGenerationService:
             successful_turn_ids.update(batch.turn_ids)
             candidates.extend(result.candidates)
             processed_count += batch.turn_count
-            if include_brain:
-                brain_extracted_successfully = True
-                if not brain_counted:
-                    processed_count += brain_units
-                    brain_counted = True
-                include_brain_next = False
-            else:
-                include_brain_next = False
             await self._save_progress(
                 db,
                 run,
@@ -640,25 +720,21 @@ class PlaybookGenerationService:
                 warning_count=warning_count,
             )
 
-        if successful_batches == 0 and brain_units > 0:
-            result = await playbook_extraction_service.extract_batch(
-                _empty_batch(), brain, include_brain=True
-            )
-            extraction_warnings.extend(result.warnings)
-            warning_count += len(result.warnings)
-            if result.succeeded:
-                successful_batches += 1
-                candidates.extend(result.candidates)
-                processed_count += brain_units
-                brain_counted = True
-                brain_extracted_successfully = True
-            await self._save_progress(
-                db,
-                run,
-                processed_count=processed_count,
-                total_count=total_count,
-                warning_count=warning_count,
-            )
+        brain_result = await self._extract_brain_batches(
+            db,
+            run,
+            brain,
+            include_keys=None,
+            processed=processed_count,
+            total=total_count,
+            warnings=warning_count,
+        )
+        candidates.extend(brain_result.candidates)
+        extraction_warnings.extend(brain_result.extraction_warnings)
+        warning_count = brain_result.warnings
+        processed_count = brain_result.processed
+        successful_batches += brain_result.success_count
+        successful_brain_keys.update(brain_result.successful_keys)
 
         if successful_batches == 0:
             raise PlaybookExtractionError(SAFE_ERROR_NO_BATCHES)
@@ -703,7 +779,7 @@ class PlaybookGenerationService:
                 transcripts=transcripts,
                 brain=brain,
                 successful_turn_ids=successful_turn_ids,
-                brain_extracted_successfully=brain_extracted_successfully,
+                successful_brain_keys=successful_brain_keys,
                 warning_count=warning_count,
                 processed_count=processed_count,
                 total_count=total_count,
@@ -722,7 +798,7 @@ class PlaybookGenerationService:
         transcripts: PlaybookTranscriptSet,
         brain: PlaybookBrainSnapshot,
         successful_turn_ids: set[str],
-        brain_extracted_successfully: bool,
+        successful_brain_keys: set[tuple[str, str]],
         warning_count: int,
         processed_count: int,
         total_count: int,
@@ -811,8 +887,11 @@ class PlaybookGenerationService:
                         status=PLAYBOOK_SOURCE_STATE_PROCESSED,
                     )
                 )
-        if brain_extracted_successfully and source_state_hashes is None:
-            if brain.user_brain is not None:
+        if source_state_hashes is None:
+            if brain.user_brain is not None and (
+                PLAYBOOK_SOURCE_TYPE_USER_BRAIN,
+                brain.user_brain.id,
+            ) in successful_brain_keys:
                 db.add(
                     PlaybookSourceState(
                         playbook_id=playbook.id,
@@ -825,6 +904,11 @@ class PlaybookGenerationService:
                     )
                 )
             for item in brain.knowledge_items:
+                if (
+                    PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE,
+                    item.id,
+                ) not in successful_brain_keys:
+                    continue
                 db.add(
                     PlaybookSourceState(
                         playbook_id=playbook.id,
@@ -927,6 +1011,10 @@ def _empty_batch() -> PlaybookExtractionBatch:
         oversized=False,
         chats=(),
     )
+
+
+def _is_generic_error(message: str) -> bool:
+    return (message or "").strip() in GENERIC_ERROR_MESSAGES
 
 
 def _safe_error_message(exc: object, *, fallback: str = SAFE_ERROR_GENERIC) -> str:

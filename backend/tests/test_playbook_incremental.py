@@ -514,12 +514,12 @@ async def test_brain_refresh_success_failure_and_removal(db, auth, monkeypatch):
         .all()
     )
     assert (await playbook_pending_service.response(db, auth)).brain_changes == 1
-    assert failed_calls == [((), True, (knowledge.id,))]
+    assert failed_calls == [((), True, ())]
 
     calls = _mock_incremental_pipeline(monkeypatch)
     run, success = await _execute_incremental(db, auth, book)
     assert success["status"] == "completed" and run.processed_count == run.total_count == 1
-    assert calls == [((), True, (knowledge.id,))]
+    assert calls == [((), True, ())]
     assert (await playbook_pending_service.response(db, auth)).pending_source_items == 0
     brain_evidence = (
         (
@@ -538,7 +538,7 @@ async def test_brain_refresh_success_failure_and_removal(db, auth, monkeypatch):
     await db.commit()
     calls = _mock_incremental_pipeline(monkeypatch)
     await _execute_incremental(db, auth, book)
-    assert calls == [((), True, ())]
+    assert calls == []
     assert (
         await db.execute(
             select(PlaybookSourceState).where(PlaybookSourceState.source_id == knowledge.id)
@@ -710,3 +710,55 @@ async def test_incremental_pending_and_rerun_are_user_and_org_isolated(db, auth,
     assert peer_rerun.status_code == org_rerun.status_code == 409
     assert jobs == []
     assert (await playbook_pending_service.response(db, auth)).pending_source_items == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_brain_retry_keeps_failed_units_pending(db, auth, monkeypatch):
+    chat = await _make_chat(db, auth)
+    stable = await _make_turn(db, chat)
+    book = await _active_book(db, auth)
+    await _checkpoint_current(db, auth, book, stable)
+    items = [
+        await _make_knowledge(db, auth, source_id=f"p-{index}", title=f"P{index}")
+        for index in range(3)
+    ]
+    await db.commit()
+    real_brain = playbook_source_service.batch_brain_snapshot
+    monkeypatch.setattr(
+        playbook_source_service,
+        "batch_brain_snapshot",
+        lambda brain, **kwargs: real_brain(brain, max_chars=220, **kwargs),
+    )
+    _mock_incremental_pipeline(monkeypatch)
+    original = playbook_extraction_service.extract_batch
+
+    async def fail_one(batch, brain, *, include_brain=True, source_text=None):
+        result = await original(batch, brain, include_brain=include_brain, source_text=source_text)
+        if include_brain and any(item.id == items[1].id for item in brain.knowledge_items):
+            return BatchExtractionResult(
+                [], [ExtractionWarning(code="forced", message="forced")], False
+            )
+        return result
+
+    monkeypatch.setattr(playbook_extraction_service, "extract_batch", fail_one)
+    _, success = await _execute_incremental(db, auth, book, total=3)
+    assert success["status"] in {"completed", "completed_with_warnings"}
+    pending = await playbook_pending_service.response(db, auth)
+    assert pending.brain_changes == 1
+    rows = (
+        (
+            await db.execute(
+                select(PlaybookSourceState).where(PlaybookSourceState.playbook_id == book.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    states = {
+        row.source_id
+        for row in rows
+        if row.source_type == PLAYBOOK_SOURCE_TYPE_BRAIN_KNOWLEDGE
+    }
+    assert items[1].id not in states
+    assert items[0].id in states
+    assert items[2].id in states
