@@ -22,7 +22,7 @@ from app.db.models import (
     Turn,
     Verdict,
 )
-from app.llm.catalog import get_model
+from app.llm.catalog import get_model, is_intelligence_eligible_model
 from app.llm.providers import get_provider_registry
 from app.schemas.api import (
     ContentLabelResponse,
@@ -449,8 +449,12 @@ class SavedDocumentService:
         if isinstance(verdict, dict) and verdict.get("text"):
             parts.append(str(verdict["text"]))
         for answer in snapshot.get("council_answers") or []:
-            if isinstance(answer, dict) and answer.get("text"):
-                parts.append(str(answer["text"])[:400])
+            if not isinstance(answer, dict) or not answer.get("text"):
+                continue
+            model_id = answer.get("model_id")
+            if isinstance(model_id, str) and not is_intelligence_eligible_model(model_id):
+                continue
+            parts.append(str(answer["text"])[:400])
         return "\n\n".join(p for p in parts if p)
 
 

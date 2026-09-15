@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import AuthContext
 from app.core.logging import get_logger
 from app.db.models import BrainKnowledgeItem
+from app.llm.catalog import is_intelligence_eligible_model
 from app.schemas.api import BrainKnowledgeItemResponse
 from app.services.embedding_utils import cosine_similarity, embed_text
 
@@ -25,6 +26,16 @@ SOURCE_LESSON = "lesson"
 SOURCE_FEEDBACK = "feedback"
 SOURCE_SCRAPING_MISSION = "scraping_mission"
 SOURCE_SCRAPING_FACILITY = "scraping_facility"
+
+
+def format_council_digest(answers: Sequence[Any], *, max_chars: int = 1200) -> str | None:
+    """Production Council excerpts only — shadow answers never enter Brain."""
+    digest = "; ".join(
+        f"{answer.model_id}: {(answer.text or '')[:160]}"
+        for answer in answers
+        if getattr(answer, "text", None) and is_intelligence_eligible_model(answer.model_id)
+    )[:max_chars]
+    return digest or None
 
 
 class BrainKnowledgeService:

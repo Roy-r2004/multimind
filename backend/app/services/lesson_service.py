@@ -23,7 +23,7 @@ from app.db.models import (
     VerdictLesson,
 )
 from app.services.brain_service import brain_service
-from app.llm.catalog import get_model, resolve_llm_cost
+from app.llm.catalog import get_model, intelligence_eligible_model_ids, intelligence_eligible_answers, resolve_llm_cost
 from app.llm.orchestrator import TurnContext, get_orchestrator
 from app.llm.prompt_engine import get_prompt_engine, resolve_effective_referee_prompt
 from app.llm.providers import get_provider_registry
@@ -388,7 +388,7 @@ class LessonService:
             raise ConflictError("This turn has no verdict to disagree with")
         verdict_model = get_model(turn.verdict.model_id)
         answer_context = []
-        for answer in turn.model_answers:
+        for answer in intelligence_eligible_answers(turn.model_answers):
             model = get_model(answer.model_id)
             answer_context.append(
                 {
@@ -428,6 +428,10 @@ class LessonService:
         challenge: str,
     ) -> list[dict[str, Any]]:
         model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
+        model_ids = intelligence_eligible_model_ids(list(model_set.models or []))
+        if not model_ids:
+            return []
+
         previous_context = self._challenge_previous_context(
             turn=turn,
             answer_context=answer_context,
@@ -452,7 +456,7 @@ class LessonService:
             org_id=auth.org_id,
             project_id=chat.project_id if chat else None,
             user_message=challenge,
-            model_ids=list(model_set.models),
+            model_ids=model_ids,
             verdict_model_id=turn.verdict_model,
             strategy=turn.strategy,
             model_set_name=f"{model_set.name} challenge council",
@@ -474,7 +478,7 @@ class LessonService:
             select(ModelAnswer).where(ModelAnswer.turn_id == challenge_turn.id)
         )
         answer_by_model = {answer.model_id: answer for answer in answer_rows.scalars().all()}
-        for model_id in model_set.models:
+        for model_id in model_ids:
             answer = answer_by_model.get(model_id)
             if answer is None:
                 continue

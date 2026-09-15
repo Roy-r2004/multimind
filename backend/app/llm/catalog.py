@@ -1,6 +1,8 @@
 """Canonical model catalog — built-in shortcuts + dynamic OpenRouter models."""
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from app.llm.pricing import get_pricing_service, vendor_from_slug
 
@@ -133,9 +135,51 @@ FALLBACK_PRICE = {"input": 0.002, "output": 0.004}
 
 _BUILTIN_IDS = frozenset(MODEL_CATALOG.keys())
 
+# Display-only Council members. They run and persist like production models
+# but must never enter Verdict, Brain, memory, Playbook, or other intelligence.
+SHADOW_MODEL_SLUGS = frozenset(
+    {
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "qwen/qwen3.8-max-0902",
+        "deepseek/deepseek-v4.1-flash",
+    }
+)
+
 
 def is_builtin_model_id(model_id: str) -> bool:
     return model_id in _BUILTIN_IDS
+
+
+def is_shadow_model(model_id: str) -> bool:
+    """True only for the three explicit test/shadow OpenRouter models."""
+    raw = (model_id or "").strip()
+    if not raw:
+        return False
+    if raw in SHADOW_MODEL_SLUGS:
+        return True
+    return model_id_to_slug(raw) in SHADOW_MODEL_SLUGS
+
+
+def is_intelligence_eligible_model(model_id: str) -> bool:
+    return not is_shadow_model(model_id)
+
+
+def intelligence_eligible_model_ids(model_ids: Iterable[str]) -> list[str]:
+    """Preserve caller order while dropping shadow model ids."""
+    return [model_id for model_id in model_ids if is_intelligence_eligible_model(model_id)]
+
+
+def intelligence_eligible_answers(answers: Sequence[Any]) -> list[Any]:
+    """Filter ModelAnswer rows or answer-context dicts for intelligence pipelines."""
+    eligible: list[Any] = []
+    for answer in answers:
+        if isinstance(answer, dict):
+            model_id = answer.get("model_id")
+        else:
+            model_id = getattr(answer, "model_id", None)
+        if isinstance(model_id, str) and is_intelligence_eligible_model(model_id):
+            eligible.append(answer)
+    return eligible
 
 
 def slug_to_model_id(openrouter_slug: str) -> str:
