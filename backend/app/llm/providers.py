@@ -13,12 +13,33 @@ import httpx
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logging import get_logger
+from app.llm.catalog import is_shadow_model, model_id_to_slug
 
 logger = get_logger(__name__)
 
 CONFIDENCE_PATTERN = re.compile(r"CONFIDENCE:\s*(\d{1,3})", re.IGNORECASE)
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_LLM_TEMPERATURE = 0.7
+# Strongest → weakest. Speed-profile fallback only walks downward.
+_SHADOW_REASONING_STRENGTH = (
+    "max",
+    "xhigh",
+    "high",
+    "medium",
+    "low",
+    "minimal",
+)
+SHADOW_PREFERRED_REASONING_EFFORT = {
+    "nvidia/nemotron-3-ultra-550b-a55b": "medium",
+    "qwen/qwen3.8-max-0902": "low",
+    "deepseek/deepseek-v4.1-flash": "low",
+}
+SHADOW_WEB_PLUGIN = {
+    "id": "web",
+    "engine": "parallel",
+    "mode": "turbo",
+    "max_results": 3,
+}
 
 
 class OpenRouterError(RuntimeError):
@@ -316,6 +337,65 @@ def openrouter_provider_preferences(model: str) -> dict[str, Any] | None:
     return None
 
 
+def _shadow_supported_reasoning_efforts(model: str) -> list[str] | None:
+    """Return OpenRouter `reasoning.supported_efforts` when cached metadata has it."""
+    try:
+        from app.llm.pricing import get_pricing_service
+
+        meta = get_pricing_service().get_slug_metadata(model_id_to_slug(model)) or {}
+    except Exception:  # noqa: BLE001 — missing catalog must not fail Council calls
+        return None
+    reasoning_meta = meta.get("reasoning")
+    if not isinstance(reasoning_meta, dict):
+        return None
+    supported = reasoning_meta.get("supported_efforts")
+    if not isinstance(supported, list) or not supported:
+        return None
+    efforts = [str(item).strip().lower() for item in supported if str(item).strip()]
+    return efforts or None
+
+
+def preferred_shadow_reasoning_effort(model: str) -> str:
+    """Explicit faster Shadow profile; never inherit a model's default xhigh/high."""
+    slug = model_id_to_slug(model)
+    return SHADOW_PREFERRED_REASONING_EFFORT.get(slug, "medium")
+
+
+def normalize_shadow_reasoning_effort(model: str) -> str:
+    """Use the shadow speed preference, then the closest weaker supported effort."""
+    preferred = preferred_shadow_reasoning_effort(model)
+    supported = _shadow_supported_reasoning_efforts(model)
+    if not supported:
+        return preferred
+    supported_set = set(supported)
+    if preferred in supported_set:
+        return preferred
+    try:
+        rank = _SHADOW_REASONING_STRENGTH.index(preferred)
+    except ValueError:
+        rank = _SHADOW_REASONING_STRENGTH.index("medium")
+    for effort in _SHADOW_REASONING_STRENGTH[rank + 1 :]:
+        if effort in supported_set:
+            return effort
+    return preferred
+
+
+def shadow_openrouter_reasoning(model: str) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "effort": normalize_shadow_reasoning_effort(model),
+        "exclude": True,
+    }
+
+
+def apply_shadow_openrouter_request_options(payload: dict[str, Any], model: str) -> None:
+    """Enable hidden reasoning + web search for the three Shadow Council models only."""
+    if not is_shadow_model(model):
+        return
+    payload["reasoning"] = shadow_openrouter_reasoning(model)
+    payload["plugins"] = [{**SHADOW_WEB_PLUGIN}]
+
+
 def build_openrouter_chat_payload(
     *,
     model: str,
@@ -345,6 +425,7 @@ def build_openrouter_chat_payload(
         payload["provider"] = provider
     if response_format is not None:
         payload["response_format"] = response_format
+    apply_shadow_openrouter_request_options(payload, model)
     return payload
 
 
@@ -376,12 +457,16 @@ def _parse_reported_cost(value: Any) -> float | None:
 
 
 def _content_to_text(content: Any) -> str:
+    """Flatten message content. Reasoning/annotation metadata is ignored."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
             if isinstance(item, dict):
+                item_type = str(item.get("type") or "").lower()
+                if item_type in {"reasoning", "thinking", "reasoning_text"}:
+                    continue
                 text = item.get("text")
                 if isinstance(text, str):
                     parts.append(text)

@@ -39,5 +39,7 @@ def test_other_models_keep_default_routing_shape() -> None:
     )
     assert payload["model"] == "openai/gpt-4.1"
     assert "provider" not in payload
+    assert "reasoning" not in payload
+    assert "plugins" not in payload
     assert resolve_openrouter_model_slug("google/gemini-2.5-pro") == "google/gemini-2.5-pro"
     assert openrouter_provider_preferences("openai/gpt-5.5") is None
