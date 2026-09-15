@@ -1370,24 +1370,25 @@ class ChatService:
                                 )
                             )
                         try:
-                            from app.services.brain_knowledge_service import brain_knowledge_service
-
-                            digest = "; ".join(
-                                f"{a.model_id}: {(a.text or '')[:160]}"
-                                for a in (turn_row.model_answers or [])
-                                if a.text
-                            )[:1200]
-                            await brain_knowledge_service.ingest_turn(
-                                run_db,
-                                org_id=auth.org_id,
-                                user_id=auth.user.id,
-                                project_id=ctx.project_id,
-                                turn_id=turn_row.id,
-                                chat_title=turn_row.chat.title if turn_row.chat else "Chat",
-                                user_message=turn_row.user_message,
-                                verdict_text=turn_row.verdict.text if turn_row.verdict else None,
-                                council_digest=digest or None,
+                            from app.services.brain_knowledge_service import (
+                                brain_knowledge_service,
+                                format_council_digest,
                             )
+
+                            digest = format_council_digest(turn_row.model_answers or [])
+                            has_production_council = digest is not None
+                            if turn_row.verdict is not None or has_production_council:
+                                await brain_knowledge_service.ingest_turn(
+                                    run_db,
+                                    org_id=auth.org_id,
+                                    user_id=auth.user.id,
+                                    project_id=ctx.project_id,
+                                    turn_id=turn_row.id,
+                                    chat_title=turn_row.chat.title if turn_row.chat else "Chat",
+                                    user_message=turn_row.user_message,
+                                    verdict_text=turn_row.verdict.text if turn_row.verdict else None,
+                                    council_digest=digest or None,
+                                )
                         except Exception as ingest_exc:  # noqa: BLE001
                             logger.warning(
                                 "brain_turn_ingest_failed",

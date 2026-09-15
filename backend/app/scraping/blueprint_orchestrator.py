@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from app.core.exceptions import AppError
-from app.llm.catalog import get_model
+from app.llm.catalog import get_model, intelligence_eligible_model_ids
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
 from app.schemas.api import ScrapingBlueprintContent
@@ -36,7 +36,7 @@ class BlueprintOrchestrator:
         previous_blueprint: dict[str, Any] | None = None,
         change_instructions: str | None = None,
     ) -> ScrapingBlueprintContent:
-        council_models = list(model_set.models or [])
+        council_models = intelligence_eligible_model_ids(list(model_set.models or []))
         if not council_models:
             raise BlueprintGenerationError("Selected model set has no council models")
 

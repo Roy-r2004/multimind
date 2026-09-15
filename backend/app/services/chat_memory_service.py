@@ -18,7 +18,7 @@ from app.db.models import (
     TurnStatus,
     UsageKind,
 )
-from app.llm.catalog import estimate_tokens, get_model, resolve_llm_cost
+from app.llm.catalog import estimate_tokens, get_model, is_intelligence_eligible_model, resolve_llm_cost
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
 
@@ -346,6 +346,8 @@ class ChatMemoryService:
         if len(answers) != 1:
             return None
         answer = answers[0]
+        if not is_intelligence_eligible_model(answer.model_id):
+            return None
         text = (answer.text or "").strip()
         if answer.status != ModelAnswerStatus.COMPLETED or not text:
             return None

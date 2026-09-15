@@ -123,6 +123,7 @@ from app.db.models import (
     Verdict,
     VerdictLesson,
 )
+from app.llm.catalog import is_intelligence_eligible_model
 from app.services.chat_memory_service import (
     CHALLENGE_TURN_MARKER,
     extract_continuation_handoff,
@@ -1285,6 +1286,8 @@ def _joined_size(current_size: int, added_size: int) -> int:
 
 
 def _is_usable_council_answer(answer: ModelAnswer) -> bool:
+    if not is_intelligence_eligible_model(answer.model_id):
+        return False
     if answer.status not in USABLE_COUNCIL_STATUSES:
         return False
     return bool((answer.text or "").strip())

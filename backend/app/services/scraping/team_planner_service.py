@@ -9,7 +9,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from app.core.exceptions import ValidationError
 from app.db.models import ModelSet, ScrapingBlueprint, ScrapingMission
-from app.llm.catalog import get_model
+from app.llm.catalog import get_model, intelligence_eligible_model_ids
 from app.llm.providers import LLMProvider, get_provider_registry
 from app.schemas.api import ScrapingTeamPlanOutput
 
@@ -27,7 +27,11 @@ class TeamPlannerService:
         planner_model_id = self.planner_model_id(model_set)
         model = get_model(planner_model_id)
         provider = get_provider_registry().get_provider(model.provider)
-        allowed_model_ids = list(dict.fromkeys(model_set.models))
+        allowed_model_ids = intelligence_eligible_model_ids(
+            list(dict.fromkeys(model_set.models or []))
+        )
+        if not allowed_model_ids:
+            raise ValidationError("Model set has no council models")
         response = await provider.complete(
             system=self._system_prompt(),
             user=self._user_prompt(
@@ -51,7 +55,12 @@ class TeamPlannerService:
         )
 
     def planner_model_id(self, model_set: ModelSet) -> str:
-        return model_set.verdict_model or model_set.models[0]
+        if model_set.verdict_model:
+            return model_set.verdict_model
+        eligible = intelligence_eligible_model_ids(list(model_set.models or []))
+        if not eligible:
+            raise ValidationError("Model set has no council models")
+        return eligible[0]
 
     async def parse_validate_or_repair(
         self,

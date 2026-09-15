@@ -20,7 +20,11 @@ from app.db.models import (
     UsageKind,
     Verdict,
 )
-from app.llm.catalog import get_model
+from app.llm.catalog import (
+    get_model,
+    intelligence_eligible_model_ids,
+    is_intelligence_eligible_model,
+)
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import council_fallback_reason, get_provider_registry
 
@@ -145,6 +149,8 @@ def _validated_answer_scores(
     for row in answer_rows:
         if row.status != ModelAnswerStatus.COMPLETED:
             continue
+        if not is_intelligence_eligible_model(row.model_id):
+            continue
         model_name = get_model(row.model_id).name
         if model_name in completed_by_name:
             duplicate_names.add(model_name)
@@ -228,6 +234,22 @@ class TurnOrchestrator:
                 Turn.id == turn_id,
                 Turn.status.in_(ACTIVE_TURN_STATUSES),
             )
+            .with_for_update()
+        )
+        if result.scalar_one_or_none() is None:
+            raise TurnNoLongerWritable
+
+    async def _lock_existing_turn_for_answer_persistence(
+        self, db: AsyncSession, turn_id: str
+    ) -> None:
+        """Allow ModelAnswer writes after production status is already terminal.
+
+        Shadow council members may finish after Verdict. Their rows still need a
+        live, non-deleted turn, but must not require PENDING/RUNNING.
+        """
+        result = await db.execute(
+            select(Turn.id)
+            .where(Turn.id == turn_id, Turn.deleted_at.is_(None))
             .with_for_update()
         )
         if result.scalar_one_or_none() is None:
@@ -387,7 +409,6 @@ class TurnOrchestrator:
             await emit("model_answer_started", {"model_id": model_id})
 
         async def call_model(model_id: str) -> ModelCallResult:
-            await self._ensure_not_deleted(db, ctx.turn_id)
             model = get_model(model_id)
             system = self._prompts.model_answer_prompt(
                 user_message=ctx.user_message,
@@ -408,7 +429,6 @@ class TurnOrchestrator:
                 if ctx.model_set_id == ULTIMATE_MODEL_SET_ID:
                     fallback_chain = ULTIMATE_COUNCIL_FALLBACKS.get(model.provider_model)
                 if fallback_chain is None:
-                    await self._ensure_not_deleted(db, ctx.turn_id)
                     response = await self._await_provider_complete(
                         ctx.turn_id,
                         provider.complete(
@@ -421,7 +441,6 @@ class TurnOrchestrator:
                 else:
                     candidates = [model.provider_model, *fallback_chain]
                     for index, candidate in enumerate(candidates):
-                        await self._ensure_not_deleted(db, ctx.turn_id)
                         log_fields = {
                             "turn_id": ctx.turn_id,
                             "model_set_id": ctx.model_set_id,
@@ -460,7 +479,6 @@ class TurnOrchestrator:
                             actual_model=raw.get("model"),
                         )
                         break
-                await self._ensure_not_deleted(db, ctx.turn_id)
                 return ModelCallResult(model_id=model_id, model_name=model.name, response=response)
             except asyncio.CancelledError:
                 raise
@@ -469,13 +487,18 @@ class TurnOrchestrator:
             except Exception as exc:
                 return ModelCallResult(model_id=model_id, model_name=model.name, error=exc)
 
-        async def persist_model_result(call_result: ModelCallResult) -> None:
+        async def persist_model_result(
+            call_result: ModelCallResult, *, require_active: bool = True
+        ) -> None:
             if call_result.error is not None:
                 message = format_llm_error(call_result.error)
                 logger.warning(
                     "model_answer_failed", model_id=call_result.model_id, error=message
                 )
-                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                if require_active:
+                    await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                else:
+                    await self._lock_existing_turn_for_answer_persistence(db, ctx.turn_id)
                 updated = await db.execute(
                     update(ModelAnswer)
                     .where(
@@ -506,7 +529,10 @@ class TurnOrchestrator:
             # Persist / emit only the OpenRouter-reported charge (never estimate).
             reported_cost = response.cost_usd
             stored_cost = float(reported_cost) if reported_cost is not None else 0.0
-            await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+            if require_active:
+                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+            else:
+                await self._lock_existing_turn_for_answer_persistence(db, ctx.turn_id)
             updated = await db.execute(
                 update(ModelAnswer)
                 .where(
@@ -563,300 +589,433 @@ class TurnOrchestrator:
                 },
             )
 
-        tasks = [asyncio.create_task(call_model(mid)) for mid in ctx.model_ids]
-        try:
-            for task in asyncio.as_completed(tasks):
-                call_result = await task
-                await persist_model_result(call_result)
-        except TurnNoLongerWritable:
-            for task in tasks:
+        production_model_ids = intelligence_eligible_model_ids(ctx.model_ids)
+        production_id_set = set(production_model_ids)
+        shadow_ids = [model_id for model_id in ctx.model_ids if model_id not in production_id_set]
+
+        production_tasks = [
+            asyncio.create_task(call_model(model_id)) for model_id in production_model_ids
+        ]
+        shadow_tasks = [asyncio.create_task(call_model(model_id)) for model_id in shadow_ids]
+        all_tasks = [*production_tasks, *shadow_tasks]
+        remaining: set[asyncio.Task[ModelCallResult]] = set()
+
+        async def cancel_outstanding() -> None:
+            for task in all_tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*all_tasks, return_exceptions=True)
+
+        async def persist_until_barrier(
+            barrier: set[asyncio.Task[ModelCallResult]],
+            extra: set[asyncio.Task[ModelCallResult]],
+        ) -> set[asyncio.Task[ModelCallResult]]:
+            leftover = set(barrier) | set(extra)
+            barrier_left = set(barrier)
+            while barrier_left:
+                done, leftover = await asyncio.wait(
+                    leftover, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    barrier_left.discard(task)
+                    call_result = await task
+                    await persist_model_result(call_result, require_active=True)
+            return leftover
+
+        async def drain_remaining(*, require_active: bool) -> None:
+            nonlocal remaining
+            leftover = remaining
+            remaining = set()
+            while leftover:
+                done, leftover = await asyncio.wait(
+                    leftover, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    call_result = await task
+                    await persist_model_result(call_result, require_active=require_active)
+
+        try:
+            # Production is the Verdict timing barrier. Shadows start concurrently
+            # but never gate Verdict. Shadow-only councils have no production barrier.
+            barrier = set(production_tasks) if production_model_ids else set(all_tasks)
+            extra = set(shadow_tasks) if production_model_ids else set()
+            remaining = await persist_until_barrier(barrier, extra)
+        except TurnNoLongerWritable:
+            await cancel_outstanding()
             await rollback_quietly()
             return result
         except asyncio.CancelledError:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await cancel_outstanding()
             raise
 
         try:
-            await self._ensure_not_deleted(db, ctx.turn_id)
-        except TurnNoLongerWritable:
-            await rollback_quietly()
-            return result
-
-        fresh_answers = await db.execute(
-            select(ModelAnswer).where(ModelAnswer.turn_id == ctx.turn_id)
-        )
-        answer_rows = {row.model_id: row for row in fresh_answers.scalars().all()}
-        await db.commit()
-
-        # Build answer context for verdict
-        answer_context = []
-        for model_id in ctx.model_ids:
-            row = answer_rows.get(model_id)
-            if row is None:
-                return result
-            model = get_model(model_id)
-            answer_context.append(
-                {
-                    "model_id": model_id,
-                    "model_name": model.name,
-                    "text": row.text or "",
-                    "failed": row.status != ModelAnswerStatus.COMPLETED,
-                    "error_message": row.error_message,
-                }
-            )
-
-        successful = [a for a in answer_context if not a["failed"]]
-        if not successful:
-            try:
-                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-            except TurnNoLongerWritable:
-                await rollback_quietly()
-                return result
-            failed_update = await db.execute(
-                update(Turn)
-                .where(Turn.id == ctx.turn_id)
-                .values(
-                    status=TurnStatus.FAILED,
-                    error_message="All models failed to respond",
-                )
-            )
-            if failed_update.rowcount != 1:
-                await rollback_quietly()
-                return result
-            await db.commit()
-            await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
-            return result
-
-        # A one-member Council is a normal single-AI turn. Its persisted answer
-        # is final, so do not invoke or account for a Referee. This deliberately
-        # uses selected membership rather than the number of successful calls.
-        if len(ctx.model_ids) == 1:
-            failed_count = sum(1 for answer in answer_context if answer["failed"])
-            final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
-            try:
-                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-            except TurnNoLongerWritable:
-                await rollback_quietly()
-                return result
-            turn_updated = await db.execute(
-                update(Turn)
-                .where(Turn.id == ctx.turn_id)
-                .values(status=final_status, error_message=None)
-            )
-            if turn_updated.rowcount != 1:
-                await rollback_quietly()
-                return result
-            await db.commit()
             try:
                 await self._ensure_not_deleted(db, ctx.turn_id)
             except TurnNoLongerWritable:
                 await rollback_quietly()
+                await cancel_outstanding()
                 return result
-            await emit(
-                "turn_completed",
-                {"turn_id": str(ctx.turn_id), "status": final_status.value},
+
+            fresh_answers = await db.execute(
+                select(ModelAnswer).where(ModelAnswer.turn_id == ctx.turn_id)
             )
-            return result
-
-        # Phase 2: Verdict
-        try:
-            await self._ensure_not_deleted(db, ctx.turn_id)
-        except TurnNoLongerWritable:
-            await rollback_quietly()
-            return result
-
-        await emit("verdict_started", {"model_id": ctx.verdict_model_id})
-
-        is_referee = ctx.strategy == Strategy.REFEREE
-        verdict_system = self._prompts.verdict_prompt(
-            strategy=ctx.strategy.value,
-            user_message=ctx.user_message,
-            model_answers=answer_context,
-            strict_referee_behavior=ctx.referee_system_prompt if is_referee else None,
-            referee_instructions=None if is_referee else ctx.referee_instructions,
-            custom_instructions=None if is_referee else ctx.referee_instructions,
-            template_instructions=None if is_referee else ctx.template_instructions,
-            user_brain_context=ctx.user_brain_context,
-            rolling_chat_memory=ctx.rolling_chat_memory,
-            recent_conversation_context=ctx.recent_conversation_context,
-            playbook_context=ctx.playbook_context,
-        )
-
-        verdict_model = get_model(ctx.verdict_model_id)
-        provider = self._providers.get_provider(verdict_model.provider)
-
-        try:
-            await self._ensure_not_deleted(db, ctx.turn_id)
-            # The verdict call is the single point where a whole turn used to be
-            # thrown away: a transient provider error or a response that was not
-            # strict JSON produced "4 answers, no verdict". Retry once, then fall
-            # back to the raw text rather than failing the turn.
-            verdict_response = None
-            last_error: Exception | None = None
-            for attempt in range(VERDICT_MAX_ATTEMPTS):
-                try:
-                    verdict_response = await self._await_provider_complete(
-                        ctx.turn_id,
-                        provider.complete(
-                            system=verdict_system,
-                            user="Produce the verdict JSON now.",
-                            model=verdict_model.provider_model,
-                            max_tokens=VERDICT_MAX_TOKENS,
-                        ),
-                    )
-                    break
-                except (asyncio.CancelledError, TurnNoLongerWritable):
-                    raise
-                except Exception as exc:  # noqa: BLE001 - retried below
-                    last_error = exc
-                    if attempt + 1 >= VERDICT_MAX_ATTEMPTS:
-                        raise
-                    logger.warning(
-                        "verdict_attempt_failed",
-                        attempt=attempt + 1,
-                        error=format_llm_error(exc),
-                    )
-                    await self._ensure_not_deleted(db, ctx.turn_id)
-
-            if verdict_response is None:  # pragma: no cover - defensive
-                raise last_error or RuntimeError("Verdict model returned no response")
-
-            await self._ensure_not_deleted(db, ctx.turn_id)
-            verdict_text, verdict_reason, parsed_verdict = _verdict_fields(
-                provider, verdict_response.text
-            )
-            if not verdict_text:
-                raise ValueError("Verdict model returned an empty response")
-
-            answer_scores = _validated_answer_scores(
-                parsed_verdict,
-                list(answer_rows.values()),
-            )
-
-            failed_count = sum(1 for a in answer_context if a["failed"])
-            final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
-            await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-            persisted_answer_scores = await self._persist_answer_scores(
-                db,
-                ctx.turn_id,
-                answer_scores,
-            )
-            reported_verdict_cost = verdict_response.cost_usd
-            stored_verdict_cost = (
-                float(reported_verdict_cost) if reported_verdict_cost is not None else 0.0
-            )
-            verdict_row = Verdict(
-                turn_id=ctx.turn_id,
-                model_id=ctx.verdict_model_id,
-                strategy=ctx.strategy,
-                text=verdict_text,
-                reason=verdict_reason,
-                tokens_input=verdict_response.tokens_input,
-                tokens_output=verdict_response.tokens_output,
-                cost_usd=stored_verdict_cost,
-            )
-            db.add(verdict_row)
-            result.verdict = verdict_row
-            await db.flush()
-
-            await self._ensure_not_deleted(db, ctx.turn_id)
-            cost = CostRecord(
-                org_id=ctx.org_id,
-                chat_id=ctx.chat_id,
-                project_id=ctx.project_id,
-                turn_id=ctx.turn_id,
-                model_id=ctx.verdict_model_id,
-                kind=UsageKind.VERDICT,
-                tokens_input=verdict_response.tokens_input,
-                tokens_output=verdict_response.tokens_output,
-                cost_usd=stored_verdict_cost,
-            )
-            db.add(cost)
-            result.cost_records.append(cost)
-            await db.flush()
-
-            turn_updated = await db.execute(
-                update(Turn)
-                .where(Turn.id == ctx.turn_id)
-                .values(status=final_status, error_message=None)
-            )
-            if turn_updated.rowcount != 1:
-                await rollback_quietly()
-                return result
+            answer_rows = {row.model_id: row for row in fresh_answers.scalars().all()}
             await db.commit()
-            await self._ensure_not_deleted(db, ctx.turn_id)
 
-            await emit(
-                "verdict_completed",
-                {
-                    "id": str(verdict_row.id),
-                    "model_id": ctx.verdict_model_id,
-                    "strategy": ctx.strategy.value,
-                    "text": verdict_row.text,
-                    "reason": verdict_row.reason,
-                    "answer_scores": persisted_answer_scores,
-                    "tokens_input": verdict_row.tokens_input,
-                    "tokens_output": verdict_row.tokens_output,
-                    "cost_usd": reported_verdict_cost,
-                },
-            )
-        except asyncio.CancelledError:
-            raise
-        except TurnNoLongerWritable:
-            await rollback_quietly()
-            return result
-        except Exception as exc:
-            message = format_llm_error(exc)
-            logger.error(
-                "verdict_failed",
-                turn_id=ctx.turn_id,
-                operation="persist_verdict",
-                error_type=type(exc).__name__,
-                error=message,
-            )
-            # PostgreSQL leaves the transaction unusable after a statement
-            # failure. Roll back before issuing deletion or status queries so
-            # the original error is not masked by InFailedSQLTransactionError.
-            await rollback_quietly()
-            if await is_turn_deleted(db, ctx.turn_id):
+            required_ids = production_model_ids or list(ctx.model_ids)
+            for model_id in required_ids:
+                if answer_rows.get(model_id) is None:
+                    await cancel_outstanding()
+                    return result
+
+            if not production_model_ids:
+                # Shadow-only council: display/store answers, never run Verdict.
+                shadow_failed = sum(
+                    1
+                    for model_id in ctx.model_ids
+                    if answer_rows[model_id].status != ModelAnswerStatus.COMPLETED
+                )
+                if shadow_failed == len(ctx.model_ids):
+                    try:
+                        await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                    except TurnNoLongerWritable:
+                        await rollback_quietly()
+                        await cancel_outstanding()
+                        return result
+                    failed_update = await db.execute(
+                        update(Turn)
+                        .where(Turn.id == ctx.turn_id)
+                        .values(
+                            status=TurnStatus.FAILED,
+                            error_message="All models failed to respond",
+                        )
+                    )
+                    if failed_update.rowcount != 1:
+                        await rollback_quietly()
+                        await cancel_outstanding()
+                        return result
+                    await db.commit()
+                    await emit(
+                        "turn_failed",
+                        {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE},
+                    )
+                    return result
+                final_status = (
+                    TurnStatus.PARTIAL if shadow_failed else TurnStatus.COMPLETED
+                )
+                try:
+                    await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                except TurnNoLongerWritable:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                turn_updated = await db.execute(
+                    update(Turn)
+                    .where(Turn.id == ctx.turn_id)
+                    .values(status=final_status, error_message=None)
+                )
+                if turn_updated.rowcount != 1:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                await db.commit()
+                try:
+                    await self._ensure_not_deleted(db, ctx.turn_id)
+                except TurnNoLongerWritable:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                await emit(
+                    "turn_completed",
+                    {"turn_id": str(ctx.turn_id), "status": final_status.value},
+                )
                 return result
+
+            # Verdict / status use production answers only. Shadow failures are
+            # non-critical and never appear in the Verdict prompt.
+            answer_context = []
+            for model_id in production_model_ids:
+                row = answer_rows[model_id]
+                model = get_model(model_id)
+                answer_context.append(
+                    {
+                        "model_id": model_id,
+                        "model_name": model.name,
+                        "text": row.text or "",
+                        "failed": row.status != ModelAnswerStatus.COMPLETED,
+                        "error_message": row.error_message,
+                    }
+                )
+
+            successful = [a for a in answer_context if not a["failed"]]
+            if not successful:
+                try:
+                    await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                except TurnNoLongerWritable:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                failed_update = await db.execute(
+                    update(Turn)
+                    .where(Turn.id == ctx.turn_id)
+                    .values(
+                        status=TurnStatus.FAILED,
+                        error_message="All models failed to respond",
+                    )
+                )
+                if failed_update.rowcount != 1:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                await db.commit()
+                await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
+                await drain_remaining(require_active=False)
+                return result
+
+            # A one-member Council is a normal single-AI turn. Its persisted answer
+            # is final, so do not invoke or account for a Referee. This deliberately
+            # uses selected membership rather than the number of successful calls.
+            # Shadow members do not count toward this one-member rule.
+            if len(ctx.model_ids) == 1:
+                failed_count = sum(1 for answer in answer_context if answer["failed"])
+                final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
+                try:
+                    await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                except TurnNoLongerWritable:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                turn_updated = await db.execute(
+                    update(Turn)
+                    .where(Turn.id == ctx.turn_id)
+                    .values(status=final_status, error_message=None)
+                )
+                if turn_updated.rowcount != 1:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                await db.commit()
+                try:
+                    await self._ensure_not_deleted(db, ctx.turn_id)
+                except TurnNoLongerWritable:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                await emit(
+                    "turn_completed",
+                    {"turn_id": str(ctx.turn_id), "status": final_status.value},
+                )
+                return result
+
+            # Phase 2: Verdict — production answers only; outstanding shadows keep running.
             try:
-                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                await self._ensure_not_deleted(db, ctx.turn_id)
             except TurnNoLongerWritable:
                 await rollback_quietly()
+                await cancel_outstanding()
                 return result
-            failed_update = await db.execute(
-                update(Turn)
-                .where(Turn.id == ctx.turn_id)
-                .values(
-                    status=TurnStatus.FAILED,
-                    error_message=f"Verdict generation failed: {message}",
-                )
-            )
-            if failed_update.rowcount != 1:
-                await rollback_quietly()
-                return result
-            await db.commit()
-            await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
-            return result
 
-        if await is_turn_deleted(db, ctx.turn_id):
+            await emit("verdict_started", {"model_id": ctx.verdict_model_id})
+
+            is_referee = ctx.strategy == Strategy.REFEREE
+            verdict_system = self._prompts.verdict_prompt(
+                strategy=ctx.strategy.value,
+                user_message=ctx.user_message,
+                model_answers=answer_context,
+                strict_referee_behavior=ctx.referee_system_prompt if is_referee else None,
+                referee_instructions=None if is_referee else ctx.referee_instructions,
+                custom_instructions=None if is_referee else ctx.referee_instructions,
+                template_instructions=None if is_referee else ctx.template_instructions,
+                user_brain_context=ctx.user_brain_context,
+                rolling_chat_memory=ctx.rolling_chat_memory,
+                recent_conversation_context=ctx.recent_conversation_context,
+                playbook_context=ctx.playbook_context,
+            )
+
+            verdict_model = get_model(ctx.verdict_model_id)
+            provider = self._providers.get_provider(verdict_model.provider)
+
+            try:
+                await self._ensure_not_deleted(db, ctx.turn_id)
+                # The verdict call is the single point where a whole turn used to be
+                # thrown away: a transient provider error or a response that was not
+                # strict JSON produced "4 answers, no verdict". Retry once, then fall
+                # back to the raw text rather than failing the turn.
+                verdict_response = None
+                last_error: Exception | None = None
+                for attempt in range(VERDICT_MAX_ATTEMPTS):
+                    try:
+                        verdict_response = await self._await_provider_complete(
+                            ctx.turn_id,
+                            provider.complete(
+                                system=verdict_system,
+                                user="Produce the verdict JSON now.",
+                                model=verdict_model.provider_model,
+                                max_tokens=VERDICT_MAX_TOKENS,
+                            ),
+                        )
+                        break
+                    except (asyncio.CancelledError, TurnNoLongerWritable):
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - retried below
+                        last_error = exc
+                        if attempt + 1 >= VERDICT_MAX_ATTEMPTS:
+                            raise
+                        logger.warning(
+                            "verdict_attempt_failed",
+                            attempt=attempt + 1,
+                            error=format_llm_error(exc),
+                        )
+                        await self._ensure_not_deleted(db, ctx.turn_id)
+
+                if verdict_response is None:  # pragma: no cover - defensive
+                    raise last_error or RuntimeError("Verdict model returned no response")
+
+                await self._ensure_not_deleted(db, ctx.turn_id)
+                verdict_text, verdict_reason, parsed_verdict = _verdict_fields(
+                    provider, verdict_response.text
+                )
+                if not verdict_text:
+                    raise ValueError("Verdict model returned an empty response")
+
+                answer_scores = _validated_answer_scores(
+                    parsed_verdict,
+                    list(answer_rows.values()),
+                )
+
+                failed_count = sum(1 for a in answer_context if a["failed"])
+                final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
+                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                persisted_answer_scores = await self._persist_answer_scores(
+                    db,
+                    ctx.turn_id,
+                    answer_scores,
+                )
+                reported_verdict_cost = verdict_response.cost_usd
+                stored_verdict_cost = (
+                    float(reported_verdict_cost) if reported_verdict_cost is not None else 0.0
+                )
+                verdict_row = Verdict(
+                    turn_id=ctx.turn_id,
+                    model_id=ctx.verdict_model_id,
+                    strategy=ctx.strategy,
+                    text=verdict_text,
+                    reason=verdict_reason,
+                    tokens_input=verdict_response.tokens_input,
+                    tokens_output=verdict_response.tokens_output,
+                    cost_usd=stored_verdict_cost,
+                )
+                db.add(verdict_row)
+                result.verdict = verdict_row
+                await db.flush()
+
+                await self._ensure_not_deleted(db, ctx.turn_id)
+                cost = CostRecord(
+                    org_id=ctx.org_id,
+                    chat_id=ctx.chat_id,
+                    project_id=ctx.project_id,
+                    turn_id=ctx.turn_id,
+                    model_id=ctx.verdict_model_id,
+                    kind=UsageKind.VERDICT,
+                    tokens_input=verdict_response.tokens_input,
+                    tokens_output=verdict_response.tokens_output,
+                    cost_usd=stored_verdict_cost,
+                )
+                db.add(cost)
+                result.cost_records.append(cost)
+                await db.flush()
+
+                turn_updated = await db.execute(
+                    update(Turn)
+                    .where(Turn.id == ctx.turn_id)
+                    .values(status=final_status, error_message=None)
+                )
+                if turn_updated.rowcount != 1:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                await db.commit()
+                await self._ensure_not_deleted(db, ctx.turn_id)
+
+                await emit(
+                    "verdict_completed",
+                    {
+                        "id": str(verdict_row.id),
+                        "model_id": ctx.verdict_model_id,
+                        "strategy": ctx.strategy.value,
+                        "text": verdict_row.text,
+                        "reason": verdict_row.reason,
+                        "answer_scores": persisted_answer_scores,
+                        "tokens_input": verdict_row.tokens_input,
+                        "tokens_output": verdict_row.tokens_output,
+                        "cost_usd": reported_verdict_cost,
+                    },
+                )
+            except asyncio.CancelledError:
+                raise
+            except TurnNoLongerWritable:
+                await rollback_quietly()
+                await cancel_outstanding()
+                return result
+            except Exception as exc:
+                message = format_llm_error(exc)
+                logger.error(
+                    "verdict_failed",
+                    turn_id=ctx.turn_id,
+                    operation="persist_verdict",
+                    error_type=type(exc).__name__,
+                    error=message,
+                )
+                # PostgreSQL leaves the transaction unusable after a statement
+                # failure. Roll back before issuing deletion or status queries so
+                # the original error is not masked by InFailedSQLTransactionError.
+                await rollback_quietly()
+                if await is_turn_deleted(db, ctx.turn_id):
+                    await cancel_outstanding()
+                    return result
+                try:
+                    await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+                except TurnNoLongerWritable:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                failed_update = await db.execute(
+                    update(Turn)
+                    .where(Turn.id == ctx.turn_id)
+                    .values(
+                        status=TurnStatus.FAILED,
+                        error_message=f"Verdict generation failed: {message}",
+                    )
+                )
+                if failed_update.rowcount != 1:
+                    await rollback_quietly()
+                    await cancel_outstanding()
+                    return result
+                await db.commit()
+                await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
+                await drain_remaining(require_active=False)
+                return result
+
+            if await is_turn_deleted(db, ctx.turn_id):
+                await rollback_quietly()
+                await cancel_outstanding()
+                return result
+            await drain_remaining(require_active=False)
+            await emit(
+                "turn_completed",
+                {
+                    "turn_id": str(ctx.turn_id),
+                    "status": (TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED).value,
+                },
+            )
+            return result
+        except TurnNoLongerWritable:
+            await cancel_outstanding()
             await rollback_quietly()
             return result
-        await emit(
-            "turn_completed",
-            {
-                "turn_id": str(ctx.turn_id),
-                "status": (TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED).value,
-            },
-        )
-        return result
+        except asyncio.CancelledError:
+            await cancel_outstanding()
+            raise
 
 
 _orchestrator: TurnOrchestrator | None = None
