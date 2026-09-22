@@ -1376,8 +1376,8 @@ class ChatService:
                             )
 
                             digest = format_council_digest(turn_row.model_answers or [])
-                            has_production_council = digest is not None
-                            if turn_row.verdict is not None or has_production_council:
+                            has_council_digest = digest is not None
+                            if turn_row.verdict is not None or has_council_digest:
                                 await brain_knowledge_service.ingest_turn(
                                     run_db,
                                     org_id=auth.org_id,

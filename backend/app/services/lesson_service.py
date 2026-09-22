@@ -23,7 +23,7 @@ from app.db.models import (
     VerdictLesson,
 )
 from app.services.brain_service import brain_service
-from app.llm.catalog import get_model, intelligence_eligible_model_ids, intelligence_eligible_answers, resolve_llm_cost
+from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.orchestrator import TurnContext, get_orchestrator
 from app.llm.prompt_engine import get_prompt_engine, resolve_effective_referee_prompt
 from app.llm.providers import get_provider_registry
@@ -388,7 +388,7 @@ class LessonService:
             raise ConflictError("This turn has no verdict to disagree with")
         verdict_model = get_model(turn.verdict.model_id)
         answer_context = []
-        for answer in intelligence_eligible_answers(turn.model_answers):
+        for answer in turn.model_answers:
             model = get_model(answer.model_id)
             answer_context.append(
                 {
@@ -428,7 +428,7 @@ class LessonService:
         challenge: str,
     ) -> list[dict[str, Any]]:
         model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
-        model_ids = intelligence_eligible_model_ids(list(model_set.models or []))
+        model_ids = list(model_set.models or [])
         if not model_ids:
             return []
 

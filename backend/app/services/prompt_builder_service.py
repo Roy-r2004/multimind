@@ -17,7 +17,7 @@ from app.core.dependencies import AuthContext
 from app.core.exceptions import AppError, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.db.models import ModelSet
-from app.llm.catalog import estimate_tokens, get_model, intelligence_eligible_model_ids
+from app.llm.catalog import estimate_tokens, get_model
 from app.llm.pricing import get_pricing_service
 from app.llm.providers import LLMResponse, get_provider_registry
 from app.schemas.api import (
@@ -147,7 +147,7 @@ class PromptBuilderService:
         self._raise_if_overflow(projected)
         proposals = await self._run_council(
             providers,
-            model_ids=intelligence_eligible_model_ids(list(model_set.models)),
+            model_ids=list(model_set.models),
             transcript=transcript,
         )
         if not proposals:
@@ -242,7 +242,7 @@ class PromptBuilderService:
         return estimate_tokens(f"system:\n{system}\n\nuser:\n{user}")
 
     async def _projected_budgets(self, model_set: ModelSet, transcript: str) -> list[_CallBudget]:
-        council_ids = intelligence_eligible_model_ids(list(model_set.models))
+        council_ids = list(model_set.models)
         council_user = self._council_user_payload(transcript)
         budgets: list[_CallBudget] = []
         for model_id in council_ids:
@@ -330,8 +330,6 @@ class PromptBuilderService:
         if model_set is None:
             raise NotFoundError("ModelSet", slug)
         if not model_set.models:
-            raise ValidationError("Model set has no council models")
-        if not intelligence_eligible_model_ids(list(model_set.models)):
             raise ValidationError("Model set has no council models")
         if not (model_set.verdict_model or "").strip():
             raise ValidationError("Model set has no verdict model")
