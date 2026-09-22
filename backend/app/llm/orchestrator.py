@@ -20,11 +20,7 @@ from app.db.models import (
     UsageKind,
     Verdict,
 )
-from app.llm.catalog import (
-    get_model,
-    intelligence_eligible_model_ids,
-    is_intelligence_eligible_model,
-)
+from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import council_fallback_reason, get_provider_registry
 
@@ -149,8 +145,6 @@ def _validated_answer_scores(
     for row in answer_rows:
         if row.status != ModelAnswerStatus.COMPLETED:
             continue
-        if not is_intelligence_eligible_model(row.model_id):
-            continue
         model_name = get_model(row.model_id).name
         if model_name in completed_by_name:
             duplicate_names.add(model_name)
@@ -234,22 +228,6 @@ class TurnOrchestrator:
                 Turn.id == turn_id,
                 Turn.status.in_(ACTIVE_TURN_STATUSES),
             )
-            .with_for_update()
-        )
-        if result.scalar_one_or_none() is None:
-            raise TurnNoLongerWritable
-
-    async def _lock_existing_turn_for_answer_persistence(
-        self, db: AsyncSession, turn_id: str
-    ) -> None:
-        """Allow ModelAnswer writes after production status is already terminal.
-
-        Shadow council members may finish after Verdict. Their rows still need a
-        live, non-deleted turn, but must not require PENDING/RUNNING.
-        """
-        result = await db.execute(
-            select(Turn.id)
-            .where(Turn.id == turn_id, Turn.deleted_at.is_(None))
             .with_for_update()
         )
         if result.scalar_one_or_none() is None:
@@ -487,18 +465,13 @@ class TurnOrchestrator:
             except Exception as exc:
                 return ModelCallResult(model_id=model_id, model_name=model.name, error=exc)
 
-        async def persist_model_result(
-            call_result: ModelCallResult, *, require_active: bool = True
-        ) -> None:
+        async def persist_model_result(call_result: ModelCallResult) -> None:
             if call_result.error is not None:
                 message = format_llm_error(call_result.error)
                 logger.warning(
                     "model_answer_failed", model_id=call_result.model_id, error=message
                 )
-                if require_active:
-                    await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-                else:
-                    await self._lock_existing_turn_for_answer_persistence(db, ctx.turn_id)
+                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
                 updated = await db.execute(
                     update(ModelAnswer)
                     .where(
@@ -529,10 +502,7 @@ class TurnOrchestrator:
             # Persist / emit only the OpenRouter-reported charge (never estimate).
             reported_cost = response.cost_usd
             stored_cost = float(reported_cost) if reported_cost is not None else 0.0
-            if require_active:
-                await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-            else:
-                await self._lock_existing_turn_for_answer_persistence(db, ctx.turn_id)
+            await self._lock_active_turn_for_persistence(db, ctx.turn_id)
             updated = await db.execute(
                 update(ModelAnswer)
                 .where(
@@ -589,16 +559,7 @@ class TurnOrchestrator:
                 },
             )
 
-        production_model_ids = intelligence_eligible_model_ids(ctx.model_ids)
-        production_id_set = set(production_model_ids)
-        shadow_ids = [model_id for model_id in ctx.model_ids if model_id not in production_id_set]
-
-        production_tasks = [
-            asyncio.create_task(call_model(model_id)) for model_id in production_model_ids
-        ]
-        shadow_tasks = [asyncio.create_task(call_model(model_id)) for model_id in shadow_ids]
-        all_tasks = [*production_tasks, *shadow_tasks]
-        remaining: set[asyncio.Task[ModelCallResult]] = set()
+        all_tasks = [asyncio.create_task(call_model(model_id)) for model_id in ctx.model_ids]
 
         async def cancel_outstanding() -> None:
             for task in all_tasks:
@@ -606,40 +567,10 @@ class TurnOrchestrator:
                     task.cancel()
             await asyncio.gather(*all_tasks, return_exceptions=True)
 
-        async def persist_until_barrier(
-            barrier: set[asyncio.Task[ModelCallResult]],
-            extra: set[asyncio.Task[ModelCallResult]],
-        ) -> set[asyncio.Task[ModelCallResult]]:
-            leftover = set(barrier) | set(extra)
-            barrier_left = set(barrier)
-            while barrier_left:
-                done, leftover = await asyncio.wait(
-                    leftover, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in done:
-                    barrier_left.discard(task)
-                    call_result = await task
-                    await persist_model_result(call_result, require_active=True)
-            return leftover
-
-        async def drain_remaining(*, require_active: bool) -> None:
-            nonlocal remaining
-            leftover = remaining
-            remaining = set()
-            while leftover:
-                done, leftover = await asyncio.wait(
-                    leftover, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in done:
-                    call_result = await task
-                    await persist_model_result(call_result, require_active=require_active)
-
         try:
-            # Production is the Verdict timing barrier. Shadows start concurrently
-            # but never gate Verdict. Shadow-only councils have no production barrier.
-            barrier = set(production_tasks) if production_model_ids else set(all_tasks)
-            extra = set(shadow_tasks) if production_model_ids else set()
-            remaining = await persist_until_barrier(barrier, extra)
+            # Await every selected Council member and persist results as they finish.
+            for task in asyncio.as_completed(all_tasks):
+                await persist_model_result(await task)
         except TurnNoLongerWritable:
             await cancel_outstanding()
             await rollback_quietly()
@@ -662,80 +593,16 @@ class TurnOrchestrator:
             answer_rows = {row.model_id: row for row in fresh_answers.scalars().all()}
             await db.commit()
 
-            required_ids = production_model_ids or list(ctx.model_ids)
-            for model_id in required_ids:
+            for model_id in ctx.model_ids:
                 if answer_rows.get(model_id) is None:
                     await cancel_outstanding()
                     return result
 
-            if not production_model_ids:
-                # Shadow-only council: display/store answers, never run Verdict.
-                shadow_failed = sum(
-                    1
-                    for model_id in ctx.model_ids
-                    if answer_rows[model_id].status != ModelAnswerStatus.COMPLETED
-                )
-                if shadow_failed == len(ctx.model_ids):
-                    try:
-                        await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-                    except TurnNoLongerWritable:
-                        await rollback_quietly()
-                        await cancel_outstanding()
-                        return result
-                    failed_update = await db.execute(
-                        update(Turn)
-                        .where(Turn.id == ctx.turn_id)
-                        .values(
-                            status=TurnStatus.FAILED,
-                            error_message="All models failed to respond",
-                        )
-                    )
-                    if failed_update.rowcount != 1:
-                        await rollback_quietly()
-                        await cancel_outstanding()
-                        return result
-                    await db.commit()
-                    await emit(
-                        "turn_failed",
-                        {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE},
-                    )
-                    return result
-                final_status = (
-                    TurnStatus.PARTIAL if shadow_failed else TurnStatus.COMPLETED
-                )
-                try:
-                    await self._lock_active_turn_for_persistence(db, ctx.turn_id)
-                except TurnNoLongerWritable:
-                    await rollback_quietly()
-                    await cancel_outstanding()
-                    return result
-                turn_updated = await db.execute(
-                    update(Turn)
-                    .where(Turn.id == ctx.turn_id)
-                    .values(status=final_status, error_message=None)
-                )
-                if turn_updated.rowcount != 1:
-                    await rollback_quietly()
-                    await cancel_outstanding()
-                    return result
-                await db.commit()
-                try:
-                    await self._ensure_not_deleted(db, ctx.turn_id)
-                except TurnNoLongerWritable:
-                    await rollback_quietly()
-                    await cancel_outstanding()
-                    return result
-                await emit(
-                    "turn_completed",
-                    {"turn_id": str(ctx.turn_id), "status": final_status.value},
-                )
-                return result
-
-            # Verdict / status use production answers only. Shadow failures are
-            # non-critical and never appear in the Verdict prompt.
             answer_context = []
-            for model_id in production_model_ids:
+            for model_id in ctx.model_ids:
                 row = answer_rows[model_id]
+                if row.status != ModelAnswerStatus.COMPLETED:
+                    continue
                 model = get_model(model_id)
                 answer_context.append(
                     {
@@ -747,8 +614,11 @@ class TurnOrchestrator:
                     }
                 )
 
-            successful = [a for a in answer_context if not a["failed"]]
-            if not successful:
+            failed_count = sum(
+                answer_rows[model_id].status != ModelAnswerStatus.COMPLETED
+                for model_id in ctx.model_ids
+            )
+            if not answer_context:
                 try:
                     await self._lock_active_turn_for_persistence(db, ctx.turn_id)
                 except TurnNoLongerWritable:
@@ -769,15 +639,12 @@ class TurnOrchestrator:
                     return result
                 await db.commit()
                 await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
-                await drain_remaining(require_active=False)
                 return result
 
             # A one-member Council is a normal single-AI turn. Its persisted answer
             # is final, so do not invoke or account for a Referee. This deliberately
             # uses selected membership rather than the number of successful calls.
-            # Shadow members do not count toward this one-member rule.
             if len(ctx.model_ids) == 1:
-                failed_count = sum(1 for answer in answer_context if answer["failed"])
                 final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
                 try:
                     await self._lock_active_turn_for_persistence(db, ctx.turn_id)
@@ -807,7 +674,7 @@ class TurnOrchestrator:
                 )
                 return result
 
-            # Phase 2: Verdict — production answers only; outstanding shadows keep running.
+            # Phase 2: Verdict uses all completed selected Council answers.
             try:
                 await self._ensure_not_deleted(db, ctx.turn_id)
             except TurnNoLongerWritable:
@@ -883,7 +750,6 @@ class TurnOrchestrator:
                     list(answer_rows.values()),
                 )
 
-                failed_count = sum(1 for a in answer_context if a["failed"])
                 final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED
                 await self._lock_active_turn_for_persistence(db, ctx.turn_id)
                 persisted_answer_scores = await self._persist_answer_scores(
@@ -993,14 +859,12 @@ class TurnOrchestrator:
                     return result
                 await db.commit()
                 await emit("turn_failed", {"code": TURN_FAILED_CODE, "error": TURN_FAILED_MESSAGE})
-                await drain_remaining(require_active=False)
                 return result
 
             if await is_turn_deleted(db, ctx.turn_id):
                 await rollback_quietly()
                 await cancel_outstanding()
                 return result
-            await drain_remaining(require_active=False)
             await emit(
                 "turn_completed",
                 {

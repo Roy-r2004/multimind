@@ -13,7 +13,7 @@ import httpx
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logging import get_logger
-from app.llm.catalog import is_shadow_model, model_id_to_slug
+from app.llm.catalog import model_id_to_slug
 
 logger = get_logger(__name__)
 
@@ -21,7 +21,7 @@ CONFIDENCE_PATTERN = re.compile(r"CONFIDENCE:\s*(\d{1,3})", re.IGNORECASE)
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_LLM_TEMPERATURE = 0.7
 # Strongest → weakest. Speed-profile fallback only walks downward.
-_SHADOW_REASONING_STRENGTH = (
+_REASONING_STRENGTH = (
     "max",
     "xhigh",
     "high",
@@ -29,12 +29,12 @@ _SHADOW_REASONING_STRENGTH = (
     "low",
     "minimal",
 )
-SHADOW_PREFERRED_REASONING_EFFORT = {
+MODEL_REASONING_EFFORTS = {
     "nvidia/nemotron-3-ultra-550b-a55b": "medium",
     "qwen/qwen3.8-max-0902": "low",
     "deepseek/deepseek-v4.1-flash": "low",
 }
-SHADOW_WEB_PLUGIN = {
+MODEL_PROFILE_WEB_PLUGIN = {
     "id": "web",
     "engine": "parallel",
     "mode": "turbo",
@@ -337,7 +337,7 @@ def openrouter_provider_preferences(model: str) -> dict[str, Any] | None:
     return None
 
 
-def _shadow_supported_reasoning_efforts(model: str) -> list[str] | None:
+def _supported_reasoning_efforts(model: str) -> list[str] | None:
     """Return OpenRouter `reasoning.supported_efforts` when cached metadata has it."""
     try:
         from app.llm.pricing import get_pricing_service
@@ -355,45 +355,45 @@ def _shadow_supported_reasoning_efforts(model: str) -> list[str] | None:
     return efforts or None
 
 
-def preferred_shadow_reasoning_effort(model: str) -> str:
-    """Explicit faster Shadow profile; never inherit a model's default xhigh/high."""
+def preferred_model_reasoning_effort(model: str) -> str:
+    """Explicit model reasoning profile; never inherit a model's default xhigh/high."""
     slug = model_id_to_slug(model)
-    return SHADOW_PREFERRED_REASONING_EFFORT.get(slug, "medium")
+    return MODEL_REASONING_EFFORTS.get(slug, "medium")
 
 
-def normalize_shadow_reasoning_effort(model: str) -> str:
-    """Use the shadow speed preference, then the closest weaker supported effort."""
-    preferred = preferred_shadow_reasoning_effort(model)
-    supported = _shadow_supported_reasoning_efforts(model)
+def normalize_model_reasoning_effort(model: str) -> str:
+    """Use the model preference, then the closest weaker supported effort."""
+    preferred = preferred_model_reasoning_effort(model)
+    supported = _supported_reasoning_efforts(model)
     if not supported:
         return preferred
     supported_set = set(supported)
     if preferred in supported_set:
         return preferred
     try:
-        rank = _SHADOW_REASONING_STRENGTH.index(preferred)
+        rank = _REASONING_STRENGTH.index(preferred)
     except ValueError:
-        rank = _SHADOW_REASONING_STRENGTH.index("medium")
-    for effort in _SHADOW_REASONING_STRENGTH[rank + 1 :]:
+        rank = _REASONING_STRENGTH.index("medium")
+    for effort in _REASONING_STRENGTH[rank + 1 :]:
         if effort in supported_set:
             return effort
     return preferred
 
 
-def shadow_openrouter_reasoning(model: str) -> dict[str, Any]:
+def model_profile_reasoning(model: str) -> dict[str, Any]:
     return {
         "enabled": True,
-        "effort": normalize_shadow_reasoning_effort(model),
+        "effort": normalize_model_reasoning_effort(model),
         "exclude": True,
     }
 
 
-def apply_shadow_openrouter_request_options(payload: dict[str, Any], model: str) -> None:
-    """Enable hidden reasoning + web search for the three Shadow Council models only."""
-    if not is_shadow_model(model):
+def apply_model_openrouter_profile(payload: dict[str, Any], model: str) -> None:
+    """Enable hidden reasoning + web search for models with an explicit OpenRouter profile."""
+    if model_id_to_slug(model) not in MODEL_REASONING_EFFORTS:
         return
-    payload["reasoning"] = shadow_openrouter_reasoning(model)
-    payload["plugins"] = [{**SHADOW_WEB_PLUGIN}]
+    payload["reasoning"] = model_profile_reasoning(model)
+    payload["plugins"] = [{**MODEL_PROFILE_WEB_PLUGIN}]
 
 
 def build_openrouter_chat_payload(
@@ -425,7 +425,7 @@ def build_openrouter_chat_payload(
         payload["provider"] = provider
     if response_format is not None:
         payload["response_format"] = response_format
-    apply_shadow_openrouter_request_options(payload, model)
+    apply_model_openrouter_profile(payload, model)
     return payload
 
 

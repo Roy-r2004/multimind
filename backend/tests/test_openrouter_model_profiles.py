@@ -1,4 +1,4 @@
-"""Shadow Council OpenRouter payload: reasoning + web plugin, production unchanged."""
+"""Model-specific OpenRouter payload: reasoning + web plugin, other models unchanged."""
 
 from __future__ import annotations
 
@@ -8,23 +8,22 @@ import pytest
 
 from app.llm.catalog import slug_to_model_id
 from app.llm.providers import (
+    MODEL_PROFILE_WEB_PLUGIN,
     OpenRouterProvider,
-    SHADOW_WEB_PLUGIN,
     _content_to_text,
     build_openrouter_chat_payload,
-    normalize_shadow_reasoning_effort,
+    normalize_model_reasoning_effort,
 )
 
-
 NEMOTRON = "nvidia/nemotron-3-ultra-550b-a55b"
-QWEN_SHADOW = "qwen/qwen3.8-max-0902"
-DEEPSEEK_SHADOW = "deepseek/deepseek-v4.1-flash"
-SHADOW_EFFORTS = {
+QWEN_PROFILE = "qwen/qwen3.8-max-0902"
+DEEPSEEK_PROFILE = "deepseek/deepseek-v4.1-flash"
+PROFILE_EFFORTS = {
     NEMOTRON: "medium",
-    QWEN_SHADOW: "medium",
-    DEEPSEEK_SHADOW: "low",
+    QWEN_PROFILE: "low",
+    DEEPSEEK_PROFILE: "low",
 }
-PRODUCTION_MODELS = (
+UNPROFILED_MODELS = (
     "openai/gpt-4.1",
     "gpt-4.1",
     "google/gemini-2.5-pro",
@@ -36,7 +35,7 @@ PRODUCTION_MODELS = (
 )
 
 
-def _assert_shadow_reasoning_and_web(payload: dict, *, effort: str) -> None:
+def _assert_model_profile_reasoning_and_web(payload: dict, *, effort: str) -> None:
     assert payload["reasoning"] == {
         "enabled": True,
         "effort": effort,
@@ -50,12 +49,14 @@ def _assert_shadow_reasoning_and_web(payload: dict, *, effort: str) -> None:
             "max_results": 3,
         }
     ]
-    assert payload["plugins"] == [{**SHADOW_WEB_PLUGIN}]
+    assert payload["plugins"] == [{**MODEL_PROFILE_WEB_PLUGIN}]
     assert not str(payload["model"]).endswith(":online")
 
 
-@pytest.mark.parametrize("model,effort", list(SHADOW_EFFORTS.items()))
-def test_shadow_slugs_use_fast_reasoning_and_parallel_turbo_web(model: str, effort: str) -> None:
+@pytest.mark.parametrize("model,effort", list(PROFILE_EFFORTS.items()))
+def test_model_profile_slugs_use_fast_reasoning_and_parallel_turbo_web(
+    model: str, effort: str
+) -> None:
     payload = build_openrouter_chat_payload(
         model=model,
         system="sys",
@@ -63,11 +64,13 @@ def test_shadow_slugs_use_fast_reasoning_and_parallel_turbo_web(model: str, effo
         max_tokens=256,
     )
     assert payload["model"] == model
-    _assert_shadow_reasoning_and_web(payload, effort=effort)
+    _assert_model_profile_reasoning_and_web(payload, effort=effort)
 
 
-@pytest.mark.parametrize("slug,effort", list(SHADOW_EFFORTS.items()))
-def test_shadow_or_ids_use_fast_reasoning_and_parallel_turbo_web(slug: str, effort: str) -> None:
+@pytest.mark.parametrize("slug,effort", list(PROFILE_EFFORTS.items()))
+def test_model_profile_or_ids_use_fast_reasoning_and_parallel_turbo_web(
+    slug: str, effort: str
+) -> None:
     model_id = slug_to_model_id(slug)
     payload = build_openrouter_chat_payload(
         model=model_id,
@@ -76,11 +79,11 @@ def test_shadow_or_ids_use_fast_reasoning_and_parallel_turbo_web(slug: str, effo
         max_tokens=256,
     )
     assert payload["model"] == model_id
-    _assert_shadow_reasoning_and_web(payload, effort=effort)
+    _assert_model_profile_reasoning_and_web(payload, effort=effort)
 
 
-@pytest.mark.parametrize("model", PRODUCTION_MODELS)
-def test_production_models_do_not_receive_shadow_reasoning_or_web(model: str) -> None:
+@pytest.mark.parametrize("model", UNPROFILED_MODELS)
+def test_unprofiled_models_keep_default_request_options(model: str) -> None:
     payload = build_openrouter_chat_payload(
         model=model,
         system="sys",
@@ -92,11 +95,11 @@ def test_production_models_do_not_receive_shadow_reasoning_or_web(model: str) ->
     assert payload["usage"] == {"include": True}
 
 
-def test_qwen_explicit_medium_is_not_overridden_by_xhigh_default(
+def test_qwen_explicit_low_is_not_overridden_by_xhigh_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _meta(slug: str):
-        if slug == QWEN_SHADOW:
+        if slug == QWEN_PROFILE:
             return {
                 "reasoning": {
                     "mandatory": True,
@@ -111,14 +114,14 @@ def test_qwen_explicit_medium_is_not_overridden_by_xhigh_default(
         "app.llm.pricing.get_pricing_service",
         lambda: SimpleNamespace(get_slug_metadata=_meta),
     )
-    assert normalize_shadow_reasoning_effort(QWEN_SHADOW) == "medium"
+    assert normalize_model_reasoning_effort(QWEN_PROFILE) == "low"
     payload = build_openrouter_chat_payload(
-        model=QWEN_SHADOW,
+        model=QWEN_PROFILE,
         system="sys",
         user="hello",
         max_tokens=256,
     )
-    _assert_shadow_reasoning_and_web(payload, effort="medium")
+    _assert_model_profile_reasoning_and_web(payload, effort="low")
 
 
 def test_medium_preference_falls_down_to_low_when_medium_unsupported(
@@ -133,21 +136,21 @@ def test_medium_preference_falls_down_to_low_when_medium_unsupported(
         "app.llm.pricing.get_pricing_service",
         lambda: SimpleNamespace(get_slug_metadata=_meta),
     )
-    assert normalize_shadow_reasoning_effort(NEMOTRON) == "low"
+    assert normalize_model_reasoning_effort(NEMOTRON) == "low"
     payload = build_openrouter_chat_payload(
         model=NEMOTRON,
         system="sys",
         user="hello",
         max_tokens=256,
     )
-    _assert_shadow_reasoning_and_web(payload, effort="low")
+    _assert_model_profile_reasoning_and_web(payload, effort="low")
 
 
 def test_deepseek_keeps_low_instead_of_upgrading_to_high(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _meta(slug: str):
-        if slug == DEEPSEEK_SHADOW:
+        if slug == DEEPSEEK_PROFILE:
             return {"reasoning": {"supported_efforts": ["max", "high", "low"]}}
         return None
 
@@ -155,14 +158,14 @@ def test_deepseek_keeps_low_instead_of_upgrading_to_high(
         "app.llm.pricing.get_pricing_service",
         lambda: SimpleNamespace(get_slug_metadata=_meta),
     )
-    assert normalize_shadow_reasoning_effort(DEEPSEEK_SHADOW) == "low"
+    assert normalize_model_reasoning_effort(DEEPSEEK_PROFILE) == "low"
     payload = build_openrouter_chat_payload(
-        model=DEEPSEEK_SHADOW,
+        model=DEEPSEEK_PROFILE,
         system="sys",
         user="hello",
         max_tokens=256,
     )
-    _assert_shadow_reasoning_and_web(payload, effort="low")
+    _assert_model_profile_reasoning_and_web(payload, effort="low")
 
 
 def test_content_parser_keeps_final_text_and_drops_reasoning_parts() -> None:
@@ -179,7 +182,7 @@ def test_content_parser_keeps_final_text_and_drops_reasoning_parts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shadow_provider_hides_reasoning_and_keeps_usage_cost(
+async def test_model_profile_provider_hides_reasoning_and_keeps_usage_cost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict = {}
@@ -233,7 +236,7 @@ async def test_shadow_provider_hides_reasoning_and_keeps_usage_cost(
         model=NEMOTRON,
         max_tokens=256,
     )
-    _assert_shadow_reasoning_and_web(captured["json"], effort="medium")
+    _assert_model_profile_reasoning_and_web(captured["json"], effort="medium")
     assert response.text == "Council-visible answer."
     assert "SECRET_INTERNAL_TRACE" not in response.text
     assert response.tokens_input == 21

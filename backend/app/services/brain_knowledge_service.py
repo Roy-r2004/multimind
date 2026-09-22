@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import AuthContext
 from app.core.logging import get_logger
 from app.db.models import BrainKnowledgeItem
-from app.llm.catalog import is_intelligence_eligible_model
 from app.schemas.api import BrainKnowledgeItemResponse
 from app.services.embedding_utils import cosine_similarity, embed_text
 
@@ -29,11 +28,11 @@ SOURCE_SCRAPING_FACILITY = "scraping_facility"
 
 
 def format_council_digest(answers: Sequence[Any], *, max_chars: int = 1200) -> str | None:
-    """Production Council excerpts only — shadow answers never enter Brain."""
+    """Format Council excerpts for Brain ingestion."""
     digest = "; ".join(
         f"{answer.model_id}: {(answer.text or '')[:160]}"
         for answer in answers
-        if getattr(answer, "text", None) and is_intelligence_eligible_model(answer.model_id)
+        if getattr(answer, "text", None)
     )[:max_chars]
     return digest or None
 
