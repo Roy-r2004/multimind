@@ -401,3 +401,109 @@ async def test_saved_prompt_stores_question_and_verdict(db_setup):
                 label_names=[],
             )
         await db.commit()
+
+@pytest.mark.asyncio
+async def test_selection_pins_independent(db_setup):
+    async with db_setup.Session() as db:
+        auth = await auth_for(db, db_setup)
+        for text in ("Alcohol", "REM sleep"):
+            result = await chat_service.pin_verdict(db, auth, db_setup.chat_id, db_setup.verdict_id,
+                pin_type="selection", selected_text=text, selected_html=f"<b>{text}</b>")
+        first, second = result.pinned_verdicts
+        assert result.pinned_verdict_id is None
+        assert first.selected_html and second.selected_html
+        for _ in range(2):
+            result = await chat_service.pin_verdict(db, auth, db_setup.chat_id, db_setup.verdict_id)
+        assert len(result.pinned_verdicts) == 3
+        result = await chat_service.unpin_legacy_verdict(db, auth, db_setup.chat_id)
+        assert {p.id for p in result.pinned_verdicts} == {first.id, second.id}
+        result = await chat_service.unpin_selection(db, auth, db_setup.chat_id, first.id)
+        assert [p.id for p in result.pinned_verdicts] == [second.id]
+        with pytest.raises(NotFoundError):
+            await chat_service.pin_verdict(db, auth, db_setup.chat_id, db_setup.other_verdict_id,
+                pin_type="selection", selected_text="Secret")
+        with pytest.raises(NotFoundError):
+            await chat_service.unpin_selection(db, auth, db_setup.other_chat_id, second.id)
+        listed = await chat_service.list_chats(db, auth)
+        assert listed[0].pinned_verdicts[0].id == second.id
+
+
+def test_pin_request_defaults_and_validation():
+    from pydantic import ValidationError
+    from app.schemas.api import PinVerdictRequest
+    request = PinVerdictRequest(verdict_id="v", selected_text="ignored", selected_html="ignored")
+    assert request.pin_type == "verdict"
+    assert request.selected_text is None and request.selected_html is None
+    for text in (None, "", "  \n"):
+        with pytest.raises(ValidationError):
+            PinVerdictRequest(verdict_id="v", pin_type="selection", selected_text=text)
+    with pytest.raises(ValidationError):
+        PinVerdictRequest(verdict_id="v", pin_type="invalid")
+
+@pytest.mark.asyncio
+async def test_pin_api_backward_compatibility(db_setup):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from app.api.v1.chats import router
+    from app.core.dependencies import get_auth_context
+    from app.db.session import get_db
+
+    async with db_setup.Session() as db:
+        auth = await auth_for(db, db_setup)
+        app = FastAPI()
+        app.include_router(router, prefix="/chats")
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_auth_context] = lambda: auth
+        base = f"/chats/{db_setup.chat_id}"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.put(f"{base}/pinned-verdict", json={"verdict_id": db_setup.verdict_id})
+            assert response.status_code == 200
+            assert response.json()["pinned_verdicts"][0]["pin_type"] == "verdict"
+            selection = await client.post(f"{base}/pinned-verdicts", json={
+                "verdict_id": db_setup.verdict_id, "pin_type": "selection", "selected_text": "Alcohol",
+                "selection_locator": {"start": 0, "end": 7, "quote": "Alcohol"}})
+            assert selection.status_code == 200
+            pin = next(p for p in selection.json()["pinned_verdicts"] if p["pin_type"] == "selection")
+            assert pin["selection_locator"] == {"start": 0, "end": 7, "quote": "Alcohol"}
+            response = await client.delete(f"{base}/pinned-verdicts/{db_setup.verdict_id}")
+            assert [p["id"] for p in response.json()["pinned_verdicts"]] == [pin["id"]]
+            response = await client.delete(f"{base}/pinned-verdicts/selections/{pin['id']}")
+            assert response.status_code == 200 and response.json()["pinned_verdicts"] == []
+            invalid = await client.post(f"{base}/pinned-verdicts", json={
+                "verdict_id": db_setup.verdict_id, "pin_type": "selection", "selected_text": " "})
+            assert invalid.status_code == 422
+
+@pytest.mark.asyncio
+async def test_selection_locator_persists_and_deletes_independently(db_setup):
+    locators = [{"start": 0, "end": 7, "quote": "Alcohol"},
+                {"start": 17, "end": 26, "quote": "REM sleep"}]
+    async with db_setup.Session() as db:
+        auth = await auth_for(db, db_setup)
+        for locator in locators:
+            result = await chat_service.pin_verdict(
+                db, auth, db_setup.chat_id, db_setup.verdict_id,
+                pin_type="selection", selected_text=locator["quote"], selection_locator=locator,
+            )
+        pin_ids = {pin.selected_text: pin.id for pin in result.pinned_verdicts}
+        await db.commit()
+    async with db_setup.Session() as db:
+        auth = await auth_for(db, db_setup)
+        chat = (await chat_service.list_chats(db, auth))[0]
+        assert {pin.selected_text: pin.selection_locator.model_dump() for pin in chat.pinned_verdicts} == {
+            locator["quote"]: locator for locator in locators
+        }
+        result = await chat_service.unpin_selection(db, auth, db_setup.chat_id, pin_ids["Alcohol"])
+        assert [pin.id for pin in result.pinned_verdicts] == [pin_ids["REM sleep"]]
+        assert result.pinned_verdicts[0].selection_locator.model_dump() == locators[1]
+
+
+def test_selection_locator_validation_and_whole_pin_compatibility():
+    from pydantic import ValidationError
+    from app.schemas.api import PinVerdictRequest
+    locator = {"start": 0, "end": 5, "quote": "words"}
+    assert PinVerdictRequest(verdict_id="v", selection_locator=locator).selection_locator is None
+    assert PinVerdictRequest(verdict_id="v", pin_type="selection", selected_text="words").selection_locator is None
+    for invalid in ({**locator, "start": -1}, {**locator, "end": 0},
+                    {**locator, "start": 5}, {**locator, "quote": " "}):
+        with pytest.raises(ValidationError):
+            PinVerdictRequest(verdict_id="v", pin_type="selection", selected_text="words", selection_locator=invalid)

@@ -150,6 +150,26 @@ async def unpin_verdict(
     return await chat_service.unpin_verdict(db, auth, str(chat_id), str(verdict_id))
 
 
+@router.post("/{chat_id}/pinned-verdicts", response_model=ChatResponse)
+async def create_verdict_pin(
+    chat_id: UUID,
+    data: PinVerdictRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.pin_verdict(db, auth, str(chat_id), **data.model_dump())
+
+
+@router.delete("/{chat_id}/pinned-verdicts/selections/{pin_id}", response_model=ChatResponse)
+async def unpin_selection(
+    chat_id: UUID,
+    pin_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.unpin_selection(db, auth, str(chat_id), str(pin_id))
+
+
 @router.put("/{chat_id}/pinned-verdict", response_model=ChatResponse, deprecated=True)
 async def pin_verdict_legacy(
     chat_id: UUID,
@@ -158,7 +178,7 @@ async def pin_verdict_legacy(
     db: AsyncSession = Depends(get_db),
 ):
     """Compatibility adapter for the current scalar-pin frontend."""
-    return await chat_service.pin_verdict(db, auth, str(chat_id), data.verdict_id)
+    return await chat_service.pin_verdict(db, auth, str(chat_id), **data.model_dump())
 
 
 @router.delete("/{chat_id}/pinned-verdict", response_model=ChatResponse, deprecated=True)

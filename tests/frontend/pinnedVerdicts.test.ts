@@ -59,3 +59,10 @@ test("pinned menu labels resolve visible turn positions with a safe fallback", (
     "Pinned verdict",
   );
 });
+
+test("selection pins show stored text without toggling whole Verdict membership", () => {
+  const pin = { id: "p1", verdictId: "A", turnId: "TA", pinType: "selection" as const, selectedText: "Selected words" };
+  assert.equal(isVerdictPinned([pin], "A"), false);
+  assert.equal(pinnedVerdictLabel(pin, []), "Selected words");
+  assert.equal(buildPinnedVerdictMenuItems([pin, { ...pin, id: "p2" }], []).length, 2);
+});

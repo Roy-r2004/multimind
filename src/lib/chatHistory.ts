@@ -42,6 +42,11 @@ export function mapApiChat(c: ApiChat): Chat {
     projectId: c.project_id,
     modelSetId: c.model_set_id ?? null,
     pinnedVerdicts: c.pinned_verdicts.map((pin) => ({
+      id: pin.id,
+      pinType: pin.pin_type ?? "verdict",
+      selectedText: pin.selected_text,
+      selectedHtml: pin.selected_html,
+      selectionLocator: pin.selection_locator,
       verdictId: pin.verdict_id,
       turnId: pin.turn_id,
     })),

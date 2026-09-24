@@ -106,6 +106,11 @@ export type ApiChat = {
   pinned_verdict_id?: string | null;
   pinned_turn_id?: string | null;
   pinned_verdicts: Array<{
+    id?: string;
+    pin_type?: "verdict" | "selection";
+    selected_text?: string | null;
+    selected_html?: string | null;
+    selection_locator?: import("../verdictSelectionNavigation").SelectionLocator | null;
     verdict_id: string;
     turn_id: string;
   }>;

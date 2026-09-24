@@ -34,7 +34,7 @@ export type Chat = {
   updated: string;
   projectId?: string | null;
   modelSetId?: string | null;
-  pinnedVerdicts: Array<{ verdictId: string; turnId: string }>;
+  pinnedVerdicts: import("./pinnedVerdicts").PinnedVerdict[];
   activeReferencedChat?: { id: string; title: string } | null;
 };
 

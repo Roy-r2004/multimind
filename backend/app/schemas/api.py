@@ -1259,7 +1259,24 @@ class ChatReferenceResponse(BaseModel):
     title: str
 
 
+class SelectionPinLocator(BaseModel):
+    start: int = Field(ge=0, strict=True)
+    end: int = Field(gt=0, strict=True)
+    quote: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_offsets(self):
+        if self.end <= self.start or not self.quote.strip():
+            raise ValueError("Selection locator requires ordered offsets and a non-empty quote")
+        return self
+
+
 class PinnedVerdictResponse(BaseModel):
+    id: str
+    pin_type: Literal["verdict", "selection"] = "verdict"
+    selected_text: str | None = None
+    selected_html: str | None = None
+    selection_locator: SelectionPinLocator | None = None
     verdict_id: str
     turn_id: str
 
@@ -1303,6 +1320,21 @@ class ChatUpdateRequest(BaseModel):
 
 class PinVerdictRequest(BaseModel):
     verdict_id: str
+    pin_type: Literal["verdict", "selection"] = "verdict"
+    selected_text: str | None = None
+    selected_html: str | None = None
+    selection_locator: SelectionPinLocator | None = None
+
+    @model_validator(mode="after")
+    def validate_selection(self):
+        if self.pin_type == "selection":
+            if not self.selected_text or not self.selected_text.strip():
+                raise ValueError("Selection pins require non-empty selected_text")
+        else:
+            self.selected_text = None
+            self.selected_html = None
+            self.selection_locator = None
+        return self
 
 
 # --- Turns ---

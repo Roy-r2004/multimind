@@ -50,6 +50,13 @@ import {
   SimpleExplanationBox,
   SimpleExplanationLoadingBox,
 } from "@/components/chat/SimpleExplanationBox";
+import { VerdictSelectionPin } from "@/components/chat/VerdictSelectionPin";
+import { VERDICT_COPY_ROOT_SELECTOR } from "@/lib/verdictSelectionCopy";
+import {
+  locateSelectionRange, scrollToSelectionRange, highlightSelectionRange,
+  type SelectionPinPayload,
+} from "@/lib/verdictSelectionNavigation";
+import type { PinnedVerdict } from "@/lib/pinnedVerdicts";
 import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
 import { UserPromptBubble } from "@/components/chat/UserPromptBubble";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
@@ -230,6 +237,8 @@ export function ChatPage() {
   const [pendingSavedVerdicts, setPendingSavedVerdicts] = useState<Set<string>>(() => new Set());
   const [pendingPinnedVerdicts, setPendingPinnedVerdicts] = useState<Set<string>>(() => new Set());
   const pendingPinnedVerdictsRef = useRef<Set<string>>(new Set());
+  const pinNavigationRef = useRef(0);
+  const clearPinHighlightRef = useRef<(() => void) | null>(null);
   const [showDeleteChat, setShowDeleteChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
   const [deleteTurnTarget, setDeleteTurnTarget] = useState<ApiTurn | null>(null);
@@ -466,7 +475,14 @@ export function ChatPage() {
     el.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [apiTurns.length, activeChatId]);
 
-  function scrollToPinnedVerdict(verdictId: string, turnId: string) {
+  useEffect(() => () => {
+    pinNavigationRef.current += 1;
+    clearPinHighlightRef.current?.();
+  }, [activeChatId]);
+
+  function scrollToPinnedVerdict(verdictId: string, turnId: string, selectionPin?: PinnedVerdict) {
+    const navigation = ++pinNavigationRef.current;
+    clearPinHighlightRef.current?.();
     // Stop "stick to bottom" from fighting the jump to the pinned synthesis.
     shouldPinToBottomRef.current = false;
     showScrollToLatestRef.current = true;
@@ -480,6 +496,7 @@ export function ChatPage() {
     };
 
     const attempt = (n: number) => {
+      if (navigation !== pinNavigationRef.current) return;
       const target = findVerdictSynthesisElement(verdictId, turnId);
       if (!target) {
         if (n < 12) {
@@ -491,15 +508,27 @@ export function ChatPage() {
       }
       const thread = threadRef.current;
       if (thread) {
-        scrollThreadToElement(thread, target, "smooth");
+        scrollThreadToElement(thread, target, selectionPin ? "auto" : "smooth");
       } else {
-        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.scrollIntoView({ behavior: selectionPin ? "auto" : "smooth", block: "center" });
       }
-      flash(target);
+      if (!selectionPin) flash(target);
       // Second pass after layout settles (images/markdown can shift height).
       window.setTimeout(() => {
+        if (navigation !== pinNavigationRef.current) return;
         const settled = findVerdictSynthesisElement(verdictId, turnId);
         if (!settled) return;
+        if (selectionPin) {
+          const root = settled.querySelector(VERDICT_COPY_ROOT_SELECTOR);
+          const range = root ? locateSelectionRange(root, selectionPin) : null;
+          if (!range) {
+            toast.info("Opened the source Verdict, but this fragment could not be located uniquely. Re-pin it to save its exact position.");
+            return;
+          }
+          scrollToSelectionRange(range, threadRef.current);
+          clearPinHighlightRef.current = highlightSelectionRange(range, threadRef.current);
+          return;
+        }
         if (threadRef.current) {
           scrollThreadToElement(threadRef.current, settled, "auto");
         } else {
@@ -509,6 +538,24 @@ export function ChatPage() {
     };
 
     window.requestAnimationFrame(() => attempt(0));
+  }
+
+  async function handlePinSelection(verdictId: string, payload: SelectionPinPayload) {
+    const auth = authHeaders();
+    if (!auth || !activeChatId) throw new Error("No active chat");
+    applyChatUpdate(await api.chats.pinSelection(auth, activeChatId, verdictId, payload.plainText, payload.html, payload.locator));
+    toast.success("Selection pinned");
+  }
+
+  async function handleUnpinSelection(pinId: string) {
+    const auth = authHeaders();
+    if (!auth || !activeChatId) return;
+    try {
+      applyChatUpdate(await api.chats.unpinSelection(auth, activeChatId, pinId));
+      toast.success("Selection unpinned");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not unpin selection");
+    }
   }
 
   async function handlePinVerdict(verdictId: string, currentlyPinned: boolean) {
@@ -868,6 +915,11 @@ export function ChatPage() {
           model_set_id: set.id,
           pinned_verdicts:
             activeChat?.pinnedVerdicts.map((pin) => ({
+              id: pin.id,
+              pin_type: pin.pinType,
+              selected_text: pin.selectedText,
+              selected_html: pin.selectedHtml,
+              selection_locator: pin.selectionLocator,
               verdict_id: pin.verdictId,
               turn_id: pin.turnId,
             })) ?? [],
@@ -1170,9 +1222,28 @@ export function ChatPage() {
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  {pinnedVerdictMenuItems.map((pin) => (
+                  {pinnedVerdictMenuItems.map((pin) => pin.pinType === "selection" ? (
+                    <div key={pin.id} className="flex items-center">
+                      <DropdownMenuItem
+                        className="min-w-0 flex-1"
+                        onSelect={() => scrollToPinnedVerdict(pin.verdictId, pin.turnId, pin)}
+                        title={pin.label}
+                      >
+                        <Pin className="size-3.5 shrink-0 fill-current text-amber-700" />
+                        <span className="truncate">{pin.label}</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        aria-label={`Unpin selection: ${pin.label}`}
+                        title="Unpin selection"
+                        disabled={!pin.id}
+                        onSelect={() => pin.id && void handleUnpinSelection(pin.id)}
+                      >
+                        <X className="size-3.5" />
+                      </DropdownMenuItem>
+                    </div>
+                  ) : (
                     <DropdownMenuItem
-                      key={pin.verdictId}
+                      key={pin.id ?? pin.verdictId}
                       onSelect={() => scrollToPinnedVerdict(pin.verdictId, pin.turnId)}
                     >
                       <Pin className="size-3.5 fill-current text-amber-700" />
@@ -1343,6 +1414,7 @@ export function ChatPage() {
                       modelById={modelById}
                       pendingSavedVerdicts={pendingSavedVerdicts}
                       pinnedVerdicts={pinnedVerdicts}
+                      onPinSelection={handlePinSelection}
                       pinPending={Boolean(
                         turn.verdict && pendingPinnedVerdicts.has(turn.verdict.id),
                       )}
@@ -1966,6 +2038,7 @@ function AiTurn({
   pinnedVerdicts,
   pinPending,
   onTogglePin,
+  onPinSelection,
   onToggleSavedVerdict,
   onLessonUpdate,
 }: {
@@ -1973,7 +2046,8 @@ function AiTurn({
   turn: ApiTurn;
   modelById: (id: string) => { name: string; color: string; vendor: string };
   pendingSavedVerdicts: Set<string>;
-  pinnedVerdicts: Array<{ verdictId: string; turnId: string }>;
+  pinnedVerdicts: PinnedVerdict[];
+  onPinSelection: (verdictId: string, payload: SelectionPinPayload) => Promise<void>;
   pinPending: boolean;
   onTogglePin: (verdictId: string, currentlyPinned: boolean) => void;
   onToggleSavedVerdict: (verdictId: string, saved: boolean) => void;
@@ -2246,6 +2320,7 @@ function AiTurn({
           </div>
         </div>
         <div className="mt-5 space-y-3">
+          <VerdictSelectionPin root={verdictContentRef} onPin={(payload) => onPinSelection(turn.verdict!.id, payload)} />
           <div ref={verdictContentRef} data-verdict-copy-root="">
             <MessageContent variant="verdict">{turn.verdict.text}</MessageContent>
           </div>

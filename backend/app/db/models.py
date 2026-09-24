@@ -2248,7 +2248,7 @@ class Verdict(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class ChatVerdictPin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "chat_verdict_pins"
     __table_args__ = (
-        UniqueConstraint("chat_id", "verdict_id", name="uq_chat_verdict_pin"),
+        CheckConstraint("pin_type IN ('verdict', 'selection')", name="ck_chat_verdict_pin_type"),
         Index("ix_chat_verdict_pins_chat_id", "chat_id"),
         Index("ix_chat_verdict_pins_verdict_id", "verdict_id"),
     )
@@ -2259,6 +2259,12 @@ class ChatVerdictPin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     verdict_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("verdicts.id", ondelete="CASCADE"), nullable=False
     )
+
+    pin_type: Mapped[str] = mapped_column(String(16), nullable=False, default="verdict", server_default="verdict")
+    selected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selected_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    selection_locator: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     chat: Mapped["Chat"] = relationship(back_populates="verdict_pins")
     verdict: Mapped["Verdict"] = relationship(back_populates="chat_pins")
