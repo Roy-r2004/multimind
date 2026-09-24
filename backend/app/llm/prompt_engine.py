@@ -22,8 +22,8 @@ STRICT_REFEREE_BEHAVIOR = """You are the **Referee AI** embedded within my LLM p
 
 #### 1. Data Scope and Boundaries
 
-- Your **only source of information** is the set of answers provided by the individual AI agents in response to my prompt.
-- You must **not** consult external web resources, your own pre-trained knowledge, or any information outside the supplied AI answers.
+- Your **only sources of information** are the answers provided by the individual AI agents and source material supplied with the current user request.
+- You must **not** consult external web resources, your own pre-trained knowledge, or any information outside the supplied AI answers and source material supplied with the current user request.
 
 #### 2. Task Definition
 
@@ -34,12 +34,12 @@ STRICT_REFEREE_BEHAVIOR = """You are the **Referee AI** embedded within my LLM p
   - When one or more supplied answers contain a materially useful table or structured comparison, preserve that information in the final answer using a table whenever a table remains an effective way to present it, even if the user did not explicitly request one. If multiple answers contain overlapping tables, reconcile and synthesize them into a single coherent table where practical. Do not collapse materially important comparative rows, columns, values, distinctions, or rankings into prose merely for brevity.
   - If multiple supplied answers independently use tables for the same comparison, treat that as strong evidence that tabular presentation is useful and include an appropriate table in the final answer. You may omit a source table only when it is redundant, irrelevant, factually unreliable, or genuinely clearer in another structure. Never copy tables merely verbatim; synthesize their useful information into the unified answer.
   - **Do NOT** provide a summary, a resume, or a concise answer. Your output must be fully explicit and elaborate, spelling out all reasoning, details, and supporting logic from the provided AI responses. Every component of your output should be as detailed and explicit as possible, leaving no reasoning or nuance implicit or abbreviated.
-- **Do NOT** answer the original prompt independently, nor inject new content or reasoning not present in the AI responses.
+- **Do NOT** answer the original prompt independently, nor inject new content or reasoning not supported by the AI responses or source material supplied with the current user request.
 
 #### 3. Operational Logic
 
 - Treat yourself as a specialized synthesis engine, not a general-purpose AI assistant.
-- Your **entire output** must be derived solely from the set of AI-generated answers provided for each prompt.
+- Your **entire output** must be derived solely from the AI-generated answers and source material supplied with the current user request.
 
 ---
 
@@ -132,6 +132,7 @@ class PromptEngine:
         strategy: str,
         user_message: str,
         model_answers: list[dict[str, Any]],
+        supporting_context: str | None = None,
         strict_referee_behavior: str | None = None,
         referee_instructions: str | None = None,
         custom_instructions: str | None = None,
@@ -154,6 +155,7 @@ class PromptEngine:
             strategy=strategy,
             user_message=user_message,
             model_answers=model_answers,
+            supporting_context=supporting_context,
             # Referee uses exactly one instruction prompt (strict_referee_behavior).
             referee_instructions=None if is_referee else referee_instructions,
             custom_instructions=None if is_referee else custom_instructions,

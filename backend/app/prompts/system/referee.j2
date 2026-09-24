@@ -8,6 +8,12 @@ Do not answer the question independently for the purpose of scoring. Evaluate ea
 
 {{ user_message }}
 
+{% if supporting_context %}
+## Supporting Context
+
+{{ supporting_context }}
+
+{% endif %}
 ## Supplied Panelist Answers
 
 {% include "partials/model_responses.j2" %}

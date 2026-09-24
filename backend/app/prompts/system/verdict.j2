@@ -40,6 +40,12 @@ The user is continuing this chat. The content below is **prior context only** â€
 
 {{ user_message }}
 
+{% if supporting_context %}
+## Supporting Context
+
+{{ supporting_context }}
+
+{% endif %}
 ## Council Model Responses (evidence only)
 {% include "partials/model_responses.j2" %}
 

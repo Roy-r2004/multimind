@@ -10,8 +10,8 @@ EXPECTED_STRICT_REFEREE_BEHAVIOR = """You are the **Referee AI** embedded within
 
 #### 1. Data Scope and Boundaries
 
-- Your **only source of information** is the set of answers provided by the individual AI agents in response to my prompt.
-- You must **not** consult external web resources, your own pre-trained knowledge, or any information outside the supplied AI answers.
+- Your **only sources of information** are the answers provided by the individual AI agents and source material supplied with the current user request.
+- You must **not** consult external web resources, your own pre-trained knowledge, or any information outside the supplied AI answers and source material supplied with the current user request.
 
 #### 2. Task Definition
 
@@ -22,12 +22,12 @@ EXPECTED_STRICT_REFEREE_BEHAVIOR = """You are the **Referee AI** embedded within
   - When one or more supplied answers contain a materially useful table or structured comparison, preserve that information in the final answer using a table whenever a table remains an effective way to present it, even if the user did not explicitly request one. If multiple answers contain overlapping tables, reconcile and synthesize them into a single coherent table where practical. Do not collapse materially important comparative rows, columns, values, distinctions, or rankings into prose merely for brevity.
   - If multiple supplied answers independently use tables for the same comparison, treat that as strong evidence that tabular presentation is useful and include an appropriate table in the final answer. You may omit a source table only when it is redundant, irrelevant, factually unreliable, or genuinely clearer in another structure. Never copy tables merely verbatim; synthesize their useful information into the unified answer.
   - **Do NOT** provide a summary, a resume, or a concise answer. Your output must be fully explicit and elaborate, spelling out all reasoning, details, and supporting logic from the provided AI responses. Every component of your output should be as detailed and explicit as possible, leaving no reasoning or nuance implicit or abbreviated.
-- **Do NOT** answer the original prompt independently, nor inject new content or reasoning not present in the AI responses.
+- **Do NOT** answer the original prompt independently, nor inject new content or reasoning not supported by the AI responses or source material supplied with the current user request.
 
 #### 3. Operational Logic
 
 - Treat yourself as a specialized synthesis engine, not a general-purpose AI assistant.
-- Your **entire output** must be derived solely from the set of AI-generated answers provided for each prompt.
+- Your **entire output** must be derived solely from the AI-generated answers and source material supplied with the current user request.
 
 ---
 
@@ -64,6 +64,41 @@ def _answers() -> list[dict]:
             "error_message": "AGENT_FAILURE_SENTINEL",
         },
     ]
+
+
+def test_current_turn_attachment_context_reaches_council_and_both_verdict_templates():
+    engine = PromptEngine()
+    attachment = "Attached file: Addiction V2\nContent:\n```text\nATTACHMENT_SOURCE_MARKER\n```"
+    council = engine.model_answer_prompt(
+        user_message="Revise Addiction V2",
+        model_id="test",
+        model_name="Test",
+        vendor="test",
+        model_set_name="Test Council",
+        council_runtime_context=attachment,
+    )
+    assert attachment in council
+    for strategy in ("Synthesize", "Referee"):
+        verdict = engine.verdict_prompt(
+            strategy=strategy,
+            user_message="Revise Addiction V2",
+            model_answers=_answers(),
+            supporting_context=attachment,
+        )
+        assert f"## Supporting Context\n\n{attachment}" in verdict
+        assert "COUNCIL_ANSWER_ALPHA" in verdict
+
+
+def test_verdict_without_supporting_context_omits_section():
+    engine = PromptEngine()
+    for strategy in ("Synthesize", "Referee"):
+        kwargs = dict(strategy=strategy, user_message="QUESTION", model_answers=_answers())
+        baseline = engine.verdict_prompt(**kwargs)
+        assert engine.verdict_prompt(**kwargs, supporting_context=None) == baseline
+        assert engine.verdict_prompt(**kwargs, supporting_context="") == baseline
+        assert "## Supporting Context" not in baseline
+        assert "QUESTION" in baseline
+        assert "COUNCIL_ANSWER_ALPHA" in baseline
 
 
 def test_strict_referee_behavior_is_exact_and_rendered_verbatim():
