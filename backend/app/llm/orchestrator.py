@@ -689,6 +689,7 @@ class TurnOrchestrator:
                 strategy=ctx.strategy.value,
                 user_message=ctx.user_message,
                 model_answers=answer_context,
+                supporting_context=ctx.council_runtime_context,
                 strict_referee_behavior=ctx.referee_system_prompt if is_referee else None,
                 referee_instructions=None if is_referee else ctx.referee_instructions,
                 custom_instructions=None if is_referee else ctx.referee_instructions,
