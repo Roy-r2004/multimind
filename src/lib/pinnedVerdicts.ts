@@ -1,6 +1,15 @@
+import type { SelectionLocator } from "./verdictSelectionNavigation.ts";
 import type { ApiTurn } from "@/lib/api/types";
 
-export type PinnedVerdict = { verdictId: string; turnId: string };
+export type PinnedVerdict = {
+  id?: string;
+  verdictId: string;
+  turnId: string;
+  pinType?: "verdict" | "selection";
+  selectedText?: string | null;
+  selectedHtml?: string | null;
+  selectionLocator?: SelectionLocator | null;
+};
 
 export function pinVerdictPath(chatId: string, verdictId: string): string {
   return `/chats/${chatId}/pinned-verdicts/${verdictId}`;
@@ -18,10 +27,16 @@ export function verdictPinRequest(
 }
 
 export function isVerdictPinned(pins: PinnedVerdict[], verdictId: string | undefined): boolean {
-  return Boolean(verdictId && pins.some((pin) => pin.verdictId === verdictId));
+  return Boolean(
+    verdictId && pins.some((pin) => pin.verdictId === verdictId && pin.pinType !== "selection"),
+  );
 }
 
 export function pinnedVerdictLabel(pin: PinnedVerdict, turns: ApiTurn[]): string {
+  if (pin.pinType === "selection") {
+    const label = (pin.selectedText ?? "").replace(/\s+/g, " ").trim();
+    return label.length > 64 ? `${label.slice(0, 63)}…` : label || "Pinned selection";
+  }
   const visibleIndex = turns.findIndex((turn) => turn.id === pin.turnId);
   return visibleIndex >= 0 ? `Verdict — Turn ${visibleIndex + 1}` : "Pinned verdict";
 }

@@ -137,23 +137,11 @@ export function handleVerdictSelectionCopy(event: ClipboardEvent): boolean {
   if (!data) return false;
   if (isFormFieldCopyTarget(event.target)) return false;
 
-  const selection = typeof window !== "undefined" ? window.getSelection() : null;
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
-
-  let range: Range;
-  try {
-    range = selection.getRangeAt(0);
-  } catch {
-    return false;
-  }
-
-  if (isFormFieldCopyTarget(range.startContainer) || isFormFieldCopyTarget(range.endContainer)) {
-    return false;
-  }
-
-  const startRoot = verdictCopyRootFromNode(range.startContainer);
-  const endRoot = verdictCopyRootFromNode(range.endContainer);
-  if (!startRoot || startRoot !== endRoot) return false;
+  const scoped = verdictSelectionRange(
+    typeof window !== "undefined" ? window.getSelection() : null,
+  );
+  if (!scoped) return false;
+  const { range, root: startRoot } = scoped;
 
   const payload = selectionRangeToClipboard(range, startRoot);
   if (!payload) return false;
@@ -166,6 +154,30 @@ export function handleVerdictSelectionCopy(event: ClipboardEvent): boolean {
   } catch {
     return false;
   }
+}
+
+/** Shared selection scope for native copy and selection pins. */
+export function verdictSelectionRange(
+  selection: Selection | null,
+): { range: Range; root: Element } | null {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+
+  let range: Range;
+  try {
+    range = selection.getRangeAt(0);
+  } catch {
+    return null;
+  }
+
+  if (isFormFieldCopyTarget(range.startContainer) || isFormFieldCopyTarget(range.endContainer)) {
+    return null;
+  }
+
+  const startRoot = verdictCopyRootFromNode(range.startContainer);
+  const endRoot = verdictCopyRootFromNode(range.endContainer);
+  if (!startRoot || startRoot !== endRoot) return null;
+
+  return { range, root: startRoot };
 }
 
 export function selectionRangeToClipboard(range: Range, root: Element): SelectionCopyPayload | null {

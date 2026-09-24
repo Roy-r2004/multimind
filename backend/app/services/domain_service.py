@@ -120,14 +120,14 @@ class ProjectService:
         pins_by_chat: dict[str, list[PinnedVerdictResponse]] = {}
         if chats:
             pin_rows = await db.execute(
-                select(ChatVerdictPin.chat_id, Verdict.id, Verdict.turn_id)
+                select(ChatVerdictPin, Verdict.turn_id)
                 .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)
                 .where(ChatVerdictPin.chat_id.in_([chat.id for chat in chats]))
                 .order_by(ChatVerdictPin.created_at, ChatVerdictPin.id)
             )
-            for chat_id, verdict_id, turn_id in pin_rows.all():
-                pins_by_chat.setdefault(chat_id, []).append(
-                    PinnedVerdictResponse(verdict_id=verdict_id, turn_id=turn_id)
+            for pin, turn_id in pin_rows.all():
+                pins_by_chat.setdefault(pin.chat_id, []).append(
+                    PinnedVerdictResponse(id=pin.id, verdict_id=pin.verdict_id, turn_id=turn_id, pin_type=pin.pin_type, selected_text=pin.selected_text, selected_html=pin.selected_html, selection_locator=pin.selection_locator)
                 )
         mission_result = await db.execute(
             select(ScrapingMission)
@@ -148,10 +148,10 @@ class ProjectService:
                     project_id=c.project_id,
                     model_set_id=c.model_set_id,
                     pinned_verdict_id=(
-                        pins_by_chat[c.id][0].verdict_id if pins_by_chat.get(c.id) else None
+                        next((p.verdict_id for p in pins_by_chat.get(c.id, []) if p.pin_type == "verdict"), None)
                     ),
                     pinned_turn_id=(
-                        pins_by_chat[c.id][0].turn_id if pins_by_chat.get(c.id) else None
+                        next((p.turn_id for p in pins_by_chat.get(c.id, []) if p.pin_type == "verdict"), None)
                     ),
                     pinned_verdicts=pins_by_chat.get(c.id, []),
                     updated_at=c.updated_at,

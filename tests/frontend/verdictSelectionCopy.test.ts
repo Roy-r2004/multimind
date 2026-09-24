@@ -225,3 +225,20 @@ test("Library paste behavior was not changed", () => {
   assert.match(libraryEditorSrc, /clipboard\.getData\("text\/plain"\)/);
   assert.doesNotMatch(libraryEditorSrc, /handleVerdictSelectionCopy/);
 });
+
+test("pin selection scope accepts one Verdict and rejects invalid ranges", async () => {
+  const { verdictSelectionRange } = await import("../../src/lib/verdictSelectionCopy.ts");
+  const rootA = {};
+  const rootB = {};
+  const node = (root: object | null) => ({ closest: (selector: string) => selector === "[data-verdict-copy-root]" ? root : null });
+  const selection = (start: object, end: object, collapsed = false) => ({
+    isCollapsed: collapsed, rangeCount: 1,
+    getRangeAt: () => ({ startContainer: start, endContainer: end }),
+  }) as unknown as Selection;
+  assert.equal(verdictSelectionRange(null), null);
+  assert.equal(verdictSelectionRange(selection(node(rootA), node(rootA), true)), null);
+  assert.equal(verdictSelectionRange(selection(node(null), node(null))), null);
+  assert.equal(verdictSelectionRange(selection(node(rootA), node(rootB))), null);
+  assert.equal(verdictSelectionRange(selection(node(rootA), node(null))), null);
+  assert.equal(verdictSelectionRange(selection(node(rootA), node(rootA)))?.root, rootA);
+});

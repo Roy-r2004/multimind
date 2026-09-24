@@ -1,3 +1,4 @@
+import type { SelectionLocator } from "@/lib/verdictSelectionNavigation";
 /** Typed API methods — one function per backend endpoint */
 
 import { apiFormRequest, apiRequest } from "@/lib/api/client";
@@ -227,6 +228,17 @@ export const api = {
         orgId: auth.orgId,
       });
     },
+
+    pinSelection: (auth: Auth, chatId: string, verdictId: string, plainText: string, html: string, locator?: SelectionLocator | null) =>
+      apiRequest<ApiChat>(`/chats/${chatId}/pinned-verdicts`, {
+        method: "POST", token: auth.token, orgId: auth.orgId,
+        body: { verdict_id: verdictId, pin_type: "selection", selected_text: plainText, selected_html: html, selection_locator: locator },
+      }),
+
+    unpinSelection: (auth: Auth, chatId: string, pinId: string) =>
+      apiRequest<ApiChat>(`/chats/${chatId}/pinned-verdicts/selections/${pinId}`, {
+        method: "DELETE", token: auth.token, orgId: auth.orgId,
+      }),
 
     unpinVerdict: (auth: Auth, chatId: string, verdictId: string) => {
       const request = verdictPinRequest(chatId, verdictId, "unpin");

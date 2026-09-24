@@ -313,14 +313,14 @@ class ChatService:
         pins_by_chat: dict[str, list[PinnedVerdictResponse]] = {}
         if chats:
             rows = await db.execute(
-                select(ChatVerdictPin.chat_id, Verdict.id, Verdict.turn_id)
+                select(ChatVerdictPin, Verdict.turn_id)
                 .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)
                 .where(ChatVerdictPin.chat_id.in_([chat.id for chat in chats]))
                 .order_by(ChatVerdictPin.created_at, ChatVerdictPin.id)
             )
-            for chat_id, verdict_id, turn_id in rows.all():
-                pins_by_chat.setdefault(chat_id, []).append(
-                    PinnedVerdictResponse(verdict_id=verdict_id, turn_id=turn_id)
+            for pin, turn_id in rows.all():
+                pins_by_chat.setdefault(pin.chat_id, []).append(
+                    PinnedVerdictResponse(id=pin.id, verdict_id=pin.verdict_id, turn_id=turn_id, pin_type=pin.pin_type, selected_text=pin.selected_text, selected_html=pin.selected_html, selection_locator=pin.selection_locator)
                 )
         return [
             self._chat_response(
@@ -1581,7 +1581,9 @@ class ChatService:
         )
 
     async def pin_verdict(
-        self, db: AsyncSession, auth: AuthContext, chat_id: str, verdict_id: str
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, verdict_id: str,
+        pin_type: str = "verdict", selected_text: str | None = None, selected_html: str | None = None,
+        selection_locator: dict | None = None,
     ) -> ChatResponse:
         chat = await self.get_chat(db, auth, chat_id)
         result = await db.execute(
@@ -1595,10 +1597,24 @@ class ChatService:
         verdict = result.scalar_one_or_none()
         if verdict is None:
             raise NotFoundError("Verdict", verdict_id)
+        if pin_type not in ("verdict", "selection"):
+            raise ValidationError("Invalid pin_type")
+        if pin_type == "selection":
+            if not selected_text or not selected_text.strip():
+                raise ValidationError("Selection pins require non-empty selected_text")
+            db.add(ChatVerdictPin(chat_id=chat.id, verdict_id=verdict.id,
+                                 pin_type="selection", selected_text=selected_text,
+                                 selected_html=selected_html, selection_locator=selection_locator))
+            await db.flush()
+            return await self._chat_response_async(db, chat)
+        # Serialize whole-pin creation for this chat, including concurrent requests.
+        # A no-op UPDATE also acquires a write lock on SQLite.
+        await db.execute(update(Chat).where(Chat.id == chat.id).values(updated_at=Chat.updated_at))
         existing = await db.execute(
             select(ChatVerdictPin.id).where(
                 ChatVerdictPin.chat_id == chat.id,
                 ChatVerdictPin.verdict_id == verdict.id,
+                ChatVerdictPin.pin_type == "verdict",
             )
         )
         if existing.scalar_one_or_none() is None:
@@ -1637,6 +1653,7 @@ class ChatService:
             delete(ChatVerdictPin).where(
                 ChatVerdictPin.chat_id == chat.id,
                 ChatVerdictPin.verdict_id == verdict_id,
+                ChatVerdictPin.pin_type == "verdict",
             )
         )
         await db.flush()
@@ -1657,13 +1674,22 @@ class ChatService:
             logger.warning("brain_unpin_cleanup_failed", error=str(exc))
         return await self._chat_response_async(db, chat)
 
+    async def unpin_selection(self, db: AsyncSession, auth: AuthContext, chat_id: str, pin_id: str) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        await db.execute(delete(ChatVerdictPin).where(
+            ChatVerdictPin.id == pin_id, ChatVerdictPin.chat_id == chat.id,
+            ChatVerdictPin.pin_type == "selection",
+        ))
+        await db.flush()
+        return await self._chat_response_async(db, chat)
+
     async def unpin_legacy_verdict(
         self, db: AsyncSession, auth: AuthContext, chat_id: str
     ) -> ChatResponse:
         chat = await self.get_chat(db, auth, chat_id)
         result = await db.execute(
             select(ChatVerdictPin.verdict_id)
-            .where(ChatVerdictPin.chat_id == chat.id)
+            .where(ChatVerdictPin.chat_id == chat.id, ChatVerdictPin.pin_type == "verdict")
             .order_by(ChatVerdictPin.created_at, ChatVerdictPin.id)
             .limit(1)
         )
@@ -1680,7 +1706,7 @@ class ChatService:
         active_reference: Chat | None = None,
     ) -> ChatResponse:
         pins = pinned_verdicts or []
-        legacy_pin = pins[0] if pins else None
+        legacy_pin = next((pin for pin in pins if pin.pin_type == "verdict"), None)
         return ChatResponse(
             id=chat.id,  # type: ignore[arg-type]
             title=chat.title,
@@ -1699,14 +1725,14 @@ class ChatService:
 
     async def _chat_response_async(self, db: AsyncSession, chat: Chat) -> ChatResponse:
         result = await db.execute(
-            select(Verdict.id, Verdict.turn_id)
-            .join(ChatVerdictPin, ChatVerdictPin.verdict_id == Verdict.id)
+            select(ChatVerdictPin, Verdict.turn_id)
+            .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)
             .where(ChatVerdictPin.chat_id == chat.id)
             .order_by(ChatVerdictPin.created_at, ChatVerdictPin.id)
         )
         pinned_verdicts = [
-            PinnedVerdictResponse(verdict_id=verdict_id, turn_id=turn_id)
-            for verdict_id, turn_id in result.all()
+            PinnedVerdictResponse(id=pin.id, verdict_id=pin.verdict_id, turn_id=turn_id, pin_type=pin.pin_type, selected_text=pin.selected_text, selected_html=pin.selected_html, selection_locator=pin.selection_locator)
+            for pin, turn_id in result.all()
         ]
         active_reference = None
         if chat.active_referenced_chat_id:
