@@ -23,10 +23,6 @@ import { cn } from "@/lib/utils";
 const CONTEXT_LIMIT_MESSAGE =
   "Context limit reached. Your complete Prompt Builder history is still saved. Nothing was deleted. Start a new Builder session or use a model with a larger context window.";
 
-function compactTokens(value: number): string {
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}K` : String(value);
-}
-
 export function PromptBuilderModal({
   open,
   onClose,
@@ -34,6 +30,7 @@ export function PromptBuilderModal({
   modelSetId,
   sessionIdentity,
   initialComposerText = "",
+  getComposerText,
   voiceDisabled = false,
   onVoiceRecordingStateChange,
 }: {
@@ -43,6 +40,7 @@ export function PromptBuilderModal({
   modelSetId: string;
   sessionIdentity: string;
   initialComposerText?: string;
+  getComposerText: () => string;
   voiceDisabled?: boolean;
   onVoiceRecordingStateChange?: (active: boolean) => void;
 }) {
@@ -50,7 +48,6 @@ export function PromptBuilderModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [contextUsage, setContextUsage] = useState<ApiPromptBuilderContextUsage | null>(null);
-  const [lastActualUsage, setLastActualUsage] = useState<ApiPromptBuilderContextUsage | null>(null);
   const [originalCopied, setOriginalCopied] = useState(false);
   const { authHeaders } = useAuth();
   const auth = authHeaders();
@@ -154,7 +151,6 @@ export function PromptBuilderModal({
       });
       if (loadedKey.current !== requestStorageKey) return;
       setSession(applyPromptBuilderSuccess(next, response.improved_prompt));
-      setLastActualUsage(response.context_usage);
     } catch (caught) {
       if (loadedKey.current !== requestStorageKey) return;
       const message =
@@ -181,10 +177,9 @@ export function PromptBuilderModal({
     )
       return;
     clearPersistedPromptBuilderSession(storageKey);
-    const replacement = startNewPromptBuilderSession(modelSetId);
+    const replacement = startNewPromptBuilderSession(modelSetId, getComposerText());
     setSession(replacement);
     setContextUsage(null);
-    setLastActualUsage(null);
     setError(null);
     setOriginalCopied(false);
   }
@@ -206,11 +201,11 @@ export function PromptBuilderModal({
       onClose={onClose}
       title="Prompt Builder"
       size="lg"
-      className="flex h-[min(92vh,900px)] max-h-[min(92vh,900px)] max-w-[min(94vw,960px)] flex-col"
-      bodyClassName="flex min-h-0 max-h-none flex-1 flex-col overflow-hidden p-5"
+      className="flex h-[min(94vh,1100px)] max-h-[calc(100dvh-2rem)] max-w-[min(95vw,1400px)] flex-col"
+      bodyClassName="flex min-h-0 max-h-none flex-1 flex-col overflow-hidden p-4"
     >
       <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <div className="shrink-0 rounded-xl border border-border bg-accent/10 p-3">
+        <div className="shrink-0 rounded-xl border border-border bg-accent/10 p-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Original Prompt
@@ -229,35 +224,10 @@ export function PromptBuilderModal({
               {originalCopied ? "Copied" : "Copy"}
             </button>
           </div>
-          <div className="mt-1 max-h-[min(20vh,10rem)] min-h-[1.25rem] overflow-y-auto whitespace-pre-wrap break-words text-sm">
+          <div className="mt-0.5 max-h-[50px] min-h-[1.25rem] overflow-y-auto whitespace-pre-wrap break-words text-sm">
             {session.originalPrompt}
           </div>
         </div>
-
-        {contextUsage && (
-          <div className="shrink-0 rounded-xl border border-border px-3 py-2 text-xs text-muted-foreground">
-            <div>
-              Context ({contextUsage.is_estimate ? "estimated" : "actual"}):{" "}
-              {compactTokens(
-                contextUsage.actual_input_tokens ?? contextUsage.estimated_input_tokens,
-              )}{" "}
-              / {compactTokens(contextUsage.context_limit)}
-            </div>
-            <div>
-              {compactTokens(Math.max(0, contextUsage.remaining_tokens))} remaining after{" "}
-              {compactTokens(contextUsage.reserved_output_tokens)} output reservation
-            </div>
-            <div>
-              Limiting model: {contextUsage.limiting_model_name} ({contextUsage.limiting_call})
-            </div>
-            {lastActualUsage?.actual_input_tokens != null && (
-              <div>
-                Last request actual input: {compactTokens(lastActualUsage.actual_input_tokens)} (
-                {lastActualUsage.limiting_model_name}, {lastActualUsage.limiting_call})
-              </div>
-            )}
-          </div>
-        )}
 
         <div
           ref={listRef}
