@@ -118,9 +118,13 @@ export function originalPromptClipboardText(session: PromptBuilderSession): stri
   return session.originalPrompt;
 }
 
-export function startNewPromptBuilderSession(modelSetId: string): PromptBuilderSession {
+export function startNewPromptBuilderSession(
+  modelSetId: string,
+  draft = "",
+): PromptBuilderSession {
   return {
     ...createPromptBuilderSession("", modelSetId),
+    draft,
     intentionalEmpty: true,
   };
 }

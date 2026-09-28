@@ -256,22 +256,20 @@ test("Copy button stays rendered even when originalPrompt is empty", () => {
   assert.doesNotMatch(originalSection, /disabled=\{!session\.originalPrompt\}/);
 });
 
-test("confirmed New Session starts completely empty and does not copy the composer", () => {
-  const composer = "Some text currently in composer";
+test("New Session helper prefills only the supplied text into a fresh session", () => {
+  const draft = "  exact draft\r\nwith spacing  ";
   const prior = applyPromptBuilderSuccess(
-    beginPromptBuilderSend(createPromptBuilderSession(composer, "set-a"), composer),
+    beginPromptBuilderSend(createPromptBuilderSession("original", "set-a"), "original"),
     "previous latest",
   );
-  const next = startNewPromptBuilderSession(prior.modelSetId);
+  const next = startNewPromptBuilderSession(prior.modelSetId, draft);
 
   assert.equal(next.originalPrompt, "");
-  assert.equal(next.draft, "");
+  assert.equal(next.draft, draft);
   assert.equal(next.messages.length, 0);
   assert.equal(next.latestPrompt, null);
   assert.equal(next.modelSetId, "set-a");
-  assert.equal(composer, "Some text currently in composer");
-  assert.notEqual(next.originalPrompt, composer);
-  assert.notEqual(next.draft, composer);
+  assert.equal(startNewPromptBuilderSession("set-a").draft, "");
 });
 
 test("New Session does not modify the normal composer", () => {
