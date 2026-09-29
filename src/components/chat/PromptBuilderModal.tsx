@@ -201,11 +201,11 @@ export function PromptBuilderModal({
       onClose={onClose}
       title="Prompt Builder"
       size="lg"
-      className="flex h-[min(94vh,1100px)] max-h-[calc(100dvh-2rem)] max-w-[min(95vw,1400px)] flex-col"
-      bodyClassName="flex min-h-0 max-h-none flex-1 flex-col overflow-hidden p-4"
+      className="flex h-[min(94vh,calc(100dvh-2rem))] w-[min(95vw,1400px,calc(100vw-2rem))] max-h-[min(94vh,calc(100dvh-2rem))] max-w-[min(95vw,1400px,calc(100vw-2rem))] flex-col"
+      bodyClassName="flex h-full min-h-0 max-h-[none] flex-1 flex-col overflow-hidden p-4"
     >
-      <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <div className="shrink-0 rounded-xl border border-border bg-accent/10 p-2.5">
+      <div className="flex h-full min-h-0 flex-1 flex-col gap-3">
+        <div className="shrink-0 rounded-xl border border-border bg-accent/10 px-2.5 py-1.5">
           <div className="flex items-center justify-between gap-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Original Prompt
@@ -213,7 +213,7 @@ export function PromptBuilderModal({
             <button
               type="button"
               onClick={() => void copyOriginalPrompt()}
-              className="inline-flex items-center gap-1 rounded-lg border border-border bg-background/60 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="inline-flex items-center gap-1 rounded-lg border border-border bg-background/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
               data-prompt-builder-copy-original=""
             >
               {originalCopied ? (
@@ -224,14 +224,14 @@ export function PromptBuilderModal({
               {originalCopied ? "Copied" : "Copy"}
             </button>
           </div>
-          <div className="mt-0.5 max-h-[50px] min-h-[1.25rem] overflow-y-auto whitespace-pre-wrap break-words text-sm">
+          <div className="mt-1 h-[50px] overflow-y-auto overscroll-y-contain whitespace-pre-wrap break-words text-sm leading-5">
             {session.originalPrompt}
           </div>
         </div>
 
         <div
           ref={listRef}
-          className="min-h-0 flex-1 space-y-3 overflow-y-auto rounded-xl border border-border bg-accent/10 p-3"
+          className="min-h-0 flex-1 basis-0 space-y-3 overflow-y-auto overscroll-y-contain rounded-xl border border-border bg-accent/10 p-3"
         >
           {session.messages.length === 0 && !loading ? (
             <div className="flex h-full min-h-[180px] items-center justify-center gap-2 text-sm text-muted-foreground">
