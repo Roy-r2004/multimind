@@ -247,7 +247,7 @@ test("Copy button stays rendered even when originalPrompt is empty", () => {
   );
   const originalSection = source.slice(
     source.indexOf("Original Prompt"),
-    source.indexOf("{contextUsage &&"),
+    source.indexOf("ref={listRef}"),
   );
   assert.match(originalSection, /data-prompt-builder-copy-original/);
   assert.match(originalSection, /\{originalCopied \? "Copied" : "Copy"\}/);
@@ -256,20 +256,25 @@ test("Copy button stays rendered even when originalPrompt is empty", () => {
   assert.doesNotMatch(originalSection, /disabled=\{!session\.originalPrompt\}/);
 });
 
-test("New Session helper prefills only the supplied text into a fresh session", () => {
-  const draft = "  exact draft\r\nwith spacing  ";
+test("New Session helper seeds a fresh session from the current composer text", () => {
+  const composer = "  exact draft\r\nwith spacing  ";
   const prior = applyPromptBuilderSuccess(
-    beginPromptBuilderSend(createPromptBuilderSession("original", "set-a"), "original"),
+    beginPromptBuilderSend(createPromptBuilderSession("original", "set-a"), "builder draft"),
     "previous latest",
   );
-  const next = startNewPromptBuilderSession(prior.modelSetId, draft);
+  const next = startNewPromptBuilderSession(prior.modelSetId, composer);
 
-  assert.equal(next.originalPrompt, "");
-  assert.equal(next.draft, draft);
+  assert.equal(next.originalPrompt, composer);
+  assert.equal(next.draft, composer);
   assert.equal(next.messages.length, 0);
   assert.equal(next.latestPrompt, null);
   assert.equal(next.modelSetId, "set-a");
+  assert.equal(next.intentionalEmpty, undefined);
+  assert.notEqual(next.originalPrompt, prior.originalPrompt);
+  assert.notEqual(next.draft, "builder draft");
+  assert.equal(startNewPromptBuilderSession("set-a").originalPrompt, "");
   assert.equal(startNewPromptBuilderSession("set-a").draft, "");
+  assert.equal(startNewPromptBuilderSession("set-a").intentionalEmpty, true);
 });
 
 test("New Session does not modify the normal composer", () => {
@@ -402,6 +407,51 @@ test("New Session after capture resets originalPrompt back to empty", () => {
   assert.equal(reset.draft, "");
   assert.deepEqual(reset.messages, []);
   assert.equal(reset.latestPrompt, null);
+});
+
+test("New Session replaces history with the current main composer text and does not send it", () => {
+  const key = keyFor("new-session-composer");
+  const composer = "Create a business plan for a rehab center";
+  const prior = applyPromptBuilderSuccess(
+    beginPromptBuilderSend(createPromptBuilderSession("old builder original", "set-a"), "old builder original"),
+    "old latest",
+  );
+  savePromptBuilderSession(key, { ...prior, draft: "previous builder draft" });
+  clearPersistedPromptBuilderSession(key);
+
+  const next = startNewPromptBuilderSession(prior.modelSetId, composer);
+  persistPromptBuilderSession(key, next);
+  const reopened = openPromptBuilderSession(key, "later composer text", "set-b");
+
+  assert.equal(next.originalPrompt, composer);
+  assert.equal(next.draft, composer);
+  assert.deepEqual(next.messages, []);
+  assert.equal(next.latestPrompt, null);
+  assert.equal(reopened.originalPrompt, composer);
+  assert.equal(reopened.draft, composer);
+  assert.deepEqual(reopened.messages, []);
+  assert.equal(reopened.latestPrompt, null);
+  assert.equal(reopened.modelSetId, "set-a");
+  assert.equal(composer, "Create a business plan for a rehab center");
+});
+
+test("Prompt Builder modal keeps context math and hides the context token block", () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/components/chat/PromptBuilderModal.tsx"),
+    "utf8",
+  );
+  assert.match(source, /startNewPromptBuilderSession\(modelSetId, getComposerText\(\)\)/);
+  assert.match(source, /api\.promptBuilder[\s\S]*\.context\(/);
+  assert.match(source, /contextUsage\.remaining_tokens < 0/);
+  assert.doesNotMatch(source, /Limiting model/);
+  assert.doesNotMatch(source, /Context \(/);
+  assert.doesNotMatch(source, /remaining after/);
+  assert.doesNotMatch(source, /compactTokens/);
+  assert.match(source, /h-\[50px\] overflow-y-auto/);
+  assert.match(source, /min\(94vh,calc\(100dvh-2rem\)\)/);
+  assert.match(source, /min\(95vw,1400px,calc\(100vw-2rem\)\)/);
+  assert.match(source, /max-h-\[none\]/);
+  assert.match(source, /min-h-0 flex-1 basis-0 space-y-3 overflow-y-auto/);
 });
 
 test("empty composer shells are not persisted, so a later open can capture the composer", () => {

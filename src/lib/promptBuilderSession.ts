@@ -120,13 +120,18 @@ export function originalPromptClipboardText(session: PromptBuilderSession): stri
 
 export function startNewPromptBuilderSession(
   modelSetId: string,
-  draft = "",
+  composerText = "",
 ): PromptBuilderSession {
-  return {
-    ...createPromptBuilderSession("", modelSetId),
-    draft,
-    intentionalEmpty: true,
-  };
+  // Snapshot the main chat composer only. An empty composer stays an intentional
+  // empty session so a later reopen cannot invent a prompt. A non-empty composer
+  // seeds originalPrompt and draft the same way a first open does, without sending.
+  if (composerText === "") {
+    return {
+      ...createPromptBuilderSession("", modelSetId),
+      intentionalEmpty: true,
+    };
+  }
+  return createPromptBuilderSession(composerText, modelSetId);
 }
 
 export function resolvePromptBuilderSession(
