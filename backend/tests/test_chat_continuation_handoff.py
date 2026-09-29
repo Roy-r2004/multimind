@@ -30,6 +30,7 @@ from app.services.chat_memory_service import (
     CONTINUATION_HANDOFF_HEADER,
     CONTINUATION_HANDOFF_MAX_CHARS,
     CONTINUATION_HANDOFF_MAX_RECENT_TURNS,
+    CONTINUATION_HANDOFF_ROLLING_MEMORY_MAX_CHARS,
     CONTINUATION_SEED_PREFIX,
     TurnHistoryEntry,
     build_continuation_handoff_text,
@@ -428,6 +429,36 @@ def test_handoff_text_budget_and_contents():
     assert "User question:" in handoff or "Q" in handoff
     assert len(handoff) <= CONTINUATION_HANDOFF_MAX_CHARS
     assert "SECRET_COUNCIL" not in handoff
+
+
+@pytest.mark.asyncio
+async def test_single_reference_handoff_includes_up_to_ten_recent_turns_and_caps_memory(
+    handoff_env,
+):
+    async with handoff_env.Session() as db:
+        source = await db.get(Chat, handoff_env.chat_a_id)
+        assert source is not None
+        source.rolling_memory = "MEMORY_LIMIT_MARKER " * 2_000
+        for index in range(12):
+            await _add_completed_turn(db, chat_id=source.id, index=index)
+        await db.commit()
+
+        handoff = await chat_memory_service.build_continuation_handoff(
+            db, source_chat=source
+        )
+
+    assert len(handoff) <= CONTINUATION_HANDOFF_MAX_CHARS
+    assert "User question 0\n" not in handoff
+    assert "User question 1\n" not in handoff
+    for index in range(2, 12):
+        assert f"User question {index}\n" in handoff
+
+    memory_start = handoff.index("### Older memory from previous chat\n")
+    recent_start = handoff.index("### Recent turns from previous chat\n")
+    memory_text = handoff[
+        memory_start + len("### Older memory from previous chat\n") : recent_start
+    ].rstrip()
+    assert len(memory_text) <= CONTINUATION_HANDOFF_ROLLING_MEMORY_MAX_CHARS
 
 
 def test_extract_and_seed_format_helpers():
