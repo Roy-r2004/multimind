@@ -104,10 +104,10 @@ curl https://multiverdict.tech/api/v1/maps/runs/$RUN_ID \
 - Adjust budget in config, restart
 
 ### 3. Campaign Timeout
-**Prevent runaway jobs (8-hour default)**
+**Prevent runaway jobs (10-hour default)**
 
 **Defaults:**
-- Campaign runs max 8 hours (`maps_census_campaign_timeout_seconds`)
+- Campaign runs max 10 hours (`maps_census_campaign_timeout_seconds`)
 - Checked every 10 cells (`maps_census_timeout_check_interval_cells`)
 
 **If timeout approaching:**
@@ -203,8 +203,8 @@ MAPS_CELL_LLM_BUDGET_MAX_CALLS=10
 MAPS_RUN_LLM_BUDGET_MAX_CALLS=5000
 MAPS_RUN_LLM_BUDGET_CHECK_ENABLED=true
 
-# Campaign timeout (recommended: 8h for full run, 2h for test)
-MAPS_CENSUS_CAMPAIGN_TIMEOUT_SECONDS=28800
+# Campaign timeout (recommended: 10h for full run, 2h for test)
+MAPS_CENSUS_CAMPAIGN_TIMEOUT_SECONDS=36000
 
 # Observability (recommended: ON)
 MAPS_OBSERVABILITY_ENABLED=true
