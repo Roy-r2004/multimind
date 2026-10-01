@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     maps_run_llm_budget_check_enabled: bool = True
 
     # Global campaign timeout (prevent runaway jobs)
-    maps_census_campaign_timeout_seconds: int = 28800  # 8 hours
+    maps_census_campaign_timeout_seconds: int = 36000  # 10 hours
     maps_census_timeout_check_interval_cells: int = 10  # Check every N cells
 
     # Observability: structured logging
