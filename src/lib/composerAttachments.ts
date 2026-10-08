@@ -153,6 +153,54 @@ export function hasUploadingComposerFiles(files: ComposerFileChip[]): boolean {
   return files.some((file) => file.state === "uploading");
 }
 
+export function hasFailedComposerFiles(files: ComposerFileChip[]): boolean {
+  return files.some((file) => file.state === "error");
+}
+
+/** In-flight selection batches. Incremented synchronously before any chat-creation await. */
+export type ComposerUploadGuard = { current: number };
+
+export function beginComposerUploadGuard(
+  guard: ComposerUploadGuard,
+  onChange?: (count: number) => void,
+): void {
+  guard.current += 1;
+  onChange?.(guard.current);
+}
+
+export function endComposerUploadGuard(
+  guard: ComposerUploadGuard,
+  onChange?: (count: number) => void,
+): void {
+  guard.current = Math.max(0, guard.current - 1);
+  onChange?.(guard.current);
+}
+
+export type ComposerSubmitBlock =
+  | { ok: true }
+  | { ok: false; reason: "uploading" | "failed"; message: string };
+
+export function composerSubmitBlock(options: {
+  uploadGuardCount: number;
+  files: ComposerFileChip[];
+}): ComposerSubmitBlock {
+  if (options.uploadGuardCount > 0 || hasUploadingComposerFiles(options.files)) {
+    return {
+      ok: false,
+      reason: "uploading",
+      message: "Wait for file uploads to finish before sending.",
+    };
+  }
+  if (hasFailedComposerFiles(options.files)) {
+    return {
+      ok: false,
+      reason: "failed",
+      message: "Remove the failed attachment before sending. It was not uploaded.",
+    };
+  }
+  return { ok: true };
+}
+
 /** Count chips that occupy a pending attachment slot (uploading or uploaded). */
 export function countActiveComposerAttachments(files: ComposerFileChip[]): number {
   return files.filter((file) => file.state === "uploading" || file.state === "uploaded").length;
@@ -349,6 +397,9 @@ export type RunComposerUploadsDeps = {
   onValidationError?: (fileName: string, message: string) => void;
   onUploadError?: (fileName: string, message: string) => void;
   onTooMany?: (message: string) => void;
+  /** Set synchronously before createChat so send cannot race the first chip. */
+  uploadGuard?: ComposerUploadGuard;
+  onUploadGuardChange?: (count: number) => void;
 };
 
 /**
@@ -368,8 +419,13 @@ export async function runComposerUploads(
     return { targetChatId: null, uploadAttempts: 0 };
   }
 
+  if (deps.uploadGuard) {
+    beginComposerUploadGuard(deps.uploadGuard, deps.onUploadGuardChange);
+  }
+
   let targetChatId = deps.activeChatId;
   let createdNewChat = false;
+  try {
   if (!targetChatId) {
     targetChatId = await deps.createChat({
       activate: false,
@@ -468,4 +524,9 @@ export async function runComposerUploads(
   }
 
   return { targetChatId, uploadAttempts };
+  } finally {
+    if (deps.uploadGuard) {
+      endComposerUploadGuard(deps.uploadGuard, deps.onUploadGuardChange);
+    }
+  }
 }

@@ -15,6 +15,7 @@ import {
   canStartComposerAttachmentDelete,
   captureComposerFileInputFiles,
   composerAttachmentUploadTimeoutMs,
+  composerSubmitBlock,
   countActiveComposerAttachments,
   hasUploadingComposerFiles,
   failAttachmentTranscription,
@@ -678,6 +679,153 @@ test("auto-discard skipped when attachment already persisted on chips", () => {
     }),
     true,
   );
+});
+
+test("new-chat selection holds the upload guard before createChat resolves", async () => {
+  const file = { name: "race.txt", size: 8 } as File;
+  const guard = { current: 0 };
+  const guardSamples: number[] = [];
+  let releaseCreate: (id: string) => void = () => {};
+  const createGate = new Promise<string>((resolve) => {
+    releaseCreate = resolve;
+  });
+  let files: ComposerFileChip[] = [];
+  const retainRef = { current: null as string | null };
+
+  const pending = runComposerUploads([file], {
+    activeChatId: null,
+    retainRef,
+    uploadGuard: guard,
+    onUploadGuardChange: (count) => guardSamples.push(count),
+    getActiveChatId: () => null,
+    getFiles: () => files,
+    setFiles: (updater) => {
+      files = updater(files);
+    },
+    createChat: async ({ onChatCreated } = {}) => {
+      assert.equal(guard.current, 1);
+      assert.equal(
+        composerSubmitBlock({ uploadGuardCount: guard.current, files }).ok,
+        false,
+      );
+      const id = await createGate;
+      onChatCreated?.(id);
+      return id;
+    },
+    activateChat: () => {},
+    uploadAttachment: async () => ({ id: "att-race", text_excerpt: "body" }),
+  });
+
+  assert.equal(guard.current, 1);
+  assert.equal(files.length, 0);
+  releaseCreate("chat-race");
+  const result = await pending;
+  assert.equal(result.uploadAttempts, 1);
+  assert.equal(guard.current, 0);
+  assert.deepEqual(guardSamples, [1, 0]);
+  assert.deepEqual(submittedAttachmentIds(files), ["att-race"]);
+  assert.equal(composerSubmitBlock({ uploadGuardCount: guard.current, files }).ok, true);
+});
+
+test("concurrent new-chat uploads keep the guard until every file settles", async () => {
+  const guard = { current: 0 };
+  let releaseA: () => void = () => {};
+  let releaseB: () => void = () => {};
+  const gateA = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+  const gateB = new Promise<void>((resolve) => {
+    releaseB = resolve;
+  });
+  let files: ComposerFileChip[] = [];
+  const retainRef = { current: null as string | null };
+
+  const deps = {
+    activeChatId: "chat-existing",
+    retainRef,
+    uploadGuard: guard,
+    getActiveChatId: () => "chat-existing",
+    getFiles: () => files,
+    setFiles: (updater: (prev: ComposerFileChip[]) => ComposerFileChip[]) => {
+      files = updater(files);
+    },
+    createChat: async () => "unused",
+  };
+
+  const first = runComposerUploads([{ name: "a.txt", size: 4 } as File], {
+    ...deps,
+    uploadAttachment: async () => {
+      await gateA;
+      return { id: "att-a", text_excerpt: "a" };
+    },
+  });
+  const second = runComposerUploads([{ name: "b.txt", size: 4 } as File], {
+    ...deps,
+    uploadAttachment: async () => {
+      await gateB;
+      return { id: "att-b", text_excerpt: "b" };
+    },
+  });
+
+  assert.equal(guard.current, 2);
+  assert.equal(composerSubmitBlock({ uploadGuardCount: guard.current, files }).ok, false);
+  releaseA();
+  await first;
+  assert.equal(guard.current, 1);
+  releaseB();
+  await second;
+  assert.equal(guard.current, 0);
+  assert.deepEqual(submittedAttachmentIds(files), ["att-a", "att-b"]);
+});
+
+test("failed upload ends the guard and blocks a silent send", async () => {
+  const guard = { current: 0 };
+  let files: ComposerFileChip[] = [];
+  const retainRef = { current: null as string | null };
+  await runComposerUploads([{ name: "bad.txt", size: 4 } as File], {
+    activeChatId: null,
+    retainRef,
+    uploadGuard: guard,
+    getActiveChatId: () => "chat-fail",
+    getFiles: () => files,
+    setFiles: (updater) => {
+      files = updater(files);
+    },
+    createChat: async ({ onChatCreated } = {}) => {
+      onChatCreated?.("chat-fail");
+      return "chat-fail";
+    },
+    activateChat: () => {},
+    uploadAttachment: async () => {
+      throw new Error("disk full");
+    },
+  });
+  assert.equal(guard.current, 0);
+  assert.equal(files[0]?.state, "error");
+  const block = composerSubmitBlock({ uploadGuardCount: guard.current, files });
+  assert.equal(block.ok, false);
+  if (!block.ok) assert.equal(block.reason, "failed");
+  assert.deepEqual(submittedAttachmentIds(files), []);
+});
+
+test("send without attachments is not blocked", () => {
+  const block = composerSubmitBlock({ uploadGuardCount: 0, files: [] });
+  assert.equal(block.ok, true);
+  assert.deepEqual(submittedAttachmentIds([]), []);
+});
+
+test("chat send reads attachment ids after chat creation and honors the guard", () => {
+  const source = readFileSync(new URL("../../src/routes/chat.tsx", import.meta.url), "utf8");
+  const sendFn = source.slice(source.indexOf("async function send("), source.indexOf("async function stopGenerating("));
+  const createChatAt = sendFn.indexOf("await createChat");
+  const idsAt = sendFn.indexOf("submittedAttachmentIds");
+  const createTurnAt = sendFn.indexOf("createTurn");
+  assert.ok(createChatAt > 0);
+  assert.ok(idsAt > createChatAt);
+  assert.ok(createTurnAt > idsAt);
+  assert.match(sendFn, /uploadGuardRef\.current/);
+  assert.match(source, /uploadGuard: uploadGuardRef/);
+  assert.match(source, /uploadGuardCount > 0/);
 });
 
 test("auto-discard still allowed when retain points at a different chat", () => {
