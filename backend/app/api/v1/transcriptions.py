@@ -143,12 +143,16 @@ async def create_transcription(
     tmp_path: Path | None = None
     upload_size = 0
     started = time.perf_counter()
+    stage = "validate_media_type"
     try:
         if normalized_mime not in ALLOWED_AUDIO_TYPES:
             raise UnsupportedAudioTypeError()
 
+        stage = "save_upload"
         tmp_path, upload_size = await save_upload_to_temp_file(file)
+        stage = "probe_audio"
         duration_seconds = inspect_audio_duration(tmp_path)
+        stage = "transcribe"
         result = await service.transcribe_nowait(
             tmp_path,
             language=language_to_service_value(language),
@@ -179,6 +183,9 @@ async def create_transcription(
             normalized_mime=normalized_mime,
             upload_size=upload_size or None,
             failure_category=exc.code,
+            stage=stage,
+            exception_type=type(exc).__name__,
+            exc_info=isinstance(exc, InvalidAudioError),
         )
         raise
     except Exception as exc:
@@ -189,6 +196,9 @@ async def create_transcription(
             normalized_mime=normalized_mime,
             upload_size=upload_size or None,
             failure_category="unexpected",
+            stage=stage,
+            exception_type=type(exc).__name__,
+            exc_info=True,
         )
         raise InternalServerError("Transcription failed") from exc
     finally:
