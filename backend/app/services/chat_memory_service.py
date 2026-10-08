@@ -37,7 +37,7 @@ CHAT_MEMORY_STORED_MAX_TOKENS = 2_048
 CHAT_MEMORY_MAX_CAS_RETRIES = 4
 
 # One-time cross-chat continuation handoff (Chat A → first turn of Chat B).
-CONTINUATION_HANDOFF_MAX_CHARS = 150_000
+CONTINUATION_HANDOFF_MAX_CHARS = 500_000
 CONTINUATION_HANDOFF_MAX_RECENT_TURNS = 10
 CONTINUATION_HANDOFF_ROLLING_MEMORY_MAX_CHARS = 12_000
 # Rolling-memory seed stays at the previous handoff size. It is not the prompt handoff.
@@ -45,7 +45,7 @@ CONTINUATION_SEED_MAX_CHARS = 40_000
 CONTINUATION_HANDOFF_HEADER = "## MultiMind Continuation Handoff"
 CONTINUATION_SEED_PREFIX = "Continuation context inherited from a previous chat:"
 CONTINUATION_ATTACHMENT_HEADER = "### Previously attached text files"
-CONTINUATION_ATTACHMENT_PER_FILE_CHARS = 20_000
+CONTINUATION_ATTACHMENT_PER_FILE_CHARS = 30_000
 CONTINUATION_ATTACHMENT_MAX_FILES = 10
 PRIOR_TXT_ATTACHMENT_LIMIT = 20
 _ATTACHMENT_TRUNCATION_MARKER = "\n[Attachment context truncated]"
@@ -247,7 +247,7 @@ def format_bounded_txt_attachment_section(
     per_file_chars: int = CONTINUATION_ATTACHMENT_PER_FILE_CHARS,
     max_files: int = CONTINUATION_ATTACHMENT_MAX_FILES,
 ) -> str:
-    """Up to 10 TXT files, each capped at 20,000 characters with an explicit marker.
+    """Up to 10 TXT files, each capped at 30,000 characters with an explicit marker.
 
     The overall referenced-chat handoff cap is applied later, after this section
     is assembled. Duplicate filenames are skipped.
@@ -344,7 +344,7 @@ def build_continuation_handoff_text(
                     used += len(separator) + len(section)
 
     if attachment_section and remaining() > len(CONTINUATION_ATTACHMENT_HEADER) + 16:
-        # Per-file limits are already applied. This is the 150,000-character handoff cap.
+        # Per-file limits are already applied. This is the 500,000-character handoff cap.
         section = attachment_section
         room = remaining() - 2
         if len(section) > room:
