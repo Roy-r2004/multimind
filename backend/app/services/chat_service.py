@@ -1042,6 +1042,7 @@ class ChatService:
 
         budget = get_settings().chat_attachment_context_max_chars
         truncation_marker = "[Attachment context truncated]"
+        txt_context_chars = 30_000
         omitted_marker = "[Content omitted due to attachment context budget]"
         parts: list[str] = []
         used = 0
@@ -1071,8 +1072,17 @@ class ChatService:
                 prefix = f"Attached file: {filename}\nContent:\n```text\n"
                 suffix = "\n```"
                 excerpt = attachment.text_excerpt
+                if (filename or "").lower().endswith(".txt") and len(excerpt) > txt_context_chars:
+                    marker = f"\n{truncation_marker}"
+                    room = txt_context_chars - len(marker)
+                    excerpt = excerpt[: max(room, 0)].rstrip() + marker
                 full = f"{prefix}{excerpt}{suffix}"
-                if try_append(full):
+                # A full excerpt must leave room for every later filename.
+                # Otherwise earlier files consume the 300k budget and the rest
+                # disappear with no marker.
+                reserve = filename_reserve(index + 1)
+                separator_len = 2 if parts else 0
+                if used + separator_len + len(full) + reserve <= budget and try_append(full):
                     continue
 
                 # Fit truncated excerpt while reserving room for later filenames.

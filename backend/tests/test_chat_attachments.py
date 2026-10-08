@@ -1608,6 +1608,53 @@ def test_pdf_context_obeys_total_attachment_budget(monkeypatch):
     )
 
 
+def test_ten_txt_files_of_30k_stay_within_300k_and_keep_every_filename():
+    from types import SimpleNamespace
+
+    from app.llm.prompt_engine import PromptEngine
+
+    assert get_settings().chat_attachment_context_max_chars == 300_000
+    attachments = [
+        SimpleNamespace(
+            filename=f"note-{index}.txt",
+            excerpt_status="ready",
+            text_excerpt=("ABCDEFGHIJ"[index] * 30_001),
+        )
+        for index in range(10)
+    ]
+    text = chat_service._build_attachment_instructions(attachments)
+    assert text is not None
+    assert len(text) <= 300_000
+    for index in range(10):
+        assert f"note-{index}.txt" in text
+        assert "[Attachment context truncated]" in text
+    engine = PromptEngine()
+    council = engine.model_answer_prompt(
+        user_message="Read the files",
+        model_id="gpt-4.1",
+        model_name="GPT",
+        vendor="openai",
+        model_set_name="Research",
+        council_runtime_context=text,
+    )
+    verdict = engine.verdict_prompt(
+        strategy="Synthesize",
+        user_message="Read the files",
+        model_answers=[{"model_name": "GPT", "text": "ok", "failed": False, "error_message": None}],
+        supporting_context=text,
+    )
+    referee = engine.verdict_prompt(
+        strategy="Referee",
+        user_message="Read the files",
+        model_answers=[{"model_name": "GPT", "text": "ok", "failed": False, "error_message": None}],
+        supporting_context=text,
+        strict_referee_behavior="Use the supplied source material.",
+    )
+    for rendered in (council, verdict, referee):
+        for index in range(10):
+            assert f"note-{index}.txt" in rendered
+
+
 @pytest.mark.parametrize(
     ("sizes", "minimum_retained"),
     [
@@ -1627,7 +1674,7 @@ def test_multiple_attachments_share_one_total_context_budget(
     text = chat_service._build_attachment_instructions(
         [
             SimpleNamespace(
-                filename=f"attachment-{index}.txt",
+                filename=f"attachment-{index}.pdf",
                 excerpt_status="ready",
                 text_excerpt=markers[index] * size,
             )
@@ -1639,9 +1686,11 @@ def test_multiple_attachments_share_one_total_context_budget(
     assert len(text) <= get_settings().chat_attachment_context_max_chars
     for index, minimum in enumerate(minimum_retained):
         assert text.count(markers[index]) >= minimum
-        assert f"attachment-{index}.txt" in text
-    filenames = [text.index(f"attachment-{index}.txt") for index in range(len(sizes))]
+        assert f"attachment-{index}.pdf" in text
+    filenames = [text.index(f"attachment-{index}.pdf") for index in range(len(sizes))]
     assert filenames == sorted(filenames)
+    for index in range(len(sizes)):
+        assert f"attachment-{index}.pdf" in text
     assert (
         "[Attachment context truncated]" in text
         or "[Content omitted due to attachment context budget]" in text
