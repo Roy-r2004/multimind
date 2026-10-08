@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
+    ChatAttachment,
     CostRecord,
     ModelAnswerStatus,
     Turn,
@@ -36,11 +37,18 @@ CHAT_MEMORY_STORED_MAX_TOKENS = 2_048
 CHAT_MEMORY_MAX_CAS_RETRIES = 4
 
 # One-time cross-chat continuation handoff (Chat A → first turn of Chat B).
-CONTINUATION_HANDOFF_MAX_CHARS = 40_000
+CONTINUATION_HANDOFF_MAX_CHARS = 150_000
 CONTINUATION_HANDOFF_MAX_RECENT_TURNS = 10
 CONTINUATION_HANDOFF_ROLLING_MEMORY_MAX_CHARS = 12_000
+# Rolling-memory seed stays at the previous handoff size. It is not the prompt handoff.
+CONTINUATION_SEED_MAX_CHARS = 40_000
 CONTINUATION_HANDOFF_HEADER = "## MultiMind Continuation Handoff"
 CONTINUATION_SEED_PREFIX = "Continuation context inherited from a previous chat:"
+CONTINUATION_ATTACHMENT_HEADER = "### Previously attached text files"
+CONTINUATION_ATTACHMENT_PER_FILE_CHARS = 20_000
+CONTINUATION_ATTACHMENT_MAX_FILES = 10
+PRIOR_TXT_ATTACHMENT_LIMIT = 20
+_ATTACHMENT_TRUNCATION_MARKER = "\n[Attachment context truncated]"
 
 TURN_SEPARATOR = "\n\n---\n\n"
 TRUNCATION_MARKER = "\n[...truncated...]"
@@ -223,6 +231,56 @@ def partition_history_by_recent_budget(
     return HistoryPartition(eligible_oldest_first[:compact_count], selected)
 
 
+def _bound_attachment_excerpt(excerpt: str, *, per_file_chars: int) -> str:
+    body = (excerpt or "").strip()
+    if len(body) <= per_file_chars:
+        return body
+    room = per_file_chars - len(_ATTACHMENT_TRUNCATION_MARKER)
+    if room <= 0:
+        return _ATTACHMENT_TRUNCATION_MARKER.strip()
+    return body[:room].rstrip() + _ATTACHMENT_TRUNCATION_MARKER
+
+
+def format_bounded_txt_attachment_section(
+    excerpts: list[tuple[str, str]],
+    *,
+    per_file_chars: int = CONTINUATION_ATTACHMENT_PER_FILE_CHARS,
+    max_files: int = CONTINUATION_ATTACHMENT_MAX_FILES,
+) -> str:
+    """Up to 10 TXT files, each capped at 20,000 characters with an explicit marker.
+
+    The overall referenced-chat handoff cap is applied later, after this section
+    is assembled. Duplicate filenames are skipped.
+    """
+    if per_file_chars <= 0 or max_files <= 0 or not excerpts:
+        return ""
+    parts: list[str] = [CONTINUATION_ATTACHMENT_HEADER]
+    seen: set[str] = set()
+    unique: list[tuple[str, str]] = []
+    for filename, excerpt in excerpts:
+        name = (filename or "file.txt").strip() or "file.txt"
+        key = name.lower()
+        if key in seen:
+            continue
+        body = (excerpt or "").strip()
+        if not body:
+            continue
+        seen.add(key)
+        unique.append((name, body))
+    # Keep the most recent files when a chat has more than the handoff allows.
+    selected = unique[-max_files:]
+    omitted = len(unique) - len(selected)
+    for name, body in selected:
+        parts.append(f"Attached text file: {name}\n{_bound_attachment_excerpt(body, per_file_chars=per_file_chars)}")
+    if omitted:
+        parts.append(
+            f"[Attachment context truncated]\n{omitted} additional text file(s) omitted."
+        )
+    if len(parts) == 1:
+        return ""
+    return "\n\n".join(parts)
+
+
 def build_continuation_handoff_text(
     *,
     source_title: str,
@@ -230,6 +288,7 @@ def build_continuation_handoff_text(
     recent_entries_oldest_first: list[TurnHistoryEntry],
     max_chars: int = CONTINUATION_HANDOFF_MAX_CHARS,
     rolling_memory_max_chars: int = CONTINUATION_HANDOFF_ROLLING_MEMORY_MAX_CHARS,
+    attachment_section: str | None = None,
 ) -> str:
     """Build a compact, bounded continuation handoff from Chat A context."""
     title = (source_title or "Untitled chat").strip() or "Untitled chat"
@@ -256,7 +315,10 @@ def build_continuation_handoff_text(
             parts.append(section)
             used += len(separator) + len(section)
 
-    recent_budget = remaining() - 2  # account for upcoming \n\n
+    attachment_section = (attachment_section or "").strip()
+    # History is reserved first (rolling memory already placed, then up to 10
+    # recent turns). Attachments receive only the handoff budget that remains.
+    recent_budget = remaining() - 2
     if recent_budget > 64 and recent_entries_oldest_first:
         blocks = [
             format_turn_history_block(
@@ -280,6 +342,16 @@ def build_continuation_handoff_text(
                 if used + len(separator) + len(section) <= max_chars:
                     parts.append(section)
                     used += len(separator) + len(section)
+
+    if attachment_section and remaining() > len(CONTINUATION_ATTACHMENT_HEADER) + 16:
+        # Per-file limits are already applied. This is the 150,000-character handoff cap.
+        section = attachment_section
+        room = remaining() - 2
+        if len(section) > room:
+            section = truncate_text_under_budget(section, room)
+        if section:
+            parts.append(section)
+            used += 2 + len(section)
 
     return "\n\n".join(parts).strip()
 
@@ -310,7 +382,7 @@ def format_continuation_seed_memory(handoff: str) -> str:
     if not body:
         return ""
     seeded = f"{CONTINUATION_SEED_PREFIX}\n\n{body}".strip()
-    return truncate_text_under_budget(seeded, CONTINUATION_HANDOFF_MAX_CHARS)
+    return truncate_text_under_budget(seeded, CONTINUATION_SEED_MAX_CHARS)
 
 
 def eligible_prior_turn_filters(
@@ -675,6 +747,44 @@ class ChatMemoryService:
         )
         return True
 
+    async def load_prior_txt_attachments(
+        self,
+        db: AsyncSession,
+        chat_id: str,
+        *,
+        exclude_relative_paths: set[str] | None = None,
+    ) -> list[ChatAttachment]:
+        """Latest ready .txt snapshots on non-deleted turns, one row per stored file."""
+        result = await db.execute(
+            select(ChatAttachment)
+            .join(Turn, Turn.id == ChatAttachment.turn_id)
+            .where(
+                ChatAttachment.chat_id == chat_id,
+                ChatAttachment.turn_id.is_not(None),
+                ChatAttachment.excerpt_status == "ready",
+                Turn.deleted_at.is_(None),
+            )
+            .order_by(ChatAttachment.created_at.desc(), ChatAttachment.id.desc())
+            .limit(PRIOR_TXT_ATTACHMENT_LIMIT * 4)
+        )
+        excluded = exclude_relative_paths or set()
+        seen: set[str] = set()
+        picked: list[ChatAttachment] = []
+        for row in result.scalars().all():
+            if not (row.filename or "").lower().endswith(".txt"):
+                continue
+            if not (row.text_excerpt or "").strip():
+                continue
+            key = row.relative_path or row.stored_name or row.id
+            if key in excluded or key in seen:
+                continue
+            seen.add(key)
+            picked.append(row)
+            if len(picked) >= PRIOR_TXT_ATTACHMENT_LIMIT:
+                break
+        picked.reverse()
+        return picked
+
     async def build_continuation_handoff(
         self,
         db: AsyncSession,
@@ -695,10 +805,15 @@ class ChatMemoryService:
             )
             for turn, assistant_result in recent_pairs
         ]
+        prior_txt = await self.load_prior_txt_attachments(db, source_chat.id)
+        attachment_section = format_bounded_txt_attachment_section(
+            [(row.filename, row.text_excerpt or "") for row in prior_txt]
+        )
         handoff = build_continuation_handoff_text(
             source_title=source_chat.title,
             rolling_memory=source_chat.rolling_memory,
             recent_entries_oldest_first=entries,
+            attachment_section=attachment_section or None,
         )
         logger.info(
             "continuation_handoff_built",

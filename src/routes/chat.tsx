@@ -80,6 +80,7 @@ import {
   apiErrorMessage,
   canStartComposerAttachmentDelete,
   captureComposerFileInputFiles,
+  composerSubmitBlock,
   hasUploadingComposerFiles,
   markComposerFileDeleting,
   mergePendingAttachments,
@@ -259,6 +260,9 @@ export function ChatPage() {
   const activeChatIdRef = useRef<string | null>(activeChatId);
   /** Keeps first-upload chips alive across null→newChatId activation. */
   const retainComposerFilesForChatRef = useRef<string | null>(null);
+  /** Synchronous batch count so send cannot pass before the uploading chip exists. */
+  const uploadGuardRef = useRef(0);
+  const [uploadGuardCount, setUploadGuardCount] = useState(0);
   /** Monotonic generation so stale pending-list GETs cannot clobber newer local chips. */
   const pendingRestoreGenerationRef = useRef(0);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
@@ -871,8 +875,12 @@ export function ChatPage() {
     if (sendInFlightRef.current) return;
     const question = composerRef.current?.getValue().trim() ?? "";
     if (isVoiceActive || !question || !set) return;
-    if (hasUploadingComposerFiles(filesRef.current)) {
-      toast.error("Wait for file uploads to finish before sending.");
+    const submitBlock = composerSubmitBlock({
+      uploadGuardCount: uploadGuardRef.current,
+      files: filesRef.current,
+    });
+    if (!submitBlock.ok) {
+      toast.error(submitBlock.message);
       return;
     }
     const auth = authHeaders();
@@ -881,7 +889,6 @@ export function ChatPage() {
       return;
     }
     sendInFlightRef.current = true;
-    const uploadedIds = submittedAttachmentIds(filesRef.current);
     const hadActiveChat = Boolean(activeChatId);
     let createdChatId: string | null = null;
     composerRef.current?.replaceValue("");
@@ -896,6 +903,16 @@ export function ChatPage() {
         composerRef.current?.replaceValue(question);
         return;
       }
+      const submitBlockAfterChat = composerSubmitBlock({
+        uploadGuardCount: uploadGuardRef.current,
+        files: filesRef.current,
+      });
+      if (!submitBlockAfterChat.ok) {
+        composerRef.current?.replaceValue(question);
+        toast.error(submitBlockAfterChat.message);
+        return;
+      }
+      const uploadedIds = submittedAttachmentIds(filesRef.current);
       const pending = await api.chats.createTurn(auth, chatId, {
         user_message: question,
         model_set_id: set.id,
@@ -1099,6 +1116,8 @@ export function ChatPage() {
       createChat,
       activateChat: setActiveChatId,
       retainRef: retainComposerFilesForChatRef,
+      uploadGuard: uploadGuardRef,
+      onUploadGuardChange: setUploadGuardCount,
       getActiveChatId: () => activeChatIdRef.current,
       getFiles: () => filesRef.current,
       setFiles: (updater) => setFiles(updater),
@@ -1165,7 +1184,7 @@ export function ChatPage() {
   const anyTurnGenerating = generatingTurnPresent || loading;
   const conversationGenerating = generatingTurnPresent;
   const turnDeleteDisabled = isHistoricalTurnDeleteDisabled(anyTurnGenerating);
-  const uploadsInProgress = hasUploadingComposerFiles(files);
+  const uploadsInProgress = hasUploadingComposerFiles(files) || uploadGuardCount > 0;
   const [turnLayout, setTurnLayout] = useChatTurnLayout();
 
   return (

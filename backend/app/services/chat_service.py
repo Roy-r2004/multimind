@@ -724,7 +724,13 @@ class ChatService:
                 .where(Turn.id.in_(superseded_ids), Turn.chat_id == chat_id)
                 .values(deleted_at=now)
             )
-            await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
+            # A continuation seed has no watermark. Rebuild cannot recreate it
+            # once this turn is soft-deleted, so keep it in place.
+            unwatermarked_seed = bool((locked_chat.rolling_memory or "").strip()) and (
+                locked_chat.rolling_memory_through_turn_id is None
+            )
+            if not unwatermarked_seed:
+                await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
 
             superseded_pinned_verdict_ids = list(
                 (
@@ -760,11 +766,37 @@ class ChatService:
                 custom_instructions=(target.custom_instructions or "").strip() or None,
                 decision_insurance_enabled=False,
             )
+            source_attachments = list(
+                (
+                    await db.execute(
+                        select(ChatAttachment).where(ChatAttachment.turn_id == target.id)
+                    )
+                ).scalars().all()
+            )
+
             db.add(new_turn)
             locked_chat.model_set_id = model_set.slug
             # User regenerate is a conversation action — bump recency once.
             locked_chat.updated_at = datetime.now(UTC)
             await db.flush()
+
+            for attachment in source_attachments:
+                db.add(
+                    ChatAttachment(
+                        org_id=attachment.org_id,
+                        chat_id=attachment.chat_id,
+                        uploaded_by_user_id=attachment.uploaded_by_user_id,
+                        turn_id=new_turn.id,
+                        library_item_id=attachment.library_item_id,
+                        filename=attachment.filename,
+                        stored_name=attachment.stored_name,
+                        content_type=attachment.content_type,
+                        size_bytes=attachment.size_bytes,
+                        relative_path=attachment.relative_path,
+                        text_excerpt=attachment.text_excerpt,
+                        excerpt_status=attachment.excerpt_status,
+                    )
+                )
 
             for model_id in model_set.models:
                 db.add(
@@ -840,7 +872,12 @@ class ChatService:
             chat_id=chat.id,
             attachment_ids=data.attachment_ids,
         )
-        attachment_instructions = self._build_attachment_instructions(attachments)
+        prior_txt = await chat_memory_service.load_prior_txt_attachments(
+            db,
+            chat.id,
+            exclude_relative_paths={row.relative_path for row in attachments if row.relative_path},
+        )
+        attachment_instructions = self._build_attachment_instructions([*attachments, *prior_txt])
 
         reference_context: str | None = None
         if data.referenced_chat_id is not None and data.referenced_chat_ids is not None:

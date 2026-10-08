@@ -79,15 +79,42 @@ def excerpt_from_transcript(text: str) -> tuple[str | None, str]:
     return _finalize(text.strip())
 
 
+def _looks_like_utf16(raw: bytes, *, high_byte_index: int) -> bool:
+    """ASCII-range UTF-16 has a NUL in every other byte. Ordinary UTF-8 does not."""
+    if len(raw) < 8 or len(raw) % 2 != 0:
+        return False
+    sample = raw[:200]
+    pairs = len(sample) // 2
+    nulls = sum(1 for index in range(high_byte_index, len(sample), 2) if sample[index] == 0)
+    return pairs >= 4 and nulls / pairs >= 0.8
+
+
+def decode_plain_text_bytes(raw: bytes) -> str:
+    """Decode TXT bytes. UTF-8 stays UTF-8. BOM and NUL-paired UTF-16 are not misread."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", errors="replace")
+    if _looks_like_utf16(raw, high_byte_index=1):
+        return raw.decode("utf-16-le", errors="replace")
+    if _looks_like_utf16(raw, high_byte_index=0):
+        return raw.decode("utf-16-be", errors="replace")
+    return raw.decode("utf-8", errors="replace")
+
+
 def _extract_plain_text(content: bytes) -> str:
-    return content.decode("utf-8", errors="replace")
+    return decode_plain_text_bytes(content)
 
 
 def _extract_plain_text_from_path(path: Path) -> str:
-    # Bound the read so large text files do not need a full in-memory copy.
+    # Two bytes per character so a UTF-16 file can still fill the excerpt budget.
+    # _finalize keeps the historical 100_000-character prefix.
+    read_limit = ATTACHMENT_TEXT_EXCERPT_MAX * 2 + 8
     with path.open("rb") as handle:
-        raw = handle.read(ATTACHMENT_TEXT_EXCERPT_MAX + 4096)
-    return raw.decode("utf-8", errors="replace")
+        raw = handle.read(read_limit + 1)
+    if len(raw) > read_limit:
+        raw = raw[:read_limit]
+    return decode_plain_text_bytes(raw)
 
 
 def _extract_docx_text(content: bytes) -> str:
