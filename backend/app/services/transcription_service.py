@@ -161,6 +161,8 @@ class TranscriptionService:
                 resolved_device=model.device,
                 compute_type=model.compute_type,
                 failure_category="invalid_audio",
+                exception_type=type(exc).__name__,
+                exc_info=True,
             )
             raise InvalidAudioError() from exc
 
