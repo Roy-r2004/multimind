@@ -11,10 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context
-from app.db.models import Chat, ChatAttachment, LibraryItem
+from app.db.models import Chat, ChatAttachment, LibraryItem, Turn
 from app.db.session import get_db
 from app.main import create_app
-from tests.conftest import create_other_auth
+from app.schemas.api import TurnCreateRequest
+from app.services.chat_service import chat_service
+from tests.conftest import create_model_set, create_other_auth
 
 
 async def _client_for(db: AsyncSession, auth: AuthContext) -> AsyncClient:
@@ -539,3 +541,63 @@ async def test_library_file_detail_org_isolation(
         assert fetched.status_code == 404
         downloaded = await other_client.get(f"/api/v1/library/items/{item_id}/download")
         assert downloaded.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [6, 10])
+async def test_library_txt_attach_keeps_every_filename_within_context_budget(
+    db: AsyncSession, auth: AuthContext, count: int
+):
+    await create_model_set(db, auth, slug="research-set")
+    chat = await _create_chat(db, auth)
+    attachment_ids: list[str] = []
+    async with await _client_for(db, auth) as client:
+        for index in range(count):
+            created = await client.post(
+                "/api/v1/library/items/documents",
+                json={
+                    "title": f"Library Note {index}",
+                    "content_text": f"FILE{index}-" + ("x" * 40_000),
+                },
+            )
+            assert created.status_code == 201
+            attached = await client.post(
+                f"/api/v1/chats/{chat.id}/attachments/from-library",
+                json={"library_item_id": created.json()["id"]},
+            )
+            assert attached.status_code == 201
+            attachment_ids.append(attached.json()["id"])
+        pending = await client.get(f"/api/v1/chats/{chat.id}/attachments")
+    assert len(pending.json()["items"]) == count
+    assert len(attachment_ids) == count
+
+    turn = await chat_service.start_turn(
+        db,
+        auth,
+        chat.id,
+        TurnCreateRequest(
+            user_message="Read every library file",
+            model_set_id="research-set",
+            attachment_ids=attachment_ids,
+        ),
+    )
+    text = (await db.get(Turn, turn.id)).custom_instructions or ""
+    assert get_settings().chat_attachment_context_max_chars == 300_000
+    assert len(text) <= 300_000
+    for index in range(count):
+        assert f"Library Note {index}.txt" in text
+    assert "[Attachment context truncated]" in text
+
+    follow_up = await chat_service.start_turn(
+        db,
+        auth,
+        chat.id,
+        TurnCreateRequest(
+            user_message="What was in the library files?",
+            model_set_id="research-set",
+        ),
+    )
+    follow_text = (await db.get(Turn, follow_up.id)).custom_instructions or ""
+    assert len(follow_text) <= 300_000
+    for index in range(count):
+        assert f"Library Note {index}.txt" in follow_text
