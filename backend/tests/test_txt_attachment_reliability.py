@@ -339,7 +339,8 @@ async def test_referenced_chat_handoff_keeps_bounded_txt(
     assert CONTINUATION_ATTACHMENT_HEADER in handoff
     assert "SOURCE_TXT_MARKER" in handoff
     assert len(handoff) <= CONTINUATION_HANDOFF_MAX_CHARS
-    assert CONTINUATION_HANDOFF_MAX_CHARS == 150_000
+    assert CONTINUATION_HANDOFF_MAX_CHARS == 500_000
+    assert CONTINUATION_ATTACHMENT_PER_FILE_CHARS == 30_000
 
     continued = await chat_service.start_turn(
         db,
@@ -413,6 +414,6 @@ def test_referenced_handoff_bounds_one_two_and_ten_txt_files():
         attachment_section="Z" * (CONTINUATION_HANDOFF_MAX_CHARS + 5_000),
     )
     assert len(over) <= CONTINUATION_HANDOFF_MAX_CHARS
-    assert len(over) > 40_000
+    assert len(over) > 150_000
     assert "RECENT_QUESTION_MARKER" in over
     assert "[...truncated...]" in over
