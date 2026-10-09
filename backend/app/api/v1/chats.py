@@ -1,8 +1,9 @@
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +57,7 @@ from app.services.chat_attachment_text import (
     extract_attachment_text_from_path,
 )
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
+from app.services.chat_title_events import iter_chat_title_sse
 from app.services.library_service import (
     ITEM_TYPE_DOCUMENT,
     ITEM_TYPE_FILE,
@@ -102,6 +104,28 @@ async def create_chat(
     db: AsyncSession = Depends(get_db),
 ):
     return await chat_service.create_chat(db, auth, data)
+
+
+@router.get("/events/stream")
+async def stream_chat_events(
+    request: Request,
+    auth: AuthContext = Depends(get_streaming_auth_context),
+):
+    """Authenticated org channel for chat metadata. Separate from turn streams."""
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        async for frame in iter_chat_title_sse(auth.org_id, request):
+            yield frame
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.patch("/{chat_id}", response_model=ChatResponse)

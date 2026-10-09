@@ -20,6 +20,7 @@ import {
   upsertChatToTop,
 } from "@/lib/chatHistory";
 import { shouldApplyRefreshResult } from "@/lib/chatStoreRefresh";
+import { applyChatTitle, mergeChatTitles, runChatTitleSync } from "@/lib/chatTitleSync";
 import type { Chat, ModelSet, Project } from "@/lib/mock";
 import { modelSetRequestPayload, selectExistingModelSetId } from "@/lib/modelSetSelection";
 
@@ -165,6 +166,26 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       clearChatScopedState();
     }
   }, [isApiMode, authLoading, isAuthenticated, refreshAll, clearChatScopedState]);
+
+  useEffect(() => {
+    if (!isApiMode || authLoading) return;
+    const auth = authHeaders();
+    if (!auth) return;
+    const controller = new AbortController();
+    void runChatTitleSync({
+      auth,
+      signal: controller.signal,
+      onTitle: (event) => {
+        setChats((prev) => applyChatTitle(prev, event));
+      },
+      refreshTitles: async () => {
+        const list = await api.chats.list(auth);
+        if (controller.signal.aborted) return;
+        setChats((prev) => mergeChatTitles(prev, list));
+      },
+    });
+    return () => controller.abort();
+  }, [isApiMode, authLoading, authHeaders]);
 
   const setActiveModelSetId = useCallback((id: string) => {
     setActiveModelSetIdState(id);
