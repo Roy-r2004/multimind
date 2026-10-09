@@ -370,6 +370,7 @@ class ChatService:
         self, db: AsyncSession, auth: AuthContext, chat_id: str, data: ChatUpdateRequest
     ) -> ChatResponse:
         chat = await self.get_chat(db, auth, chat_id)
+        previous_title = chat.title
         if data.title is not None:
             chat.title = data.title.strip()
         if data.project_id is not None:
@@ -389,6 +390,15 @@ class ChatService:
                 await self.get_chat(db, auth, reference_id)
             chat.active_referenced_chat_id = reference_id
         await db.flush()
+        if data.title is not None and chat.title != previous_title:
+            from app.services.chat_title_events import schedule_chat_title_event
+
+            schedule_chat_title_event(
+                db,
+                org_id=auth.org_id,
+                chat_id=str(chat.id),
+                title=chat.title,
+            )
         return await self._chat_response_async(db, chat)
 
     async def delete_chat(
