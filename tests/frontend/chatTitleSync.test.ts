@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyChatCreated,
+  applyChatDeleted,
   applyChatTitle,
+  mergeChatHistory,
   mergeChatTitles,
+  parseChatCreatedEvent,
   parseChatTitleEvent,
   parseSseFrames,
+  rememberPendingTitle,
   runChatTitleSync,
 } from "../../src/lib/chatTitleSync.ts";
 
@@ -36,6 +41,67 @@ test("mergeChatTitles refreshes titles in place", () => {
   assert.equal(next[1].draft, "also");
 });
 
+test("generated title is not overwritten by an older New chat snapshot", () => {
+  const pending = new Map();
+  rememberPendingTitle(pending, {
+    chatId: "c",
+    title: "Hello council",
+    updatedAt: "2026-10-12T08:01:00+00:00",
+  });
+  const created = applyChatCreated(
+    [],
+    { id: "c", title: "New chat", updatedAt: "2026-10-12T08:00:00+00:00" },
+    pending,
+  );
+  assert.equal(created[0].title, "Hello council");
+  const stale = applyChatTitle(created, {
+    chatId: "c",
+    title: "New chat",
+    updatedAt: "2026-10-12T08:00:00+00:00",
+  });
+  assert.equal(stale[0].title, "Hello council");
+  const removed = applyChatDeleted(stale, "c");
+  assert.deepEqual(removed, []);
+  const ordered = applyChatCreated(
+    [{ id: "old", title: "Old", updatedAt: "2026-10-12T07:00:00+00:00" }],
+    { id: "new", title: "New chat", updatedAt: "2026-10-12T09:00:00+00:00" },
+  );
+  assert.deepEqual(
+    ordered.map((chat) => chat.id),
+    ["new", "old"],
+  );
+  assert.equal(applyChatCreated(ordered, ordered[0]), ordered);
+});
+
+test("applyChatCreated prepends once and leaves an existing row untouched", () => {
+  const created = { id: "c", title: "Gamma", draft: "remote" };
+  const next = applyChatCreated(chats, created);
+  assert.deepEqual(
+    next.map((chat) => chat.id),
+    ["c", "a", "b"],
+  );
+  assert.equal(next[1], chats[0]);
+  assert.equal(applyChatCreated(next, created), next);
+});
+
+test("mergeChatHistory inserts missed chats in server order and keeps matching rows", () => {
+  const remote = [
+    { id: "c", title: "Gamma" },
+    { id: "a", title: "Alpha" },
+  ];
+  const next = mergeChatHistory(chats, remote);
+  assert.equal(next[1], chats[0]);
+  assert.equal(next[0].id, "c");
+  assert.equal(mergeChatHistory(next, remote), next);
+  const withTitle = [{ id: "a", title: "Hello council", updatedAt: "2026-10-12T08:02:00+00:00" }];
+  const staleSnapshot = mergeChatHistory(withTitle, [
+    { id: "a", title: "New chat", updatedAt: "2026-10-12T08:00:00+00:00" },
+  ]);
+  assert.equal(staleSnapshot[0].title, "Hello council");
+  const afterDelete = mergeChatHistory(withTitle, []);
+  assert.deepEqual(afterDelete, []);
+});
+
 test("parseSseFrames reads chat_title and ignores heartbeats", () => {
   const { frames, rest } = parseSseFrames(
     ": heartbeat\n\n" +
@@ -44,8 +110,18 @@ test("parseSseFrames reads chat_title and ignores heartbeats", () => {
   );
   assert.equal(rest, "event: chat_title\ndata: {");
   assert.equal(frames.length, 1);
-  assert.deepEqual(parseChatTitleEvent(frames[0].data), { chatId: "a", title: "Next" });
+  assert.deepEqual(parseChatTitleEvent(frames[0].data), {
+    chatId: "a",
+    title: "Next",
+    updatedAt: undefined,
+  });
   assert.equal(parseChatTitleEvent('{"chat_id":"a"}'), null);
+  const created = parseChatCreatedEvent(
+    '{"type":"chat.created","chat_id":"c","title":"Gamma","project_id":null,"model_set_id":"set","updated_at":"2026-10-12T08:00:00+00:00"}',
+  );
+  assert.equal(created?.id, "c");
+  assert.equal(created?.model_set_id, "set");
+  assert.equal(parseChatCreatedEvent('{"chat_id":"c","title":"Gamma"}'), null);
 });
 
 test("reconnect refreshes titles once and abort closes the loop", async () => {

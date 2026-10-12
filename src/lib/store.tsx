@@ -20,7 +20,14 @@ import {
   upsertChatToTop,
 } from "@/lib/chatHistory";
 import { shouldApplyRefreshResult } from "@/lib/chatStoreRefresh";
-import { applyChatTitle, mergeChatTitles, runChatTitleSync } from "@/lib/chatTitleSync";
+import {
+  applyChatCreated,
+  applyChatDeleted,
+  applyChatTitle,
+  mergeChatHistory,
+  rememberPendingTitle,
+  runChatTitleSync,
+} from "@/lib/chatTitleSync";
 import type { Chat, ModelSet, Project } from "@/lib/mock";
 import { modelSetRequestPayload, selectExistingModelSetId } from "@/lib/modelSetSelection";
 
@@ -105,6 +112,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const activeChatIdRef = useRef<string | null>(null);
   activeChatIdRef.current = activeChatId;
   const createChatInflightRef = useRef<Promise<string | null> | null>(null);
+  const pendingTitlesRef = useRef(new Map<string, { chatId: string; title: string; updatedAt?: string }>());
   const refreshGenerationRef = useRef(0);
 
   const clearChatScopedState = useCallback(() => {
@@ -176,12 +184,26 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       auth,
       signal: controller.signal,
       onTitle: (event) => {
-        setChats((prev) => applyChatTitle(prev, event));
+        setChats((prev) => {
+          if (!prev.some((chat) => chat.id === event.chatId)) {
+            rememberPendingTitle(pendingTitlesRef.current, event);
+            return prev;
+          }
+          return applyChatTitle(prev, event);
+        });
+      },
+      onCreated: (event) => {
+        setChats((prev) => applyChatCreated(prev, mapApiChat(event), pendingTitlesRef.current));
+      },
+      onDeleted: (event) => {
+        pendingTitlesRef.current.delete(event.chatId);
+        setChats((prev) => applyChatDeleted(prev, event.chatId));
+        if (activeChatIdRef.current === event.chatId) setActiveChatIdState(null);
       },
       refreshTitles: async () => {
         const list = await api.chats.list(auth);
         if (controller.signal.aborted) return;
-        setChats((prev) => mergeChatTitles(prev, list));
+        setChats((prev) => mergeChatHistory(prev, list.map(mapApiChat)));
       },
     });
     return () => controller.abort();

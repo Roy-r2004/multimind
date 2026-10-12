@@ -32,6 +32,8 @@ export type Chat = {
   id: string;
   title: string;
   updated: string;
+  /** Server timestamp used to ignore stale title events and snapshots. */
+  updatedAt?: string;
   projectId?: string | null;
   modelSetId?: string | null;
   pinnedVerdicts: import("./pinnedVerdicts").PinnedVerdict[];

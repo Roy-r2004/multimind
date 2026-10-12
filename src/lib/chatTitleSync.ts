@@ -2,7 +2,21 @@
 
 export type ChatTitleTarget = { id: string; title: string };
 
-export type ChatTitleEvent = { chatId: string; title: string };
+export type ChatTitleEvent = { chatId: string; title: string; updatedAt?: string };
+
+export type ChatDeletedEvent = { chatId: string };
+
+export type PendingTitles = Map<string, ChatTitleEvent>;
+
+export type ChatCreatedEvent = {
+  id: string;
+  title: string;
+  project_id: string | null;
+  model_set_id: string | null;
+  pinned_verdicts: [];
+  active_referenced_chat: null;
+  updated_at: string;
+};
 
 type Auth = { token: string; orgId?: string | null };
 
@@ -14,14 +28,87 @@ function defaultApiBase(): string {
   return (env?.VITE_API_URL ?? "/api/v1").replace(/\/$/, "");
 }
 
-export function applyChatTitle<T extends ChatTitleTarget>(chats: T[], event: ChatTitleEvent): T[] {
+function isOlder(candidate: string | undefined, current: string | undefined): boolean {
+  return Boolean(candidate && current && candidate < current);
+}
+
+export function applyChatTitle<T extends ChatTitleTarget & { updatedAt?: string }>(
+  chats: T[],
+  event: ChatTitleEvent,
+): T[] {
   let changed = false;
   const next = chats.map((chat) => {
-    if (chat.id !== event.chatId || chat.title === event.title) return chat;
+    if (chat.id !== event.chatId) return chat;
+    if (isOlder(event.updatedAt, chat.updatedAt)) return chat;
+    if (chat.title === event.title && chat.updatedAt === (event.updatedAt ?? chat.updatedAt)) return chat;
     changed = true;
-    return { ...chat, title: event.title };
+    return { ...chat, title: event.title, updatedAt: event.updatedAt ?? chat.updatedAt };
   });
   return changed ? next : chats;
+}
+
+/** Remember a title that arrived before the chat row. Newer stamps win. */
+export function rememberPendingTitle(pending: PendingTitles, event: ChatTitleEvent): void {
+  const current = pending.get(event.chatId);
+  if (current && isOlder(event.updatedAt, current.updatedAt)) return;
+  pending.set(event.chatId, event);
+}
+
+/** Insert a newly created chat by server timestamp. Existing ids stay put. */
+export function applyChatCreated<T extends { id: string; updatedAt?: string; title: string }>(
+  chats: T[],
+  chat: T,
+  pending?: PendingTitles,
+): T[] {
+  if (chats.some((item) => item.id === chat.id)) return chats;
+  let next = chat;
+  const earlier = pending?.get(chat.id);
+  if (earlier && !isOlder(earlier.updatedAt, chat.updatedAt)) {
+    next = { ...chat, title: earlier.title, updatedAt: earlier.updatedAt ?? chat.updatedAt };
+    pending?.delete(chat.id);
+  }
+  const stamp = next.updatedAt ?? "";
+  if (!stamp) return [next, ...chats];
+  const index = chats.findIndex((item) => (item.updatedAt ?? "") < stamp);
+  const at = index < 0 ? chats.length : index;
+  return [...chats.slice(0, at), next, ...chats.slice(at)];
+}
+
+export function applyChatDeleted<T extends { id: string }>(chats: T[], chatId: string): T[] {
+  if (!chats.some((chat) => chat.id === chatId)) return chats;
+  return chats.filter((chat) => chat.id !== chatId);
+}
+
+/**
+ * Rebuild sidebar order from the server list.
+ * Keeps the local object when title, project, and model set already match.
+ */
+export function mergeChatHistory<T extends ChatTitleTarget & {
+  projectId?: string | null;
+  modelSetId?: string | null;
+  updatedAt?: string;
+}>(local: T[], remote: T[]): T[] {
+  const localById = new Map(local.map((chat) => [chat.id, chat]));
+  const next = remote.map((chat) => {
+    const existing = localById.get(chat.id);
+    if (!existing) return chat;
+    if (isOlder(chat.updatedAt, existing.updatedAt)) {
+      return existing;
+    }
+    if (
+      existing.title === chat.title &&
+      existing.projectId === chat.projectId &&
+      existing.modelSetId === chat.modelSetId &&
+      existing.updatedAt === chat.updatedAt
+    ) {
+      return existing;
+    }
+    return chat;
+  });
+  if (next.length === local.length && next.every((chat, index) => chat === local[index])) {
+    return local;
+  }
+  return next;
 }
 
 /** Replace titles in place so reconnect recovery does not reorder or reset chats. */
@@ -55,12 +142,61 @@ export function parseSseFrames(buffer: string): { frames: { event: string; data:
   return { frames, rest };
 }
 
+export function parseChatCreatedEvent(data: string): ChatCreatedEvent | null {
+  try {
+    const parsed = JSON.parse(data) as {
+      type?: unknown;
+      chat_id?: unknown;
+      title?: unknown;
+      project_id?: unknown;
+      model_set_id?: unknown;
+      updated_at?: unknown;
+    };
+    if (parsed.type !== "chat.created") return null;
+    if (typeof parsed.chat_id !== "string" || !parsed.chat_id) return null;
+    if (typeof parsed.title !== "string" || !parsed.title.trim()) return null;
+    if (typeof parsed.updated_at !== "string" || !parsed.updated_at) return null;
+    const projectId = parsed.project_id;
+    const modelSetId = parsed.model_set_id;
+    if (projectId !== null && projectId !== undefined && typeof projectId !== "string") return null;
+    if (modelSetId !== null && modelSetId !== undefined && typeof modelSetId !== "string") return null;
+    return {
+      id: parsed.chat_id,
+      title: parsed.title,
+      project_id: typeof projectId === "string" ? projectId : null,
+      model_set_id: typeof modelSetId === "string" ? modelSetId : null,
+      pinned_verdicts: [],
+      active_referenced_chat: null,
+      updated_at: parsed.updated_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function parseChatDeletedEvent(data: string): ChatDeletedEvent | null {
+  try {
+    const parsed = JSON.parse(data) as { type?: unknown; chat_id?: unknown };
+    if (parsed.type !== "chat.deleted") return null;
+    if (typeof parsed.chat_id !== "string" || !parsed.chat_id) return null;
+    return { chatId: parsed.chat_id };
+  } catch {
+    return null;
+  }
+}
+
 export function parseChatTitleEvent(data: string): ChatTitleEvent | null {
   try {
-    const parsed = JSON.parse(data) as { chat_id?: unknown; title?: unknown };
+    const parsed = JSON.parse(data) as { chat_id?: unknown; title?: unknown; updated_at?: unknown };
     if (typeof parsed.chat_id !== "string" || typeof parsed.title !== "string") return null;
     if (!parsed.chat_id || !parsed.title.trim()) return null;
-    return { chatId: parsed.chat_id, title: parsed.title };
+    const updatedAt = parsed.updated_at;
+    if (updatedAt !== undefined && typeof updatedAt !== "string") return null;
+    return {
+      chatId: parsed.chat_id,
+      title: parsed.title,
+      updatedAt: typeof updatedAt === "string" && updatedAt ? updatedAt : undefined,
+    };
   } catch {
     return null;
   }
@@ -87,6 +223,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 async function readTitleStream(
   body: ReadableStream<Uint8Array>,
   onTitle: (event: ChatTitleEvent) => void,
+  onCreated: (event: ChatCreatedEvent) => void,
+  onDeleted: (event: ChatDeletedEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
   const reader = body.getReader();
@@ -100,6 +238,16 @@ async function readTitleStream(
       const parsed = parseSseFrames(buffer);
       buffer = parsed.rest;
       for (const frame of parsed.frames) {
+        if (frame.event === "chat.created") {
+          const created = parseChatCreatedEvent(frame.data);
+          if (created) onCreated(created);
+          continue;
+        }
+        if (frame.event === "chat.deleted") {
+          const deleted = parseChatDeletedEvent(frame.data);
+          if (deleted) onDeleted(deleted);
+          continue;
+        }
         if (frame.event !== "chat_title") continue;
         const event = parseChatTitleEvent(frame.data);
         if (event) onTitle(event);
@@ -118,6 +266,8 @@ export async function runChatTitleSync(options: {
   auth: Auth;
   signal: AbortSignal;
   onTitle: (event: ChatTitleEvent) => void;
+  onCreated?: (event: ChatCreatedEvent) => void;
+  onDeleted?: (event: ChatDeletedEvent) => void;
   refreshTitles: () => Promise<void>;
   fetchImpl?: typeof fetch;
   sleepImpl?: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -145,7 +295,13 @@ export async function runChatTitleSync(options: {
       connected = true;
       sawConnection = true;
       backoff = INITIAL_BACKOFF_MS;
-      await readTitleStream(response.body, options.onTitle, options.signal);
+      await readTitleStream(
+        response.body,
+        options.onTitle,
+        options.onCreated ?? (() => {}),
+        options.onDeleted ?? (() => {}),
+        options.signal,
+      );
     } catch (error) {
       if (options.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) {
         return;
