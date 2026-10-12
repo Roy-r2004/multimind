@@ -12,14 +12,17 @@ import {
   FlaskConical,
   Layers,
   Sparkles,
+  Check,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { VendorLogo } from "@/components/chat/VendorLogo";
 import { GlassCard } from "@/components/cinematic/PageChrome";
 import ModelSetModal from "@/components/ModelSetModal";
 import { Modal } from "@/components/Modal";
+import { Badge } from "@/components/ui/badge";
 import { useChatStore } from "@/lib/store";
 import { useModels } from "@/lib/models";
+import { modelSetCardState } from "@/lib/modelSetCard";
 import { cn } from "@/lib/utils";
 import {
   clonedSystemModelSetName,
@@ -57,7 +60,8 @@ const SET_ICON_COLORS: Record<string, string> = {
 };
 
 function ModelSetsPage() {
-  const { modelSets, createModelSet, updateModelSet, deleteModelSet } = useChatStore();
+  const { modelSets, activeModelSetId, setActiveModelSetId, createModelSet, updateModelSet, deleteModelSet } =
+    useChatStore();
   const { modelById } = useModels();
   const [editing, setEditing] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -117,16 +121,26 @@ function ModelSetsPage() {
               const isSystemSet = SYSTEM_MODEL_SETS.has(s.id);
               const Icon = SET_ICONS[s.id] ?? Layers;
               const iconGrad = SET_ICON_COLORS[s.id] ?? "from-sky-500 to-blue-600";
-              const isReferee =
-                s.id === "referee" || s.name.toLowerCase().includes("referee");
               const verdict = modelById(s.verdictModel);
+              const card = modelSetCardState(s.id, activeModelSetId);
+              const selectSet = () => setActiveModelSetId(s.id);
 
               return (
                 <GlassCard
                   key={s.id}
-                  featured={isReferee}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={card.active}
+                  onClick={selectSet}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      selectSet();
+                    }
+                  }}
                   className={cn(
-                    "elevate-card p-5",
+                    "elevate-card cursor-pointer p-5 text-left outline-none transition",
+                    card.className,
                     index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
                   )}
                 >
@@ -141,14 +155,25 @@ function ModelSetsPage() {
                         <Icon className="size-5" />
                       </span>
                       <div className="min-w-0">
-                        <div className="font-medium">{s.name}</div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="font-medium">{s.name}</div>
+                          {card.badge && (
+                            <Badge className="gap-1 border-transparent bg-primary/15 text-primary shadow-none hover:bg-primary/15">
+                              <Check className="size-3" aria-hidden />
+                              {card.badge}
+                            </Badge>
+                          )}
+                        </div>
                         <p className="mt-1 text-sm text-muted-foreground">{s.description}</p>
                       </div>
                     </div>
                     <div className="flex gap-1">
                       <button
                         type="button"
-                        onClick={() => setEditing(s.id)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setEditing(s.id);
+                        }}
                         title={
                           shouldCloneSystemModelSet(s.id, SYSTEM_MODEL_SETS)
                             ? "Customize set"
@@ -161,7 +186,10 @@ function ModelSetsPage() {
                       {!isSystemSet && (
                         <button
                           type="button"
-                          onClick={() => setDeleteTarget(s.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setDeleteTarget(s.id);
+                          }}
                           title="Delete set"
                           className="rounded-lg p-2 text-destructive hover:bg-destructive/10"
                         >
