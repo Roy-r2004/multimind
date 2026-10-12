@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, HTMLAttributes, ReactNode } from "react";
 import { Check } from "lucide-react";
 import { VendorLogo } from "@/components/chat/VendorLogo";
 import { cn } from "@/lib/utils";
@@ -62,16 +62,16 @@ export function GlassCard({
   glow,
   featured,
   style,
-}: {
+  ...rest
+}: HTMLAttributes<HTMLDivElement> & {
   children: ReactNode;
-  className?: string;
   glow?: boolean;
   featured?: boolean;
-  style?: CSSProperties;
 }) {
   return (
     <div
       style={style}
+      {...rest}
       className={cn(
         "relative overflow-hidden rounded-2xl border border-border/90 bg-card/95 shadow-[0_1px_0_oklch(1_0_0/0.8)_inset,0_8px_28px_oklch(0.45_0.04_240/0.06)] backdrop-blur-[2px]",
         glow &&
