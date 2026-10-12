@@ -348,6 +348,17 @@ class ChatService:
         )
         db.add(chat)
         await db.flush()
+        from app.services.chat_title_events import schedule_chat_created_event
+
+        schedule_chat_created_event(
+            db,
+            org_id=auth.org_id,
+            chat_id=str(chat.id),
+            title=chat.title,
+            project_id=chat.project_id,
+            model_set_id=chat.model_set_id,
+            updated_at=chat.updated_at.isoformat() if chat.updated_at is not None else "",
+        )
         return await self._chat_response_async(db, chat)
 
     async def get_chat(self, db: AsyncSession, auth: AuthContext, chat_id: str) -> Chat:
@@ -398,6 +409,7 @@ class ChatService:
                 org_id=auth.org_id,
                 chat_id=str(chat.id),
                 title=chat.title,
+                updated_at=chat.updated_at.isoformat() if chat.updated_at is not None else "",
             )
         return await self._chat_response_async(db, chat)
 
@@ -501,6 +513,9 @@ class ChatService:
             )
             await db.delete(locked_chat)
             await db.flush()
+            from app.services.chat_title_events import schedule_chat_deleted_event
+
+            schedule_chat_deleted_event(db, org_id=auth.org_id, chat_id=str(chat_id))
             await db.commit()
         except Exception:
             await db.rollback()
@@ -964,8 +979,19 @@ class ChatService:
 
         # Recency: every new user turn bumps the parent chat (not streaming/verdict).
         chat.updated_at = datetime.now(UTC)
+        previous_title = chat.title
         if chat.title == "New chat":
             chat.title = data.user_message.strip()[:80] or "New chat"
+        if chat.title != previous_title:
+            from app.services.chat_title_events import schedule_chat_title_event
+
+            schedule_chat_title_event(
+                db,
+                org_id=auth.org_id,
+                chat_id=str(chat.id),
+                title=chat.title,
+                updated_at=chat.updated_at.isoformat(),
+            )
 
         await db.flush()
 

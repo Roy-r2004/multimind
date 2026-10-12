@@ -29,18 +29,68 @@ def title_channel(org_id: str) -> str:
     return f"chat:titles:{org_id}"
 
 
-def schedule_chat_title_event(
-    db: AsyncSession, *, org_id: str, chat_id: str, title: str
-) -> None:
+def _queue_event(db: AsyncSession, payload: dict) -> None:
     sync = db.sync_session
-    sync.info.setdefault(_EVENTS_KEY, []).append(
-        {"org_id": org_id, "chat_id": chat_id, "title": title}
-    )
+    sync.info.setdefault(_EVENTS_KEY, []).append(payload)
+    # Captured here, on the request task. after_commit can run in a greenlet
+    # where get_running_loop() fails, which previously dropped the publish.
+    try:
+        sync.info["chat_events_loop"] = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
     if sync.info.get(_HOOK_KEY):
         return
     sync.info[_HOOK_KEY] = True
     event.listen(sync, "after_commit", _publish_after_commit)
     event.listen(sync, "after_rollback", _discard_after_rollback)
+
+
+def schedule_chat_title_event(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    chat_id: str,
+    title: str,
+    updated_at: str,
+) -> None:
+    _queue_event(
+        db,
+        {
+            "kind": "title",
+            "org_id": org_id,
+            "chat_id": chat_id,
+            "title": title,
+            "updated_at": updated_at,
+        },
+    )
+
+
+def schedule_chat_deleted_event(db: AsyncSession, *, org_id: str, chat_id: str) -> None:
+    _queue_event(db, {"kind": "deleted", "org_id": org_id, "chat_id": chat_id})
+
+
+def schedule_chat_created_event(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    chat_id: str,
+    title: str,
+    project_id: str | None,
+    model_set_id: str | None,
+    updated_at: str,
+) -> None:
+    _queue_event(
+        db,
+        {
+            "kind": "created",
+            "org_id": org_id,
+            "chat_id": chat_id,
+            "title": title,
+            "project_id": project_id,
+            "model_set_id": model_set_id,
+            "updated_at": updated_at,
+        },
+    )
 
 
 def _discard_after_rollback(session) -> None:
@@ -51,13 +101,34 @@ def _publish_after_commit(session) -> None:
     events = list(session.info.pop(_EVENTS_KEY, []))
     if not events:
         return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        logger.warning("chat_title_publish_skipped_no_loop")
-        return
+    loop = session.info.get("chat_events_loop")
+    if loop is None or getattr(loop, "is_closed", lambda: False)():
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("chat_title_publish_skipped_no_loop")
+            return
     for queued in events:
-        task = loop.create_task(publish_chat_title(**queued))
+        kind = queued.get("kind", "title")
+        if kind == "created":
+            coro = publish_chat_created(
+                org_id=queued["org_id"],
+                chat_id=queued["chat_id"],
+                title=queued["title"],
+                project_id=queued.get("project_id"),
+                model_set_id=queued.get("model_set_id"),
+                updated_at=queued.get("updated_at") or "",
+            )
+        elif kind == "deleted":
+            coro = publish_chat_deleted(org_id=queued["org_id"], chat_id=queued["chat_id"])
+        else:
+            coro = publish_chat_title(
+                org_id=queued["org_id"],
+                chat_id=queued["chat_id"],
+                title=queued["title"],
+                updated_at=queued.get("updated_at") or "",
+            )
+        task = loop.create_task(coro)
         task.add_done_callback(_log_task_failure)
 
 
@@ -69,8 +140,70 @@ def _log_task_failure(task: asyncio.Task) -> None:
         logger.warning("chat_title_publish_failed", exc_info=exc)
 
 
-async def publish_chat_title(*, org_id: str, chat_id: str, title: str) -> None:
-    payload = json.dumps({"chat_id": chat_id, "title": title}, separators=(",", ":"))
+def _sse_event_name(data: str) -> str:
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return "chat_title"
+    if isinstance(parsed, dict) and parsed.get("type") == "chat.created":
+        return "chat.created"
+    if isinstance(parsed, dict) and parsed.get("type") == "chat.deleted":
+        return "chat.deleted"
+    return "chat_title"
+
+
+async def publish_chat_created(
+    *,
+    org_id: str,
+    chat_id: str,
+    title: str,
+    project_id: str | None,
+    model_set_id: str | None,
+    updated_at: str,
+) -> None:
+    payload = json.dumps(
+        {
+            "type": "chat.created",
+            "chat_id": chat_id,
+            "title": title,
+            "project_id": project_id,
+            "model_set_id": model_set_id,
+            "updated_at": updated_at,
+        },
+        separators=(",", ":"),
+    )
+    client = Redis.from_url(
+        get_settings().redis_url,
+        decode_responses=True,
+        socket_connect_timeout=1.0,
+    )
+    try:
+        await client.publish(title_channel(org_id), payload)
+    finally:
+        await client.aclose()
+
+
+async def publish_chat_deleted(*, org_id: str, chat_id: str) -> None:
+    payload = json.dumps(
+        {"type": "chat.deleted", "chat_id": chat_id},
+        separators=(",", ":"),
+    )
+    client = Redis.from_url(
+        get_settings().redis_url,
+        decode_responses=True,
+        socket_connect_timeout=1.0,
+    )
+    try:
+        await client.publish(title_channel(org_id), payload)
+    finally:
+        await client.aclose()
+
+
+async def publish_chat_title(*, org_id: str, chat_id: str, title: str, updated_at: str) -> None:
+    payload = json.dumps(
+        {"chat_id": chat_id, "title": title, "updated_at": updated_at},
+        separators=(",", ":"),
+    )
     client = Redis.from_url(
         get_settings().redis_url,
         decode_responses=True,
@@ -112,9 +245,11 @@ async def iter_chat_title_sse(
             if message.get("type") != "message":
                 continue
             data = message.get("data")
+            if isinstance(data, bytes):
+                data = data.decode()
             if not isinstance(data, str) or not data:
                 continue
-            yield f"event: chat_title\ndata: {data}\n\n"
+            yield f"event: {_sse_event_name(data)}\ndata: {data}\n\n"
     finally:
         try:
             await pubsub.unsubscribe(title_channel(org_id))

@@ -39,6 +39,7 @@ export function mapApiChat(c: ApiChat): Chat {
     id: c.id,
     title: c.title,
     updated: formatRelativeTime(c.updated_at),
+    updatedAt: c.updated_at,
     projectId: c.project_id,
     modelSetId: c.model_set_id ?? null,
     pinnedVerdicts: c.pinned_verdicts.map((pin) => ({
@@ -70,6 +71,7 @@ export function chatFromTurnActivity(
     id: data.chatId,
     title,
     updated: formatRelativeTime(updatedAt),
+    updatedAt,
     projectId: existing?.projectId ?? null,
     modelSetId: data.modelSetId ?? existing?.modelSetId ?? null,
     pinnedVerdicts: existing?.pinnedVerdicts ?? [],
