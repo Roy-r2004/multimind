@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Plus, Search, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -36,13 +36,25 @@ import { useAuth } from "@/lib/auth";
 import { COMPOSER_FILE_ACCEPT } from "@/lib/composerAttachments";
 import { attachLibraryItemViaApi } from "@/lib/libraryAttach";
 import {
-  LIBRARY_HOME_RECENT_LIMIT,
   buildLibraryFolderTree,
   libraryFolderPath,
   libraryViewAfterFolderDelete,
   libraryViewHeading,
-  type LibraryViewMode,
 } from "@/lib/libraryUi";
+import {
+  applyLibraryBrowseChange,
+  browserSessionStorage,
+  EMPTY_LIBRARY_BROWSE,
+  libraryBrowseContextKey,
+  libraryListQuery,
+  libraryScrollToRestore,
+  readLibraryBrowseState,
+  readLibraryScrollTop,
+  rememberLibraryScroll,
+  writeLibraryBrowseState,
+  writeLibraryScrollTop,
+  type LibraryBrowseState,
+} from "@/lib/libraryBrowseMemory";
 import { useChatStore } from "@/lib/store";
 
 export const Route = createFileRoute("/library/")({
@@ -60,12 +72,61 @@ function LibraryPage() {
   const [folders, setFolders] = useState<ApiLibraryFolder[]>([]);
   const [labels, setLabels] = useState<ApiLibraryLabel[]>([]);
   const [items, setItems] = useState<ApiLibraryItem[]>([]);
-  const [view, setView] = useState<LibraryViewMode>({ kind: "home" });
-  const [query, setQuery] = useState("");
-  const [folderQuery, setFolderQuery] = useState("");
-  const [foldersExpanded, setFoldersExpanded] = useState(false);
-  const [fileTypeFilter, setFileTypeFilter] = useState<string>("");
+  const [browse, setBrowse] = useState<LibraryBrowseState>(EMPTY_LIBRARY_BROWSE);
+  const [browseReady, setBrowseReady] = useState(false);
+  const browseRef = useRef(browse);
+  browseRef.current = browse;
+  const scrollRestoredRef = useRef(false);
+  const pendingScrollRef = useRef(0);
+  const leaveLibraryRef = useRef(false);
+  const ignoreScrollRef = useRef(false);
   const [loading, setLoading] = useState(true);
+  const view = browse.view;
+  const query = browse.query;
+  const folderQuery = browse.folderQuery;
+  const foldersExpanded = browse.foldersExpanded;
+  const fileTypeFilter = browse.fileTypeFilter;
+
+  const updateBrowse = useCallback(
+    (patch: Partial<LibraryBrowseState> | ((current: LibraryBrowseState) => Partial<LibraryBrowseState>)) => {
+      const current = browseRef.current;
+      const resolved = typeof patch === "function" ? patch(current) : patch;
+      const next = applyLibraryBrowseChange(current, resolved);
+      browseRef.current = next;
+      writeLibraryBrowseState(browserSessionStorage(), next);
+      if (libraryBrowseContextKey(current) !== libraryBrowseContextKey(next)) {
+        pendingScrollRef.current = 0;
+        ignoreScrollRef.current = true;
+        writeLibraryScrollTop(0);
+        window.requestAnimationFrame(() => {
+          ignoreScrollRef.current = false;
+        });
+      }
+      setBrowse(next);
+    },
+    [],
+  );
+
+  const flushLibraryScroll = useCallback(() => {
+    if (leaveLibraryRef.current || ignoreScrollRef.current) return;
+    const next = rememberLibraryScroll(browseRef.current, readLibraryScrollTop());
+    if (next === browseRef.current) return;
+    browseRef.current = next;
+    writeLibraryBrowseState(browserSessionStorage(), next);
+  }, []);
+
+  const rememberBeforeDocument = useCallback(() => {
+    flushLibraryScroll();
+    leaveLibraryRef.current = true;
+  }, [flushLibraryScroll]);
+
+  useLayoutEffect(() => {
+    const stored = readLibraryBrowseState(browserSessionStorage());
+    pendingScrollRef.current = stored.scrollY;
+    browseRef.current = stored;
+    setBrowse(stored);
+    setBrowseReady(true);
+  }, []);
   const [attachingId, setAttachingId] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -113,32 +174,25 @@ function LibraryPage() {
     }
     setLoading(true);
     try {
+      const listQuery = libraryListQuery({ view, query, fileTypeFilter });
       const params: Parameters<typeof api.library.listItems>[1] = {};
-      if (view.kind === "home" || view.kind === "recent") params.recent = true;
-      if (view.kind !== "home") {
-        params.q = query.trim() || undefined;
-        if (fileTypeFilter === "document") params.item_type = "document";
-        if (fileTypeFilter === "file") params.item_type = "file";
-      }
-      if (view.kind === "favorites") params.favorites = true;
-      if (view.kind === "folder") params.folder_id = view.folderId;
-      if (view.kind === "unfiled") params.unfiled = true;
-      if (view.kind === "label") params.label_id = view.labelId;
+      if (listQuery.recent) params.recent = true;
+      if (listQuery.q) params.q = listQuery.q;
+      if (listQuery.item_type) params.item_type = listQuery.item_type;
+      if (listQuery.favorites) params.favorites = true;
+      if (listQuery.folder_id) params.folder_id = listQuery.folder_id;
+      if (listQuery.unfiled) params.unfiled = true;
+      if (listQuery.label_id) params.label_id = listQuery.label_id;
 
       let list = await api.library.listItems(auth, params);
-      if (
-        view.kind !== "home" &&
-        fileTypeFilter &&
-        fileTypeFilter !== "document" &&
-        fileTypeFilter !== "file"
-      ) {
-        const ext = fileTypeFilter.toLowerCase();
+      if (listQuery.extension) {
+        const ext = listQuery.extension;
         list = list.filter((item) =>
           (item.original_filename || item.title || "").toLowerCase().endsWith(ext),
         );
       }
-      if (view.kind === "home") {
-        list = list.slice(0, LIBRARY_HOME_RECENT_LIMIT);
+      if (listQuery.homeLimit) {
+        list = list.slice(0, listQuery.homeLimit);
       }
       setItems(list);
     } catch (error) {
@@ -149,12 +203,35 @@ function LibraryPage() {
   }, [authHeaders, query, view, fileTypeFilter]);
 
   useEffect(() => {
+    if (!browseReady) return;
     void reloadMeta();
-  }, [reloadMeta]);
+  }, [browseReady, reloadMeta]);
 
   useEffect(() => {
+    if (!browseReady) return;
     void reloadItems();
-  }, [reloadItems]);
+  }, [browseReady, reloadItems]);
+
+  useEffect(() => {
+    if (!browseReady) return;
+    const flush = () => flushLibraryScroll();
+    window.addEventListener("scroll", flush, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", flush);
+    };
+  }, [browseReady, flushLibraryScroll]);
+
+  useEffect(() => {
+    if (!browseReady || loading || scrollRestoredRef.current) return;
+    scrollRestoredRef.current = true;
+    const top = libraryScrollToRestore(pendingScrollRef.current, {
+      contentReady: true,
+      alreadyRestored: false,
+    });
+    if (top == null) return;
+    writeLibraryScrollTop(top);
+    window.requestAnimationFrame(() => writeLibraryScrollTop(top));
+  }, [browseReady, loading, items.length]);
 
   async function createFolder(parentId: string | null) {
     const auth = authHeaders();
@@ -207,7 +284,9 @@ function LibraryPage() {
     setDeletingFolder(true);
     try {
       await api.library.deleteFolder(auth, target.id);
-      setView((current) => libraryViewAfterFolderDelete(current, target));
+      updateBrowse((current) => ({
+        view: libraryViewAfterFolderDelete(current.view, target),
+      }));
       await reloadMeta();
       setDeleteFolderTarget(null);
       toast.success("Folder deleted");
@@ -407,6 +486,17 @@ function LibraryPage() {
     onDelete: (item: ApiLibraryItem) => void deleteItem(item),
   };
 
+  if (!browseReady) {
+    return (
+      <AppShell>
+        <div className="flex items-center justify-center gap-2 py-24 text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Loading…
+        </div>
+      </AppShell>
+    );
+  }
+
   return (
     <AppShell>
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 md:px-8">
@@ -446,10 +536,12 @@ function LibraryPage() {
               labels={labels}
               folderQuery={folderQuery}
               foldersExpanded={foldersExpanded}
-              onFolderQueryChange={setFolderQuery}
-              onToggleFoldersExpanded={() => setFoldersExpanded((open) => !open)}
-              onView={setView}
-              onSelectFolder={(folderId) => setView({ kind: "folder", folderId })}
+              onFolderQueryChange={(value) => updateBrowse({ folderQuery: value })}
+              onToggleFoldersExpanded={() =>
+                updateBrowse((current) => ({ foldersExpanded: !current.foldersExpanded }))
+              }
+              onView={(next) => updateBrowse({ view: next })}
+              onSelectFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
               onCreateRootFolder={() => void createFolder(null)}
               onAddChild={(id) => void createFolder(id)}
               onRename={openRenameFolder}
@@ -480,9 +572,9 @@ function LibraryPage() {
                   ? labels.find((label) => label.id === view.labelId)?.name
                   : undefined
               }
-              onHome={() => setView({ kind: "home" })}
-              onFolder={(folderId) => setView({ kind: "folder", folderId })}
-              onView={(kind) => setView({ kind })}
+              onHome={() => updateBrowse({ view: { kind: "home" } })}
+              onFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
+              onView={(kind) => updateBrowse({ view: { kind } })}
             />
 
             {view.kind === "home" ? (
@@ -496,7 +588,8 @@ function LibraryPage() {
                   recentItems={items}
                   folders={folderTree}
                   attachingId={attachingId}
-                  onOpenFolder={(folderId) => setView({ kind: "folder", folderId })}
+                  onOpenFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
+                  onOpenItem={rememberBeforeDocument}
                   {...itemRowHandlers}
                 />
               )
@@ -514,7 +607,7 @@ function LibraryPage() {
                     <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
                     <input
                       value={query}
-                      onChange={(e) => setQuery(e.target.value)}
+                      onChange={(e) => updateBrowse({ query: e.target.value })}
                       placeholder={
                         view.kind === "folder"
                           ? "Search this folder..."
@@ -525,7 +618,7 @@ function LibraryPage() {
                   </div>
                   <select
                     value={fileTypeFilter}
-                    onChange={(e) => setFileTypeFilter(e.target.value)}
+                    onChange={(e) => updateBrowse({ fileTypeFilter: e.target.value })}
                     className="rounded-lg border border-border bg-background/70 px-3 py-2 text-sm"
                   >
                     <option value="">All types</option>
@@ -555,6 +648,7 @@ function LibraryPage() {
                           key={item.id}
                           item={item}
                           attaching={attachingId === item.id}
+                          onOpen={rememberBeforeDocument}
                           {...itemRowHandlers}
                         />
                       ))}

@@ -32,6 +32,7 @@ export function LibraryItemRow({
   onDownload,
   onAttach,
   onDelete,
+  onOpen,
 }: {
   item: ApiLibraryItem;
   attaching: boolean;
@@ -41,6 +42,7 @@ export function LibraryItemRow({
   onDownload: (item: ApiLibraryItem) => void;
   onAttach: (item: ApiLibraryItem) => void;
   onDelete: (item: ApiLibraryItem) => void;
+  onOpen?: () => void;
 }) {
   const typeLabel = libraryItemTypeLabel(item);
   const size = item.size_bytes != null ? formatLibraryBytes(item.size_bytes) : "";
@@ -60,6 +62,7 @@ export function LibraryItemRow({
           params={{ itemId: item.id }}
           className="block truncate font-medium hover:underline"
           title={item.title}
+          onClick={() => onOpen?.()}
         >
           {item.title}
         </Link>

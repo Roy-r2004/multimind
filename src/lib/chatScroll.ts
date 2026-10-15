@@ -274,6 +274,16 @@ export function restoreChatScrollPosition(thread: HTMLElement, snapshot: ChatScr
   thread.scrollTop = nextScrollTopForRestore(thread.scrollTop, snapshot, null);
 }
 
+export function findPinnedContentElement(
+  pin: { verdictId?: string | null; turnId?: string | null; answerId?: string | null },
+): HTMLElement | null {
+  if (pin.answerId) {
+    if (typeof document === "undefined") return null;
+    return document.getElementById(`answer-${pin.answerId}`);
+  }
+  return findVerdictSynthesisElement(pin.verdictId, pin.turnId);
+}
+
 export function findVerdictSynthesisElement(
   verdictId: string | null | undefined,
   turnId: string | null | undefined,

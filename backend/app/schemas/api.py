@@ -1281,6 +1281,16 @@ class PinnedVerdictResponse(BaseModel):
     turn_id: str
 
 
+class PinnedAnswerResponse(BaseModel):
+    id: str
+    pin_type: Literal["answer", "selection"] = "answer"
+    selected_text: str | None = None
+    selected_html: str | None = None
+    selection_locator: SelectionPinLocator | None = None
+    answer_id: str
+    turn_id: str
+
+
 class ChatResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1291,6 +1301,7 @@ class ChatResponse(BaseModel):
     pinned_verdict_id: str | None = None
     pinned_turn_id: str | None = None
     pinned_verdicts: list[PinnedVerdictResponse] = Field(default_factory=list)
+    pinned_answers: list[PinnedAnswerResponse] = Field(default_factory=list)
     active_referenced_chat: ChatReferenceResponse | None = None
     updated_at: datetime
 
@@ -1337,10 +1348,30 @@ class PinVerdictRequest(BaseModel):
         return self
 
 
+class PinAnswerRequest(BaseModel):
+    answer_id: str
+    pin_type: Literal["answer", "selection"] = "answer"
+    selected_text: str | None = None
+    selected_html: str | None = None
+    selection_locator: SelectionPinLocator | None = None
+
+    @model_validator(mode="after")
+    def validate_selection(self):
+        if self.pin_type == "selection":
+            if not self.selected_text or not self.selected_text.strip():
+                raise ValueError("Selection pins require non-empty selected_text")
+        else:
+            self.selected_text = None
+            self.selected_html = None
+            self.selection_locator = None
+        return self
+
+
 # --- Turns ---
 
 
 class ModelAnswerResponse(BaseModel):
+    id: str | None = None
     model_id: str
     model_name: str
     text: str | None = None

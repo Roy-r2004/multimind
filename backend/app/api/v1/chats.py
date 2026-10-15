@@ -29,6 +29,7 @@ from app.schemas.api import (
     ChatResponse,
     ChatUpdateRequest,
     MessageResponse,
+    PinAnswerRequest,
     PinVerdictRequest,
     ShareLinkResponse,
     TranscriptionResponse,
@@ -182,6 +183,46 @@ async def create_verdict_pin(
     db: AsyncSession = Depends(get_db),
 ):
     return await chat_service.pin_verdict(db, auth, str(chat_id), **data.model_dump())
+
+
+@router.put("/{chat_id}/pinned-answers/{answer_id}", response_model=ChatResponse)
+async def pin_answer(
+    chat_id: UUID,
+    answer_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.pin_answer(db, auth, str(chat_id), str(answer_id))
+
+
+@router.delete("/{chat_id}/pinned-answers/{answer_id}", response_model=ChatResponse)
+async def unpin_answer(
+    chat_id: UUID,
+    answer_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.unpin_answer(db, auth, str(chat_id), str(answer_id))
+
+
+@router.post("/{chat_id}/pinned-answers", response_model=ChatResponse)
+async def create_answer_pin(
+    chat_id: UUID,
+    data: PinAnswerRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.pin_answer(db, auth, str(chat_id), **data.model_dump())
+
+
+@router.delete("/{chat_id}/pinned-answers/selections/{pin_id}", response_model=ChatResponse)
+async def unpin_answer_selection(
+    chat_id: UUID,
+    pin_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.unpin_answer_selection(db, auth, str(chat_id), str(pin_id))
 
 
 @router.delete("/{chat_id}/pinned-verdicts/selections/{pin_id}", response_model=ChatResponse)
