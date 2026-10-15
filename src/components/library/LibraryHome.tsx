@@ -15,6 +15,7 @@ export function LibraryHome({
   onDownload,
   onAttach,
   onDelete,
+  onOpenItem,
 }: {
   recentItems: ApiLibraryItem[];
   folders: LibraryFolderNode[];
@@ -26,6 +27,7 @@ export function LibraryHome({
   onDownload: (item: ApiLibraryItem) => void;
   onAttach: (item: ApiLibraryItem) => void;
   onDelete: (item: ApiLibraryItem) => void;
+  onOpenItem?: () => void;
 }) {
   return (
     <div className="space-y-6">
@@ -51,6 +53,7 @@ export function LibraryHome({
                   onDownload={onDownload}
                   onAttach={onAttach}
                   onDelete={onDelete}
+                  onOpen={onOpenItem}
                 />
               ))}
             </ul>

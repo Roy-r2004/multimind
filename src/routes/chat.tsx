@@ -56,7 +56,7 @@ import {
   locateSelectionRange, scrollToSelectionRange, highlightSelectionRange,
   type SelectionPinPayload,
 } from "@/lib/verdictSelectionNavigation";
-import type { PinnedVerdict } from "@/lib/pinnedVerdicts";
+import { singleAiAnswerActionState } from "@/lib/singleAiAnswerActions";
 import { VerdictCopyButton } from "@/components/chat/VerdictCopyButton";
 import { UserPromptBubble } from "@/components/chat/UserPromptBubble";
 import { ModelConfidenceBadge } from "@/components/chat/ModelConfidenceBadge";
@@ -144,7 +144,7 @@ import { useChatTurnLayout } from "@/hooks/useChatTurnLayout";
 import { useTurnAnswerExpansion } from "@/hooks/useTurnAnswerExpansion";
 import {
   CHAT_SCROLL_RESTORE_SETTLE_MS,
-  findVerdictSynthesisElement,
+  findPinnedContentElement,
   getChatScrollMemory,
   getChatScrollSnapshot,
   isChatNearBottom,
@@ -157,7 +157,15 @@ import {
   shouldPinToBottomForPlan,
   shouldShowScrollToLatest,
 } from "@/lib/chatScroll";
-import { buildPinnedVerdictMenuItems, isVerdictPinned } from "@/lib/pinnedVerdicts";
+import {
+  buildPinnedVerdictMenuItems,
+  dropPinsForTurns,
+  isAnswerPinned,
+  isVerdictPinned,
+  partitionPinsForApi,
+  pinnedMenuLabel,
+  type PinnedVerdict,
+} from "@/lib/pinnedVerdicts";
 import { simpleExplanationSurface, visibleSimpleExplanationContent } from "@/lib/simpleExplanation";
 import {
   DropdownMenu,
@@ -484,7 +492,7 @@ export function ChatPage() {
     clearPinHighlightRef.current?.();
   }, [activeChatId]);
 
-  function scrollToPinnedVerdict(verdictId: string, turnId: string, selectionPin?: PinnedVerdict) {
+  function scrollToPinnedVerdict(pin: PinnedVerdict, selectionPin?: PinnedVerdict) {
     const navigation = ++pinNavigationRef.current;
     clearPinHighlightRef.current?.();
     // Stop "stick to bottom" from fighting the jump to the pinned synthesis.
@@ -501,13 +509,17 @@ export function ChatPage() {
 
     const attempt = (n: number) => {
       if (navigation !== pinNavigationRef.current) return;
-      const target = findVerdictSynthesisElement(verdictId, turnId);
+      const target = findPinnedContentElement(pin);
       if (!target) {
         if (n < 12) {
           window.setTimeout(() => attempt(n + 1), 40);
           return;
         }
-        toast.error("Could not find the pinned verdict in this chat");
+        toast.error(
+          pin.answerId
+            ? "Could not find the pinned answer in this chat"
+            : "Could not find the pinned verdict in this chat",
+        );
         return;
       }
       const thread = threadRef.current;
@@ -520,13 +532,17 @@ export function ChatPage() {
       // Second pass after layout settles (images/markdown can shift height).
       window.setTimeout(() => {
         if (navigation !== pinNavigationRef.current) return;
-        const settled = findVerdictSynthesisElement(verdictId, turnId);
+        const settled = findPinnedContentElement(pin);
         if (!settled) return;
         if (selectionPin) {
           const root = settled.querySelector(VERDICT_COPY_ROOT_SELECTOR);
           const range = root ? locateSelectionRange(root, selectionPin) : null;
           if (!range) {
-            toast.info("Opened the source Verdict, but this fragment could not be located uniquely. Re-pin it to save its exact position.");
+            toast.info(
+              pin.answerId
+                ? "Opened the source answer, but this fragment could not be located uniquely. Re-pin it to save its exact position."
+                : "Opened the source Verdict, but this fragment could not be located uniquely. Re-pin it to save its exact position.",
+            );
             return;
           }
           scrollToSelectionRange(range, threadRef.current);
@@ -551,14 +567,71 @@ export function ChatPage() {
     toast.success("Selection pinned");
   }
 
-  async function handleUnpinSelection(pinId: string) {
+  async function handleUnpinSelection(pin: PinnedVerdict) {
     const auth = authHeaders();
-    if (!auth || !activeChatId) return;
+    if (!auth || !activeChatId || !pin.id) return;
     try {
-      applyChatUpdate(await api.chats.unpinSelection(auth, activeChatId, pinId));
+      const updated = pin.answerId
+        ? await api.chats.unpinAnswerSelection(auth, activeChatId, pin.id)
+        : await api.chats.unpinSelection(auth, activeChatId, pin.id);
+      applyChatUpdate(updated);
       toast.success("Selection unpinned");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not unpin selection");
+    }
+  }
+
+  async function handlePinAnswerSelection(answerId: string, payload: SelectionPinPayload) {
+    const auth = authHeaders();
+    if (!auth || !activeChatId) throw new Error("No active chat");
+    applyChatUpdate(
+      await api.chats.pinAnswerSelection(
+        auth,
+        activeChatId,
+        answerId,
+        payload.plainText,
+        payload.html,
+        payload.locator,
+      ),
+    );
+    toast.success("Selection pinned");
+  }
+
+  function forgetPinsForTurns(turnIds: string[]) {
+    if (!activeChat || turnIds.length === 0) return;
+    const remaining = dropPinsForTurns(activeChat.pinnedVerdicts, turnIds);
+    if (remaining.length === activeChat.pinnedVerdicts.length) return;
+    applyChatUpdate({
+      id: activeChat.id,
+      title: activeChat.title,
+      project_id: activeChat.projectId ?? null,
+      model_set_id: activeChat.modelSetId ?? null,
+      ...partitionPinsForApi(remaining),
+      active_referenced_chat: activeChat.activeReferencedChat ?? null,
+      updated_at: activeChat.updatedAt ?? new Date().toISOString(),
+    });
+  }
+
+  async function handlePinAnswer(answerId: string, currentlyPinned: boolean) {
+    const auth = authHeaders();
+    if (!auth || !activeChatId || pendingPinnedVerdictsRef.current.has(answerId)) return;
+    pendingPinnedVerdictsRef.current.add(answerId);
+    setPendingPinnedVerdicts((current) => new Set(current).add(answerId));
+    try {
+      const updated = currentlyPinned
+        ? await api.chats.unpinAnswer(auth, activeChatId, answerId)
+        : await api.chats.pinAnswer(auth, activeChatId, answerId);
+      applyChatUpdate(updated);
+      toast.success(currentlyPinned ? "Answer unpinned" : "Answer pinned");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update pin");
+    } finally {
+      pendingPinnedVerdictsRef.current.delete(answerId);
+      setPendingPinnedVerdicts((current) => {
+        const next = new Set(current);
+        next.delete(answerId);
+        return next;
+      });
     }
   }
 
@@ -930,16 +1003,7 @@ export function ChatPage() {
           title: pending.chat_title ?? activeChat?.title ?? question.slice(0, 80),
           project_id: activeChat?.projectId ?? null,
           model_set_id: set.id,
-          pinned_verdicts:
-            activeChat?.pinnedVerdicts.map((pin) => ({
-              id: pin.id,
-              pin_type: pin.pinType,
-              selected_text: pin.selectedText,
-              selected_html: pin.selectedHtml,
-              selection_locator: pin.selectionLocator,
-              verdict_id: pin.verdictId,
-              turn_id: pin.turnId,
-            })) ?? [],
+          ...partitionPinsForApi(activeChat?.pinnedVerdicts ?? []),
           active_referenced_chat: { id: refChats[0].chatId, title: refChats[0].title },
           updated_at: pending.chat_updated_at ?? new Date().toISOString(),
         });
@@ -1015,6 +1079,7 @@ export function ChatPage() {
     try {
       await api.chats.deleteTurn(auth, activeChatId, target.id);
       removeTurn(activeChatId, target.id);
+      forgetPinsForTurns([target.id]);
       setApiTurns((prev) => removeTurnFromList(prev, target.id));
       setDeletedTurns((prev) => [target, ...prev.filter((t) => t.id !== target.id)]);
       setDeleteTurnTarget(null);
@@ -1050,6 +1115,7 @@ export function ChatPage() {
       for (const supersededId of result.superseded_turn_ids) {
         removeTurn(activeChatId, supersededId);
       }
+      forgetPinsForTurns(result.superseded_turn_ids);
       setApiTurns((prev) => {
         const remaining = prev.filter((item) => !result.superseded_turn_ids.includes(item.id));
         return [...remaining, result.new_turn].sort((a, b) =>
@@ -1235,7 +1301,7 @@ export function ChatPage() {
                     type="button"
                     className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300"
                   >
-                    <Pin className="size-3.5 fill-current" /> Pinned verdicts (
+                    <Pin className="size-3.5 fill-current" /> {pinnedMenuLabel(pinnedVerdicts)} (
                     {pinnedVerdictMenuItems.length})
                     <ChevronDown className="size-3.5" />
                   </button>
@@ -1245,7 +1311,7 @@ export function ChatPage() {
                     <div key={pin.id} className="flex items-center">
                       <DropdownMenuItem
                         className="min-w-0 flex-1"
-                        onSelect={() => scrollToPinnedVerdict(pin.verdictId, pin.turnId, pin)}
+                        onSelect={() => scrollToPinnedVerdict(pin, pin)}
                         title={pin.label}
                       >
                         <Pin className="size-3.5 shrink-0 fill-current text-amber-700" />
@@ -1255,15 +1321,15 @@ export function ChatPage() {
                         aria-label={`Unpin selection: ${pin.label}`}
                         title="Unpin selection"
                         disabled={!pin.id}
-                        onSelect={() => pin.id && void handleUnpinSelection(pin.id)}
+                        onSelect={() => void handleUnpinSelection(pin)}
                       >
                         <X className="size-3.5" />
                       </DropdownMenuItem>
                     </div>
                   ) : (
                     <DropdownMenuItem
-                      key={pin.id ?? pin.verdictId}
-                      onSelect={() => scrollToPinnedVerdict(pin.verdictId, pin.turnId)}
+                      key={pin.id ?? pin.answerId ?? pin.verdictId}
+                      onSelect={() => scrollToPinnedVerdict(pin)}
                     >
                       <Pin className="size-3.5 fill-current text-amber-700" />
                       {pin.label}
@@ -1434,11 +1500,13 @@ export function ChatPage() {
                       pendingSavedVerdicts={pendingSavedVerdicts}
                       pinnedVerdicts={pinnedVerdicts}
                       onPinSelection={handlePinSelection}
-                      pinPending={Boolean(
-                        turn.verdict && pendingPinnedVerdicts.has(turn.verdict.id),
-                      )}
+                      onPinAnswerSelection={handlePinAnswerSelection}
+                      pendingPinIds={pendingPinnedVerdicts}
                       onTogglePin={(verdictId, currentlyPinned) =>
                         void handlePinVerdict(verdictId, currentlyPinned)
+                      }
+                      onToggleAnswerPin={(answerId, currentlyPinned) =>
+                        void handlePinAnswer(answerId, currentlyPinned)
                       }
                       onToggleSavedVerdict={(verdictId, saved) =>
                         toggleSavedVerdict(verdictId, saved).catch((error) => {
@@ -2056,9 +2124,11 @@ function AiTurn({
   modelById,
   pendingSavedVerdicts,
   pinnedVerdicts,
-  pinPending,
+  pendingPinIds,
   onTogglePin,
+  onToggleAnswerPin,
   onPinSelection,
+  onPinAnswerSelection,
   onToggleSavedVerdict,
   onLessonUpdate,
 }: {
@@ -2068,8 +2138,10 @@ function AiTurn({
   pendingSavedVerdicts: Set<string>;
   pinnedVerdicts: PinnedVerdict[];
   onPinSelection: (verdictId: string, payload: SelectionPinPayload) => Promise<void>;
-  pinPending: boolean;
+  onPinAnswerSelection: (answerId: string, payload: SelectionPinPayload) => Promise<void>;
+  pendingPinIds: Set<string>;
   onTogglePin: (verdictId: string, currentlyPinned: boolean) => void;
+  onToggleAnswerPin: (answerId: string, currentlyPinned: boolean) => void;
   onToggleSavedVerdict: (verdictId: string, saved: boolean) => void;
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
 }) {
@@ -2080,8 +2152,16 @@ function AiTurn({
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
   const verdictContentRef = useRef<HTMLDivElement>(null);
+  const answerCopyRef = useRef<HTMLDivElement>(null);
   const answerCards = deriveTurnAnswerCards(turn, set.models);
   const cardModelIds = answerCards.map((card) => card.modelId);
+  const singleAi = singleAiAnswerActionState({
+    answerCount: answerCards.length,
+    hasVerdict: Boolean(turn.verdict),
+    status: answerCards[0]?.status ?? "",
+    text: answerCards[0]?.answer?.text,
+    answerId: answerCards[0]?.answer?.id,
+  });
 
   const topModelId = turn.verdict ? inferTopModelId(turn, cardModelIds, modelById) : null;
   const judgeModel = turn.verdict ? modelById(turn.verdict.model_id) : null;
@@ -2090,6 +2170,9 @@ function AiTurn({
   const bookmarkState = getVerdictBookmarkState(turn, pendingSavedVerdicts);
   const isPinned = isVerdictPinned(pinnedVerdicts, turn.verdict?.id);
   const hasVerdict = Boolean(turn.verdict);
+  const verdictPinPending = Boolean(turn.verdict && pendingPinIds.has(turn.verdict.id));
+  const answerPinned = isAnswerPinned(pinnedVerdicts, singleAi.answerId ?? undefined);
+  const answerPinPending = Boolean(singleAi.answerId && pendingPinIds.has(singleAi.answerId));
 
   function openDisagree() {
     verdictRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -2132,15 +2215,21 @@ function AiTurn({
           const inProgress = status === "pending" || status === "running";
           const isTopPick = topModelId === id;
           const expanded = isExpanded(id, hasVerdict);
+          const showSingleAiActions = singleAi.showCopy && index === 0;
           return (
             <GlassCard
               key={id}
+              id={showSingleAiActions && singleAi.answerId ? `answer-${singleAi.answerId}` : undefined}
               featured={isTopPick}
+              data-single-ai-answer={showSingleAiActions ? "true" : undefined}
               style={{ borderLeftColor: m.color } satisfies CSSProperties}
               className={cn(
                 "elevate-card relative w-full min-w-0 overflow-hidden border-l-[3px] p-4 sm:p-5",
                 index > 0 && `elevate-card-delay-${Math.min(index, 4)}`,
                 isTopPick && "ring-1 ring-primary/35",
+                showSingleAiActions &&
+                  answerPinned &&
+                  "ring-2 ring-amber-400/60 ring-offset-2 ring-offset-background",
               )}
             >
               <div className="relative flex items-start gap-2.5 sm:gap-3">
@@ -2184,6 +2273,36 @@ function AiTurn({
                     </div>
                   ) : null}
                 </div>
+                {showSingleAiActions ? (
+                  <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+                    <VerdictCopyButton
+                      text={singleAi.copyText}
+                      getHtml={() => getVerdictBodyCopyHtml(answerCopyRef.current)}
+                      successMessage="Answer copied"
+                      errorMessage="Could not copy answer"
+                      testId="single-ai-copy"
+                    />
+                    {singleAi.showPin && singleAi.answerId ? (
+                      <button
+                        type="button"
+                        data-testid="single-ai-pin"
+                        aria-label={answerPinned ? "Unpin answer" : "Pin answer"}
+                        title={answerPinned ? "Unpin answer" : "Pin answer in this chat"}
+                        disabled={answerPinPending}
+                        onClick={() => onToggleAnswerPin(singleAi.answerId!, answerPinned)}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60",
+                          answerPinned
+                            ? "border-amber-500/40 bg-amber-500/10 text-amber-800"
+                            : "border-border bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                        )}
+                      >
+                        <Pin className={cn("size-3.5", answerPinned && "fill-current")} />
+                        {answerPinned ? "Unpin" : "Pin"}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               <div className="relative mt-3 border-t border-border/60 pt-3 sm:mt-4 sm:pt-4">
                 {failed ? (
@@ -2204,7 +2323,21 @@ function AiTurn({
                     onToggle={() => toggleAnswerExpansion(id)}
                     contentKey={a?.text ?? ""}
                   >
-                    <MessageContent>{a?.text ?? ""}</MessageContent>
+                    {showSingleAiActions ? (
+                      <>
+                        {singleAi.showPin && singleAi.answerId ? (
+                          <VerdictSelectionPin
+                            root={answerCopyRef}
+                            onPin={(payload) => onPinAnswerSelection(singleAi.answerId!, payload)}
+                          />
+                        ) : null}
+                        <div ref={answerCopyRef} data-verdict-copy-root="">
+                          <MessageContent>{a?.text ?? ""}</MessageContent>
+                        </div>
+                      </>
+                    ) : (
+                      <MessageContent>{a?.text ?? ""}</MessageContent>
+                    )}
                   </ExpandableAnswer>
                 )}
               </div>
@@ -2287,7 +2420,7 @@ function AiTurn({
                 type="button"
                 aria-label={isPinned ? "Unpin verdict" : "Pin verdict"}
                 title={isPinned ? "Unpin verdict" : "Pin verdict in this chat"}
-                disabled={pinPending}
+                disabled={verdictPinPending}
                 onClick={() => onTogglePin(turn.verdict!.id, isPinned)}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60",

@@ -2270,6 +2270,33 @@ class ChatVerdictPin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     verdict: Mapped["Verdict"] = relationship(back_populates="chat_pins")
 
 
+class ChatAnswerPin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Pin of a single-AI answer. Single-AI turns have no Verdict row."""
+
+    __tablename__ = "chat_answer_pins"
+    __table_args__ = (
+        CheckConstraint("pin_type IN ('answer', 'selection')", name="ck_chat_answer_pin_type"),
+        Index("ix_chat_answer_pins_chat_id", "chat_id"),
+        Index("ix_chat_answer_pins_model_answer_id", "model_answer_id"),
+    )
+
+    chat_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False
+    )
+    model_answer_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("model_answers.id", ondelete="CASCADE"), nullable=False
+    )
+    pin_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="answer", server_default="answer"
+    )
+    selected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selected_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selection_locator: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    chat: Mapped["Chat"] = relationship()
+    model_answer: Mapped["ModelAnswer"] = relationship()
+
+
 class VerdictSimpleExplanation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """Derived readability artifact for one Verdict. Not conversation or memory."""
 

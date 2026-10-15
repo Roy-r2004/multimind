@@ -16,6 +16,7 @@ from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, Va
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
+    ChatAnswerPin,
     ChatAttachment,
     ChatVerdictPin,
     CostRecord,
@@ -47,6 +48,7 @@ from app.schemas.api import (
     ChatUpdateRequest,
     DecisionInsuranceResponse,
     ModelAnswerResponse,
+    PinnedAnswerResponse,
     PinnedVerdictResponse,
     TurnAttachmentResponse,
     TurnCreateRequest,
@@ -65,6 +67,39 @@ from app.services.playbook_context_service import playbook_context_service
 from app.services.saved_verdict_service import saved_verdict_service
 
 logger = get_logger(__name__)
+
+
+def _pinned_answer_response(pin: ChatAnswerPin, turn_id: str) -> PinnedAnswerResponse:
+    return PinnedAnswerResponse(
+        id=pin.id,
+        answer_id=pin.model_answer_id,
+        turn_id=turn_id,
+        pin_type=pin.pin_type,
+        selected_text=pin.selected_text,
+        selected_html=pin.selected_html,
+        selection_locator=pin.selection_locator,
+    )
+
+
+async def load_answer_pins(
+    db: AsyncSession, chat_ids: list[str]
+) -> dict[str, list[PinnedAnswerResponse]]:
+    if not chat_ids:
+        return {}
+    rows = await db.execute(
+        select(ChatAnswerPin, ModelAnswer.turn_id)
+        .join(ModelAnswer, ModelAnswer.id == ChatAnswerPin.model_answer_id)
+        .join(Turn, Turn.id == ModelAnswer.turn_id)
+        .where(
+            ChatAnswerPin.chat_id.in_(chat_ids),
+            Turn.deleted_at.is_(None),
+        )
+        .order_by(ChatAnswerPin.created_at, ChatAnswerPin.id)
+    )
+    grouped: dict[str, list[PinnedAnswerResponse]] = {}
+    for pin, turn_id in rows.all():
+        grouped.setdefault(pin.chat_id, []).append(_pinned_answer_response(pin, turn_id))
+    return grouped
 CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
 TURN_ALREADY_RUNNING_CODE = "TURN_ALREADY_RUNNING"
 TURN_ALREADY_RUNNING_MESSAGE = "Turn orchestration is already running."
@@ -311,6 +346,7 @@ class ChatService:
             )
             reference_by_id = {c.id: c for c in rows.scalars().all()}
         pins_by_chat: dict[str, list[PinnedVerdictResponse]] = {}
+        answer_pins_by_chat = await load_answer_pins(db, [chat.id for chat in chats])
         if chats:
             rows = await db.execute(
                 select(ChatVerdictPin, Verdict.turn_id)
@@ -327,6 +363,7 @@ class ChatService:
                 c,
                 active_reference=reference_by_id.get(c.active_referenced_chat_id),
                 pinned_verdicts=pins_by_chat.get(c.id, []),
+                pinned_answers=answer_pins_by_chat.get(c.id, []),
             )
             for c in chats
         ]
@@ -485,6 +522,17 @@ class ChatService:
             )
             await db.execute(delete(ChatVerdictPin).where(ChatVerdictPin.chat_id == chat_id))
             await self._delete_pinned_brain_sources(db, auth.org_id, pinned_verdict_ids)
+            pinned_answer_ids = list(
+                (
+                    await db.execute(
+                        select(ChatAnswerPin.model_answer_id).where(
+                            ChatAnswerPin.chat_id == chat_id
+                        )
+                    )
+                ).scalars().all()
+            )
+            await db.execute(delete(ChatAnswerPin).where(ChatAnswerPin.chat_id == chat_id))
+            await self._delete_pinned_answer_brain_sources(db, auth.org_id, pinned_answer_ids)
             await db.execute(
                 delete(VerdictSimpleExplanation).where(
                     VerdictSimpleExplanation.verdict_id.in_(
@@ -571,6 +619,28 @@ class ChatService:
                 )
                 await self._delete_pinned_brain_sources(
                     db, auth.org_id, pinned_verdict_ids
+                )
+            pinned_answer_ids = list(
+                (
+                    await db.execute(
+                        select(ChatAnswerPin.model_answer_id)
+                        .join(ModelAnswer, ModelAnswer.id == ChatAnswerPin.model_answer_id)
+                        .where(
+                            ChatAnswerPin.chat_id == chat_id,
+                            ModelAnswer.turn_id == turn_id,
+                        )
+                    )
+                ).scalars().all()
+            )
+            if pinned_answer_ids:
+                await db.execute(
+                    delete(ChatAnswerPin).where(
+                        ChatAnswerPin.chat_id == chat_id,
+                        ChatAnswerPin.model_answer_id.in_(pinned_answer_ids),
+                    )
+                )
+                await self._delete_pinned_answer_brain_sources(
+                    db, auth.org_id, pinned_answer_ids
                 )
             await db.execute(
                 update(Turn)
@@ -778,6 +848,24 @@ class ChatService:
                 )
                 await self._delete_pinned_brain_sources(
                     db, auth.org_id, superseded_pinned_verdict_ids
+                )
+
+            superseded_answer_ids = list(
+                (
+                    await db.execute(
+                        select(ModelAnswer.id).where(ModelAnswer.turn_id.in_(superseded_ids))
+                    )
+                ).scalars().all()
+            )
+            if superseded_answer_ids:
+                await db.execute(
+                    delete(ChatAnswerPin).where(
+                        ChatAnswerPin.chat_id == chat_id,
+                        ChatAnswerPin.model_answer_id.in_(superseded_answer_ids),
+                    )
+                )
+                await self._delete_pinned_answer_brain_sources(
+                    db, auth.org_id, superseded_answer_ids
                 )
 
             new_turn = Turn(
@@ -1167,6 +1255,7 @@ class ChatService:
             model = get_model(a.model_id)
             answers.append(
                 ModelAnswerResponse(
+                    id=str(a.id),
                     model_id=a.model_id,
                     model_name=model.name,
                     text=a.text,
@@ -1766,6 +1855,128 @@ class ChatService:
         await db.flush()
         return await self._chat_response_async(db, chat)
 
+    async def pin_answer(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        chat_id: str,
+        answer_id: str,
+        pin_type: str = "answer",
+        selected_text: str | None = None,
+        selected_html: str | None = None,
+        selection_locator: dict | None = None,
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        result = await db.execute(
+            select(ModelAnswer)
+            .join(Turn, Turn.id == ModelAnswer.turn_id)
+            .where(
+                ModelAnswer.id == answer_id,
+                Turn.chat_id == chat.id,
+                Turn.deleted_at.is_(None),
+            )
+        )
+        answer = result.scalar_one_or_none()
+        if answer is None:
+            raise NotFoundError("Answer", answer_id)
+        if pin_type not in ("answer", "selection"):
+            raise ValidationError("Invalid pin_type")
+        if pin_type == "selection":
+            if not selected_text or not selected_text.strip():
+                raise ValidationError("Selection pins require non-empty selected_text")
+            db.add(
+                ChatAnswerPin(
+                    chat_id=chat.id,
+                    model_answer_id=answer.id,
+                    pin_type="selection",
+                    selected_text=selected_text,
+                    selected_html=selected_html,
+                    selection_locator=selection_locator,
+                )
+            )
+            await db.flush()
+            return await self._chat_response_async(db, chat)
+        if not answer.text or not answer.text.strip():
+            raise ValidationError("Answer pins require answer text")
+        await db.execute(update(Chat).where(Chat.id == chat.id).values(updated_at=Chat.updated_at))
+        existing = await db.execute(
+            select(ChatAnswerPin.id).where(
+                ChatAnswerPin.chat_id == chat.id,
+                ChatAnswerPin.model_answer_id == answer.id,
+                ChatAnswerPin.pin_type == "answer",
+            )
+        )
+        if existing.scalar_one_or_none() is None:
+            db.add(ChatAnswerPin(chat_id=chat.id, model_answer_id=answer.id, pin_type="answer"))
+            await db.flush()
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_ANSWER,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.upsert_item(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                project_id=chat.project_id,
+                source_type=SOURCE_PINNED_ANSWER,
+                source_id=answer.id,
+                title=f"Pinned answer — {chat.title}",
+                content=answer.text,
+                metadata={
+                    "chat_id": chat.id,
+                    "answer_id": answer.id,
+                    "turn_id": answer.turn_id,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_answer_pin_ingest_failed", error=str(exc))
+        return await self._chat_response_async(db, chat)
+
+    async def unpin_answer(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, answer_id: str
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        await db.execute(
+            delete(ChatAnswerPin).where(
+                ChatAnswerPin.chat_id == chat.id,
+                ChatAnswerPin.model_answer_id == answer_id,
+                ChatAnswerPin.pin_type == "answer",
+            )
+        )
+        await db.flush()
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_ANSWER,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.delete_source(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                source_type=SOURCE_PINNED_ANSWER,
+                source_id=answer_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_answer_unpin_cleanup_failed", error=str(exc))
+        return await self._chat_response_async(db, chat)
+
+    async def unpin_answer_selection(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, pin_id: str
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        await db.execute(
+            delete(ChatAnswerPin).where(
+                ChatAnswerPin.id == pin_id,
+                ChatAnswerPin.chat_id == chat.id,
+                ChatAnswerPin.pin_type == "selection",
+            )
+        )
+        await db.flush()
+        return await self._chat_response_async(db, chat)
+
     async def unpin_legacy_verdict(
         self, db: AsyncSession, auth: AuthContext, chat_id: str
     ) -> ChatResponse:
@@ -1786,6 +1997,7 @@ class ChatService:
         chat: Chat,
         *,
         pinned_verdicts: list[PinnedVerdictResponse] | None = None,
+        pinned_answers: list[PinnedAnswerResponse] | None = None,
         active_reference: Chat | None = None,
     ) -> ChatResponse:
         pins = pinned_verdicts or []
@@ -1798,6 +2010,7 @@ class ChatService:
             pinned_verdict_id=legacy_pin.verdict_id if legacy_pin else None,
             pinned_turn_id=legacy_pin.turn_id if legacy_pin else None,
             pinned_verdicts=pins,
+            pinned_answers=pinned_answers or [],
             active_referenced_chat=(
                 ChatReferenceResponse(id=active_reference.id, title=active_reference.title)
                 if active_reference is not None
@@ -1817,6 +2030,7 @@ class ChatService:
             PinnedVerdictResponse(id=pin.id, verdict_id=pin.verdict_id, turn_id=turn_id, pin_type=pin.pin_type, selected_text=pin.selected_text, selected_html=pin.selected_html, selection_locator=pin.selection_locator)
             for pin, turn_id in result.all()
         ]
+        answer_pins = (await load_answer_pins(db, [chat.id])).get(chat.id, [])
         active_reference = None
         if chat.active_referenced_chat_id:
             result = await db.execute(
@@ -1827,7 +2041,10 @@ class ChatService:
             )
             active_reference = result.scalar_one_or_none()
         return self._chat_response(
-            chat, pinned_verdicts=pinned_verdicts, active_reference=active_reference
+            chat,
+            pinned_verdicts=pinned_verdicts,
+            pinned_answers=answer_pins,
+            active_reference=active_reference,
         )
 
     async def _delete_pinned_brain_sources(
@@ -1850,6 +2067,26 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_pin_cleanup_failed", error=str(exc))
 
+    async def _delete_pinned_answer_brain_sources(
+        self, db: AsyncSession, org_id: str, answer_ids: list[str]
+    ) -> None:
+        if not answer_ids:
+            return
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_ANSWER,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.delete_sources_for_org(
+                db,
+                org_id=org_id,
+                source_type=SOURCE_PINNED_ANSWER,
+                source_ids=answer_ids,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_answer_pin_cleanup_failed", error=str(exc))
+
     def _turn_response(
         self, turn: Turn, saved_verdict_ids: set[str] | None = None
     ) -> TurnResponse:
@@ -1858,6 +2095,7 @@ class ChatService:
             model = get_model(a.model_id)
             answers.append(
                 ModelAnswerResponse(
+                    id=str(a.id),
                     model_id=a.model_id,
                     model_name=model.name,
                     text=a.text,

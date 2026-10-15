@@ -114,11 +114,21 @@ export type ApiChat = {
     verdict_id: string;
     turn_id: string;
   }>;
+  pinned_answers?: Array<{
+    id?: string;
+    pin_type?: "answer" | "selection";
+    selected_text?: string | null;
+    selected_html?: string | null;
+    selection_locator?: import("../verdictSelectionNavigation").SelectionLocator | null;
+    answer_id: string;
+    turn_id: string;
+  }>;
   active_referenced_chat?: { id: string; title: string } | null;
   updated_at: string;
 };
 
 export type ApiModelAnswer = {
+  id?: string | null;
   model_id: string;
   model_name: string;
   text?: string | null;

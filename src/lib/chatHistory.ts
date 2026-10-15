@@ -42,15 +42,27 @@ export function mapApiChat(c: ApiChat): Chat {
     updatedAt: c.updated_at,
     projectId: c.project_id,
     modelSetId: c.model_set_id ?? null,
-    pinnedVerdicts: c.pinned_verdicts.map((pin) => ({
-      id: pin.id,
-      pinType: pin.pin_type ?? "verdict",
-      selectedText: pin.selected_text,
-      selectedHtml: pin.selected_html,
-      selectionLocator: pin.selection_locator,
-      verdictId: pin.verdict_id,
-      turnId: pin.turn_id,
-    })),
+    pinnedVerdicts: [
+      ...c.pinned_verdicts.map((pin) => ({
+        id: pin.id,
+        pinType: pin.pin_type ?? "verdict",
+        selectedText: pin.selected_text,
+        selectedHtml: pin.selected_html,
+        selectionLocator: pin.selection_locator,
+        verdictId: pin.verdict_id,
+        turnId: pin.turn_id,
+      })),
+      ...(c.pinned_answers ?? []).map((pin) => ({
+        id: pin.id,
+        pinType: pin.pin_type ?? "answer",
+        selectedText: pin.selected_text,
+        selectedHtml: pin.selected_html,
+        selectionLocator: pin.selection_locator,
+        verdictId: "",
+        answerId: pin.answer_id,
+        turnId: pin.turn_id,
+      })),
+    ],
     activeReferencedChat: c.active_referenced_chat ?? null,
   };
 }

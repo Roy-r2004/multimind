@@ -16,6 +16,7 @@ from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, Va
 from app.db.base import Base
 from app.db.models import (
     Chat,
+    ChatAnswerPin,
     ChatVerdictPin,
     ModelAnswer,
     ModelAnswerStatus,
@@ -525,6 +526,89 @@ async def test_regeneration_removes_only_superseded_verdict_pins(db_setup):
             .all()
         )
         assert pinned_ids == {verdict_by_turn[t1.id].id}
+
+
+@pytest.mark.asyncio
+async def test_regeneration_drops_single_ai_answer_pins_and_new_answer_can_be_pinned(db_setup):
+    Session = db_setup.Session
+    base = datetime.now(UTC)
+    kept = await _complete_turn(
+        Session, chat_id=db_setup.chat_id, user_message="Keep", created_at=base
+    )
+    async with Session() as db:
+        single = Turn(
+            chat_id=db_setup.chat_id,
+            user_message="Solo",
+            model_set_id="current-set",
+            strategy=Strategy.REFEREE,
+            verdict_model="claude",
+            status=TurnStatus.COMPLETED,
+            created_at=base + timedelta(seconds=1),
+        )
+        db.add(single)
+        await db.flush()
+        answer = ModelAnswer(
+            turn_id=single.id,
+            model_id="gemini",
+            text="Solo answer",
+            status=ModelAnswerStatus.COMPLETED,
+        )
+        db.add(answer)
+        await db.commit()
+        answer_id = answer.id
+        single_id = single.id
+
+    async with Session() as db:
+        kept_answer = (
+            await db.execute(select(ModelAnswer).where(ModelAnswer.turn_id == kept.id))
+        ).scalar_one()
+        await chat_service.pin_answer(db, db_setup.auth, db_setup.chat_id, kept_answer.id)
+        await chat_service.pin_answer(db, db_setup.auth, db_setup.chat_id, answer_id)
+        await chat_service.pin_answer(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            answer_id,
+            pin_type="selection",
+            selected_text="Solo",
+        )
+        await db.commit()
+        kept_answer_id = kept_answer.id
+
+    async with Session() as db:
+        result = await chat_service.regenerate_turn(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            single_id,
+            TurnRegenerateRequest(prompt="Solo edited"),
+        )
+
+    async with Session() as db:
+        remaining = list(
+            (
+                await db.execute(
+                    select(ChatAnswerPin).where(ChatAnswerPin.chat_id == db_setup.chat_id)
+                )
+            ).scalars()
+        )
+        assert [pin.model_answer_id for pin in remaining] == [kept_answer_id]
+        new_answer = result.new_turn.model_answers[0]
+        assert new_answer.id
+        assert new_answer.id != answer_id
+        stored = await db.get(ModelAnswer, new_answer.id)
+        stored.text = "Regenerated solo answer"
+        stored.status = ModelAnswerStatus.COMPLETED
+        await db.commit()
+        pinned = await chat_service.pin_answer(
+            db, db_setup.auth, db_setup.chat_id, new_answer.id
+        )
+        assert {pin.answer_id for pin in pinned.pinned_answers if pin.pin_type == "answer"} == {
+            kept_answer_id,
+            new_answer.id,
+        }
+        new_pin = next(pin for pin in pinned.pinned_answers if pin.answer_id == new_answer.id)
+        assert new_pin.turn_id == result.new_turn.id
 
 
 @pytest.mark.asyncio
