@@ -101,9 +101,13 @@ services:
 
       CHAT_ATTACHMENT_DIR: ${CHAT_ATTACHMENT_DIR:-/app/data/chat_attachments}
       CHAT_ATTACHMENT_MAX_BYTES: ${CHAT_ATTACHMENT_MAX_BYTES:-10485760}
+      LIBRARY_FILE_DIR: ${LIBRARY_FILE_DIR:-/app/data/library_files}
+      LARGE_DOCUMENTS_ENABLED: ${LARGE_DOCUMENTS_ENABLED:-false}
+      DOCUMENT_OCR_MODEL: ${DOCUMENT_OCR_MODEL:-google/gemini-3-flash-preview}
     volumes:
       - whisper_models:/models/whisper
       - chat_attachments:/app/data/chat_attachments
+      - library_files:/app/data/library_files
     depends_on:
       postgres:
         condition: service_healthy
@@ -212,6 +216,41 @@ services:
       start_period: 90s
     restart: unless-stopped
 
+  document-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.documents.worker.WorkerSettings"]
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-multiai}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-multiai}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      LARGE_DOCUMENTS_ENABLED: ${LARGE_DOCUMENTS_ENABLED:-false}
+      DOCUMENT_OCR_MODEL: ${DOCUMENT_OCR_MODEL:-google/gemini-3-flash-preview}
+      CHAT_ATTACHMENT_DIR: ${CHAT_ATTACHMENT_DIR:-/app/data/chat_attachments}
+      LIBRARY_FILE_DIR: ${LIBRARY_FILE_DIR:-/app/data/library_files}
+      DOCUMENT_WORKER_QUEUE_NAME: ${DOCUMENT_WORKER_QUEUE_NAME:-documents}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_SITE_URL: ${PUBLIC_APP_URL:-https://multiverdict.tech}
+      OPENROUTER_APP_NAME: MultiAI
+    volumes:
+      - chat_attachments:/app/data/chat_attachments
+      - library_files:/app/data/library_files
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "arq", "app.documents.worker.WorkerSettings", "--check"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    restart: unless-stopped
+
   web:
     build:
       context: .
@@ -241,3 +280,4 @@ volumes:
   postgres_data:
   whisper_models:
   chat_attachments:
+  library_files:

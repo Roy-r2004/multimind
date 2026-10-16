@@ -40,6 +40,12 @@ from app.services.chat_attachment_text import (
     _finalize,
     extract_attachment_text_from_path,
 )
+from app.services.document_processing import (
+    enqueue_processing,
+    hash_file,
+    should_defer_extraction,
+    upload_max_bytes,
+)
 
 logger = get_logger(__name__)
 
@@ -434,7 +440,7 @@ class LibraryService:
         try:
             tmp_path, size_bytes = await stream_upload_to_temp_file(
                 upload,
-                max_bytes=settings.library_file_max_bytes,
+                max_bytes=upload_max_bytes(library=True),
                 extension=ext,
                 root=settings.library_file_dir,
             )
@@ -442,14 +448,18 @@ class LibraryService:
                 with tmp_path.open("rb") as handle:
                     header = handle.read(64)
                 validate_image_magic_bytes(header, ext)
-            text_excerpt, excerpt_status = extract_attachment_text_from_path(
-                tmp_path, ext
-            )
+            if should_defer_extraction(ext):
+                text_excerpt, excerpt_status = None, "processing"
+            else:
+                text_excerpt, excerpt_status = extract_attachment_text_from_path(
+                    tmp_path, ext
+                )
             dest_path = resolve_attachment_path(
                 relative_path, root=settings.library_file_dir
             )
             promote_temp_attachment_file(tmp_path, dest_path)
             tmp_path = None
+            content_sha256 = hash_file(dest_path) if excerpt_status == "processing" else None
 
             item = LibraryItem(
                 id=item_id,
@@ -466,6 +476,7 @@ class LibraryService:
                 relative_path=relative_path,
                 text_excerpt=text_excerpt,
                 excerpt_status=excerpt_status,
+                content_sha256=content_sha256,
             )
             db.add(item)
             await db.flush()
@@ -473,6 +484,8 @@ class LibraryService:
                 db.add(LibraryItemLabel(item_id=item.id, label_id=label.id))
             await db.flush()
             await db.commit()
+            if excerpt_status == "processing":
+                await enqueue_processing(kind="library", source_id=item.id, org_id=auth.org_id)
             return await self.get_item(db, auth, item.id)
         except Exception:
             cleanup_path(tmp_path)

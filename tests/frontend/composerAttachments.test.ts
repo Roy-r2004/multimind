@@ -7,6 +7,7 @@ import {
   COMPOSER_ATTACHMENT_MAX_BYTES,
   COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS,
   COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS,
+  COMPOSER_LARGE_UPLOAD_TIMEOUT_MS,
   COMPOSER_FILE_ACCEPT,
   apiErrorMessage,
   applySuccessfulAttachmentTranscription,
@@ -179,6 +180,9 @@ test("rejects empty, oversized, and unsupported files before network", () => {
   if (!bad.ok) {
     assert.match(bad.message, /Unsupported/i);
   }
+  const aboveTenMb = COMPOSER_ATTACHMENT_MAX_BYTES + 1024;
+  assert.equal(validateComposerAttachment({ name: "a.txt", size: aboveTenMb }, aboveTenMb).ok, true);
+  assert.equal(composerAttachmentUploadTimeoutMs("a.txt", aboveTenMb), COMPOSER_LARGE_UPLOAD_TIMEOUT_MS);
 });
 
 test("rejects missing filename", () => {

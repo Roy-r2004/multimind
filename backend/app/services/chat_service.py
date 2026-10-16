@@ -25,10 +25,10 @@ from app.db.models import (
     Chat,
     ChatAnswerPin,
     ChatAttachment,
-    LibraryItem,
     ChatVerdictPin,
     CostRecord,
     DecisionInsurance,
+    LibraryItem,
     ModelAnswer,
     ModelAnswerStatus,
     ModelSet,
@@ -42,17 +42,6 @@ from app.db.models import (
 )
 from app.db.session import AsyncSessionLocal
 from app.llm.catalog import get_model
-from app.services.attachment_types import is_library_ref_relative_path
-from app.services.chat_attachment_storage import resolve_attachment_path
-from app.services.chat_attachment_text import extract_attachment_text_from_path
-from app.services.document_context import (
-    assess_legacy_excerpt,
-    excerpt_looks_truncated,
-    parse_reference_chat_ids,
-    render_stored_attachment_block,
-    sources_from_attachment_rows,
-)
-from app.services.library_service import ITEM_TYPE_DOCUMENT, ITEM_TYPE_FILE, library_document_excerpt
 from app.llm.orchestrator import (
     ACTIVE_TURN_STATUSES,
     TurnContext,
@@ -78,9 +67,26 @@ from app.schemas.api import (
     VerdictResponse,
     VerdictSimpleExplanationResponse,
 )
+from app.services.attachment_types import is_library_ref_relative_path
 from app.services.brain_service import brain_service
-from app.services.chat_attachment_storage import safe_delete_attachment_files
+from app.services.chat_attachment_storage import (
+    resolve_attachment_path,
+    safe_delete_attachment_files,
+)
+from app.services.chat_attachment_text import extract_attachment_text_from_path
 from app.services.chat_memory_service import chat_memory_service
+from app.services.document_context import (
+    assess_legacy_excerpt,
+    excerpt_looks_truncated,
+    parse_reference_chat_ids,
+    render_stored_attachment_block,
+)
+from app.services.document_processing import resolve_document_sources, wait_for_document_processing
+from app.services.library_service import (
+    ITEM_TYPE_DOCUMENT,
+    ITEM_TYPE_FILE,
+    library_document_excerpt,
+)
 from app.services.multi_reference_context_service import multi_reference_context_service
 from app.services.playbook_context_service import playbook_context_service
 from app.services.saved_verdict_service import saved_verdict_service
@@ -1495,7 +1501,10 @@ class ChatService:
             org_id=auth.org_id,
             user_id=auth.user.id,
         )
-        document_sources = sources_from_attachment_rows(document_rows, recovery_notes)
+        await wait_for_document_processing(db, document_rows)
+        document_sources = await resolve_document_sources(
+            db, document_rows, recovery_notes, turn.user_message
+        )
 
         is_referee = turn.strategy == Strategy.REFEREE
         ctx = TurnContext(

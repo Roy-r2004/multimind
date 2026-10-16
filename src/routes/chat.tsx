@@ -98,6 +98,7 @@ import {
   failAttachmentTranscription,
   isUploadedWebmAttachment,
   attachmentExtractionLabel,
+  COMPOSER_ATTACHMENT_MAX_BYTES,
   type AttachmentTranscriptionState,
 } from "@/lib/composerAttachments";
 import {
@@ -229,6 +230,7 @@ export function ChatPage() {
   const [isPromptVoiceActive, setIsPromptVoiceActive] = useState(false);
   const isVoiceActive = isComposerVoiceActive || isPromptVoiceActive;
   const [files, setFiles] = useState<ComposerFile[]>([]);
+  const [attachmentMaxBytes, setAttachmentMaxBytes] = useState(COMPOSER_ATTACHMENT_MAX_BYTES);
   const [attachmentTranscriptions, setAttachmentTranscriptions] = useState<
     Record<string, AttachmentTranscriptionState>
   >({});
@@ -329,6 +331,52 @@ export function ChatPage() {
   const draftStorageKey = composerDraftStorageKey(activeChatId);
   const pinnedVerdicts = activeChat?.pinnedVerdicts ?? [];
   const pinnedVerdictMenuItems = buildPinnedVerdictMenuItems(pinnedVerdicts, apiTurns);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .clientConfig()
+      .then((config) => {
+        if (!cancelled && config.attachment_max_bytes > 0) {
+          setAttachmentMaxBytes(config.attachment_max_bytes);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const processingAttachmentKey = files
+    .filter((file) => file.excerptStatus === "processing" && file.attachmentId)
+    .map((file) => file.attachmentId)
+    .join(",");
+
+  useEffect(() => {
+    if (!activeChatId || !processingAttachmentKey) return;
+    const auth = authHeaders();
+    if (!auth) return;
+    const timer = window.setInterval(() => {
+      void api.chats
+        .listAttachments(auth, activeChatId)
+        .then((response) => {
+          const byId = new Map(response.items.map((item) => [item.id, item]));
+          setFiles((current) =>
+            current.map((file) => {
+              const server = file.attachmentId ? byId.get(file.attachmentId) : undefined;
+              if (!server) return file;
+              return {
+                ...file,
+                excerptStatus: server.excerpt_status,
+                textExcerpt: server.text_excerpt,
+              };
+            }),
+          );
+        })
+        .catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeChatId, authHeaders, processingAttachmentKey]);
 
   useEffect(() => {
     if (!activeChatId) {
@@ -1193,6 +1241,7 @@ export function ChatPage() {
       onValidationError: (fileName, message) => toast.error(`${fileName}: ${message}`),
       onUploadError: (fileName, message) => toast.error(`${fileName}: ${message}`),
       onTooMany: (message) => toast.error(message),
+      maxBytes: attachmentMaxBytes,
     });
   }
 

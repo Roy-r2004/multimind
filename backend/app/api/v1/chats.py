@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.transcriptions import inspect_audio_duration, language_to_service_value
-from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context, get_streaming_auth_context
 from app.core.exceptions import (
     ConflictError,
@@ -59,6 +58,12 @@ from app.services.chat_attachment_text import (
 )
 from app.services.chat_service import chat_service, turn_stream_internal_error_event
 from app.services.chat_title_events import iter_chat_title_sse
+from app.services.document_processing import (
+    enqueue_processing,
+    hash_file,
+    should_defer_extraction,
+    upload_max_bytes,
+)
 from app.services.library_service import (
     ITEM_TYPE_DOCUMENT,
     ITEM_TYPE_FILE,
@@ -350,7 +355,6 @@ async def upload_attachment(
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    settings = get_settings()
     await chat_service.get_chat(db, auth, str(chat_id))
 
     pending_count = (
@@ -380,7 +384,7 @@ async def upload_attachment(
     try:
         tmp_path, size_bytes = await stream_upload_to_temp_file(
             file,
-            max_bytes=settings.chat_attachment_max_bytes,
+            max_bytes=upload_max_bytes(),
             extension=ext,
         )
 
@@ -389,6 +393,8 @@ async def upload_attachment(
                 # Audio is the recovery source. Store it independently of Whisper so
                 # explicit transcription failures can always be retried later.
                 text_excerpt, excerpt_status = None, "failed"
+            elif should_defer_extraction(ext):
+                text_excerpt, excerpt_status = None, "processing"
             else:
                 text_excerpt, excerpt_status = extract_attachment_text_from_path(
                     tmp_path, ext
@@ -411,6 +417,7 @@ async def upload_attachment(
 
         promote_temp_attachment_file(tmp_path, dest_path)
         tmp_path = None  # ownership transferred
+        content_sha256 = hash_file(dest_path) if excerpt_status == "processing" else None
 
         row = ChatAttachment(
             id=attachment_id,
@@ -425,6 +432,7 @@ async def upload_attachment(
             relative_path=relative_path,
             text_excerpt=text_excerpt,
             excerpt_status=excerpt_status,
+            content_sha256=content_sha256,
         )
         try:
             db.add(row)
@@ -432,6 +440,9 @@ async def upload_attachment(
         except Exception:
             cleanup_path(dest_path)
             raise
+        if excerpt_status == "processing":
+            await db.commit()
+            await enqueue_processing(kind="chat", source_id=row.id, org_id=auth.org_id)
 
         return _attachment_response(row)
     finally:

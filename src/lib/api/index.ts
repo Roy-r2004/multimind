@@ -160,6 +160,13 @@ export const api = {
     warm: () => apiRequest<{ status: string }>("/health"),
   },
 
+  clientConfig: () =>
+    apiRequest<{
+      large_documents_enabled: boolean;
+      attachment_max_bytes: number;
+      library_max_bytes: number;
+    }>("/client-config"),
+
   models: {
     list: (auth: Auth) =>
       apiRequest<ApiModel[]>("/models", { token: auth.token, orgId: auth.orgId }),
@@ -357,7 +364,7 @@ export const api = {
         token: auth.token,
         orgId: auth.orgId,
         // .webm transcription runs inside this request; documents keep the short timeout.
-        timeoutMs: composerAttachmentUploadTimeoutMs(file.name),
+        timeoutMs: composerAttachmentUploadTimeoutMs(file.name, file.size),
       });
     },
 

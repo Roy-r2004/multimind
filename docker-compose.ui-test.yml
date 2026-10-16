@@ -19,6 +19,9 @@ x-ui-test-env: &ui-test-env
   OPENROUTER_SITE_URL: http://127.0.0.1:3280
   OPENROUTER_APP_NAME: MultiAI
   SEED_AUSTRIA_CENSUS_DEMO: "true"
+  LARGE_DOCUMENTS_ENABLED: "true"
+  DOCUMENT_OCR_MODEL: ${DOCUMENT_OCR_MODEL:-google/gemini-3-flash-preview}
+  LIBRARY_FILE_DIR: /data/library-files
 
 services:
   postgres:
@@ -57,9 +60,11 @@ services:
       PORT: "8000"
       TRANSCRIPTION_MODEL_DIR: /models/whisper
       CHAT_ATTACHMENT_DIR: /data/chat-attachments
+      LIBRARY_FILE_DIR: /data/library-files
     volumes:
       - whisper_models:/models/whisper
       - chat_attachments:/data/chat-attachments
+      - library_files:/data/library-files
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,6 +111,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  document-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.documents.worker.WorkerSettings"]
+    environment:
+      <<: *ui-test-env
+      CHAT_ATTACHMENT_DIR: /data/chat-attachments
+      LIBRARY_FILE_DIR: /data/library-files
+    volumes:
+      - chat_attachments:/data/chat-attachments
+      - library_files:/data/library-files
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   web:
     build:
       context: .
@@ -132,3 +156,5 @@ volumes:
     name: multimind-ui-test-whisper
   chat_attachments:
     name: multimind-ui-test-chat-attachments
+  library_files:
+    name: multimind-ui-test-library-files

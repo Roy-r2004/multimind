@@ -101,6 +101,7 @@ class LLMProvider(ABC):
         preserve_whitespace: bool = False,
         timeout: float | None = None,
         allow_provider_fallbacks: bool = False,
+        images: list[Any] | None = None,
     ) -> LLMResponse:
         pass
 
@@ -227,6 +228,7 @@ class OpenRouterProvider(LLMProvider):
         preserve_whitespace: bool = False,
         timeout: float | None = None,
         allow_provider_fallbacks: bool = False,
+        images: list[Any] | None = None,
     ) -> LLMResponse:
         if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
@@ -244,6 +246,7 @@ class OpenRouterProvider(LLMProvider):
                     preserve_whitespace=preserve_whitespace,
                     timeout=timeout,
                     allow_provider_fallbacks=allow_provider_fallbacks,
+                    images=images,
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -266,6 +269,7 @@ class OpenRouterProvider(LLMProvider):
         preserve_whitespace: bool = False,
         timeout: float | None = None,
         allow_provider_fallbacks: bool = False,
+        images: list[Any] | None = None,
     ) -> LLMResponse:
         async with httpx.AsyncClient(timeout=timeout if timeout is not None else self._timeout) as client:
             payload = build_openrouter_chat_payload(
@@ -276,6 +280,7 @@ class OpenRouterProvider(LLMProvider):
                 response_format=response_format,
                 temperature=temperature,
                 allow_provider_fallbacks=allow_provider_fallbacks,
+                images=images,
             )
             resp = await client.post(
                 OPENROUTER_CHAT_URL,
@@ -405,14 +410,17 @@ def build_openrouter_chat_payload(
     response_format: dict[str, Any] | None = None,
     temperature: float | None = None,
     allow_provider_fallbacks: bool = False,
+    images: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Build the OpenRouter chat/completions JSON body (routing prefs included)."""
+    from app.services.chat_vision import build_openrouter_user_content
+
     routed_model = resolve_openrouter_model_slug(model)
     payload: dict[str, Any] = {
         "model": routed_model,
         "messages": [
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "user", "content": build_openrouter_user_content(user, images)},
         ],
         "temperature": DEFAULT_LLM_TEMPERATURE if temperature is None else temperature,
         "max_tokens": max_tokens,
