@@ -4,6 +4,7 @@ import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown"
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
+import { presentAnswerMarkdown } from "@/lib/answerMarkdown";
 import { copyRichContent } from "@/lib/richClipboard";
 import { cn } from "@/lib/utils";
 import { verdictTablePlainText } from "@/lib/verdictTableCopy";
@@ -181,7 +182,7 @@ function buildComponents(compact: boolean, variant: "default" | "verdict" = "def
       <div
         className={cn(
           isVerdict ? "mb-5 mt-1" : "mb-3",
-          "overflow-x-auto rounded-lg border border-border last:mb-0",
+          "min-w-0 max-w-full overflow-x-auto rounded-lg border border-border last:mb-0",
         )}
       >
         <table
@@ -255,7 +256,7 @@ function createVerdictComponents(sourceMarkdown: string): Components {
             {copied ? "Copied" : "Copy"}
           </button>
         </div>
-        <div className="overflow-x-auto rounded-lg border border-border">
+        <div className="min-w-0 max-w-full overflow-x-auto rounded-lg border border-border">
           <table
             ref={tableRef}
             className="w-full min-w-[36rem] table-auto border-collapse text-left text-[0.8125rem]"
@@ -274,10 +275,12 @@ function createVerdictComponents(sourceMarkdown: string): Components {
 }
 
 function normalizeMessageText(text: string): string {
-  return text
+  const cleaned = text
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/&nbsp;/gi, " ")
-    .replace(/\r\n/g, "\n");
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+  return presentAnswerMarkdown(cleaned);
 }
 
 function MessageContentInner({
@@ -301,7 +304,7 @@ function MessageContentInner({
   return (
     <div
       className={cn(
-        "message-content min-w-0 max-w-none break-words [overflow-wrap:anywhere]",
+        "message-content min-w-0 max-w-full break-words [overflow-wrap:anywhere]",
         muted ? "text-muted-foreground" : "text-foreground/92",
         className,
       )}
