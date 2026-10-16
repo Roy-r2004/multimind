@@ -469,10 +469,10 @@ async def test_large_library_document_attachment_preserves_up_to_100k_characters
 
     assert attached.status_code == 201
     excerpt = attached.json()["text_excerpt"]
-    assert len(excerpt) == 100_000
-    assert excerpt == content[:100_000]
+    assert attached.json()["excerpt_status"] == "ready"
+    assert excerpt == content
     assert "B" * 50_000 in excerpt
-    assert "C" not in excerpt
+    assert "C" * 10_000 in excerpt
 
 
 @pytest.mark.asyncio
@@ -582,11 +582,11 @@ async def test_library_txt_attach_keeps_every_filename_within_context_budget(
         ),
     )
     text = (await db.get(Turn, turn.id)).custom_instructions or ""
-    assert get_settings().chat_attachment_context_max_chars == 300_000
-    assert len(text) <= 300_000
     for index in range(count):
         assert f"Library Note {index}.txt" in text
-    assert "[Attachment context truncated]" in text
+        assert f"FILE{index}-" in text
+        assert "x" * 40_000 in text
+    assert "[Document content omitted]" not in text
 
     follow_up = await chat_service.start_turn(
         db,
@@ -598,6 +598,6 @@ async def test_library_txt_attach_keeps_every_filename_within_context_budget(
         ),
     )
     follow_text = (await db.get(Turn, follow_up.id)).custom_instructions or ""
-    assert len(follow_text) <= 300_000
     for index in range(count):
         assert f"Library Note {index}.txt" in follow_text
+        assert f"FILE{index}-" in follow_text

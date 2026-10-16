@@ -22,6 +22,7 @@ from app.db.models import (
 from app.llm.catalog import estimate_tokens, get_model, resolve_llm_cost
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
+from app.services.document_context import reference_chat_marker
 
 logger = get_logger(__name__)
 
@@ -48,6 +49,7 @@ CONTINUATION_ATTACHMENT_HEADER = "### Previously attached text files"
 CONTINUATION_ATTACHMENT_PER_FILE_CHARS = 30_000
 CONTINUATION_ATTACHMENT_MAX_FILES = 10
 PRIOR_TXT_ATTACHMENT_LIMIT = 20
+PRIOR_DOCUMENT_ATTACHMENT_LIMIT = 40
 _ATTACHMENT_TRUNCATION_MARKER = "\n[Attachment context truncated]"
 
 TURN_SEPARATOR = "\n\n---\n\n"
@@ -279,6 +281,32 @@ def format_bounded_txt_attachment_section(
     if len(parts) == 1:
         return ""
     return "\n\n".join(parts)
+
+
+def format_reference_document_manifest(rows: list, source_chat_id: str) -> str:
+    """Name retained documents without pasting a fixed character prefix.
+
+    The destination turn loads the stored extracts and budgets them per model.
+    """
+    kept = [row for row in rows if (getattr(row, "text_excerpt", None) or "").strip()]
+    if not kept:
+        return ""
+    selected = kept[-CONTINUATION_ATTACHMENT_MAX_FILES:]
+    omitted = len(kept) - len(selected)
+    lines = [
+        CONTINUATION_ATTACHMENT_HEADER,
+        reference_chat_marker(source_chat_id),
+        "Document text is loaded from the source chat when the question runs. "
+        "This handoff lists files and does not paste a character prefix.",
+    ]
+    for row in selected:
+        text = row.text_excerpt or ""
+        lines.append(
+            f"- {row.filename}: stored_chars={len(text)} status={getattr(row, 'excerpt_status', None) or 'unknown'}"
+        )
+    if omitted:
+        lines.append(f"{omitted} additional file(s) omitted from this manifest.")
+    return "\n".join(lines)
 
 
 def build_continuation_handoff_text(
@@ -747,6 +775,55 @@ class ChatMemoryService:
         )
         return True
 
+    async def load_prior_document_attachments(
+        self,
+        db: AsyncSession,
+        chat_id: str,
+        *,
+        org_id: str | None = None,
+        exclude_relative_paths: set[str] | None = None,
+        exclude_turn_id: str | None = None,
+        limit: int = PRIOR_DOCUMENT_ATTACHMENT_LIMIT,
+    ) -> list[ChatAttachment]:
+        """Latest document snapshots on non-deleted turns, one row per stored file.
+
+        PDF, DOCX, XLSX, text, and partial extracts are included. A later file with
+        the same stored path does not hide an earlier one of a different path.
+        """
+        conditions = [
+            ChatAttachment.chat_id == chat_id,
+            ChatAttachment.turn_id.is_not(None),
+            ChatAttachment.excerpt_status.in_(("ready", "partial", "empty", "failed", "image")),
+            Turn.deleted_at.is_(None),
+        ]
+        if org_id is not None:
+            conditions.append(ChatAttachment.org_id == org_id)
+        if exclude_turn_id is not None:
+            conditions.append(ChatAttachment.turn_id != exclude_turn_id)
+        result = await db.execute(
+            select(ChatAttachment)
+            .join(Turn, Turn.id == ChatAttachment.turn_id)
+            .where(*conditions)
+            .order_by(ChatAttachment.created_at.desc(), ChatAttachment.id.desc())
+            .limit(max(limit, 1) * 4)
+        )
+        excluded = exclude_relative_paths or set()
+        seen: set[str] = set()
+        picked: list[ChatAttachment] = []
+        for row in result.scalars().all():
+            has_text = bool((row.text_excerpt or "").strip())
+            if row.excerpt_status in {"ready", "partial"} and not has_text:
+                continue
+            key = row.relative_path or row.stored_name or row.id
+            if key in excluded or key in seen:
+                continue
+            seen.add(key)
+            picked.append(row)
+            if len(picked) >= limit:
+                break
+        picked.reverse()
+        return picked
+
     async def load_prior_txt_attachments(
         self,
         db: AsyncSession,
@@ -754,36 +831,18 @@ class ChatMemoryService:
         *,
         exclude_relative_paths: set[str] | None = None,
     ) -> list[ChatAttachment]:
-        """Latest ready .txt snapshots on non-deleted turns, one row per stored file."""
-        result = await db.execute(
-            select(ChatAttachment)
-            .join(Turn, Turn.id == ChatAttachment.turn_id)
-            .where(
-                ChatAttachment.chat_id == chat_id,
-                ChatAttachment.turn_id.is_not(None),
-                ChatAttachment.excerpt_status == "ready",
-                Turn.deleted_at.is_(None),
-            )
-            .order_by(ChatAttachment.created_at.desc(), ChatAttachment.id.desc())
-            .limit(PRIOR_TXT_ATTACHMENT_LIMIT * 4)
+        """Text-file subset used by the referenced-chat handoff formatter."""
+        rows = await self.load_prior_document_attachments(
+            db,
+            chat_id,
+            exclude_relative_paths=exclude_relative_paths,
+            limit=PRIOR_TXT_ATTACHMENT_LIMIT,
         )
-        excluded = exclude_relative_paths or set()
-        seen: set[str] = set()
-        picked: list[ChatAttachment] = []
-        for row in result.scalars().all():
-            if not (row.filename or "").lower().endswith(".txt"):
-                continue
-            if not (row.text_excerpt or "").strip():
-                continue
-            key = row.relative_path or row.stored_name or row.id
-            if key in excluded or key in seen:
-                continue
-            seen.add(key)
-            picked.append(row)
-            if len(picked) >= PRIOR_TXT_ATTACHMENT_LIMIT:
-                break
-        picked.reverse()
-        return picked
+        return [
+            row
+            for row in rows
+            if (row.filename or "").lower().endswith(".txt") and (row.text_excerpt or "").strip()
+        ]
 
     async def build_continuation_handoff(
         self,
@@ -805,10 +864,8 @@ class ChatMemoryService:
             )
             for turn, assistant_result in recent_pairs
         ]
-        prior_txt = await self.load_prior_txt_attachments(db, source_chat.id)
-        attachment_section = format_bounded_txt_attachment_section(
-            [(row.filename, row.text_excerpt or "") for row in prior_txt]
-        )
+        prior_docs = await self.load_prior_document_attachments(db, source_chat.id)
+        attachment_section = format_reference_document_manifest(prior_docs, source_chat.id)
         handoff = build_continuation_handoff_text(
             source_title=source_chat.title,
             rolling_memory=source_chat.rolling_memory,

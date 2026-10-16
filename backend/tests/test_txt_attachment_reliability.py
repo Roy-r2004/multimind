@@ -73,18 +73,12 @@ def test_plain_text_encodings_round_trip():
     assert "\x00" not in decode_plain_text_bytes(text.encode("utf-16"))
 
 
-def test_large_txt_excerpt_keeps_a_bounded_prefix():
+def test_large_txt_keeps_the_full_readable_text():
     raw = ("A" * 50).encode("utf-8")
-    from app.services import chat_attachment_text as text_mod
-
-    original = text_mod.ATTACHMENT_TEXT_EXCERPT_MAX
-    text_mod.ATTACHMENT_TEXT_EXCERPT_MAX = 20
-    try:
-        excerpt, status = extract_attachment_text(raw, ".txt")
-    finally:
-        text_mod.ATTACHMENT_TEXT_EXCERPT_MAX = original
+    excerpt, status = extract_attachment_text(raw, ".txt")
     assert status == "ready"
-    assert excerpt == "A" * 20
+    assert excerpt == "A" * 50
+    assert "[Content truncated]" not in excerpt
 
 
 def test_attachment_block_reaches_council_verdict_and_referee():
@@ -227,8 +221,25 @@ async def test_context_budget_marks_omitted_txt(
         ),
     )
     text = (await db.get(Turn, turn.id)).custom_instructions or ""
-    assert "Attachment context truncated" in text or "Content omitted due to attachment context budget" in text
-    assert len(text) <= 80
+    assert "Z" * 500 in text
+    assert "big.txt" in text
+    from app.services.document_context import DocumentSource, prepare_model_context
+
+    fitted = prepare_model_context(
+        model_id="gpt-4.1",
+        user_message="Read it",
+        fixed_system="System instructions.",
+        references=None,
+        documents=[DocumentSource("big.txt", "Z" * 8_000, "ready")],
+        requested_output_tokens=256,
+        context_window=2_200,
+        window_source="caller",
+    )
+    assert fitted.overflow_message is None
+    assert fitted.runtime_context is not None
+    assert "big.txt" in fitted.runtime_context
+    assert "Z" * 8_000 not in fitted.runtime_context
+    assert "selected relevant sections" in fitted.runtime_context or "Document content omitted" in fitted.runtime_context
 
 
 @pytest.mark.asyncio
@@ -337,7 +348,8 @@ async def test_referenced_chat_handoff_keeps_bounded_txt(
     handoff = await chat_memory_service.build_continuation_handoff(db, source_chat=source)
     assert CONTINUATION_HANDOFF_HEADER in handoff
     assert CONTINUATION_ATTACHMENT_HEADER in handoff
-    assert "SOURCE_TXT_MARKER" in handoff
+    assert "source.txt" in handoff
+    assert f"[[multimind_reference_chat id={source.id}]]" in handoff
     assert len(handoff) <= CONTINUATION_HANDOFF_MAX_CHARS
     assert CONTINUATION_HANDOFF_MAX_CHARS == 500_000
     assert CONTINUATION_ATTACHMENT_PER_FILE_CHARS == 30_000
@@ -354,7 +366,8 @@ async def test_referenced_chat_handoff_keeps_bounded_txt(
     )
     await db.commit()
     instructions = (await db.get(Turn, continued.id)).custom_instructions or ""
-    assert "SOURCE_TXT_MARKER" in instructions
+    assert f"[[multimind_reference_chat id={source.id}]]" in instructions
+    assert "source.txt" in instructions
 
 
 def test_referenced_handoff_bounds_one_two_and_ten_txt_files():

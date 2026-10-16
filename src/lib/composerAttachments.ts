@@ -39,6 +39,7 @@ export type ComposerFileChip = {
   attachmentId?: string;
   libraryItemId?: string;
   textExcerpt?: string | null;
+  excerptStatus?: string | null;
   errorMessage?: string;
   deleting?: boolean;
 };
@@ -224,8 +225,25 @@ export type PendingAttachmentItem = {
   id: string;
   filename: string;
   text_excerpt?: string | null;
+  excerpt_status?: string | null;
   library_item_id?: string | null;
 };
+
+/** User-facing extraction state. A normal full extract does not add a chip label. */
+export function attachmentExtractionLabel(status: string | null | undefined): string | null {
+  switch ((status ?? "").toLowerCase()) {
+    case "partial":
+      return "Partly extracted";
+    case "empty":
+      return "No readable text";
+    case "failed":
+      return "Could not read file";
+    case "image":
+      return "Image attached";
+    default:
+      return null;
+  }
+}
 
 /**
  * Reconcile a pending-list GET into local chip state.
@@ -259,6 +277,7 @@ export function mergePendingAttachments(options: {
       attachmentId: item.id,
       libraryItemId: item.library_item_id ?? undefined,
       textExcerpt: item.text_excerpt ?? null,
+      excerptStatus: item.excerpt_status ?? null,
     });
   }
 
@@ -393,7 +412,7 @@ export type RunComposerUploadsDeps = {
   uploadAttachment: (
     chatId: string,
     file: File,
-  ) => Promise<{ id: string; text_excerpt?: string | null }>;
+  ) => Promise<{ id: string; text_excerpt?: string | null; excerpt_status?: string | null }>;
   onValidationError?: (fileName: string, message: string) => void;
   onUploadError?: (fileName: string, message: string) => void;
   onTooMany?: (message: string) => void;
@@ -490,6 +509,7 @@ export async function runComposerUploads(
                       state: "uploaded" as const,
                       attachmentId: uploaded.id,
                       textExcerpt: uploaded.text_excerpt,
+                      excerptStatus: uploaded.excerpt_status,
                       errorMessage: undefined,
                     }
                   : item,

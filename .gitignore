@@ -28,6 +28,7 @@ backend/.ruff_cache
 backend/*.db
 *.db
 .env
+.env.ui-test
 
 # Wrangler / Cloudflare
 .wrangler/

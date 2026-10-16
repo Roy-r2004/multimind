@@ -1,4 +1,4 @@
-"""Extract bounded text excerpts from chat attachment files."""
+"""Extract attachment text. Successful extraction is stored in full up to an explicit safety cap."""
 
 from __future__ import annotations
 
@@ -11,12 +11,14 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-ATTACHMENT_TEXT_EXCERPT_MAX = 100_000
-_XLSX_MAX_SHEETS = 5
-_XLSX_MAX_ROWS = 200
-_XLSX_MAX_COLS = 30
-_PDF_MAX_PAGES = 100
+# Explicit processing cap. Longer extracts are kept up to this size and marked partial.
+ATTACHMENT_TEXT_EXCERPT_MAX = 1_500_000
+_XLSX_MAX_SHEETS = 50
+_XLSX_MAX_ROWS = 5_000
+_XLSX_MAX_COLS = 64
+_PDF_MAX_PAGES = 500
 _TRUNCATION_MARKER = "\n[Content truncated]"
+_UNREADABLE_PAGE = "[Unreadable page: no text extracted. This page may be scanned or image-based.]"
 _BLANK_LINE_RE = re.compile(r"\n{3,}")
 
 
@@ -30,9 +32,11 @@ def extract_attachment_text(content: bytes, extension: str) -> tuple[str | None,
         if ext in {".docx"}:
             return _finalize(_extract_docx_text(content))
         if ext in {".xlsx"}:
-            return _finalize(_extract_xlsx_text(content))
+            text, truncated = _extract_xlsx_text(content)
+            return _finalize(text, truncated=truncated)
         if ext in {".pdf"}:
-            return _finalize(_extract_pdf_text(content))
+            text, truncated = _extract_pdf_text(content)
+            return _finalize(text, truncated=truncated)
         return _finalize(_extract_plain_text(content))
     except InvalidAttachmentError:
         logger.warning(
@@ -45,8 +49,8 @@ def extract_attachment_text(content: bytes, extension: str) -> tuple[str | None,
 def extract_attachment_text_from_path(path: Path, extension: str) -> tuple[str | None, str]:
     """Extract from a temp/final file path without requiring a full in-memory upload buffer.
 
-    Plain text reads only a bounded prefix. Office/PDF parsers open the path directly.
-    Images skip extraction entirely (native vision path).
+    Office and PDF parsers open the path directly. Plain text is read up to the safety cap.
+    Images skip text extraction. There is no OCR pass.
     """
     ext = extension.lower()
     if ext in {".png", ".jpg", ".jpeg", ".webp"}:
@@ -55,10 +59,13 @@ def extract_attachment_text_from_path(path: Path, extension: str) -> tuple[str |
         if ext in {".docx"}:
             return _finalize(_extract_docx_from_path(path))
         if ext in {".xlsx"}:
-            return _finalize(_extract_xlsx_from_path(path))
+            text, truncated = _extract_xlsx_from_path(path)
+            return _finalize(text, truncated=truncated)
         if ext in {".pdf"}:
-            return _finalize(_extract_pdf_from_path(path))
-        return _finalize(_extract_plain_text_from_path(path))
+            text, truncated = _extract_pdf_from_path(path)
+            return _finalize(text, truncated=truncated)
+        text, truncated = _extract_plain_text_from_path(path)
+        return _finalize(text, truncated=truncated)
     except InvalidAttachmentError:
         logger.warning(
             "chat_attachment_extraction_failed",
@@ -67,11 +74,14 @@ def extract_attachment_text_from_path(path: Path, extension: str) -> tuple[str |
         raise
 
 
-def _finalize(text: str) -> tuple[str | None, str]:
-    excerpt = text[:ATTACHMENT_TEXT_EXCERPT_MAX]
-    if not excerpt.strip():
-        return None, "empty"
-    return excerpt, "ready"
+def _finalize(text: str, *, truncated: bool = False) -> tuple[str | None, str]:
+    """Keep the extracted text. A parser limit is status ``partial``, never a silent prefix."""
+    body = text or ""
+    if truncated and body and not body.rstrip().endswith("[Content truncated]"):
+        body = body.rstrip() + _TRUNCATION_MARKER
+    if not body.strip():
+        return None, "partial" if truncated else "empty"
+    return body, "partial" if truncated else "ready"
 
 
 def excerpt_from_transcript(text: str) -> tuple[str | None, str]:
@@ -106,15 +116,9 @@ def _extract_plain_text(content: bytes) -> str:
     return decode_plain_text_bytes(content)
 
 
-def _extract_plain_text_from_path(path: Path) -> str:
-    # Two bytes per character so a UTF-16 file can still fill the excerpt budget.
-    # _finalize keeps the historical 100_000-character prefix.
-    read_limit = ATTACHMENT_TEXT_EXCERPT_MAX * 2 + 8
-    with path.open("rb") as handle:
-        raw = handle.read(read_limit + 1)
-    if len(raw) > read_limit:
-        raw = raw[:read_limit]
-    return decode_plain_text_bytes(raw)
+def _extract_plain_text_from_path(path: Path) -> tuple[str, bool]:
+    """Read an accepted upload in full. Upload size is already bounded."""
+    return decode_plain_text_bytes(path.read_bytes()), False
 
 
 def _extract_docx_text(content: bytes) -> str:
@@ -156,11 +160,11 @@ def _docx_document_to_text(document) -> str:
     return "\n".join(parts)
 
 
-def _extract_xlsx_text(content: bytes) -> str:
+def _extract_xlsx_text(content: bytes) -> tuple[str, bool]:
     return _xlsx_workbook_to_text(_open_xlsx(BytesIO(content)))
 
 
-def _extract_xlsx_from_path(path: Path) -> str:
+def _extract_xlsx_from_path(path: Path) -> tuple[str, bool]:
     return _xlsx_workbook_to_text(_open_xlsx(str(path)))
 
 
@@ -185,13 +189,14 @@ def _open_xlsx(source: BytesIO | str):
         raise InvalidAttachmentError("Invalid or corrupt XLSX file") from exc
 
 
-def _xlsx_workbook_to_text(workbook) -> str:
+def _xlsx_workbook_to_text(workbook) -> tuple[str, bool]:
     parts: list[str] = []
     truncated = False
     try:
-        sheet_names = list(workbook.sheetnames)[:_XLSX_MAX_SHEETS]
-        if len(workbook.sheetnames) > _XLSX_MAX_SHEETS:
+        sheet_names = list(workbook.sheetnames)
+        if len(sheet_names) > _XLSX_MAX_SHEETS:
             truncated = True
+            sheet_names = sheet_names[:_XLSX_MAX_SHEETS]
 
         for sheet_name in sheet_names:
             worksheet = workbook[sheet_name]
@@ -206,22 +211,10 @@ def _xlsx_workbook_to_text(workbook) -> str:
                     truncated = True
                     break
                 parts.append("\t".join(values).rstrip("\t"))
-                joined = "\n".join(parts)
-                if len(joined) >= ATTACHMENT_TEXT_EXCERPT_MAX:
-                    truncated = True
-                    break
-            if truncated and len("\n".join(parts)) >= ATTACHMENT_TEXT_EXCERPT_MAX:
-                break
     finally:
         workbook.close()
 
-    text = "\n".join(parts).strip()
-    if truncated:
-        budget = ATTACHMENT_TEXT_EXCERPT_MAX - len(_TRUNCATION_MARKER)
-        if budget < 0:
-            return _TRUNCATION_MARKER.strip()
-        text = text[:budget].rstrip() + _TRUNCATION_MARKER
-    return text
+    return "\n".join(parts).strip(), truncated
 
 
 def _cell_to_text(value: object) -> str:
@@ -230,11 +223,11 @@ def _cell_to_text(value: object) -> str:
     return str(value).replace("\t", " ").replace("\n", " ").strip()
 
 
-def _extract_pdf_text(content: bytes) -> str:
+def _extract_pdf_text(content: bytes) -> tuple[str, bool]:
     return _pdf_reader_to_text(_open_pdf(BytesIO(content)))
 
 
-def _extract_pdf_from_path(path: Path) -> str:
+def _extract_pdf_from_path(path: Path) -> tuple[str, bool]:
     return _pdf_reader_to_text(_open_pdf(str(path)))
 
 
@@ -283,14 +276,15 @@ def _open_pdf(source: BytesIO | str):
     return reader
 
 
-def _pdf_reader_to_text(reader) -> str:
-    parts: list[str] = []
+def _pdf_reader_to_text(reader) -> tuple[str, bool]:
     truncated = False
     page_count = len(reader.pages)
     pages_to_scan = min(page_count, _PDF_MAX_PAGES)
     if page_count > _PDF_MAX_PAGES:
         truncated = True
 
+    extracted: list[tuple[int, str]] = []
+    any_text = False
     for index in range(pages_to_scan):
         try:
             raw = reader.pages[index].extract_text() or ""
@@ -303,17 +297,20 @@ def _pdf_reader_to_text(reader) -> str:
             raise InvalidAttachmentError("Invalid or corrupt PDF file") from exc
 
         page_text = _BLANK_LINE_RE.sub("\n\n", raw).strip()
-        if not page_text:
-            continue
-        parts.append(f"[Page {index + 1}]\n{page_text}")
-        if len("\n\n".join(parts)) >= ATTACHMENT_TEXT_EXCERPT_MAX:
-            truncated = True
-            break
+        if page_text:
+            any_text = True
+        extracted.append((index, page_text))
 
-    text = "\n\n".join(parts).strip()
-    if truncated and text:
-        budget = ATTACHMENT_TEXT_EXCERPT_MAX - len(_TRUNCATION_MARKER)
-        if budget < 0:
-            return _TRUNCATION_MARKER.strip()
-        text = text[:budget].rstrip() + _TRUNCATION_MARKER
-    return text
+    if not any_text:
+        return "", truncated
+
+    parts: list[str] = []
+    for index, page_text in extracted:
+        if page_text:
+            parts.append(f"[Page {index + 1}]\n{page_text}")
+        else:
+            parts.append(f"[Page {index + 1}]\n{_UNREADABLE_PAGE}")
+    if page_count > len(extracted):
+        skipped = page_count - len(extracted)
+        parts.append(f"{skipped} later pages were not extracted.")
+    return "\n\n".join(parts).strip(), truncated

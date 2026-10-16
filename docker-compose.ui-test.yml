@@ -1,0 +1,134 @@
+# Isolated browser test for feature/single-ai-library-ux.
+# Project, network, database, and volumes are separate from the other MultiMind stacks.
+# Web: http://127.0.0.1:3280
+# Postgres and Redis are not published on the host.
+# API and worker entrypoints run alembic upgrade head (including 059) and scripts.seed
+# against this file's Postgres only.
+
+name: multimind-ui-test
+
+x-ui-test-env: &ui-test-env
+  ENVIRONMENT: production
+  DEBUG: "false"
+  DATABASE_URL: postgresql+asyncpg://multiai:multiai@postgres:5432/multiai_ui_test
+  REDIS_URL: redis://redis:6379/0
+  SECRET_KEY: ui-test-isolated-not-production
+  CORS_ORIGINS: http://127.0.0.1:3280,http://localhost:3280
+  PUBLIC_APP_URL: http://127.0.0.1:3280
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_SITE_URL: http://127.0.0.1:3280
+  OPENROUTER_APP_NAME: MultiAI
+  SEED_AUSTRIA_CENSUS_DEMO: "true"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: multiai
+      POSTGRES_PASSWORD: multiai
+      POSTGRES_DB: multiai_ui_test
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multiai -d multiai_ui_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      <<: *ui-test-env
+      PORT: "8000"
+      TRANSCRIPTION_MODEL_DIR: /models/whisper
+      CHAT_ATTACHMENT_DIR: /data/chat-attachments
+    volumes:
+      - whisper_models:/models/whisper
+      - chat_attachments:/data/chat-attachments
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+
+  scraping-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.scraping.worker.WorkerSettings"]
+    environment:
+      <<: *ui-test-env
+      TRANSCRIPTION_MODEL_DIR: /models/whisper
+      CHAT_ATTACHMENT_DIR: /data/chat-attachments
+    volumes:
+      - whisper_models:/models/whisper
+      - chat_attachments:/data/chat-attachments
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  playbook-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.playbooks.worker.WorkerSettings"]
+    environment:
+      <<: *ui-test-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
+    ports:
+      - "127.0.0.1:3280:3000"
+    environment:
+      PORT: "3000"
+      HOST: 0.0.0.0
+      BACKEND_PROXY_TARGET: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: multimind-ui-test-postgres
+  redis_data:
+    name: multimind-ui-test-redis
+  whisper_models:
+    name: multimind-ui-test-whisper
+  chat_attachments:
+    name: multimind-ui-test-chat-attachments
