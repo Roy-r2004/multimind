@@ -231,6 +231,31 @@ def _extract_pdf_from_path(path: Path) -> tuple[str, bool]:
     return _pdf_reader_to_text(_open_pdf(str(path)))
 
 
+def pdf_page_texts(path: Path) -> tuple[list[tuple[int, str]], int, bool]:
+    """Return (1-based page number, native text), total pages, and truncated flag.
+
+    Blank pages stay empty so a later OCR pass can fill them without reading
+    pages that already have native text.
+    """
+    reader = _open_pdf(str(path))
+    page_count = len(reader.pages)
+    pages_to_scan = min(page_count, _PDF_MAX_PAGES)
+    truncated = page_count > _PDF_MAX_PAGES
+    pages: list[tuple[int, str]] = []
+    for index in range(pages_to_scan):
+        try:
+            raw = reader.pages[index].extract_text() or ""
+        except Exception as exc:
+            message = str(exc).lower()
+            if "password" in message or "encrypt" in message or "decrypt" in message:
+                raise InvalidAttachmentError(
+                    "Password-protected or encrypted PDFs are not supported"
+                ) from exc
+            raise InvalidAttachmentError("Invalid or corrupt PDF file") from exc
+        pages.append((index + 1, _BLANK_LINE_RE.sub("\n\n", raw).strip()))
+    return pages, page_count, truncated
+
+
 def _open_pdf(source: BytesIO | str):
     try:
         from pypdf import PdfReader
