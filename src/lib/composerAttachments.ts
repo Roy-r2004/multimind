@@ -1,6 +1,8 @@
 /** Composer attachment validation and chip-state helpers (Phase 2). */
 
 export const COMPOSER_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+export const LARGE_DOCUMENT_MAX_BYTES = 200 * 1024 * 1024;
+export const COMPOSER_LARGE_UPLOAD_TIMEOUT_MS = 30 * 60 * 1000;
 export const COMPOSER_ATTACHMENT_MAX_COUNT = 10;
 
 export const COMPOSER_ATTACHMENT_EXTENSIONS = [
@@ -116,16 +118,23 @@ export function composerAttachmentExtension(filename: string): string {
   return base.slice(dot).toLowerCase();
 }
 
-export function composerAttachmentUploadTimeoutMs(filename: string): number {
-  return composerAttachmentExtension(filename) === ".webm"
-    ? COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS
-    : COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS;
+export function composerAttachmentUploadTimeoutMs(filename: string, sizeBytes?: number): number {
+  if (composerAttachmentExtension(filename) === ".webm") {
+    return COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS;
+  }
+  if ((sizeBytes ?? 0) > COMPOSER_ATTACHMENT_MAX_BYTES) {
+    return COMPOSER_LARGE_UPLOAD_TIMEOUT_MS;
+  }
+  return COMPOSER_DOCUMENT_UPLOAD_TIMEOUT_MS;
 }
 
-export function validateComposerAttachment(file: {
-  name?: string | null;
-  size?: number | null;
-}): ComposerAttachmentValidation {
+export function validateComposerAttachment(
+  file: {
+    name?: string | null;
+    size?: number | null;
+  },
+  maxBytes: number = COMPOSER_ATTACHMENT_MAX_BYTES,
+): ComposerAttachmentValidation {
   const name = (file.name ?? "").trim();
   if (!name || name === "." || name === "..") {
     return { ok: false, message: "A valid filename is required" };
@@ -134,10 +143,10 @@ export function validateComposerAttachment(file: {
   if (size <= 0) {
     return { ok: false, message: "Attachment is empty" };
   }
-  if (size > COMPOSER_ATTACHMENT_MAX_BYTES) {
+  if (size > maxBytes) {
     return {
       ok: false,
-      message: `File exceeds maximum size of ${COMPOSER_ATTACHMENT_MAX_BYTES / (1024 * 1024)} MB.`,
+      message: `File exceeds maximum size of ${Math.round(maxBytes / (1024 * 1024))} MB.`,
     };
   }
   const extension = composerAttachmentExtension(name);
@@ -232,6 +241,8 @@ export type PendingAttachmentItem = {
 /** User-facing extraction state. A normal full extract does not add a chip label. */
 export function attachmentExtractionLabel(status: string | null | undefined): string | null {
   switch ((status ?? "").toLowerCase()) {
+    case "processing":
+      return "Reading document";
     case "partial":
       return "Partly extracted";
     case "empty":
@@ -419,6 +430,7 @@ export type RunComposerUploadsDeps = {
   /** Set synchronously before createChat so send cannot race the first chip. */
   uploadGuard?: ComposerUploadGuard;
   onUploadGuardChange?: (count: number) => void;
+  maxBytes?: number;
 };
 
 /**
@@ -472,7 +484,7 @@ export async function runComposerUploads(
         );
         break;
       }
-      const validation = validateComposerAttachment(file);
+      const validation = validateComposerAttachment(file, deps.maxBytes);
       if (!validation.ok) {
         deps.setFiles((prev) => [
           ...prev,

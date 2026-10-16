@@ -29,6 +29,8 @@ async function proxyApiRequest(request: Request): Promise<Response | null> {
     headers,
   };
 
+  // Stream the body through. A 200 MB upload must not be buffered in this process.
+
   if (request.method !== "GET" && request.method !== "HEAD") {
     init.body = request.body;
     init.duplex = "half";
