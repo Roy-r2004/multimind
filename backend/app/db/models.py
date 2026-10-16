@@ -112,6 +112,7 @@ class UsageKind(str, enum.Enum):
     BRAIN = "brain"
     CHAT_MEMORY = "chat_memory"
     VERDICT_EXPLAIN = "verdict_explain"
+    DOCUMENT_PROCESSING = "document_processing"
 
 
 class VerdictSimpleExplanationStatus(str, enum.Enum):
@@ -2100,8 +2101,82 @@ class ChatAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     relative_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     text_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
     excerpt_status: Mapped[str] = mapped_column(String(32), nullable=False, default="failed")
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     turn: Mapped["Turn | None"] = relationship(back_populates="attachments")
+
+
+class ProcessedDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Organization-scoped extraction of one file hash.
+
+    The same SHA-256 in another organization is a different row. Workers update
+    ``heartbeat_at`` while OCR or embedding is in progress so a restart can
+    resume pages that do not yet have a section row.
+    """
+
+    __tablename__ = "processed_documents"
+    __table_args__ = (
+        UniqueConstraint("org_id", "content_sha256", name="uq_processed_documents_org_sha"),
+        Index("ix_processed_documents_org_status", "org_id", "status"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="processing")
+    pages_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pages_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unread_pages: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    sections: Mapped[list["ProcessedSection"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
+    chunks: Mapped[list["ProcessedChunk"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProcessedSection(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "processed_sections"
+    __table_args__ = (
+        UniqueConstraint("document_id", "section_index", name="uq_processed_sections_doc_index"),
+        Index("ix_processed_sections_org", "org_id"),
+    )
+
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("processed_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str] = UuidFK("organizations")
+    section_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    worksheet: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="native")
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    document: Mapped["ProcessedDocument"] = relationship(back_populates="sections")
+
+
+class ProcessedChunk(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "processed_chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "chunk_index", name="uq_processed_chunks_doc_index"),
+        Index("ix_processed_chunks_org", "org_id"),
+    )
+
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("processed_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str] = UuidFK("organizations")
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    document: Mapped["ProcessedDocument"] = relationship(back_populates="chunks")
 
 
 class LibraryFolder(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -2178,6 +2253,7 @@ class LibraryItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     text_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
     excerpt_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # MultiMind Document body (item_type == "document")
     content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -2558,9 +2634,9 @@ class CostRecord(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "cost_records"
 
     org_id: Mapped[str] = UuidFK("organizations")
-    chat_id: Mapped[str] = UuidFK("chats")
+    chat_id: Mapped[str | None] = UuidFK("chats", nullable=True)
     project_id: Mapped[str | None] = UuidFK("projects", nullable=True)
-    turn_id: Mapped[str] = UuidFK("turns")
+    turn_id: Mapped[str | None] = UuidFK("turns", nullable=True)
     model_id: Mapped[str] = mapped_column(String(64), nullable=False)
     kind: Mapped[UsageKind] = mapped_column(Enum(UsageKind), nullable=False)
     tokens_input: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
