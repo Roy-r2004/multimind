@@ -384,7 +384,9 @@ class Settings(BaseSettings):
     document_processing_poll_seconds: float = Field(default=2.0, gt=0)
     document_ocr_batch_pages: int = Field(default=4, ge=1)
     document_chunk_chars: int = Field(default=4000, ge=200)
-    document_ocr_model: str = ""
+    # OpenRouter vision slug for scanned PDF pages. Used only while
+    # large_documents_enabled is on. Override with DOCUMENT_OCR_MODEL.
+    document_ocr_model: str = "google/gemini-3-flash-preview"
     document_embedding_model: str = ""
 
     # Rate limiting

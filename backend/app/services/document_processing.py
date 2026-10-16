@@ -165,29 +165,49 @@ def render_pdf_page_png(path: Path, page_number: int) -> bytes:
 
 
 async def default_ocr_pages(images: list[tuple[int, bytes]]) -> list[tuple[int, str, dict[str, Any]]]:
-    """OCR a batch through the configured vision model.
+    """OCR scanned pages through OpenRouter vision.
 
-    Tests replace this. With no model configured the pages stay unread rather
-    than inventing text. A configured model uses the existing provider registry.
+    Each rendered PNG is sent as an image_url part, the same structure chat
+    image analysis uses. A page that fails stays empty so the caller can mark
+    it unread instead of inventing text. Native-text pages are not included
+    by the caller.
     """
     settings = get_settings()
     model_name = (settings.document_ocr_model or "").strip()
-    if not model_name or not images:
+    if not settings.large_documents_enabled or not model_name or not images:
         return []
-    from app.llm.providers import get_provider_registry
+    import base64
 
-    provider = get_provider_registry().get_provider(model_name)
+    from app.llm.providers import get_provider_registry
+    from app.services.chat_vision import VisionImage
+
+    provider = get_provider_registry().get_provider("openrouter")
     results: list[tuple[int, str, dict[str, Any]]] = []
-    for page_number, _png in images:
-        response = await provider.complete(
-            system=(
-                "Transcribe this scanned document page. Return only the visible "
-                f"text. Page number {page_number}."
-            ),
-            user="Transcribe the page image.",
-            model=model_name,
-            max_tokens=1200,
+    for page_number, png in images:
+        if not png:
+            results.append((page_number, "", {"model_id": model_name, "failed": True}))
+            continue
+        vision = VisionImage(
+            filename=f"page-{page_number}.png",
+            media_type="image/png",
+            data_base64=base64.b64encode(png).decode("ascii"),
         )
+        try:
+            response = await provider.complete(
+                system=(
+                    "Transcribe the scanned document page. Return only the visible "
+                    "text, preserving reading order. Do not describe the page."
+                ),
+                user=f"Transcribe page {page_number}.",
+                model=model_name,
+                max_tokens=1200,
+                temperature=0,
+                images=[vision],
+            )
+        except Exception:  # noqa: BLE001 — one failed page must not drop the rest
+            logger.warning("document_ocr_page_failed", page=page_number, model=model_name)
+            results.append((page_number, "", {"model_id": model_name, "failed": True}))
+            continue
         results.append(
             (
                 page_number,
@@ -195,7 +215,7 @@ async def default_ocr_pages(images: list[tuple[int, bytes]]) -> list[tuple[int, 
                 {
                     "tokens_input": response.tokens_input,
                     "tokens_output": response.tokens_output,
-                    "cost_usd": response.cost_usd,
+                    "cost_usd": response.cost_usd or 0,
                     "model_id": model_name,
                 },
             )

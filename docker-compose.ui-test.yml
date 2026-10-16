@@ -20,6 +20,7 @@ x-ui-test-env: &ui-test-env
   OPENROUTER_APP_NAME: MultiAI
   SEED_AUSTRIA_CENSUS_DEMO: "true"
   LARGE_DOCUMENTS_ENABLED: "true"
+  DOCUMENT_OCR_MODEL: ${DOCUMENT_OCR_MODEL:-google/gemini-3-flash-preview}
   LIBRARY_FILE_DIR: /data/library-files
 
 services:
