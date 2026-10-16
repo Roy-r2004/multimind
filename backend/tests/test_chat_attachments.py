@@ -612,11 +612,11 @@ async def test_xlsx_respects_sheet_row_column_limits(
         )
     assert response.status_code == 201
     excerpt = response.json()["text_excerpt"]
-    assert "[Content truncated]" in excerpt
+    assert response.json()["excerpt_status"] == "ready"
+    assert "[Content truncated]" not in excerpt
     assert "Worksheet: S0" in excerpt
-    assert "Worksheet: S5" not in excerpt
-    assert "v0-29" in excerpt
-    assert "v0-30" not in excerpt
+    assert "Worksheet: S6" in excerpt
+    assert "v0-34" in excerpt
 
 
 @pytest.mark.asyncio
@@ -1165,11 +1165,10 @@ async def test_large_text_attachment_retains_up_to_100k_characters(
 
     assert response.status_code == 201
     excerpt = response.json()["text_excerpt"]
-    assert len(excerpt) == 100_000
-    assert excerpt == content[:100_000]
-    assert len(excerpt) > 50_000
+    assert response.json()["excerpt_status"] == "ready"
+    assert excerpt == content
     assert "B" * 40_000 in excerpt
-    assert "C" not in excerpt
+    assert "C" * 10_000 in excerpt
 
 
 @pytest.mark.asyncio
@@ -1194,34 +1193,31 @@ async def test_empty_attachment_does_not_inject_fake_content_block(
     stored = (await db.execute(select(Turn).where(Turn.id == turn.id))).scalar_one()
     instructions = stored.custom_instructions or ""
     assert "blank.txt" in instructions
-    assert "(No readable content)" in instructions
+    assert "No readable text found" in instructions
     assert "```text" not in instructions
 
 
-def test_attachment_context_budget_truncates_deterministically(monkeypatch):
-    monkeypatch.setattr(get_settings(), "chat_attachment_context_max_chars", 220)
-    from types import SimpleNamespace
+def test_attachment_context_budget_truncates_deterministically():
+    from app.services.document_context import DocumentSource, prepare_model_context
 
-    attachments = [
-        SimpleNamespace(
-            filename="first.txt",
-            excerpt_status="ready",
-            text_excerpt="ALPHA" * 80,
-        ),
-        SimpleNamespace(
-            filename="second.txt",
-            excerpt_status="ready",
-            text_excerpt="BETA" * 80,
-        ),
-    ]
-    text = chat_service._build_attachment_instructions(attachments)
-    assert text is not None
+    fitted = prepare_model_context(
+        model_id="gpt-4.1",
+        user_message="What is in the files?",
+        fixed_system="System.",
+        references=None,
+        documents=[
+            DocumentSource("first.txt", "ALPHA" * 2_000, "ready"),
+            DocumentSource("second.txt", "BETA" * 2_000, "ready"),
+        ],
+        requested_output_tokens=256,
+        context_window=2_200,
+        window_source="caller",
+    )
+    text = fitted.runtime_context or ""
+    assert fitted.overflow_message is None
     assert "first.txt" in text
     assert "second.txt" in text
-    assert (
-        "[Attachment context truncated]" in text
-        or "[Content omitted due to attachment context budget]" in text
-    )
+    assert "Document content omitted" in text or "selected relevant sections" in text
     assert text.index("second.txt") > text.index("first.txt")
 
 
@@ -1422,9 +1418,11 @@ async def test_pdf_extraction_truncates_at_excerpt_limit(
         )
     assert response.status_code == 201
     excerpt = response.json()["text_excerpt"]
-    assert len(excerpt) <= 100_000
-    assert len(excerpt) > 50_000
-    assert "[Content truncated]" in excerpt
+    assert response.json()["excerpt_status"] == "ready"
+    assert len(excerpt) > 100_000
+    assert "[Page 1]" in excerpt
+    assert "[Page 3]" in excerpt
+    assert "[Content truncated]" not in excerpt
 
 
 @pytest.mark.asyncio
@@ -1437,7 +1435,7 @@ async def test_pdf_page_limit_is_bounded(monkeypatch):
 
     pages = [f"PageBody{i}" for i in range(1, 6)]
     excerpt, status = extract_attachment_text(_pdf_with_pages(pages), ".pdf")
-    assert status == "ready"
+    assert status == "partial"
     assert "[Page 1]" in excerpt
     assert "[Page 2]" in excerpt
     assert "[Page 3]" not in excerpt
@@ -1581,31 +1579,27 @@ async def test_pdf_content_reaches_turn_instructions(
     assert "[Page 1]" in (stored.custom_instructions or "")
 
 
-def test_pdf_context_obeys_total_attachment_budget(monkeypatch):
-    monkeypatch.setattr(get_settings(), "chat_attachment_context_max_chars", 240)
-    from types import SimpleNamespace
+def test_pdf_context_obeys_total_attachment_budget():
+    from app.services.document_context import DocumentSource, prepare_model_context
 
-    text = chat_service._build_attachment_instructions(
-        [
-            SimpleNamespace(
-                filename="first.pdf",
-                excerpt_status="ready",
-                text_excerpt="[Page 1]\n" + ("ALPHA" * 80),
-            ),
-            SimpleNamespace(
-                filename="second.pdf",
-                excerpt_status="ready",
-                text_excerpt="[Page 1]\n" + ("BETA" * 80),
-            ),
-        ]
+    fitted = prepare_model_context(
+        model_id="gpt-4.1",
+        user_message="Read both pdfs",
+        fixed_system="System.",
+        references=None,
+        documents=[
+            DocumentSource("first.pdf", "[Page 1]\n" + ("ALPHA" * 2_000), "ready"),
+            DocumentSource("second.pdf", "[Page 1]\n" + ("BETA" * 2_000), "ready"),
+        ],
+        requested_output_tokens=256,
+        context_window=2_200,
+        window_source="caller",
     )
-    assert text is not None
+    text = fitted.runtime_context or ""
+    assert fitted.overflow_message is None
     assert "first.pdf" in text
     assert "second.pdf" in text
-    assert (
-        "[Attachment context truncated]" in text
-        or "[Content omitted due to attachment context budget]" in text
-    )
+    assert "Document content omitted" in text or "selected relevant sections" in text
 
 
 def test_ten_txt_files_of_30k_stay_within_300k_and_keep_every_filename():
@@ -1624,10 +1618,10 @@ def test_ten_txt_files_of_30k_stay_within_300k_and_keep_every_filename():
     ]
     text = chat_service._build_attachment_instructions(attachments)
     assert text is not None
-    assert len(text) <= 300_000
     for index in range(10):
         assert f"note-{index}.txt" in text
-        assert "[Attachment context truncated]" in text
+        assert "ABCDEFGHIJ"[index] * 30_001 in text
+    assert "[Document content omitted]" not in text
     engine = PromptEngine()
     council = engine.model_answer_prompt(
         user_message="Read the files",
@@ -1655,46 +1649,28 @@ def test_ten_txt_files_of_30k_stay_within_300k_and_keep_every_filename():
             assert f"note-{index}.txt" in rendered
 
 
-@pytest.mark.parametrize(
-    ("sizes", "minimum_retained"),
-    [
-        ([50_000, 50_000], [50_000, 40_000]),
-        ([70_000, 40_000], [70_000, 20_000]),
-        ([25_000] * 4, [25_000, 25_000, 25_000, 15_000]),
-        ([20_000] * 10, [20_000, 20_000, 20_000, 20_000, 10_000]),
-    ],
-)
-def test_multiple_attachments_share_one_total_context_budget(
-    monkeypatch, sizes, minimum_retained
-):
-    monkeypatch.setattr(get_settings(), "chat_attachment_context_max_chars", 100_000)
-    from types import SimpleNamespace
+def test_multiple_attachments_keep_every_filename_when_the_window_is_small():
+    from app.services.document_context import DocumentSource, prepare_model_context
 
-    markers = "ABCDEFGHIJ"
-    text = chat_service._build_attachment_instructions(
-        [
-            SimpleNamespace(
-                filename=f"attachment-{index}.pdf",
-                excerpt_status="ready",
-                text_excerpt=markers[index] * size,
-            )
-            for index, size in enumerate(sizes)
-        ]
+    documents = [
+        DocumentSource(f"attachment-{index}.pdf", "ABCDEFGHIJ"[index] * 20_000, "ready")
+        for index in range(10)
+    ]
+    fitted = prepare_model_context(
+        model_id="small-model",
+        user_message="Look at every file",
+        fixed_system="System.",
+        references=None,
+        documents=documents,
+        requested_output_tokens=256,
+        context_window=4_000,
+        window_source="caller",
     )
-
-    assert text is not None
-    assert len(text) <= get_settings().chat_attachment_context_max_chars
-    for index, minimum in enumerate(minimum_retained):
-        assert text.count(markers[index]) >= minimum
+    text = fitted.runtime_context or ""
+    assert fitted.overflow_message is None
+    for index in range(10):
         assert f"attachment-{index}.pdf" in text
-    filenames = [text.index(f"attachment-{index}.pdf") for index in range(len(sizes))]
-    assert filenames == sorted(filenames)
-    for index in range(len(sizes)):
-        assert f"attachment-{index}.pdf" in text
-    assert (
-        "[Attachment context truncated]" in text
-        or "[Content omitted due to attachment context budget]" in text
-    )
+    assert "Document content omitted" in text or "selected relevant sections" in text
 
 
 @pytest.mark.asyncio

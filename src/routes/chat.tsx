@@ -97,6 +97,7 @@ import {
   beginAttachmentTranscription,
   failAttachmentTranscription,
   isUploadedWebmAttachment,
+  attachmentExtractionLabel,
   type AttachmentTranscriptionState,
 } from "@/lib/composerAttachments";
 import {
@@ -185,6 +186,7 @@ type ComposerFile = {
   state: "uploading" | "uploaded" | "error";
   attachmentId?: string;
   textExcerpt?: string | null;
+  excerptStatus?: string | null;
   errorMessage?: string;
   deleting?: boolean;
 };
@@ -1653,6 +1655,11 @@ export function ChatPage() {
                         <X className="size-3" />
                       </button>
                     </div>
+                    {attachmentExtractionLabel(f.excerptStatus) ? (
+                      <span className="max-w-[16rem] truncate text-[11px] text-muted-foreground">
+                        {attachmentExtractionLabel(f.excerptStatus)}
+                      </span>
+                    ) : null}
                     {(f.state === "error" || f.errorMessage) && f.errorMessage ? (
                       <span className="max-w-[16rem] truncate text-[11px] text-destructive">
                         {f.errorMessage}

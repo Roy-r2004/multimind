@@ -20,9 +20,29 @@ from app.db.models import (
     UsageKind,
     Verdict,
 )
-from app.llm.catalog import get_model
+from app.llm.catalog import estimate_tokens, get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import council_fallback_reason, get_provider_registry
+from app.llm.pricing import get_pricing_service
+from app.services.document_context import (
+    SAFETY_MARGIN_TOKENS,
+    DocumentContextOverflow,
+    DocumentSource,
+    PreparedModelContext,
+    cap_answer_texts,
+    clear_section_progress,
+    completed_section_indexes,
+    context_exceeds_budget,
+    is_context_overflow_error,
+    load_section_progress,
+    lookup_context_window,
+    output_reserve,
+    prepare_model_context,
+    render_section_findings,
+    save_section_progress,
+    strip_baked_attachment_block,
+    strip_document_cursors,
+)
 
 logger = get_logger(__name__)
 
@@ -35,6 +55,8 @@ TURN_FAILED_CODE = "TURN_FAILED"
 TURN_FAILED_MESSAGE = "Turn failed."
 VERDICT_MAX_ATTEMPTS = 2
 VERDICT_MAX_TOKENS = 15000
+COUNCIL_MAX_TOKENS = 20000
+SECTION_READ_MAX_TOKENS = 800
 VERDICT_DEFAULT_REASON = "Synthesized from model responses."
 ULTIMATE_MODEL_SET_ID = "set-7edaefc8"
 ULTIMATE_COUNCIL_FALLBACKS = {
@@ -76,6 +98,9 @@ class TurnContext:
     rolling_chat_memory: str | None = None
     recent_conversation_context: str | None = None
     playbook_context: str | None = None
+    document_sources: list[Any] = field(default_factory=list)
+    document_section_cursor: int = 0
+    document_resume_points: list[tuple[int, int]] = field(default_factory=list)
     skip_answer_seed: bool = False
 
 
@@ -92,6 +117,7 @@ class ModelCallResult:
     model_name: str
     response: Any | None = None
     error: Exception | None = None
+    document_cursor: str | None = None
 
 
 def format_llm_error(exc: Exception) -> str:
@@ -310,6 +336,327 @@ class TurnOrchestrator:
                 )
         return persisted
 
+    def _sources(self, ctx: TurnContext) -> list[DocumentSource]:
+        sources: list[DocumentSource] = []
+        for item in ctx.document_sources:
+            if isinstance(item, DocumentSource):
+                sources.append(item)
+                continue
+            sources.append(
+                DocumentSource(
+                    filename=str(item.get("filename") or "file"),
+                    text=item.get("text"),
+                    status=str(item.get("status") or "ready"),
+                )
+            )
+        return sources
+
+    def _references_for_call(self, ctx: TurnContext) -> str | None:
+        if ctx.document_sources:
+            return strip_baked_attachment_block(ctx.council_runtime_context)
+        return ctx.council_runtime_context
+
+    async def _read_document_sections(
+        self,
+        ctx: TurnContext,
+        *,
+        provider: Any,
+        model_id: str,
+        model_slug: str,
+        prepared: PreparedModelContext,
+    ) -> list[dict]:
+        findings = [
+            finding
+            for finding in load_section_progress(ctx.turn_id, model_id)
+            if not finding.get("failed")
+        ]
+        done = completed_section_indexes(findings)
+        for section in prepared.sections:
+            indexes = section.get("section_indexes") or []
+            if indexes and set(indexes).issubset(done):
+                continue
+            finding = await self._read_one_section(
+                ctx,
+                provider=provider,
+                model_slug=model_slug,
+                prepared=prepared,
+                section=section,
+            )
+            findings.append(finding)
+            if not finding.get("failed"):
+                save_section_progress(ctx.turn_id, model_id, findings)
+        return findings
+
+    async def _read_one_section(
+        self,
+        ctx: TurnContext,
+        *,
+        provider: Any,
+        model_slug: str,
+        prepared: PreparedModelContext,
+        section: dict,
+        depth: int = 0,
+    ) -> dict:
+        system = (
+            "You are reading one batch of an attached document for the user's request. "
+            "Extract every fact that could matter. "
+            "Quote distinctive names, numbers, and requirements from this batch only. "
+            "If nothing in this batch matters, reply: No matching facts in this section.\n\n"
+            f"File: {section['filename']}\n"
+            f"Section: {section['label']}\n"
+            f"{section['text']}"
+        )
+
+        async def _call() -> Any:
+            return await self._await_provider_complete(
+                ctx.turn_id,
+                provider.complete(
+                    system=system,
+                    user=ctx.user_message,
+                    model=model_slug,
+                    max_tokens=min(
+                        SECTION_READ_MAX_TOKENS,
+                        prepared.reserved_output_tokens or SECTION_READ_MAX_TOKENS,
+                    ),
+                ),
+            )
+
+        try:
+            response = await _call()
+        except (asyncio.CancelledError, TurnNoLongerWritable):
+            raise
+        except Exception as exc:
+            if (
+                is_context_overflow_error(exc)
+                and depth < 3
+                and len(section.get("text") or "") > 1_000
+            ):
+                text = section["text"]
+                midpoint = len(text) // 2
+                halves = []
+                for suffix, piece in (("a", text[:midpoint]), ("b", text[midpoint:])):
+                    child = dict(section)
+                    child["text"] = piece
+                    child["label"] = f"{section['label']} {suffix}"
+                    halves.append(
+                        await self._read_one_section(
+                            ctx,
+                            provider=provider,
+                            model_slug=model_slug,
+                            prepared=prepared,
+                            section=child,
+                            depth=depth + 1,
+                        )
+                    )
+                return {
+                    "filename": section["filename"],
+                    "label": section["label"],
+                    "index": section.get("index"),
+                    "section_indexes": section.get("section_indexes") or [],
+                    "text": "\n".join(item.get("text") or "" for item in halves),
+                    "failed": all(item.get("failed") for item in halves),
+                }
+            if depth == 0 and not is_context_overflow_error(exc):
+                try:
+                    response = await _call()
+                except (asyncio.CancelledError, TurnNoLongerWritable):
+                    raise
+                except Exception as retry_exc:
+                    exc = retry_exc
+                    response = None
+                else:
+                    return self._section_finding(section, response.text or "", failed=False)
+            else:
+                response = None
+            if response is None:
+                logger.warning(
+                    "document_section_read_failed",
+                    turn_id=ctx.turn_id,
+                    filename=section["filename"],
+                    label=section["label"],
+                    error_type=type(exc).__name__,
+                )
+                return self._section_finding(section, "This section could not be processed.", failed=True)
+        return self._section_finding(section, response.text or "", failed=False)
+
+    @staticmethod
+    def _section_finding(section: dict, text: str, *, failed: bool) -> dict:
+        return {
+            "filename": section["filename"],
+            "label": section["label"],
+            "index": section.get("index"),
+            "section_indexes": section.get("section_indexes") or [],
+            "text": text,
+            "failed": failed,
+        }
+
+    async def _reduce_findings(
+        self,
+        ctx: TurnContext,
+        *,
+        provider: Any,
+        model_slug: str,
+        prepared: PreparedModelContext,
+        findings: list[dict],
+    ) -> list[dict]:
+        """Compress section notes until the final call can carry every successful one."""
+        if len(findings) <= 1:
+            return findings
+        grouped: list[list[dict]] = []
+        current: list[dict] = []
+        current_chars = 0
+        limit = 12_000
+        for finding in findings:
+            size = len(finding.get("text") or "")
+            if current and current_chars + size > limit:
+                grouped.append(current)
+                current = []
+                current_chars = 0
+            current.append(finding)
+            current_chars += size
+        if current:
+            grouped.append(current)
+        if len(grouped) == len(findings):
+            grouped = [findings[: max(1, len(findings) // 2)], findings[max(1, len(findings) // 2) :]]
+            grouped = [group for group in grouped if group]
+        reduced: list[dict] = []
+        for group in grouped:
+            if len(group) == 1:
+                reduced.append(group[0])
+                continue
+            body = "\n\n".join(
+                f"[{item.get('filename')} | {item.get('label')}]\n{item.get('text') or ''}"
+                for item in group
+            )
+            system = (
+                "Combine these section notes into one compact brief. "
+                "Keep every distinctive name, number, requirement, and source file. "
+                "Do not add facts that are not in the notes.\n\n"
+                f"{body}"
+            )
+            try:
+                response = await self._await_provider_complete(
+                    ctx.turn_id,
+                    provider.complete(
+                        system=system,
+                        user=ctx.user_message,
+                        model=model_slug,
+                        max_tokens=min(
+                            SECTION_READ_MAX_TOKENS,
+                            prepared.reserved_output_tokens or SECTION_READ_MAX_TOKENS,
+                        ),
+                    ),
+                )
+                indexes: list[int] = []
+                for item in group:
+                    indexes.extend(item.get("section_indexes") or [])
+                reduced.append(
+                    {
+                        "filename": group[0].get("filename"),
+                        "label": f"{group[0].get('label')} through {group[-1].get('label')}",
+                        "index": group[0].get("index"),
+                        "section_indexes": indexes,
+                        "text": response.text or "",
+                        "failed": False,
+                    }
+                )
+            except (asyncio.CancelledError, TurnNoLongerWritable):
+                raise
+            except Exception:
+                reduced.extend(group)
+        return reduced or findings
+
+    def _build_verdict_request(
+        self,
+        ctx: TurnContext,
+        answer_context: list[dict[str, Any]],
+    ) -> tuple[str, int]:
+        is_referee = ctx.strategy == Strategy.REFEREE
+        verdict_user = "Produce the verdict JSON now."
+        shared = dict(
+            strategy=ctx.strategy.value,
+            user_message=ctx.user_message,
+            strict_referee_behavior=ctx.referee_system_prompt if is_referee else None,
+            referee_instructions=None if is_referee else ctx.referee_instructions,
+            custom_instructions=None if is_referee else ctx.referee_instructions,
+            template_instructions=None if is_referee else ctx.template_instructions,
+            user_brain_context=ctx.user_brain_context,
+            rolling_chat_memory=ctx.rolling_chat_memory,
+            recent_conversation_context=ctx.recent_conversation_context,
+            playbook_context=ctx.playbook_context,
+        )
+        empty_answers = [{**item, "text": ""} for item in answer_context]
+        fixed = self._prompts.verdict_prompt(
+            **shared,
+            model_answers=empty_answers,
+            supporting_context=None,
+        )
+        window, source = lookup_context_window(ctx.verdict_model_id)
+        reserved = output_reserve(window, VERDICT_MAX_TOKENS)
+        if reserved is None:
+            raise DocumentContextOverflow(
+                f"The verdict prompt for {ctx.verdict_model_id} was not sent. "
+                f"Its context window ({window} tokens, {source}) cannot reserve a reply."
+            )
+        remainder = (
+            window
+            - reserved
+            - SAFETY_MARGIN_TOKENS
+            - estimate_tokens(fixed)
+            - estimate_tokens(verdict_user)
+        )
+        if remainder < 0:
+            raise DocumentContextOverflow(
+                f"The verdict prompt for {ctx.verdict_model_id} was not sent. "
+                "System instructions already exceed the model context budget."
+            )
+        references = self._references_for_call(ctx)
+        has_supporting = bool(self._sources(ctx)) or bool((references or "").strip())
+        document_budget = max(remainder // 2, 0) if has_supporting else 0
+        answer_budget = remainder - document_budget
+        prepared = prepare_model_context(
+            model_id=ctx.verdict_model_id,
+            user_message=ctx.user_message,
+            fixed_system=fixed,
+            references=references,
+            documents=self._sources(ctx),
+            requested_output_tokens=VERDICT_MAX_TOKENS,
+            context_window=window,
+            window_source=source,
+            runtime_token_budget=document_budget,
+            plan_complete_sections=False,
+        )
+        if prepared.overflow_message:
+            raise DocumentContextOverflow(prepared.overflow_message)
+        texts = cap_answer_texts(
+            [str(item.get("text") or "") for item in answer_context],
+            answer_budget,
+        )
+        fitted_answers = [
+            {**item, "text": text} for item, text in zip(answer_context, texts, strict=False)
+        ]
+        system = self._prompts.verdict_prompt(
+            **shared,
+            model_answers=fitted_answers,
+            supporting_context=prepared.runtime_context,
+        )
+        if context_exceeds_budget(system, verdict_user, window, reserved):
+            omitted = cap_answer_texts(["" for _ in answer_context], 0)
+            system = self._prompts.verdict_prompt(
+                **shared,
+                model_answers=[
+                    {**item, "text": text}
+                    for item, text in zip(answer_context, omitted, strict=False)
+                ],
+                supporting_context=prepared.runtime_context,
+            )
+        if context_exceeds_budget(system, verdict_user, window, reserved):
+            raise DocumentContextOverflow(
+                f"The assembled verdict prompt for {ctx.verdict_model_id} exceeds its "
+                f"context budget ({window} tokens, {source}) and was not sent."
+            )
+        return system, reserved
+
     async def run(
         self,
         db: AsyncSession,
@@ -388,13 +735,12 @@ class TurnOrchestrator:
 
         async def call_model(model_id: str) -> ModelCallResult:
             model = get_model(model_id)
-            system = self._prompts.model_answer_prompt(
+            prompt_fields = dict(
                 user_message=ctx.user_message,
                 model_id=model.id,
                 model_name=model.name,
                 vendor=model.vendor,
                 model_set_name=ctx.model_set_name,
-                council_runtime_context=ctx.council_runtime_context,
                 user_brain_context=ctx.user_brain_context,
                 rolling_chat_memory=ctx.rolling_chat_memory,
                 recent_conversation_context=ctx.recent_conversation_context,
@@ -403,19 +749,111 @@ class TurnOrchestrator:
 
             try:
                 provider = self._providers.get_provider(model.provider)
+                fixed_system = self._prompts.model_answer_prompt(
+                    **prompt_fields,
+                    council_runtime_context=None,
+                )
+                progress = load_section_progress(ctx.turn_id, model_id)
+                prepared = prepare_model_context(
+                    model_id=model_id,
+                    user_message=ctx.user_message,
+                    fixed_system=fixed_system,
+                    references=self._references_for_call(ctx),
+                    documents=self._sources(ctx),
+                    requested_output_tokens=COUNCIL_MAX_TOKENS,
+                    plan_complete_sections=True,
+                    completed_section_indexes=completed_section_indexes(progress),
+                )
+                if prepared.overflow_message:
+                    raise DocumentContextOverflow(prepared.overflow_message)
+                runtime = prepared.runtime_context
+                findings: list[dict] = []
+                if prepared.sections or progress:
+                    findings = await self._read_document_sections(
+                        ctx,
+                        provider=provider,
+                        model_id=model_id,
+                        model_slug=model.provider_model,
+                        prepared=prepared,
+                    )
+                    for _round in range(6):
+                        runtime = render_section_findings(prepared, findings)
+                        trial = self._prompts.model_answer_prompt(
+                            **prompt_fields,
+                            council_runtime_context=runtime,
+                        )
+                        omitted = "Section findings omitted" in (runtime or "")
+                        too_big = context_exceeds_budget(
+                            trial,
+                            ctx.user_message,
+                            prepared.window_tokens,
+                            prepared.reserved_output_tokens,
+                        )
+                        if not omitted and not too_big:
+                            break
+                        if len(findings) <= 1 and not too_big:
+                            break
+                        findings = await self._reduce_findings(
+                            ctx,
+                            provider=provider,
+                            model_slug=model.provider_model,
+                            prepared=prepared,
+                            findings=findings,
+                        )
+                    runtime = render_section_findings(prepared, findings)
+                system = self._prompts.model_answer_prompt(
+                    **prompt_fields,
+                    council_runtime_context=runtime,
+                )
+                if context_exceeds_budget(
+                    system,
+                    ctx.user_message,
+                    prepared.window_tokens,
+                    prepared.reserved_output_tokens,
+                ):
+                    raise DocumentContextOverflow(
+                        f"The assembled prompt for {model_id} exceeds its context budget "
+                        f"({prepared.window_tokens} tokens, {prepared.window_source}) and was not sent."
+                    )
+                max_tokens = prepared.reserved_output_tokens
                 fallback_chain = None
                 if ctx.model_set_id == ULTIMATE_MODEL_SET_ID:
                     fallback_chain = ULTIMATE_COUNCIL_FALLBACKS.get(model.provider_model)
                 if fallback_chain is None:
-                    response = await self._await_provider_complete(
-                        ctx.turn_id,
-                        provider.complete(
-                            system=system,
-                            user=ctx.user_message,
-                            model=model.provider_model,
-                            max_tokens=20000,
-                        ),
-                    )
+                    response = None
+                    for pack_attempt in range(3):
+                        try:
+                            response = await self._await_provider_complete(
+                                ctx.turn_id,
+                                provider.complete(
+                                    system=system,
+                                    user=ctx.user_message,
+                                    model=model.provider_model,
+                                    max_tokens=max_tokens,
+                                ),
+                            )
+                            break
+                        except (asyncio.CancelledError, TurnNoLongerWritable):
+                            raise
+                        except Exception as exc:
+                            if not is_context_overflow_error(exc) or pack_attempt == 2 or not findings:
+                                raise
+                            findings = await self._reduce_findings(
+                                ctx,
+                                provider=provider,
+                                model_slug=model.provider_model,
+                                prepared=prepared,
+                                findings=findings,
+                            )
+                            runtime = render_section_findings(prepared, findings)
+                            system = self._prompts.model_answer_prompt(
+                                **prompt_fields,
+                                council_runtime_context=runtime,
+                            )
+                    if response is None:
+                        raise DocumentContextOverflow(
+                            f"The assembled prompt for {model_id} was not sent after repacking."
+                        )
                 else:
                     candidates = [model.provider_model, *fallback_chain]
                     for index, candidate in enumerate(candidates):
@@ -434,7 +872,7 @@ class TurnOrchestrator:
                                     system=system,
                                     user=ctx.user_message,
                                     model=candidate,
-                                    max_tokens=20000,
+                                    max_tokens=max_tokens,
                                     allow_provider_fallbacks=True,
                                 ),
                             )
@@ -457,7 +895,11 @@ class TurnOrchestrator:
                             actual_model=raw.get("model"),
                         )
                         break
-                return ModelCallResult(model_id=model_id, model_name=model.name, response=response)
+                return ModelCallResult(
+                    model_id=model_id,
+                    model_name=model.name,
+                    response=response,
+                )
             except asyncio.CancelledError:
                 raise
             except TurnNoLongerWritable:
@@ -503,6 +945,7 @@ class TurnOrchestrator:
             reported_cost = response.cost_usd
             stored_cost = float(reported_cost) if reported_cost is not None else 0.0
             await self._lock_active_turn_for_persistence(db, ctx.turn_id)
+            answer_text = strip_document_cursors(response.text or "")
             updated = await db.execute(
                 update(ModelAnswer)
                 .where(
@@ -510,7 +953,7 @@ class TurnOrchestrator:
                     ModelAnswer.model_id == call_result.model_id,
                 )
                 .values(
-                    text=response.text,
+                    text=answer_text,
                     confidence=None,
                     tokens_input=response.tokens_input,
                     tokens_output=response.tokens_output,
@@ -551,13 +994,16 @@ class TurnOrchestrator:
                 {
                     "model_id": call_result.model_id,
                     "model_name": call_result.model_name,
-                    "text": response.text,
+                    "text": answer_text,
                     "confidence": None,
                     "tokens_input": response.tokens_input,
                     "tokens_output": response.tokens_output,
                     "cost_usd": reported_cost,
                 },
             )
+
+        if self._sources(ctx):
+            await get_pricing_service().ensure_context_metadata()
 
         all_tasks = [asyncio.create_task(call_model(model_id)) for model_id in ctx.model_ids]
 
@@ -668,6 +1114,7 @@ class TurnOrchestrator:
                     await rollback_quietly()
                     await cancel_outstanding()
                     return result
+                clear_section_progress(ctx.turn_id)
                 await emit(
                     "turn_completed",
                     {"turn_id": str(ctx.turn_id), "status": final_status.value},
@@ -684,60 +1131,63 @@ class TurnOrchestrator:
 
             await emit("verdict_started", {"model_id": ctx.verdict_model_id})
 
-            is_referee = ctx.strategy == Strategy.REFEREE
-            verdict_system = self._prompts.verdict_prompt(
-                strategy=ctx.strategy.value,
-                user_message=ctx.user_message,
-                model_answers=answer_context,
-                supporting_context=ctx.council_runtime_context,
-                strict_referee_behavior=ctx.referee_system_prompt if is_referee else None,
-                referee_instructions=None if is_referee else ctx.referee_instructions,
-                custom_instructions=None if is_referee else ctx.referee_instructions,
-                template_instructions=None if is_referee else ctx.template_instructions,
-                user_brain_context=ctx.user_brain_context,
-                rolling_chat_memory=ctx.rolling_chat_memory,
-                recent_conversation_context=ctx.recent_conversation_context,
-                playbook_context=ctx.playbook_context,
-            )
-
             verdict_model = get_model(ctx.verdict_model_id)
             provider = self._providers.get_provider(verdict_model.provider)
+            try:
+                verdict_system, verdict_max_tokens = self._build_verdict_request(ctx, answer_context)
+            except DocumentContextOverflow as exc:
+                verdict_system = None
+                verdict_max_tokens = 0
+                overflow_text = str(exc)
+            else:
+                overflow_text = None
 
             try:
                 await self._ensure_not_deleted(db, ctx.turn_id)
-                # The verdict call is the single point where a whole turn used to be
-                # thrown away: a transient provider error or a response that was not
-                # strict JSON produced "4 answers, no verdict". Retry once, then fall
-                # back to the raw text rather than failing the turn.
-                verdict_response = None
-                last_error: Exception | None = None
-                for attempt in range(VERDICT_MAX_ATTEMPTS):
-                    try:
-                        verdict_response = await self._await_provider_complete(
-                            ctx.turn_id,
-                            provider.complete(
-                                system=verdict_system,
-                                user="Produce the verdict JSON now.",
-                                model=verdict_model.provider_model,
-                                max_tokens=VERDICT_MAX_TOKENS,
-                            ),
-                        )
-                        break
-                    except (asyncio.CancelledError, TurnNoLongerWritable):
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - retried below
-                        last_error = exc
-                        if attempt + 1 >= VERDICT_MAX_ATTEMPTS:
+                if overflow_text is not None:
+                    verdict_response = type(
+                        "BudgetVerdict",
+                        (),
+                        {
+                            "text": overflow_text,
+                            "tokens_input": 0,
+                            "tokens_output": 0,
+                            "cost_usd": 0,
+                            "raw": {},
+                        },
+                    )()
+                else:
+                    # A transient provider error or a non-JSON response used to discard
+                    # a finished council. Retry once, then keep the raw text.
+                    verdict_response = None
+                    last_error: Exception | None = None
+                    for attempt in range(VERDICT_MAX_ATTEMPTS):
+                        try:
+                            verdict_response = await self._await_provider_complete(
+                                ctx.turn_id,
+                                provider.complete(
+                                    system=verdict_system,
+                                    user="Produce the verdict JSON now.",
+                                    model=verdict_model.provider_model,
+                                    max_tokens=verdict_max_tokens,
+                                ),
+                            )
+                            break
+                        except (asyncio.CancelledError, TurnNoLongerWritable):
                             raise
-                        logger.warning(
-                            "verdict_attempt_failed",
-                            attempt=attempt + 1,
-                            error=format_llm_error(exc),
-                        )
-                        await self._ensure_not_deleted(db, ctx.turn_id)
+                        except Exception as exc:  # noqa: BLE001 - retried below
+                            last_error = exc
+                            if attempt + 1 >= VERDICT_MAX_ATTEMPTS:
+                                raise
+                            logger.warning(
+                                "verdict_attempt_failed",
+                                attempt=attempt + 1,
+                                error=format_llm_error(exc),
+                            )
+                            await self._ensure_not_deleted(db, ctx.turn_id)
 
-                if verdict_response is None:  # pragma: no cover - defensive
-                    raise last_error or RuntimeError("Verdict model returned no response")
+                    if verdict_response is None:  # pragma: no cover - defensive
+                        raise last_error or RuntimeError("Verdict model returned no response")
 
                 await self._ensure_not_deleted(db, ctx.turn_id)
                 verdict_text, verdict_reason, parsed_verdict = _verdict_fields(
@@ -745,6 +1195,7 @@ class TurnOrchestrator:
                 )
                 if not verdict_text:
                     raise ValueError("Verdict model returned an empty response")
+                verdict_text = strip_document_cursors(verdict_text)
 
                 answer_scores = _validated_answer_scores(
                     parsed_verdict,
@@ -866,6 +1317,7 @@ class TurnOrchestrator:
                 await rollback_quietly()
                 await cancel_outstanding()
                 return result
+            clear_section_progress(ctx.turn_id)
             await emit(
                 "turn_completed",
                 {

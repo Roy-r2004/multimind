@@ -37,7 +37,7 @@ from app.services.chat_attachment_storage import (
     stream_upload_to_temp_file,
 )
 from app.services.chat_attachment_text import (
-    ATTACHMENT_TEXT_EXCERPT_MAX,
+    _finalize,
     extract_attachment_text_from_path,
 )
 
@@ -45,9 +45,8 @@ logger = get_logger(__name__)
 
 
 def library_document_excerpt(content_text: str | None) -> tuple[str | None, str]:
-    """Derive the single Markdown-readable text projection used by Library and chat."""
-    excerpt = (content_text or "")[:ATTACHMENT_TEXT_EXCERPT_MAX]
-    return (excerpt or None, "ready" if excerpt.strip() else "empty")
+    """Store the document body for Library and chat. Over-cap text is partial, not a silent prefix."""
+    return _finalize(content_text or "")
 
 ITEM_TYPE_FILE = "file"
 ITEM_TYPE_DOCUMENT = "document"

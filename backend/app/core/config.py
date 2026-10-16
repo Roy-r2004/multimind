@@ -354,6 +354,11 @@ class Settings(BaseSettings):
     chat_attachment_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
     chat_attachment_dir: str = "data/chat_attachments"
     chat_attachment_context_max_chars: int = Field(default=300_000)
+    # Owner safeguard for automatic whole-document section reads. This is not a
+    # user prompt. A normal document finishes inside one turn well below this.
+    document_analysis_max_calls: int = Field(default=1000, ge=1)
+    document_analysis_progress_dir: str = "data/document_progress"
+    openrouter_context_cache_path: str = "data/openrouter_context_cache.json"
     # Catalog model id used for the single pre-council image analysis call.
     # Default: gemini (google/gemini-2.5-pro) — strong multimodal quality for
     # screenshots, UI, tables, charts, and photos at a reasonable OpenRouter cost.

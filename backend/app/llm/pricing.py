@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -41,6 +43,7 @@ class OpenRouterPricingService:
         self._meta_by_slug: dict[str, dict[str, Any]] = {}
         self._last_refresh: datetime | None = None
         self._lock = asyncio.Lock()
+        self.load_persisted_context_lengths()
 
     def _headers(self) -> dict[str, str]:
         settings = get_settings()
@@ -133,6 +136,7 @@ class OpenRouterPricingService:
                     self._by_model_id[model_id] = or_pricing
 
             self._last_refresh = datetime.now(UTC)
+            self.persist_context_lengths()
             logger.info(
                 "openrouter_pricing_refreshed",
                 matched=matched,
@@ -144,6 +148,57 @@ class OpenRouterPricingService:
     async def ensure_loaded(self) -> None:
         if self._cache_stale():
             await self.refresh()
+
+    async def ensure_context_metadata(self) -> None:
+        """Load verified OpenRouter context lengths. No completion call.
+
+        A missing API key keeps the last cached lengths and otherwise leaves
+        lookup on the conservative fallback. Tests do not hit the network.
+        """
+        self.load_persisted_context_lengths()
+        settings = get_settings()
+        if not settings.openrouter_api_key:
+            return
+        if self._cache_stale():
+            await self.refresh()
+
+    def load_persisted_context_lengths(self) -> int:
+        path = Path(get_settings().openrouter_context_cache_path)
+        if not path.is_file():
+            return 0
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return 0
+        if not isinstance(payload, dict):
+            return 0
+        loaded = 0
+        for slug, value in payload.items():
+            if not isinstance(slug, str) or not isinstance(value, int) or value <= 0:
+                continue
+            current = dict(self._meta_by_slug.get(slug) or {})
+            if isinstance(current.get("context_length"), int) and current["context_length"] > 0:
+                continue
+            current["context_length"] = value
+            current.setdefault("id", slug)
+            self._meta_by_slug[slug] = current
+            loaded += 1
+        return loaded
+
+    def persist_context_lengths(self) -> None:
+        payload: dict[str, int] = {}
+        for slug, meta in self._meta_by_slug.items():
+            value = meta.get("context_length")
+            if isinstance(value, int) and value > 0:
+                payload[slug] = value
+        if not payload:
+            return
+        path = Path(get_settings().openrouter_context_cache_path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        except OSError:
+            logger.warning("openrouter_context_cache_write_failed", path=str(path))
 
     def get_pricing(self, model_id: str) -> ModelPricing:
         if model_id in self._by_model_id:

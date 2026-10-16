@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, select, update
@@ -12,12 +13,19 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
-from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from app.core.exceptions import (
+    ConflictError,
+    ForbiddenError,
+    InvalidAttachmentError,
+    NotFoundError,
+    ValidationError,
+)
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
     ChatAnswerPin,
     ChatAttachment,
+    LibraryItem,
     ChatVerdictPin,
     CostRecord,
     DecisionInsurance,
@@ -34,6 +42,17 @@ from app.db.models import (
 )
 from app.db.session import AsyncSessionLocal
 from app.llm.catalog import get_model
+from app.services.attachment_types import is_library_ref_relative_path
+from app.services.chat_attachment_storage import resolve_attachment_path
+from app.services.chat_attachment_text import extract_attachment_text_from_path
+from app.services.document_context import (
+    assess_legacy_excerpt,
+    excerpt_looks_truncated,
+    parse_reference_chat_ids,
+    render_stored_attachment_block,
+    sources_from_attachment_rows,
+)
+from app.services.library_service import ITEM_TYPE_DOCUMENT, ITEM_TYPE_FILE, library_document_excerpt
 from app.llm.orchestrator import (
     ACTIVE_TURN_STATUSES,
     TurnContext,
@@ -67,6 +86,91 @@ from app.services.playbook_context_service import playbook_context_service
 from app.services.saved_verdict_service import saved_verdict_service
 
 logger = get_logger(__name__)
+
+_SOURCE_MISSING = (
+    "The original source is no longer available. "
+    "The stored excerpt was not expanded, and missing historical content was not recovered."
+)
+
+
+def _attachment_extension(filename: str | None) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    return suffix or ".txt"
+
+
+def _extract_stored_file(relative_path: str, filename: str | None, *, root: str) -> tuple[str | None, str | None]:
+    try:
+        path = resolve_attachment_path(relative_path, root=root)
+        if not path.is_file():
+            return None, None
+        return extract_attachment_text_from_path(path, _attachment_extension(filename))
+    except (InvalidAttachmentError, OSError, ValueError):
+        return None, None
+
+
+async def refresh_legacy_attachment_rows(
+    db: AsyncSession,
+    rows: list[ChatAttachment],
+    *,
+    org_id: str,
+    user_id: str,
+) -> dict[int, str]:
+    """Replace a truncated excerpt only when its original Library item or upload still exists."""
+    notes: dict[int, str] = {}
+    settings = get_settings()
+    for row in rows:
+        source_text, source_status = await _legacy_source_text(
+            db,
+            row,
+            org_id=org_id,
+            user_id=user_id,
+            library_root=settings.library_file_dir,
+            attachment_root=settings.chat_attachment_dir,
+        )
+        decision = assess_legacy_excerpt(
+            row.text_excerpt,
+            row.excerpt_status,
+            source_text=source_text,
+        )
+        if decision == "recoverable" and source_text is not None:
+            if source_text != (row.text_excerpt or "") or source_status != row.excerpt_status:
+                row.text_excerpt = source_text
+                row.excerpt_status = source_status or "ready"
+            continue
+        if decision == "source_missing":
+            if row.excerpt_status == "ready":
+                row.excerpt_status = "partial"
+            notes[id(row)] = _SOURCE_MISSING
+    return notes
+
+
+async def _legacy_source_text(
+    db: AsyncSession,
+    row: ChatAttachment,
+    *,
+    org_id: str,
+    user_id: str,
+    library_root: str,
+    attachment_root: str,
+) -> tuple[str | None, str | None]:
+    item = None
+    if row.library_item_id:
+        item = await db.get(LibraryItem, row.library_item_id)
+        if item is None or item.org_id != org_id or item.user_id != user_id:
+            item = None
+    if item is not None and item.item_type == ITEM_TYPE_DOCUMENT:
+        return library_document_excerpt(item.content_text)
+    if not excerpt_looks_truncated(row.text_excerpt, row.excerpt_status):
+        return None, None
+    if item is not None and item.item_type == ITEM_TYPE_FILE and item.relative_path:
+        return _extract_stored_file(
+            item.relative_path,
+            item.original_filename or row.filename,
+            root=library_root,
+        )
+    if row.relative_path and not is_library_ref_relative_path(row.relative_path):
+        return _extract_stored_file(row.relative_path, row.filename, root=attachment_root)
+    return None, None
 
 
 def _pinned_answer_response(pin: ChatAnswerPin, turn_id: str) -> PinnedAnswerResponse:
@@ -985,12 +1089,22 @@ class ChatService:
             chat_id=chat.id,
             attachment_ids=data.attachment_ids,
         )
-        prior_txt = await chat_memory_service.load_prior_txt_attachments(
+        prior_documents = await chat_memory_service.load_prior_document_attachments(
             db,
             chat.id,
+            org_id=auth.org_id,
             exclude_relative_paths={row.relative_path for row in attachments if row.relative_path},
         )
-        attachment_instructions = self._build_attachment_instructions([*attachments, *prior_txt])
+        recovery_notes = await refresh_legacy_attachment_rows(
+            db,
+            [*attachments, *prior_documents],
+            org_id=auth.org_id,
+            user_id=auth.user.id,
+        )
+        attachment_instructions = self._build_attachment_instructions(
+            [*attachments, *prior_documents],
+            recovery_notes,
+        )
 
         reference_context: str | None = None
         if data.referenced_chat_id is not None and data.referenced_chat_ids is not None:
@@ -1160,92 +1274,39 @@ class ChatService:
             ordered.append(row)
         return ordered
 
-    def _build_attachment_instructions(self, attachments: list[ChatAttachment]) -> str | None:
-        if not attachments:
-            return None
+    def _build_attachment_instructions(
+        self,
+        attachments: list[ChatAttachment],
+        recovery_notes: dict[int, str] | None = None,
+    ) -> str | None:
+        """Store every extracted document. Model windows are applied when the provider is called."""
+        return render_stored_attachment_block(attachments, recovery_notes)
 
-        budget = get_settings().chat_attachment_context_max_chars
-        truncation_marker = "[Attachment context truncated]"
-        txt_context_chars = 30_000
-        omitted_marker = "[Content omitted due to attachment context budget]"
-        parts: list[str] = []
-        used = 0
-
-        def filename_reserve(from_index: int) -> int:
-            """Reserve space so later attachments keep at least a filename mention."""
-            if from_index >= len(attachments):
-                return 0
-            total = 0
-            for item in attachments[from_index:]:
-                total += len(f"\n\nAttached file: {item.filename}\n{omitted_marker}")
-            return total
-
-        def try_append(text: str) -> bool:
-            nonlocal used
-            separator = "\n\n" if parts else ""
-            candidate = f"{separator}{text}"
-            if used + len(candidate) > budget:
-                return False
-            parts.append(candidate)
-            used += len(candidate)
-            return True
-
-        for index, attachment in enumerate(attachments):
-            filename = attachment.filename
-            if attachment.excerpt_status == "ready" and attachment.text_excerpt:
-                prefix = f"Attached file: {filename}\nContent:\n```text\n"
-                suffix = "\n```"
-                excerpt = attachment.text_excerpt
-                if (filename or "").lower().endswith(".txt") and len(excerpt) > txt_context_chars:
-                    marker = f"\n{truncation_marker}"
-                    room = txt_context_chars - len(marker)
-                    excerpt = excerpt[: max(room, 0)].rstrip() + marker
-                full = f"{prefix}{excerpt}{suffix}"
-                # A full excerpt must leave room for every later filename.
-                # Otherwise earlier files consume the 300k budget and the rest
-                # disappear with no marker.
-                reserve = filename_reserve(index + 1)
-                separator_len = 2 if parts else 0
-                if used + separator_len + len(full) + reserve <= budget and try_append(full):
+    async def _referenced_document_rows(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        custom_instructions: str | None,
+    ) -> list[ChatAttachment]:
+        """Load source-chat extracts named by a continuation handoff. Other orgs are skipped."""
+        rows: list[ChatAttachment] = []
+        seen: set[str] = set()
+        for source_id in parse_reference_chat_ids(custom_instructions):
+            source = await db.get(Chat, source_id)
+            if source is None or source.org_id != auth.org_id:
+                continue
+            loaded = await chat_memory_service.load_prior_document_attachments(
+                db,
+                source.id,
+                org_id=auth.org_id,
+            )
+            for row in loaded:
+                key = row.relative_path or row.id
+                if key in seen:
                     continue
-
-                # Fit truncated excerpt while reserving room for later filenames.
-                separator_len = 2 if parts else 0
-                marker = f"\n{truncation_marker}"
-                reserve = filename_reserve(index + 1)
-                available = (
-                    budget
-                    - used
-                    - separator_len
-                    - len(prefix)
-                    - len(suffix)
-                    - len(marker)
-                    - reserve
-                )
-                if available > 0:
-                    truncated = excerpt[:available].rstrip() + marker
-                    if try_append(f"{prefix}{truncated}{suffix}"):
-                        continue
-                if not try_append(f"Attached file: {filename}\n{omitted_marker}"):
-                    try_append(f"Attached file: {filename}")
-            elif attachment.excerpt_status == "empty":
-                if filename.lower().endswith(".pdf"):
-                    note = (
-                        "(No readable text found. This PDF may be scanned or image-based.)"
-                    )
-                else:
-                    note = "(No readable content)"
-                if not try_append(f"Attached file: {filename}\n{note}"):
-                    try_append(f"Attached file: {filename}")
-            else:
-                block = (
-                    f"Attached file: {filename}\n"
-                    f"(Content unavailable; excerpt status: {attachment.excerpt_status})"
-                )
-                if not try_append(block):
-                    try_append(f"Attached file: {filename}")
-
-        return "".join(parts) or None
+                seen.add(key)
+                rows.append(row)
+        return rows
 
     def _pending_turn_response(
         self, turn: Turn, *, chat: Chat | None = None
@@ -1407,6 +1468,35 @@ class ChatService:
             chat_id=chat.id,
         )
 
+        prior_documents = await chat_memory_service.load_prior_document_attachments(
+            db,
+            chat.id,
+            org_id=auth.org_id,
+            exclude_turn_id=turn.id,
+            exclude_relative_paths={
+                row.relative_path for row in turn.attachments if row.relative_path
+            },
+        )
+        referenced_documents = await self._referenced_document_rows(
+            db, auth, turn.custom_instructions
+        )
+        owned_paths = {
+            row.relative_path
+            for row in [*list(turn.attachments), *prior_documents]
+            if row.relative_path
+        }
+        referenced_documents = [
+            row for row in referenced_documents if row.relative_path not in owned_paths
+        ]
+        document_rows = [*list(turn.attachments), *prior_documents, *referenced_documents]
+        recovery_notes = await refresh_legacy_attachment_rows(
+            db,
+            document_rows,
+            org_id=auth.org_id,
+            user_id=auth.user.id,
+        )
+        document_sources = sources_from_attachment_rows(document_rows, recovery_notes)
+
         is_referee = turn.strategy == Strategy.REFEREE
         ctx = TurnContext(
             turn_id=turn.id,
@@ -1432,6 +1522,7 @@ class ChatService:
             rolling_chat_memory=rolling_chat_memory,
             recent_conversation_context=recent_conversation_context,
             playbook_context=playbook_context,
+            document_sources=document_sources,
             skip_answer_seed=True,
         )
 
