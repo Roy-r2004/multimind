@@ -19,10 +19,16 @@ from app.db.models import (
     MapsCensusStatus,
 )
 from app.services.scraping.maps_cell_runner import (
+    RunExecutionSuperseded,
+    claim_cell_by_id,
     claim_cells,
+    claim_run_execution,
+    ensure_run_execution_current,
     fail_cell_for_retry,
     heartbeat_cell,
+    heartbeat_run,
     is_run_cancelled,
+    is_run_execution_current,
     recover_stale_running_cells,
 )
 
@@ -247,3 +253,173 @@ async def test_is_run_cancelled_reflects_run_status(db: AsyncSession, auth: Auth
 
     assert await is_run_cancelled(session_factory, run_id=running_run.id) is False
     assert await is_run_cancelled(session_factory, run_id=cancelled_run.id) is True
+
+
+@pytest.mark.asyncio
+async def test_claim_run_execution_last_writer_wins(db: AsyncSession, auth: AuthContext):
+    """Two 'concurrent' run_census() calls for the same run_id both claim the
+    run execution; only the second (later) token should end up current — this
+    is what lets a watchdog-triggered duplicate supersede a run without
+    coordination."""
+    run = await _create_run(db, auth)
+    session_factory = _session_factory_for(db)
+
+    await claim_run_execution(session_factory, run_id=run.id, token="token-a")
+    assert await is_run_execution_current(session_factory, run_id=run.id, token="token-a") is True
+
+    await claim_run_execution(session_factory, run_id=run.id, token="token-b")
+
+    assert await is_run_execution_current(session_factory, run_id=run.id, token="token-a") is False
+    assert await is_run_execution_current(session_factory, run_id=run.id, token="token-b") is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_run_execution_current_raises_when_superseded(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    session_factory = _session_factory_for(db)
+    await claim_run_execution(session_factory, run_id=run.id, token="original")
+
+    # A watchdog-triggered duplicate takes over.
+    await claim_run_execution(session_factory, run_id=run.id, token="duplicate")
+
+    with pytest.raises(RunExecutionSuperseded):
+        await ensure_run_execution_current(session_factory, run_id=run.id, token="original")
+    # The newer execution is unaffected.
+    await ensure_run_execution_current(session_factory, run_id=run.id, token="duplicate")
+
+
+@pytest.mark.asyncio
+async def test_claim_cell_by_id_two_workers_only_one_wins(db: AsyncSession, auth: AuthContext):
+    """Two concurrent run_census() executions both have this exact cell_id in
+    their own local work queue (e.g. a watchdog-triggered duplicate racing
+    the original). The guarded UPDATE ... WHERE status = 'pending' must let
+    only one of them actually claim and process it."""
+    run = await _create_run(db, auth)
+    cell = await _create_cell(db, run)
+    session_factory = _session_factory_for(db)
+
+    first = await claim_cell_by_id(session_factory, cell_id=cell.id, worker_id="execution-a")
+    second = await claim_cell_by_id(session_factory, cell_id=cell.id, worker_id="execution-b")
+
+    assert first is True
+    assert second is False
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusCell, cell.id)
+        assert refreshed.status == MapsCensusCellStatus.IN_PROGRESS
+        assert refreshed.claimed_by == "execution-a"  # the second claim never overwrote it
+
+
+@pytest.mark.asyncio
+async def test_claim_cell_by_id_rejects_non_pending_cell(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    completed_cell = await _create_cell(db, run, status=MapsCensusCellStatus.COMPLETED)
+    session_factory = _session_factory_for(db)
+
+    claimed = await claim_cell_by_id(session_factory, cell_id=completed_cell.id, worker_id="worker-1")
+
+    assert claimed is False
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusCell, completed_cell.id)
+        assert refreshed.status == MapsCensusCellStatus.COMPLETED  # untouched
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_run_updates_run_heartbeat(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    run.heartbeat_at = datetime.now(UTC) - timedelta(minutes=30)
+    await db.commit()
+    session_factory = _session_factory_for(db)
+
+    await heartbeat_run(session_factory, run_id=run.id)
+
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusRun, run.id)
+        naive_heartbeat = refreshed.heartbeat_at.replace(tzinfo=None)
+        assert naive_heartbeat > (datetime.now(UTC) - timedelta(minutes=1)).replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_claim_cell_by_id_respects_backoff_not_yet_due(db: AsyncSession, auth: AuthContext):
+    """A cell that failed and is scheduled for a backed-off retry must not
+    be re-claimed before that time — without this, a cell cycling back
+    around an in-memory work queue would retry immediately, giving a
+    saturated backend (the verified cause of repeated Gosom timeouts) no
+    real time to recover between attempts."""
+    run = await _create_run(db, auth)
+    cell = await _create_cell(
+        db, run, status=MapsCensusCellStatus.PENDING, next_retry_at=datetime.now(UTC) + timedelta(minutes=5)
+    )
+    session_factory = _session_factory_for(db)
+
+    claimed = await claim_cell_by_id(session_factory, cell_id=cell.id, worker_id="worker-1")
+
+    assert claimed is False
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusCell, cell.id)
+        assert refreshed.status == MapsCensusCellStatus.PENDING  # untouched, not claimed early
+
+
+@pytest.mark.asyncio
+async def test_claim_cell_by_id_succeeds_once_backoff_has_passed(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    cell = await _create_cell(
+        db, run, status=MapsCensusCellStatus.PENDING, next_retry_at=datetime.now(UTC) - timedelta(seconds=1)
+    )
+    session_factory = _session_factory_for(db)
+
+    claimed = await claim_cell_by_id(session_factory, cell_id=cell.id, worker_id="worker-1")
+
+    assert claimed is True
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusCell, cell.id)
+        assert refreshed.status == MapsCensusCellStatus.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_fail_cell_for_retry_terminates_after_configured_timeout_attempts(
+    db: AsyncSession, auth: AuthContext
+):
+    """A tighter attempt cap (e.g. 2, for timeout-class failures) must
+    actually bite — not loop forever retrying an expensive, already-failing
+    operation."""
+    run = await _create_run(db, auth)
+    cell = await _create_cell(db, run, status=MapsCensusCellStatus.IN_PROGRESS)
+    cell.attempt_count = 1
+    await db.commit()
+    session_factory = _session_factory_for(db)
+
+    # First timeout: 1 of 2 allowed attempts used — must still schedule a
+    # (long) retry, not give up yet.
+    first = await fail_cell_for_retry(
+        session_factory,
+        cell_id=cell.id,
+        error="gosom job exceeded 900s",
+        max_attempts=2,
+        base_backoff_seconds=300,
+    )
+    assert first == {"terminal": False, "attempt_count": 1}
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusCell, cell.id)
+        assert refreshed.status == MapsCensusCellStatus.PENDING
+        naive_retry_at = refreshed.next_retry_at.replace(tzinfo=None)
+        assert naive_retry_at > datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=250)
+
+    # Second timeout (attempt_count now 2 of 2): must terminate — not loop
+    # forever against an already-saturated backend.
+    async with session_factory() as bump_db:
+        cell2 = await bump_db.get(MapsCensusCell, cell.id)
+        cell2.status = MapsCensusCellStatus.IN_PROGRESS
+        cell2.attempt_count = 2
+        await bump_db.commit()
+
+    second = await fail_cell_for_retry(
+        session_factory,
+        cell_id=cell.id,
+        error="gosom job exceeded 900s",
+        max_attempts=2,
+        base_backoff_seconds=300,
+    )
+    assert second == {"terminal": True, "attempt_count": 2}
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusCell, cell.id)
+        assert refreshed.status == MapsCensusCellStatus.FAILED

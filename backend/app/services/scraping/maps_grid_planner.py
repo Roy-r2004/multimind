@@ -52,6 +52,37 @@ class MapsGridPlanningError(Exception):
     pass
 
 
+def _planner_system_prompt(*, full_coverage: bool) -> str:
+    if not full_coverage:
+        return (
+            "You generate Google Places search queries using EXACT keyword combinations. "
+            "Rules:\n"
+            "1. Use ONLY these exact facility keywords (word-for-word, no rewording):\n"
+            f"   {', '.join(CORE_FACILITY_TYPES)}\n"
+            "2. Use ONLY these exact modifiers:\n"
+            f"   {', '.join(MODIFIERS)}\n"
+            "3. Use ONLY these exact substance keywords:\n"
+            f"   {', '.join(SUBSTANCE_ADDICTIONS[:8])}\n"
+            "4. Use ONLY these exact behavioral keywords:\n"
+            f"   {', '.join(BEHAVIORAL_ADDICTIONS[:8])}\n"
+            "5. Translate ONLY the keywords to the country language (keep facility/substance/modifier words exact in target language).\n"
+            "6. Combine: [facility] + [modifier OR addiction] + [city name]\n"
+            "7. Do NOT rephrase, do NOT add words, do NOT combine keywords differently.\n"
+            "8. Hidden from users—only results displayed. Generate 15-20 queries max."
+        )
+    return (
+        "You plan Google Maps text searches for addiction-treatment discovery across the "
+        "entire selected country or state. Spread queries across major cities, medium cities, "
+        "smaller towns, suburbs, and rural service towns. Do not cluster only in the largest cities. "
+        "For each place use several locally used phrasings, in English and in the local language "
+        "when one is known: drug rehabilitation, alcohol rehabilitation, inpatient addiction treatment, "
+        "residential rehabilitation, drug and alcohol recovery, inpatient detoxification, substance use "
+        "disorder treatment, and therapeutic communities. Do not limit the search to outpatient care. "
+        "Do not invent places outside the selected scope. Do not hardcode one country. "
+        "Return as many distinct place/query cells as requested, up to the cell cap."
+    )
+
+
 class MapsGridPlanner:
     async def plan(
         self,
@@ -63,6 +94,8 @@ class MapsGridPlanner:
         focus_region_names: list[str] | None = None,
         state_code: str | None = None,
         state_name: str | None = None,
+        full_coverage: bool = False,
+        avoid_region_names: list[str] | None = None,
     ) -> list[MapsGridCell]:
         """Plan a search grid, or — when ``focus_region_names`` is given — an
         expansion batch of *additional* cells for those already-productive
@@ -80,28 +113,16 @@ class MapsGridPlanner:
             focus_region_names=list(focus_region_names or []),
             state_code=(state_code or "").strip()[:10],
             state_name=(state_name or "").strip()[:120],
+            full_coverage=full_coverage,
+            avoid_region_names=list(avoid_region_names or []),
         )
+        system = _planner_system_prompt(full_coverage=full_coverage)
         try:
             response = await provider.complete(
-                system=(
-                    "You generate Google Places search queries using EXACT keyword combinations. "
-                    "Rules:\n"
-                    "1. Use ONLY these exact facility keywords (word-for-word, no rewording):\n"
-                    f"   {', '.join(CORE_FACILITY_TYPES)}\n"
-                    "2. Use ONLY these exact modifiers:\n"
-                    f"   {', '.join(MODIFIERS)}\n"
-                    "3. Use ONLY these exact substance keywords:\n"
-                    f"   {', '.join(SUBSTANCE_ADDICTIONS[:8])}\n"
-                    "4. Use ONLY these exact behavioral keywords:\n"
-                    f"   {', '.join(BEHAVIORAL_ADDICTIONS[:8])}\n"
-                    "5. Translate ONLY the keywords to the country language (keep facility/substance/modifier words exact in target language).\n"
-                    "6. Combine: [facility] + [modifier OR addiction] + [city name]\n"
-                    "7. Do NOT rephrase, do NOT add words, do NOT combine keywords differently.\n"
-                    "8. Hidden from users—only results displayed. Generate 15-20 queries max."
-                ),
+                system=system,
                 user=prompt,
                 model=model.provider_model,
-                max_tokens=3500,
+                max_tokens=6000 if full_coverage else 3500,
             )
             raw = LLMProvider.parse_json_response(response.text)
             known_families = _known_family_keys(country_profile)

@@ -1,0 +1,163 @@
+# Isolated Maps Census + gosom stack.
+# Does not attach to the running MultiMind project or its volumes.
+#
+# Project name is fixed so volumes are multimind-gosom-census_*.
+# Web UI: http://127.0.0.1:3180
+# Gosom API (loopback only): http://127.0.0.1:18081
+#
+# The API and worker reach gosom at http://gosom:8080 on this Compose network.
+# Migrations and seeds run from the API/worker entrypoint against this file's Postgres only.
+
+name: multimind-gosom-census
+
+x-census-env: &census-env
+  ENVIRONMENT: production
+  DEBUG: "false"
+  DATABASE_URL: postgresql+asyncpg://multiai:multiai@postgres:5432/multiai
+  REDIS_URL: redis://redis:6379/0
+  SECRET_KEY: gosom-census-isolated-not-production
+  MAPS_DISCOVERY_PROVIDER: gosom
+  GOOGLE_PLACES_API_KEY: ""
+  GOOGLE_PLACES_ENABLED: "false"
+  GOSOM_BASE_URL: http://gosom:8080
+  GOSOM_TIMEOUT_SECONDS: "60"
+  GOSOM_POLL_INTERVAL_SECONDS: "5"
+  # gosom-side target timeout (per gosom job). The campaign's real backstop
+  # is MultiMind's own independent, monotonic 20-minute per-cell deadline
+  # (maps_census_cell_absolute_deadline_seconds) — this just asks gosom to
+  # give up on its own side sooner, rather than our client waiting the full
+  # old 900s before it can even notice a job is unproductive.
+  GOSOM_JOB_MAX_TIME_SECONDS: "480"
+  # Shallower scroll depth: fewer listings discovered per search means far
+  # fewer place-detail sub-jobs spawned per outer job (gosom fans out one
+  # detail-page visit per listing, unconditionally — see gmaps/job.go) —
+  # this is the main lever against the internal job-queue backlog that was
+  # verified (via gosom's own logs) to be the root cause of the 900s
+  # timeouts on unrelated, previously-healthy queries.
+  GOSOM_DEPTH: "1"
+  GOSOM_LANGUAGE: en
+  MAPS_CENSUS_COVERAGE_MODE: full
+  MAPS_GOSOM_FULL_MAX_CELLS: "1500"
+  MAPS_CENSUS_CAMPAIGN_TIMEOUT_SECONDS: "86400"
+  MAPS_CENSUS_AUTO_ENRICHMENT_ENABLED: "false"
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_SITE_URL: http://127.0.0.1:3180
+  OPENROUTER_APP_NAME: MultiAI
+  PUBLIC_APP_URL: http://127.0.0.1:3180
+  CORS_ORIGINS: http://127.0.0.1:3180,http://localhost:3180
+  SEED_AUSTRIA_CENSUS_DEMO: "false"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: multiai
+      POSTGRES_PASSWORD: multiai
+      POSTGRES_DB: multiai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multiai -d multiai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  gosom:
+    image: gosom/google-maps-scraper:v1.18.1
+    # -c (Concurrency), -browser-pool-size, and -pages-per-browser are all
+    # verified-present, verified-applied-in-web-mode flags (runner/runner.go
+    # defines them; runner/webrunner/webrunner.go calls
+    # AppendBrowserCapacityOptions, which wires -browser-pool-size and
+    # -pages-per-browser into the scrapemate engine for every REST-submitted
+    # job — confirmed by reading the pinned v1.18.1 source, not assumed).
+    # scrapemateapp derives browser processes as ceil(Concurrency /
+    # MaxPagesPerBrowser) when -browser-pool-size is 0 (its default); setting
+    # it explicitly to 1 here just makes that derivation (4/4=1) unambiguous.
+    # This is the resource-safe way to get more throughput: ONE Chromium
+    # process (not four), with up to 4 concurrent pages/tabs inside it —
+    # not 4x the memory of running 4 separate browser processes.
+    command: ["-web", "-addr", ":8080", "-data-folder", "/gmapsdata", "-c", "4", "-browser-pool-size", "1", "-pages-per-browser", "4"]
+    volumes:
+      - gosom_data:/gmapsdata
+      - gosom_playwright_cache:/opt
+    ports:
+      - "127.0.0.1:18081:8080"
+    # Bumped from 2g: 4 concurrent pages in one browser process use more
+    # memory than 1 page did. Still a single Chromium process, not 4, so
+    # this is a safety margin, not a multiplication of the old limit.
+    mem_limit: 3g
+    cpus: 3
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      <<: *census-env
+      PORT: "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      gosom:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+  scraping-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.scraping.worker.WorkerSettings"]
+    environment:
+      <<: *census-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      gosom:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"from pathlib import Path; import sys; sys.exit(0 if b'arq' in Path('/proc/1/cmdline').read_bytes() else 1)\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:3180:3000"
+    environment:
+      PORT: "3000"
+      HOST: 0.0.0.0
+      BACKEND_PROXY_TARGET: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  gosom_data:
+  gosom_playwright_cache:

@@ -236,8 +236,8 @@ export function MapsCensusComposer() {
       )}
 
       <p className="text-sm leading-relaxed text-muted-foreground">
-        We plan a city/region search grid with English and local-language terms, search Google
-        Places for each cell, run a strict Keep/Drop classifier with Sonar fallback, enrich
+        We plan a city/region search grid with English and local-language terms, search Maps
+        for each cell, run a strict Keep/Drop classifier with Sonar fallback, enrich
         treatment pricing, and validate every facility with AI.
       </p>
 

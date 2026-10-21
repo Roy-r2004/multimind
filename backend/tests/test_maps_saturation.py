@@ -8,11 +8,16 @@ from pathlib import Path
 import pytest
 
 from app.db.models import MapsRegionSaturationStatus
+from app.services.scraping.maps_census_service import (
+    MAPS_CENSUS_ADAPTIVE_SEED_CELLS,
+    MAPS_CENSUS_EXPANSION_BATCH_CAP,
+)
 from app.services.scraping.maps_saturation import (
     CellWindowResult,
     RegionWindowMetrics,
     compute_window_metrics,
     decide_region_saturation,
+    is_coverage_evidence,
     should_stop_campaign,
 )
 
@@ -138,6 +143,55 @@ def test_should_stop_campaign_at_ceiling_or_all_regions_terminal():
         campaign_cells_used=100,
         max_cells=1500,
         all_regions_terminal=False,
+    )
+
+
+def test_small_geography_can_stop_after_the_adaptive_seed():
+    assert MAPS_CENSUS_ADAPTIVE_SEED_CELLS == 30
+    dry_window = RegionWindowMetrics(
+        new_unique_places=0, new_plausible_providers=0, cells_in_window=10
+    )
+    decision = _decide(metrics=dry_window, campaign_cells_used=30)
+    assert decision.should_expand is False
+    assert decision.status == MapsRegionSaturationStatus.SATURATED.value
+    assert should_stop_campaign(
+        campaign_cells_used=30, max_cells=1500, all_regions_terminal=True
+    )
+
+
+def test_productive_region_expands_past_the_seed():
+    productive = RegionWindowMetrics(
+        new_unique_places=8, new_plausible_providers=2, cells_in_window=10
+    )
+    decision = _decide(metrics=productive, campaign_cells_used=30)
+    assert decision.should_expand is True
+    assert MAPS_CENSUS_EXPANSION_BATCH_CAP == 40
+
+
+def test_sparse_partial_window_does_not_stop():
+    sparse = RegionWindowMetrics(
+        new_unique_places=0, new_plausible_providers=0, cells_in_window=3
+    )
+    decision = _decide(metrics=sparse, campaign_cells_used=3)
+    assert decision.should_expand is True
+    assert decision.status == MapsRegionSaturationStatus.PENDING.value
+
+
+def test_failed_or_incomplete_cells_are_not_coverage_evidence():
+    assert is_coverage_evidence(status="completed", pagination_error=None) is True
+    assert is_coverage_evidence(status="failed", pagination_error=None) is False
+    assert is_coverage_evidence(status="completed", pagination_error="gosom timeout") is False
+
+
+def test_campaign_stops_at_configured_maximum_not_beyond_it():
+    assert should_stop_campaign(
+        campaign_cells_used=50, max_cells=50, all_regions_terminal=False
+    )
+    assert should_stop_campaign(
+        campaign_cells_used=1500, max_cells=1500, all_regions_terminal=False
+    )
+    assert not should_stop_campaign(
+        campaign_cells_used=30, max_cells=1500, all_regions_terminal=False
     )
 
 

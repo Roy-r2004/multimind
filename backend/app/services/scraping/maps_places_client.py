@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -84,6 +84,7 @@ class PlaceResult:
     international_phone_number: str | None = None
     website: str | None = None
     photo_reference: str | None = None
+    maps_url: str | None = None
 
 
 @dataclass
@@ -149,6 +150,8 @@ class GooglePlacesClient:
         max_pages: int | None = None,
         resume_page_token: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        heartbeat_cb: Callable[[], Awaitable[None]] | None = None,
+        viewport_bounds: dict[str, Any] | None = None,
     ) -> PlacesSearchOutcome:
         """Search with Google Places pagination, following ``nextPageToken``
         up to ``max_pages`` (default: ``maps_census_max_pages_per_cell``).
@@ -156,7 +159,12 @@ class GooglePlacesClient:
         Each page is retried independently (exponential backoff + jitter) so
         a transient failure on page 2 does not discard page 1's results.
         ``cancel_check`` is polled between pages so a cancelled run can stop
-        mid-pagination instead of finishing every page first.
+        mid-pagination instead of finishing every page first. ``heartbeat_cb``
+        and ``viewport_bounds`` exist for interface parity with
+        ``GosomPlacesClient`` (whose jobs can run for minutes and do use a
+        viewport center) — a single Google Places page call is fast enough
+        that neither is needed here, but ``heartbeat_cb`` is still touched
+        once per page so a slow run of retries doesn't go quiet either.
         """
         if not self._api_key:
             raise PlacesConfigurationError("GOOGLE_PLACES_API_KEY is not configured")
@@ -186,6 +194,9 @@ class GooglePlacesClient:
                 if cancelled:
                     next_page_available = bool(page_token)
                     break
+
+            if heartbeat_cb is not None:
+                await heartbeat_cb()
 
             try:
                 payload = await self._request_page_with_retry(
@@ -375,5 +386,21 @@ def _first_photo_reference(photos: Any) -> str | None:
     return _bounded_optional(first.get("name"), 300)
 
 
-def create_places_client() -> GooglePlacesClient:
-    return GooglePlacesClient()
+def create_places_client():
+    """Return the Maps Census discovery client selected by settings.
+
+    ``google_places`` keeps the official Places Text Search client.
+    ``gosom`` returns the self-hosted scraper adapter, which speaks the same
+    ``search_text_paginated`` contract.
+    """
+    settings = get_settings()
+    provider = settings.maps_discovery_provider
+    if provider == "google_places":
+        return GooglePlacesClient()
+    if provider == "gosom":
+        from app.services.scraping.maps_gosom_client import GosomPlacesClient
+
+        return GosomPlacesClient()
+    raise PlacesConfigurationError(
+        "MAPS_DISCOVERY_PROVIDER must be 'google_places' or 'gosom'"
+    )

@@ -17,9 +17,44 @@ from typing import Any
 
 from sqlalchemy import or_, select, update
 
-from app.db.models import MapsCensusCell, MapsCensusCellStatus
+from app.db.models import MapsCensusCell, MapsCensusCellStatus, MapsCensusRun
 
 DEFAULT_RETRY_BASE_SECONDS = 30
+
+
+class RunExecutionSuperseded(Exception):
+    """Raised when an execution notices a newer run_census() call has taken
+    over its run_id, so it must stop without writing a terminal status or
+    enqueuing Phase 2."""
+
+
+async def claim_run_execution(session_factory, *, run_id: str, token: str) -> None:
+    """Unconditionally stamp ``token`` as the current owner of ``run_id``.
+
+    The latest caller always wins (last-writer-wins fencing). Any earlier
+    execution still running will notice the mismatch next time it checks
+    ``is_run_execution_current`` and stop itself — this is what makes a
+    watchdog-triggered duplicate ``run_census()`` harmless instead of racing
+    the original to completion.
+    """
+    async with session_factory() as db:
+        await db.execute(
+            update(MapsCensusRun).where(MapsCensusRun.id == run_id).values(execution_token=token)
+        )
+        await db.commit()
+
+
+async def is_run_execution_current(session_factory, *, run_id: str, token: str) -> bool:
+    async with session_factory() as db:
+        current = await db.scalar(
+            select(MapsCensusRun.execution_token).where(MapsCensusRun.id == run_id)
+        )
+        return current == token
+
+
+async def ensure_run_execution_current(session_factory, *, run_id: str, token: str) -> None:
+    if not await is_run_execution_current(session_factory, run_id=run_id, token=token):
+        raise RunExecutionSuperseded(run_id)
 
 
 async def claim_cells(
@@ -74,11 +109,61 @@ async def claim_cells(
         return claimed
 
 
+async def claim_cell_by_id(session_factory, *, cell_id: str, worker_id: str) -> bool:
+    """Atomically transition one specific, already-known cell from PENDING to
+    IN_PROGRESS — the same guarded ``UPDATE ... WHERE status = 'pending'``
+    primitive as ``claim_cells``, just targeted at a cell id the caller
+    already has (e.g. from its own local work queue) instead of selecting
+    candidates by query. Also respects ``next_retry_at`` (same as
+    ``claim_cells``) — a cell scheduled for a backed-off retry is not due
+    yet, so this returns ``False`` for it exactly as if someone else had
+    already claimed it. This matters: without it, a cell that failed with a
+    retry delay could be re-claimed and re-attempted the moment it cycles
+    back around an in-memory work queue, immediately burning another full
+    attempt against whatever made it fail in the first place, instead of
+    actually waiting out the backoff.
+
+    Returns ``False`` without raising when the cell is no longer PENDING,
+    not yet due for retry, or missing — the caller must skip it rather than
+    process it again.
+    """
+    now = datetime.now(UTC)
+    async with session_factory() as db:
+        result = await db.execute(
+            update(MapsCensusCell)
+            .where(
+                MapsCensusCell.id == cell_id,
+                MapsCensusCell.status == MapsCensusCellStatus.PENDING,
+                or_(MapsCensusCell.next_retry_at.is_(None), MapsCensusCell.next_retry_at <= now),
+            )
+            .values(
+                status=MapsCensusCellStatus.IN_PROGRESS,
+                claimed_by=worker_id,
+                attempt_count=MapsCensusCell.attempt_count + 1,
+                started_at=now,
+                heartbeat_at=now,
+                next_retry_at=None,
+            )
+        )
+        await db.commit()
+        return bool(result.rowcount)
+
+
 async def heartbeat_cell(session_factory, *, cell_id: str) -> None:
     async with session_factory() as db:
         await db.execute(
             update(MapsCensusCell)
             .where(MapsCensusCell.id == cell_id)
+            .values(heartbeat_at=datetime.now(UTC))
+        )
+        await db.commit()
+
+
+async def heartbeat_run(session_factory, *, run_id: str) -> None:
+    async with session_factory() as db:
+        await db.execute(
+            update(MapsCensusRun)
+            .where(MapsCensusRun.id == run_id)
             .values(heartbeat_at=datetime.now(UTC))
         )
         await db.commit()

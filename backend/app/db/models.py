@@ -2791,6 +2791,11 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     processing_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # Cumulative provider/model call counters — see maps_quota_tracker.py.
     quota_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Fencing token: each run_census() call stamps its own value here on start.
+    # Any in-flight execution that later notices this no longer matches its own
+    # token knows a newer execution has taken over and aborts before writing a
+    # terminal status or enqueuing Phase 2 — see maps_cell_runner.claim_run_execution.
+    execution_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     regions: Mapped[list["MapsCensusRegion"]] = relationship(
         back_populates="run",
@@ -2910,6 +2915,11 @@ class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     claimed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Set once, on the very first claim, and never touched again (unlike
+    # started_at, which is overwritten on every claim/retry). This is the
+    # reference point for the absolute per-cell deadline — persisted so it
+    # survives a worker crash/restart, unlike an in-process monotonic clock.
+    first_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="cells")
     region: Mapped["MapsCensusRegion | None"] = relationship(back_populates="cells")
