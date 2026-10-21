@@ -3002,7 +3002,13 @@ class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     viewport_bounds: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # --- Google Places pagination state (gap #1) ---
-    pagination_resume_token: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # Text, not a bounded String: Google's nextPageToken has no documented
+    # length cap and has been observed over 2048 characters in dense result
+    # sets (verified — a VARCHAR(2048) column raised a DataError on commit,
+    # which rolled back the whole transaction, including that page's
+    # already-flushed new places, and marked the cell FAILED even though
+    # Google Places had returned valid results).
+    pagination_resume_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     pages_fetched: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     raw_results_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     unique_results_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
