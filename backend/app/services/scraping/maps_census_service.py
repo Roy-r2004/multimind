@@ -81,8 +81,10 @@ from app.services.scraping.maps_cell_runner import (
     fail_cell_for_retry,
     heartbeat_cell,
     heartbeat_run,
+    increment_run_cells_total,
     is_campaign_paused,
     is_run_cancelled,
+    reconcile_run_cell_counters,
     recover_stale_running_cells,
 )
 from app.services.scraping.maps_cell_subdivision import ChildCellSpec, subdivide_cell
@@ -1067,6 +1069,15 @@ class MapsCensusService:
             seed_max = min(MAPS_CENSUS_SEED_CELLS, max_cells_per_campaign)
 
         if resume_existing:
+            # Self-heal cells_total/cells_completed before resuming: a worker
+            # crash, a watchdog-triggered duplicate execution, or any other
+            # prior write-path bug could have left them inconsistent with
+            # the actual persisted cell rows. Resuming is the natural, cheap
+            # checkpoint to reconcile — every resume starts from a
+            # trustworthy baseline instead of carrying stale corruption
+            # forward indefinitely.
+            await reconcile_run_cell_counters(session_factory, run_id=run_id)
+
             # Resume pending/in-progress cells only — never call the seed planner
             # again (that path destroyed terminal campaigns via false failures).
             async with session_factory() as resume_db:
@@ -1156,12 +1167,9 @@ class MapsCensusService:
                 seen_query_texts=seen_query_texts,
                 geo_anchor=geo_anchor,
             )
-            campaign_cells_used = len(cell_ids)
-            async with session_factory() as cells_db:
-                run = await cells_db.get(MapsCensusRun, run_id)
-                if run is not None:
-                    run.cells_total = campaign_cells_used
-                    await cells_db.commit()
+            campaign_cells_used = await increment_run_cells_total(
+                session_factory, run_id=run_id, by=len(cell_ids)
+            )
 
         client = create_places_client()
         summary = {"cells": campaign_cells_used, "places_found": 0, "cell_failures": 0}
@@ -1326,12 +1334,17 @@ class MapsCensusService:
                 stopped_reason = "no_expanding_regions"
                 break
 
-            campaign_cells_used += len(new_cell_ids)
-            async with session_factory() as expand_run_db:
-                run = await expand_run_db.get(MapsCensusRun, run_id)
-                if run is not None:
-                    run.cells_total = campaign_cells_used
-                    await expand_run_db.commit()
+            campaign_cells_used = await increment_run_cells_total(
+                session_factory, run_id=run_id, by=len(new_cell_ids)
+            )
+            # Re-sync the shared budget tracker to the authoritative DB
+            # value too — without this, campaign_budget["used"] only ever
+            # grew from _execute_cells's own subdivision increments and
+            # silently drifted from (undercounted) the true total every
+            # time an expansion wave like this one added cells, letting the
+            # campaign-ceiling check below under-enforce the real limit.
+            if campaign_budget is not None:
+                campaign_budget["used"] = campaign_cells_used
             work_queue = new_cell_ids
 
         # A newer run_census() execution may have taken over while this one
@@ -2145,8 +2158,17 @@ class MapsCensusService:
                             specs=specs,
                             seen_query_texts=local_seen_query_texts,
                         )
-                        if campaign_budget is not None:
-                            campaign_budget["used"] += len(child_ids)
+                        if child_ids:
+                            # Atomic SQL-level increment (see
+                            # increment_run_cells_total) — not a Python-level
+                            # read-modify-write — so this can never be
+                            # clobbered back down by another concurrent
+                            # execution's own stale local total.
+                            new_total = await increment_run_cells_total(
+                                session_factory, run_id=run_id, by=len(child_ids)
+                            )
+                            if campaign_budget is not None:
+                                campaign_budget["used"] = new_total
 
                 capped = bool(needs_subdivision and child_ids)
                 async with session_factory() as write_db:
@@ -2161,8 +2183,6 @@ class MapsCensusService:
                         )
                     if run is not None:
                         run.cells_completed += 1
-                        if child_ids:
-                            run.cells_total += len(child_ids)
                     if region is not None:
                         region.unique_places_found += new_places
                         region.plausible_providers_found += new_plausible

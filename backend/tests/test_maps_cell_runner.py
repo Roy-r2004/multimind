@@ -27,8 +27,10 @@ from app.services.scraping.maps_cell_runner import (
     fail_cell_for_retry,
     heartbeat_cell,
     heartbeat_run,
+    increment_run_cells_total,
     is_run_cancelled,
     is_run_execution_current,
+    reconcile_run_cell_counters,
     recover_stale_running_cells,
 )
 
@@ -423,3 +425,97 @@ async def test_fail_cell_for_retry_terminates_after_configured_timeout_attempts(
     async with session_factory() as check_db:
         refreshed = await check_db.get(MapsCensusCell, cell.id)
         assert refreshed.status == MapsCensusCellStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_increment_run_cells_total_is_additive_not_overwriting(
+    db: AsyncSession, auth: AuthContext
+):
+    """The exact mechanism that produced the observed 531-completed/58-total
+    state: two 'executions' each independently believe they are adding to
+    cells_total. A Python-level ``run.cells_total = local_sum`` would let
+    the second overwrite stomp the first's contribution (lost update). The
+    atomic SQL-level increment must not — both contributions survive
+    regardless of ordering.
+    """
+    run = await _create_run(db, auth)
+    session_factory = _session_factory_for(db)
+
+    first_total = await increment_run_cells_total(session_factory, run_id=run.id, by=30)
+    assert first_total == 30
+
+    # A second, concurrent-style caller adds its own batch without ever
+    # reading back and combining with the first caller's value — exactly
+    # how two independently-running executions behave.
+    second_total = await increment_run_cells_total(session_factory, run_id=run.id, by=12)
+    assert second_total == 42  # 30 + 12, not 12 (which a naive overwrite would produce)
+
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusRun, run.id)
+        assert refreshed.cells_total == 42
+
+
+@pytest.mark.asyncio
+async def test_increment_run_cells_total_survives_many_concurrent_increments(
+    db: AsyncSession, auth: AuthContext
+):
+    """Simulates many overlapping subdivision/expansion-wave writers hitting
+    the same run concurrently (asyncio.gather, real interleaving within one
+    process) — the final total must equal the exact sum of every increment,
+    with none lost."""
+    import asyncio
+
+    run = await _create_run(db, auth)
+    session_factory = _session_factory_for(db)
+
+    increments = [3, 4, 1, 6, 2, 5, 3, 4, 1, 2]
+    await asyncio.gather(
+        *[
+            increment_run_cells_total(session_factory, run_id=run.id, by=n)
+            for n in increments
+        ]
+    )
+
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusRun, run.id)
+        assert refreshed.cells_total == sum(increments)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_run_cell_counters_fixes_the_observed_impossible_state(
+    db: AsyncSession, auth: AuthContext
+):
+    """Directly reproduces the reported bug: cells_completed=531 while
+    cells_total=58, on a run whose actual maps_census_cells rows look
+    nothing like that. Reconciliation must replace both with the true,
+    persisted-row-derived values — never just clamp cells_completed down to
+    cells_total (that would hide the inconsistency rather than fix it).
+    """
+    run = await _create_run(db, auth)
+    run.cells_total = 58
+    run.cells_completed = 531
+    await db.commit()
+
+    # The actual ground truth: 10 cells, 7 terminal (completed/capped/failed
+    # in a realistic mix), 2 pending, 1 in progress.
+    statuses = (
+        [MapsCensusCellStatus.COMPLETED] * 4
+        + [MapsCensusCellStatus.CAPPED] * 2
+        + [MapsCensusCellStatus.FAILED] * 1
+        + [MapsCensusCellStatus.PENDING] * 2
+        + [MapsCensusCellStatus.IN_PROGRESS] * 1
+    )
+    for i, status in enumerate(statuses):
+        await _create_cell(db, run, query_text=f"query {i}", status=status)
+
+    session_factory = _session_factory_for(db)
+    result = await reconcile_run_cell_counters(session_factory, run_id=run.id)
+
+    assert result == {"cells_total": 10, "cells_completed": 7}
+    async with session_factory() as check_db:
+        refreshed = await check_db.get(MapsCensusRun, run.id)
+        assert refreshed.cells_total == 10
+        assert refreshed.cells_completed == 7
+        # The headline invariant: completed can never exceed total once
+        # reconciled from ground truth.
+        assert refreshed.cells_completed <= refreshed.cells_total
