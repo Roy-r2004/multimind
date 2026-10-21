@@ -8,6 +8,8 @@ const PREVIEW_UNAVAILABLE =
   "Preview is not available for this file. Download it to view it.";
 const EMPTY_TEXT = "No readable text was found in this file.";
 const FAILED_TEXT = "MultiMind could not extract readable text from this file.";
+const PARTIAL_TEXT =
+  "Only part of this file was extracted. The text below is the portion MultiMind stored, not the complete original.";
 
 /** Both documents and uploaded files use `/library/$itemId`. */
 export function libraryItemOpensDetail(itemType: string | null | undefined): boolean {
@@ -27,6 +29,10 @@ export function libraryFileContentView(item: {
 
   if (status === "image") {
     return { kind: "message", message: PREVIEW_UNAVAILABLE };
+  }
+  if (status === "partial") {
+    if (excerpt) return { kind: "text", text: `${PARTIAL_TEXT}\n\n${excerpt}` };
+    return { kind: "message", message: PARTIAL_TEXT };
   }
   if (status === "ready") {
     if (excerpt) return { kind: "text", text: excerpt };

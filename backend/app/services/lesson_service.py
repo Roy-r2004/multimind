@@ -11,6 +11,7 @@ from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
+    ChatAttachment,
     CostRecord,
     LessonStatus,
     ModelAnswer,
@@ -22,7 +23,6 @@ from app.db.models import (
     Verdict,
     VerdictLesson,
 )
-from app.services.brain_service import brain_service
 from app.llm.catalog import get_model, resolve_llm_cost
 from app.llm.orchestrator import TurnContext, get_orchestrator
 from app.llm.prompt_engine import get_prompt_engine, resolve_effective_referee_prompt
@@ -35,6 +35,10 @@ from app.schemas.api import (
     LessonListItemResponse,
     VerdictDisagreeRequest,
 )
+from app.services.brain_service import brain_service
+from app.services.chat_memory_service import chat_memory_service
+from app.services.chat_service import chat_service, refresh_legacy_attachment_rows
+from app.services.document_processing import resolve_document_sources, wait_for_document_processing
 
 logger = get_logger(__name__)
 
@@ -449,6 +453,45 @@ class LessonService:
         db.add(challenge_turn)
         await db.flush()
 
+        attachment_rows = list(
+            (
+                await db.execute(
+                    select(ChatAttachment).where(ChatAttachment.turn_id == turn.id)
+                )
+            ).scalars()
+        )
+        prior_documents = await chat_memory_service.load_prior_document_attachments(
+            db,
+            turn.chat_id,
+            org_id=auth.org_id,
+            exclude_turn_id=turn.id,
+            exclude_relative_paths={
+                row.relative_path for row in attachment_rows if row.relative_path
+            },
+        )
+        referenced_documents = await chat_service._referenced_document_rows(
+            db, auth, turn.custom_instructions
+        )
+        owned_paths = {
+            row.relative_path
+            for row in [*attachment_rows, *prior_documents]
+            if row.relative_path
+        }
+        document_rows = [
+            *attachment_rows,
+            *prior_documents,
+            *[row for row in referenced_documents if row.relative_path not in owned_paths],
+        ]
+        recovery_notes = await refresh_legacy_attachment_rows(
+            db,
+            document_rows,
+            org_id=auth.org_id,
+            user_id=auth.user.id,
+        )
+        await wait_for_document_processing(db, document_rows)
+        document_sources = await resolve_document_sources(
+            db, document_rows, recovery_notes, challenge
+        )
         is_referee = turn.strategy == Strategy.REFEREE
         ctx = TurnContext(
             turn_id=challenge_turn.id,
@@ -470,6 +513,7 @@ class LessonService:
                 else None
             ),
             recent_conversation_context=previous_context,
+            document_sources=document_sources,
         )
         result = await get_orchestrator().run(db, ctx)
 

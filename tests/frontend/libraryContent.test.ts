@@ -39,6 +39,18 @@ test("libraryFileContentView handles failed extract", () => {
   assert.match(view.message, /could not extract/);
 });
 
+test("libraryFileContentView marks a partial extract", () => {
+  const view = libraryFileContentView({
+    excerpt_status: "partial",
+    text_excerpt: "Kept prefix",
+  });
+  assert.equal(view.kind, "text");
+  if (view.kind === "text") {
+    assert.match(view.text, /Only part of this file was extracted/);
+    assert.match(view.text, /Kept prefix/);
+  }
+});
+
 test("libraryFileContentView handles image status without breaking", () => {
   const view = libraryFileContentView({
     excerpt_status: "image",

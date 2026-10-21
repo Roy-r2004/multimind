@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, select, update
@@ -12,14 +13,22 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
-from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from app.core.exceptions import (
+    ConflictError,
+    ForbiddenError,
+    InvalidAttachmentError,
+    NotFoundError,
+    ValidationError,
+)
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
+    ChatAnswerPin,
     ChatAttachment,
     ChatVerdictPin,
     CostRecord,
     DecisionInsurance,
+    LibraryItem,
     ModelAnswer,
     ModelAnswerStatus,
     ModelSet,
@@ -47,6 +56,7 @@ from app.schemas.api import (
     ChatUpdateRequest,
     DecisionInsuranceResponse,
     ModelAnswerResponse,
+    PinnedAnswerResponse,
     PinnedVerdictResponse,
     TurnAttachmentResponse,
     TurnCreateRequest,
@@ -57,14 +67,149 @@ from app.schemas.api import (
     VerdictResponse,
     VerdictSimpleExplanationResponse,
 )
+from app.services.attachment_types import is_library_ref_relative_path
 from app.services.brain_service import brain_service
-from app.services.chat_attachment_storage import safe_delete_attachment_files
+from app.services.chat_attachment_storage import (
+    resolve_attachment_path,
+    safe_delete_attachment_files,
+)
+from app.services.chat_attachment_text import extract_attachment_text_from_path
 from app.services.chat_memory_service import chat_memory_service
+from app.services.document_context import (
+    assess_legacy_excerpt,
+    excerpt_looks_truncated,
+    parse_reference_chat_ids,
+    render_stored_attachment_block,
+)
+from app.services.document_processing import resolve_document_sources, wait_for_document_processing
+from app.services.library_service import (
+    ITEM_TYPE_DOCUMENT,
+    ITEM_TYPE_FILE,
+    library_document_excerpt,
+)
 from app.services.multi_reference_context_service import multi_reference_context_service
 from app.services.playbook_context_service import playbook_context_service
 from app.services.saved_verdict_service import saved_verdict_service
 
 logger = get_logger(__name__)
+
+_SOURCE_MISSING = (
+    "The original source is no longer available. "
+    "The stored excerpt was not expanded, and missing historical content was not recovered."
+)
+
+
+def _attachment_extension(filename: str | None) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    return suffix or ".txt"
+
+
+def _extract_stored_file(relative_path: str, filename: str | None, *, root: str) -> tuple[str | None, str | None]:
+    try:
+        path = resolve_attachment_path(relative_path, root=root)
+        if not path.is_file():
+            return None, None
+        return extract_attachment_text_from_path(path, _attachment_extension(filename))
+    except (InvalidAttachmentError, OSError, ValueError):
+        return None, None
+
+
+async def refresh_legacy_attachment_rows(
+    db: AsyncSession,
+    rows: list[ChatAttachment],
+    *,
+    org_id: str,
+    user_id: str,
+) -> dict[int, str]:
+    """Replace a truncated excerpt only when its original Library item or upload still exists."""
+    notes: dict[int, str] = {}
+    settings = get_settings()
+    for row in rows:
+        source_text, source_status = await _legacy_source_text(
+            db,
+            row,
+            org_id=org_id,
+            user_id=user_id,
+            library_root=settings.library_file_dir,
+            attachment_root=settings.chat_attachment_dir,
+        )
+        decision = assess_legacy_excerpt(
+            row.text_excerpt,
+            row.excerpt_status,
+            source_text=source_text,
+        )
+        if decision == "recoverable" and source_text is not None:
+            if source_text != (row.text_excerpt or "") or source_status != row.excerpt_status:
+                row.text_excerpt = source_text
+                row.excerpt_status = source_status or "ready"
+            continue
+        if decision == "source_missing":
+            if row.excerpt_status == "ready":
+                row.excerpt_status = "partial"
+            notes[id(row)] = _SOURCE_MISSING
+    return notes
+
+
+async def _legacy_source_text(
+    db: AsyncSession,
+    row: ChatAttachment,
+    *,
+    org_id: str,
+    user_id: str,
+    library_root: str,
+    attachment_root: str,
+) -> tuple[str | None, str | None]:
+    item = None
+    if row.library_item_id:
+        item = await db.get(LibraryItem, row.library_item_id)
+        if item is None or item.org_id != org_id or item.user_id != user_id:
+            item = None
+    if item is not None and item.item_type == ITEM_TYPE_DOCUMENT:
+        return library_document_excerpt(item.content_text)
+    if not excerpt_looks_truncated(row.text_excerpt, row.excerpt_status):
+        return None, None
+    if item is not None and item.item_type == ITEM_TYPE_FILE and item.relative_path:
+        return _extract_stored_file(
+            item.relative_path,
+            item.original_filename or row.filename,
+            root=library_root,
+        )
+    if row.relative_path and not is_library_ref_relative_path(row.relative_path):
+        return _extract_stored_file(row.relative_path, row.filename, root=attachment_root)
+    return None, None
+
+
+def _pinned_answer_response(pin: ChatAnswerPin, turn_id: str) -> PinnedAnswerResponse:
+    return PinnedAnswerResponse(
+        id=pin.id,
+        answer_id=pin.model_answer_id,
+        turn_id=turn_id,
+        pin_type=pin.pin_type,
+        selected_text=pin.selected_text,
+        selected_html=pin.selected_html,
+        selection_locator=pin.selection_locator,
+    )
+
+
+async def load_answer_pins(
+    db: AsyncSession, chat_ids: list[str]
+) -> dict[str, list[PinnedAnswerResponse]]:
+    if not chat_ids:
+        return {}
+    rows = await db.execute(
+        select(ChatAnswerPin, ModelAnswer.turn_id)
+        .join(ModelAnswer, ModelAnswer.id == ChatAnswerPin.model_answer_id)
+        .join(Turn, Turn.id == ModelAnswer.turn_id)
+        .where(
+            ChatAnswerPin.chat_id.in_(chat_ids),
+            Turn.deleted_at.is_(None),
+        )
+        .order_by(ChatAnswerPin.created_at, ChatAnswerPin.id)
+    )
+    grouped: dict[str, list[PinnedAnswerResponse]] = {}
+    for pin, turn_id in rows.all():
+        grouped.setdefault(pin.chat_id, []).append(_pinned_answer_response(pin, turn_id))
+    return grouped
 CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
 TURN_ALREADY_RUNNING_CODE = "TURN_ALREADY_RUNNING"
 TURN_ALREADY_RUNNING_MESSAGE = "Turn orchestration is already running."
@@ -311,6 +456,7 @@ class ChatService:
             )
             reference_by_id = {c.id: c for c in rows.scalars().all()}
         pins_by_chat: dict[str, list[PinnedVerdictResponse]] = {}
+        answer_pins_by_chat = await load_answer_pins(db, [chat.id for chat in chats])
         if chats:
             rows = await db.execute(
                 select(ChatVerdictPin, Verdict.turn_id)
@@ -327,6 +473,7 @@ class ChatService:
                 c,
                 active_reference=reference_by_id.get(c.active_referenced_chat_id),
                 pinned_verdicts=pins_by_chat.get(c.id, []),
+                pinned_answers=answer_pins_by_chat.get(c.id, []),
             )
             for c in chats
         ]
@@ -485,6 +632,17 @@ class ChatService:
             )
             await db.execute(delete(ChatVerdictPin).where(ChatVerdictPin.chat_id == chat_id))
             await self._delete_pinned_brain_sources(db, auth.org_id, pinned_verdict_ids)
+            pinned_answer_ids = list(
+                (
+                    await db.execute(
+                        select(ChatAnswerPin.model_answer_id).where(
+                            ChatAnswerPin.chat_id == chat_id
+                        )
+                    )
+                ).scalars().all()
+            )
+            await db.execute(delete(ChatAnswerPin).where(ChatAnswerPin.chat_id == chat_id))
+            await self._delete_pinned_answer_brain_sources(db, auth.org_id, pinned_answer_ids)
             await db.execute(
                 delete(VerdictSimpleExplanation).where(
                     VerdictSimpleExplanation.verdict_id.in_(
@@ -571,6 +729,28 @@ class ChatService:
                 )
                 await self._delete_pinned_brain_sources(
                     db, auth.org_id, pinned_verdict_ids
+                )
+            pinned_answer_ids = list(
+                (
+                    await db.execute(
+                        select(ChatAnswerPin.model_answer_id)
+                        .join(ModelAnswer, ModelAnswer.id == ChatAnswerPin.model_answer_id)
+                        .where(
+                            ChatAnswerPin.chat_id == chat_id,
+                            ModelAnswer.turn_id == turn_id,
+                        )
+                    )
+                ).scalars().all()
+            )
+            if pinned_answer_ids:
+                await db.execute(
+                    delete(ChatAnswerPin).where(
+                        ChatAnswerPin.chat_id == chat_id,
+                        ChatAnswerPin.model_answer_id.in_(pinned_answer_ids),
+                    )
+                )
+                await self._delete_pinned_answer_brain_sources(
+                    db, auth.org_id, pinned_answer_ids
                 )
             await db.execute(
                 update(Turn)
@@ -780,6 +960,24 @@ class ChatService:
                     db, auth.org_id, superseded_pinned_verdict_ids
                 )
 
+            superseded_answer_ids = list(
+                (
+                    await db.execute(
+                        select(ModelAnswer.id).where(ModelAnswer.turn_id.in_(superseded_ids))
+                    )
+                ).scalars().all()
+            )
+            if superseded_answer_ids:
+                await db.execute(
+                    delete(ChatAnswerPin).where(
+                        ChatAnswerPin.chat_id == chat_id,
+                        ChatAnswerPin.model_answer_id.in_(superseded_answer_ids),
+                    )
+                )
+                await self._delete_pinned_answer_brain_sources(
+                    db, auth.org_id, superseded_answer_ids
+                )
+
             new_turn = Turn(
                 chat_id=locked_chat.id,
                 user_message=prompt,
@@ -897,12 +1095,22 @@ class ChatService:
             chat_id=chat.id,
             attachment_ids=data.attachment_ids,
         )
-        prior_txt = await chat_memory_service.load_prior_txt_attachments(
+        prior_documents = await chat_memory_service.load_prior_document_attachments(
             db,
             chat.id,
+            org_id=auth.org_id,
             exclude_relative_paths={row.relative_path for row in attachments if row.relative_path},
         )
-        attachment_instructions = self._build_attachment_instructions([*attachments, *prior_txt])
+        recovery_notes = await refresh_legacy_attachment_rows(
+            db,
+            [*attachments, *prior_documents],
+            org_id=auth.org_id,
+            user_id=auth.user.id,
+        )
+        attachment_instructions = self._build_attachment_instructions(
+            [*attachments, *prior_documents],
+            recovery_notes,
+        )
 
         reference_context: str | None = None
         if data.referenced_chat_id is not None and data.referenced_chat_ids is not None:
@@ -1072,92 +1280,39 @@ class ChatService:
             ordered.append(row)
         return ordered
 
-    def _build_attachment_instructions(self, attachments: list[ChatAttachment]) -> str | None:
-        if not attachments:
-            return None
+    def _build_attachment_instructions(
+        self,
+        attachments: list[ChatAttachment],
+        recovery_notes: dict[int, str] | None = None,
+    ) -> str | None:
+        """Store every extracted document. Model windows are applied when the provider is called."""
+        return render_stored_attachment_block(attachments, recovery_notes)
 
-        budget = get_settings().chat_attachment_context_max_chars
-        truncation_marker = "[Attachment context truncated]"
-        txt_context_chars = 30_000
-        omitted_marker = "[Content omitted due to attachment context budget]"
-        parts: list[str] = []
-        used = 0
-
-        def filename_reserve(from_index: int) -> int:
-            """Reserve space so later attachments keep at least a filename mention."""
-            if from_index >= len(attachments):
-                return 0
-            total = 0
-            for item in attachments[from_index:]:
-                total += len(f"\n\nAttached file: {item.filename}\n{omitted_marker}")
-            return total
-
-        def try_append(text: str) -> bool:
-            nonlocal used
-            separator = "\n\n" if parts else ""
-            candidate = f"{separator}{text}"
-            if used + len(candidate) > budget:
-                return False
-            parts.append(candidate)
-            used += len(candidate)
-            return True
-
-        for index, attachment in enumerate(attachments):
-            filename = attachment.filename
-            if attachment.excerpt_status == "ready" and attachment.text_excerpt:
-                prefix = f"Attached file: {filename}\nContent:\n```text\n"
-                suffix = "\n```"
-                excerpt = attachment.text_excerpt
-                if (filename or "").lower().endswith(".txt") and len(excerpt) > txt_context_chars:
-                    marker = f"\n{truncation_marker}"
-                    room = txt_context_chars - len(marker)
-                    excerpt = excerpt[: max(room, 0)].rstrip() + marker
-                full = f"{prefix}{excerpt}{suffix}"
-                # A full excerpt must leave room for every later filename.
-                # Otherwise earlier files consume the 300k budget and the rest
-                # disappear with no marker.
-                reserve = filename_reserve(index + 1)
-                separator_len = 2 if parts else 0
-                if used + separator_len + len(full) + reserve <= budget and try_append(full):
+    async def _referenced_document_rows(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        custom_instructions: str | None,
+    ) -> list[ChatAttachment]:
+        """Load source-chat extracts named by a continuation handoff. Other orgs are skipped."""
+        rows: list[ChatAttachment] = []
+        seen: set[str] = set()
+        for source_id in parse_reference_chat_ids(custom_instructions):
+            source = await db.get(Chat, source_id)
+            if source is None or source.org_id != auth.org_id:
+                continue
+            loaded = await chat_memory_service.load_prior_document_attachments(
+                db,
+                source.id,
+                org_id=auth.org_id,
+            )
+            for row in loaded:
+                key = row.relative_path or row.id
+                if key in seen:
                     continue
-
-                # Fit truncated excerpt while reserving room for later filenames.
-                separator_len = 2 if parts else 0
-                marker = f"\n{truncation_marker}"
-                reserve = filename_reserve(index + 1)
-                available = (
-                    budget
-                    - used
-                    - separator_len
-                    - len(prefix)
-                    - len(suffix)
-                    - len(marker)
-                    - reserve
-                )
-                if available > 0:
-                    truncated = excerpt[:available].rstrip() + marker
-                    if try_append(f"{prefix}{truncated}{suffix}"):
-                        continue
-                if not try_append(f"Attached file: {filename}\n{omitted_marker}"):
-                    try_append(f"Attached file: {filename}")
-            elif attachment.excerpt_status == "empty":
-                if filename.lower().endswith(".pdf"):
-                    note = (
-                        "(No readable text found. This PDF may be scanned or image-based.)"
-                    )
-                else:
-                    note = "(No readable content)"
-                if not try_append(f"Attached file: {filename}\n{note}"):
-                    try_append(f"Attached file: {filename}")
-            else:
-                block = (
-                    f"Attached file: {filename}\n"
-                    f"(Content unavailable; excerpt status: {attachment.excerpt_status})"
-                )
-                if not try_append(block):
-                    try_append(f"Attached file: {filename}")
-
-        return "".join(parts) or None
+                seen.add(key)
+                rows.append(row)
+        return rows
 
     def _pending_turn_response(
         self, turn: Turn, *, chat: Chat | None = None
@@ -1167,6 +1322,7 @@ class ChatService:
             model = get_model(a.model_id)
             answers.append(
                 ModelAnswerResponse(
+                    id=str(a.id),
                     model_id=a.model_id,
                     model_name=model.name,
                     text=a.text,
@@ -1318,6 +1474,38 @@ class ChatService:
             chat_id=chat.id,
         )
 
+        prior_documents = await chat_memory_service.load_prior_document_attachments(
+            db,
+            chat.id,
+            org_id=auth.org_id,
+            exclude_turn_id=turn.id,
+            exclude_relative_paths={
+                row.relative_path for row in turn.attachments if row.relative_path
+            },
+        )
+        referenced_documents = await self._referenced_document_rows(
+            db, auth, turn.custom_instructions
+        )
+        owned_paths = {
+            row.relative_path
+            for row in [*list(turn.attachments), *prior_documents]
+            if row.relative_path
+        }
+        referenced_documents = [
+            row for row in referenced_documents if row.relative_path not in owned_paths
+        ]
+        document_rows = [*list(turn.attachments), *prior_documents, *referenced_documents]
+        recovery_notes = await refresh_legacy_attachment_rows(
+            db,
+            document_rows,
+            org_id=auth.org_id,
+            user_id=auth.user.id,
+        )
+        await wait_for_document_processing(db, document_rows)
+        document_sources = await resolve_document_sources(
+            db, document_rows, recovery_notes, turn.user_message
+        )
+
         is_referee = turn.strategy == Strategy.REFEREE
         ctx = TurnContext(
             turn_id=turn.id,
@@ -1343,6 +1531,7 @@ class ChatService:
             rolling_chat_memory=rolling_chat_memory,
             recent_conversation_context=recent_conversation_context,
             playbook_context=playbook_context,
+            document_sources=document_sources,
             skip_answer_seed=True,
         )
 
@@ -1766,6 +1955,128 @@ class ChatService:
         await db.flush()
         return await self._chat_response_async(db, chat)
 
+    async def pin_answer(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        chat_id: str,
+        answer_id: str,
+        pin_type: str = "answer",
+        selected_text: str | None = None,
+        selected_html: str | None = None,
+        selection_locator: dict | None = None,
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        result = await db.execute(
+            select(ModelAnswer)
+            .join(Turn, Turn.id == ModelAnswer.turn_id)
+            .where(
+                ModelAnswer.id == answer_id,
+                Turn.chat_id == chat.id,
+                Turn.deleted_at.is_(None),
+            )
+        )
+        answer = result.scalar_one_or_none()
+        if answer is None:
+            raise NotFoundError("Answer", answer_id)
+        if pin_type not in ("answer", "selection"):
+            raise ValidationError("Invalid pin_type")
+        if pin_type == "selection":
+            if not selected_text or not selected_text.strip():
+                raise ValidationError("Selection pins require non-empty selected_text")
+            db.add(
+                ChatAnswerPin(
+                    chat_id=chat.id,
+                    model_answer_id=answer.id,
+                    pin_type="selection",
+                    selected_text=selected_text,
+                    selected_html=selected_html,
+                    selection_locator=selection_locator,
+                )
+            )
+            await db.flush()
+            return await self._chat_response_async(db, chat)
+        if not answer.text or not answer.text.strip():
+            raise ValidationError("Answer pins require answer text")
+        await db.execute(update(Chat).where(Chat.id == chat.id).values(updated_at=Chat.updated_at))
+        existing = await db.execute(
+            select(ChatAnswerPin.id).where(
+                ChatAnswerPin.chat_id == chat.id,
+                ChatAnswerPin.model_answer_id == answer.id,
+                ChatAnswerPin.pin_type == "answer",
+            )
+        )
+        if existing.scalar_one_or_none() is None:
+            db.add(ChatAnswerPin(chat_id=chat.id, model_answer_id=answer.id, pin_type="answer"))
+            await db.flush()
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_ANSWER,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.upsert_item(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                project_id=chat.project_id,
+                source_type=SOURCE_PINNED_ANSWER,
+                source_id=answer.id,
+                title=f"Pinned answer — {chat.title}",
+                content=answer.text,
+                metadata={
+                    "chat_id": chat.id,
+                    "answer_id": answer.id,
+                    "turn_id": answer.turn_id,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_answer_pin_ingest_failed", error=str(exc))
+        return await self._chat_response_async(db, chat)
+
+    async def unpin_answer(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, answer_id: str
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        await db.execute(
+            delete(ChatAnswerPin).where(
+                ChatAnswerPin.chat_id == chat.id,
+                ChatAnswerPin.model_answer_id == answer_id,
+                ChatAnswerPin.pin_type == "answer",
+            )
+        )
+        await db.flush()
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_ANSWER,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.delete_source(
+                db,
+                org_id=auth.org_id,
+                user_id=auth.user.id,
+                source_type=SOURCE_PINNED_ANSWER,
+                source_id=answer_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_answer_unpin_cleanup_failed", error=str(exc))
+        return await self._chat_response_async(db, chat)
+
+    async def unpin_answer_selection(
+        self, db: AsyncSession, auth: AuthContext, chat_id: str, pin_id: str
+    ) -> ChatResponse:
+        chat = await self.get_chat(db, auth, chat_id)
+        await db.execute(
+            delete(ChatAnswerPin).where(
+                ChatAnswerPin.id == pin_id,
+                ChatAnswerPin.chat_id == chat.id,
+                ChatAnswerPin.pin_type == "selection",
+            )
+        )
+        await db.flush()
+        return await self._chat_response_async(db, chat)
+
     async def unpin_legacy_verdict(
         self, db: AsyncSession, auth: AuthContext, chat_id: str
     ) -> ChatResponse:
@@ -1786,6 +2097,7 @@ class ChatService:
         chat: Chat,
         *,
         pinned_verdicts: list[PinnedVerdictResponse] | None = None,
+        pinned_answers: list[PinnedAnswerResponse] | None = None,
         active_reference: Chat | None = None,
     ) -> ChatResponse:
         pins = pinned_verdicts or []
@@ -1798,6 +2110,7 @@ class ChatService:
             pinned_verdict_id=legacy_pin.verdict_id if legacy_pin else None,
             pinned_turn_id=legacy_pin.turn_id if legacy_pin else None,
             pinned_verdicts=pins,
+            pinned_answers=pinned_answers or [],
             active_referenced_chat=(
                 ChatReferenceResponse(id=active_reference.id, title=active_reference.title)
                 if active_reference is not None
@@ -1817,6 +2130,7 @@ class ChatService:
             PinnedVerdictResponse(id=pin.id, verdict_id=pin.verdict_id, turn_id=turn_id, pin_type=pin.pin_type, selected_text=pin.selected_text, selected_html=pin.selected_html, selection_locator=pin.selection_locator)
             for pin, turn_id in result.all()
         ]
+        answer_pins = (await load_answer_pins(db, [chat.id])).get(chat.id, [])
         active_reference = None
         if chat.active_referenced_chat_id:
             result = await db.execute(
@@ -1827,7 +2141,10 @@ class ChatService:
             )
             active_reference = result.scalar_one_or_none()
         return self._chat_response(
-            chat, pinned_verdicts=pinned_verdicts, active_reference=active_reference
+            chat,
+            pinned_verdicts=pinned_verdicts,
+            pinned_answers=answer_pins,
+            active_reference=active_reference,
         )
 
     async def _delete_pinned_brain_sources(
@@ -1850,6 +2167,26 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_pin_cleanup_failed", error=str(exc))
 
+    async def _delete_pinned_answer_brain_sources(
+        self, db: AsyncSession, org_id: str, answer_ids: list[str]
+    ) -> None:
+        if not answer_ids:
+            return
+        try:
+            from app.services.brain_knowledge_service import (
+                SOURCE_PINNED_ANSWER,
+                brain_knowledge_service,
+            )
+
+            await brain_knowledge_service.delete_sources_for_org(
+                db,
+                org_id=org_id,
+                source_type=SOURCE_PINNED_ANSWER,
+                source_ids=answer_ids,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain_answer_pin_cleanup_failed", error=str(exc))
+
     def _turn_response(
         self, turn: Turn, saved_verdict_ids: set[str] | None = None
     ) -> TurnResponse:
@@ -1858,6 +2195,7 @@ class ChatService:
             model = get_model(a.model_id)
             answers.append(
                 ModelAnswerResponse(
+                    id=str(a.id),
                     model_id=a.model_id,
                     model_name=model.name,
                     text=a.text,

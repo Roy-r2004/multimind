@@ -16,6 +16,7 @@ type Props = {
   copiedLabel?: string;
   successMessage?: string;
   errorMessage?: string;
+  testId?: string;
 };
 
 /**
@@ -30,6 +31,7 @@ export function VerdictCopyButton({
   copiedLabel = "Copied",
   successMessage = "Verdict copied",
   errorMessage = "Could not copy verdict",
+  testId,
 }: Props) {
   const [copied, setCopied] = useState(false);
 
@@ -49,6 +51,7 @@ export function VerdictCopyButton({
       type="button"
       aria-label={copied ? copiedLabel : label}
       title={copied ? copiedLabel : label}
+      data-testid={testId}
       onClick={() => void handleCopy()}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition",

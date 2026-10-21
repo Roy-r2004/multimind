@@ -399,6 +399,11 @@ class Settings(BaseSettings):
     chat_attachment_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
     chat_attachment_dir: str = "data/chat_attachments"
     chat_attachment_context_max_chars: int = Field(default=300_000)
+    # Owner safeguard for automatic whole-document section reads. This is not a
+    # user prompt. A normal document finishes inside one turn well below this.
+    document_analysis_max_calls: int = Field(default=1000, ge=1)
+    document_analysis_progress_dir: str = "data/document_progress"
+    openrouter_context_cache_path: str = "data/openrouter_context_cache.json"
     # Catalog model id used for the single pre-council image analysis call.
     # Default: gemini (google/gemini-2.5-pro) — strong multimodal quality for
     # screenshots, UI, tables, charts, and photos at a reasonable OpenRouter cost.
@@ -410,6 +415,24 @@ class Settings(BaseSettings):
     chat_verdict_simplifier_model: str = "gpt-4.1-mini"
     library_file_dir: str = "data/library_files"
     library_file_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10 MB
+    # Off unless LARGE_DOCUMENTS_ENABLED is set. Production compose leaves it
+    # false. Development compose turns it on for testing. Flag off keeps the
+    # PR #98 synchronous extraction path and the 10 MB upload limit.
+    large_documents_enabled: bool = False
+    large_document_max_bytes: int = Field(default=200 * 1024 * 1024)
+    document_worker_queue_name: str = "documents"
+    document_worker_concurrency: int = Field(default=1, ge=1)
+    document_worker_job_timeout_seconds: int = Field(default=6 * 60 * 60, ge=1)
+    document_worker_keep_result_seconds: int = Field(default=3600, ge=0)
+    document_processing_stale_seconds: int = Field(default=180, ge=1)
+    document_processing_wait_seconds: int = Field(default=60 * 60, ge=1)
+    document_processing_poll_seconds: float = Field(default=2.0, gt=0)
+    document_ocr_batch_pages: int = Field(default=4, ge=1)
+    document_chunk_chars: int = Field(default=4000, ge=200)
+    # OpenRouter vision slug for scanned PDF pages. Used only while
+    # large_documents_enabled is on. Override with DOCUMENT_OCR_MODEL.
+    document_ocr_model: str = "google/gemini-3-flash-preview"
+    document_embedding_model: str = ""
 
     # Rate limiting
     rate_limit_per_minute: int = 60

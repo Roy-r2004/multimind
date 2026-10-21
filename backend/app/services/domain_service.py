@@ -118,6 +118,9 @@ class ProjectService:
         )
         chats = result.scalars().all()
         pins_by_chat: dict[str, list[PinnedVerdictResponse]] = {}
+        from app.services.chat_service import load_answer_pins
+
+        answer_pins_by_chat = await load_answer_pins(db, [chat.id for chat in chats])
         if chats:
             pin_rows = await db.execute(
                 select(ChatVerdictPin, Verdict.turn_id)
@@ -154,6 +157,7 @@ class ProjectService:
                         next((p.turn_id for p in pins_by_chat.get(c.id, []) if p.pin_type == "verdict"), None)
                     ),
                     pinned_verdicts=pins_by_chat.get(c.id, []),
+                    pinned_answers=answer_pins_by_chat.get(c.id, []),
                     updated_at=c.updated_at,
                 )
                 for c in chats

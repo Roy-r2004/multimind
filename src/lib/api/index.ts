@@ -2,7 +2,7 @@ import type { SelectionLocator } from "@/lib/verdictSelectionNavigation";
 /** Typed API methods — one function per backend endpoint */
 
 import { apiFormRequest, apiRequest } from "@/lib/api/client";
-import { verdictPinRequest } from "@/lib/pinnedVerdicts";
+import { answerPinRequest, verdictPinRequest } from "@/lib/pinnedVerdicts";
 import {
   COMPOSER_AUDIO_UPLOAD_TIMEOUT_MS,
   composerAttachmentUploadTimeoutMs,
@@ -160,6 +160,13 @@ export const api = {
     warm: () => apiRequest<{ status: string }>("/health"),
   },
 
+  clientConfig: () =>
+    apiRequest<{
+      large_documents_enabled: boolean;
+      attachment_max_bytes: number;
+      library_max_bytes: number;
+    }>("/client-config"),
+
   models: {
     list: (auth: Auth) =>
       apiRequest<ApiModel[]>("/models", { token: auth.token, orgId: auth.orgId }),
@@ -249,6 +256,52 @@ export const api = {
       });
     },
 
+    pinAnswer: (auth: Auth, chatId: string, answerId: string) => {
+      const request = answerPinRequest(chatId, answerId, "pin");
+      return apiRequest<ApiChat>(request.path, {
+        method: request.method,
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
+
+    unpinAnswer: (auth: Auth, chatId: string, answerId: string) => {
+      const request = answerPinRequest(chatId, answerId, "unpin");
+      return apiRequest<ApiChat>(request.path, {
+        method: request.method,
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
+
+    pinAnswerSelection: (
+      auth: Auth,
+      chatId: string,
+      answerId: string,
+      plainText: string,
+      html: string,
+      locator?: SelectionLocator | null,
+    ) =>
+      apiRequest<ApiChat>(`/chats/${chatId}/pinned-answers`, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+        body: {
+          answer_id: answerId,
+          pin_type: "selection",
+          selected_text: plainText,
+          selected_html: html,
+          selection_locator: locator,
+        },
+      }),
+
+    unpinAnswerSelection: (auth: Auth, chatId: string, pinId: string) =>
+      apiRequest<ApiChat>(`/chats/${chatId}/pinned-answers/selections/${pinId}`, {
+        method: "DELETE",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
     listTurns: (auth: Auth, chatId: string) =>
       apiRequest<ApiTurn[]>(`/chats/${chatId}/turns`, { token: auth.token, orgId: auth.orgId }),
 
@@ -311,7 +364,7 @@ export const api = {
         token: auth.token,
         orgId: auth.orgId,
         // .webm transcription runs inside this request; documents keep the short timeout.
-        timeoutMs: composerAttachmentUploadTimeoutMs(file.name),
+        timeoutMs: composerAttachmentUploadTimeoutMs(file.name, file.size),
       });
     },
 

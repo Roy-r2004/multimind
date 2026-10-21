@@ -113,6 +113,7 @@ export async function attachLibraryItemToComposer(
               state: "uploaded" as const,
               attachmentId: attachment.id,
               textExcerpt: attachment.text_excerpt,
+              excerptStatus: attachment.excerpt_status,
               libraryItemId,
             }
           : file,
