@@ -10,6 +10,18 @@ docker compose up --build
 
 Open http://localhost:3080 — demo login `chafic@gmail.com` / `password123` (admin: `admin@gmail.com` / `password123`).
 
+This starts Maps Census in Google Places mode (`MAPS_DISCOVERY_PROVIDER=google_places`, the default in `.env.example`) and does **not** start the `gosom` container — it's an alternative discovery provider behind its own Compose profile, not a required service.
+
+### Maps Census with Gosom instead of Google Places
+
+Set both `MAPS_DISCOVERY_PROVIDER=gosom` **and** `COMPOSE_PROFILES=gosom` (e.g. in your `.env`), then:
+
+```bash
+docker compose --profile gosom up --build
+```
+
+(`COMPOSE_PROFILES=gosom` in `.env` makes a plain `docker compose up --build` equivalent — either works, just pick one so the two settings don't drift apart.)
+
 ## Deploy on Render
 
 Connect this repo and use the included `render.yaml` blueprint. Set `OPENROUTER_API_KEY` on the API service.

@@ -252,8 +252,17 @@ services:
       retries: 3
       start_period: 60s
 
+  # Gosom is an alternative Maps Census discovery provider (see
+  # MAPS_DISCOVERY_PROVIDER in .env.example), not a mandatory service — a
+  # normal google_places deployment never needs a browser-based scraper
+  # running. The "gosom" profile keeps it out of the default `docker compose
+  # up` service set entirely; it only starts when explicitly requested (see
+  # README/below for the exact commands). Nothing else in this file
+  # declares a depends_on against it, so omitting it changes no other
+  # service's startup ordering or health checks.
   gosom:
     image: gosom/google-maps-scraper:v1.18.1
+    profiles: ["gosom"]
     command: ["-web", "-addr", ":8080", "-data-folder", "/gmapsdata", "-c", "1"]
     environment:
       PLAYWRIGHT_BROWSERS_PATH: /opt/browsers
