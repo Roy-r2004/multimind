@@ -195,6 +195,57 @@ def test_outside_polygon_does_not_change_an_already_excluded_outcome():
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
+# --- Residential/inpatient internal-contradiction guard: facility_type
+# alone saying "residential" must not override the SAME classification
+# call's own more specific residential_accommodation/care_setting fields
+# when they explicitly disagree. Absence of these fields must never
+# itself block eligibility (that would break every existing eligible case
+# above, none of which set them). ---
+
+
+def test_contradicting_residential_evidence_downgrades_to_review():
+    place = _eligible_place(residential_accommodation=False, care_setting="outpatient")
+    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+
+
+def test_contradicting_residential_evidence_virtual_care_setting_downgrades_to_review():
+    place = _eligible_place(residential_accommodation=False, care_setting="virtual")
+    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+
+
+def test_missing_residential_evidence_still_eligible():
+    """No residential_accommodation/care_setting evidence at all (the
+    normal case for most existing eligible facilities) must behave exactly
+    as before this guard — facility_type + ownership + addiction_focus
+    alone is still sufficient."""
+    place = _eligible_place()
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_residential_accommodation_true_stays_eligible():
+    place = _eligible_place(residential_accommodation=True, care_setting="residential")
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_medical_detox_alongside_real_residential_program_stays_eligible():
+    """A residential program that ALSO offers medically supervised detox
+    must never be penalized for it — only an explicit outpatient/virtual
+    care_setting triggers the contradiction guard."""
+    place = _eligible_place(
+        residential_accommodation=True, care_setting="residential", medical_detox=True
+    )
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_residential_accommodation_false_with_residential_care_setting_stays_eligible():
+    """Only the specific outpatient/virtual care_setting values count as a
+    genuine contradiction — an ambiguous/unrecognized care_setting value
+    paired with residential_accommodation=False is not enough on its own
+    to downgrade (conservative: avoid over-triggering on noisy AI output)."""
+    place = _eligible_place(residential_accommodation=False, care_setting="mixed")
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
 def test_probable_non_government_with_addiction_focus_goes_to_review_without_scope_or_type_gate():
     place = make_place(
         ownership_status=MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value,

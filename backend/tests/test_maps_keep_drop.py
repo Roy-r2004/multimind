@@ -146,19 +146,25 @@ LOW_CONF_KEEP_JSON = json.dumps(
 )
 
 
-def test_apply_keep_drop_keep_maps_to_eligible():
+def test_apply_keep_drop_keep_routes_to_phase2_without_granting_final_eligibility():
+    """A confident keep/drop "keep" is Phase 1 metadata, not verified
+    classification evidence — it must route to Phase 2 but must NOT by
+    itself establish final client_eligibility (that is reserved for
+    compute_client_eligibility, called once real classification evidence
+    exists)."""
     place = _place("r1", "g1", "Centre Rehab")
     decision = KeepDropDecision.model_validate(json.loads(KEEP_JSON))
     apply_keep_drop(place, decision, source="nano")
     assert place.keep_drop_decision == "keep"
-    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
-    assert place.lifecycle_status == MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
+    assert place.client_eligibility == MapsClientEligibility.REVIEW.value
+    assert place.lifecycle_status == MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
     assert place.is_relevant is True
     assert place.enrichment_pipeline_state == (
         MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
     )
     assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
-    assert _is_eligible_center(place)
+    # Not yet exportable — Phase 2 classification hasn't run.
+    assert not _is_eligible_center(place)
 
 
 def test_apply_keep_drop_drop_maps_to_excluded():
@@ -228,7 +234,11 @@ async def test_low_confidence_nano_falls_back_to_sonar(db, auth, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_uncertain_sonar_keep_defaults_to_drop(db, auth, monkeypatch):
+async def test_uncertain_sonar_keep_defaults_to_review(db, auth, monkeypatch):
+    """Genuine ambiguity (both calls stayed under the confidence threshold)
+    is preserved as "review" for Phase 2's real evidence-gathering, not
+    guessed away as "drop" — a false drop loses a genuine candidate's only
+    chance to ever be verified."""
     run = _run(auth)
     db.add(run)
     await db.flush()
@@ -243,7 +253,7 @@ async def test_uncertain_sonar_keep_defaults_to_drop(db, auth, monkeypatch):
     decision, _source = await classify_place_keep_drop(
         db, place, country_code="DZ", country_name="Algeria"
     )
-    assert decision.decision == "drop"
+    assert decision.decision == "review"
     assert decision.reason.startswith("uncertain:")
 
 
@@ -354,7 +364,11 @@ async def test_run_pass_is_resumable_and_gates_export(db, auth, monkeypatch):
             await fresh.execute(select(MapsPlace).where(MapsPlace.run_id == run.id))
         ).scalars().all()
     by_gid = {p.google_place_id: p for p in places}
-    assert _is_eligible_center(by_gid["g1"])
+    # Kept -> routed to Phase 2, but NOT yet an eligible center — keep/drop
+    # alone never establishes final eligibility.
+    assert by_gid["g1"].keep_drop_decision == "keep"
+    assert not _is_eligible_center(by_gid["g1"])
+    assert by_gid["g1"].enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
     assert not _is_eligible_center(by_gid["g2"])
     assert by_gid["g2"].enrichment_pipeline_state == MapsEnrichmentPipelineState.FINALIZED.value
 

@@ -811,12 +811,20 @@ def _dump_classification_evidence(
     return dumped or None
 
 
+def _has_supporting_evidence(field: EvidenceField) -> bool:
+    """A quote or a source URL — either is enough to call this an
+    attributable claim rather than an unsupported assertion. Enforced
+    here (not just requested in the prompt) because the model has
+    historically returned the field anyway with the citation left blank."""
+    return bool(field.evidence_quote.strip() or field.source_url.strip())
+
+
 def _normalize_languages(fields: list[EvidenceField]) -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
     for field in fields:
         value = (field.value or "").strip()
-        if not value:
+        if not value or not _has_supporting_evidence(field):
             continue
         key = value.casefold()
         if key in seen:
@@ -831,7 +839,7 @@ def _normalize_addictions(fields: list[EvidenceField]) -> list[str]:
     values: list[str] = []
     for field in fields:
         raw = (field.value or "").strip()
-        if not raw:
+        if not raw or not _has_supporting_evidence(field):
             continue
         canonical = _canonical_addiction(raw)
         if canonical is None or canonical in seen:

@@ -63,6 +63,16 @@ def compute_client_eligibility(place: Any) -> str:
     facility_type = _field(place, "facility_type")
     organization_scope = _field(place, "organization_scope")
     addiction_focus_confirmed = _field(place, "addiction_focus_confirmed")
+    # Finer-grained residential-setting signals from the SAME classification
+    # call that produced facility_type — consulted only to catch an
+    # internal CONTRADICTION (the AI's own more specific fields disagree
+    # with its own broad facility_type label), never to require them: a
+    # facility with no residential_accommodation/care_setting evidence at
+    # all must still reach ELIGIBLE exactly as before, via facility_type +
+    # ownership + addiction_focus alone. See compute_client_eligibility's
+    # ELIGIBLE branch below.
+    residential_accommodation = _field(place, "residential_accommodation")
+    care_setting = _field(place, "care_setting")
     # Geographic result validation (see maps_geo_boundaries.contains_point):
     # only ever set when the place HAD coordinates AND a verified polygon
     # was available to check them against — "no_coordinates" and
@@ -103,6 +113,17 @@ def compute_client_eligibility(place: Any) -> str:
         and facility_type in ELIGIBLE_FACILITY_TYPES
         and addiction_focus_confirmed is True
     ):
+        if residential_accommodation is False and care_setting in {"outpatient", "virtual"}:
+            # facility_type alone said residential/inpatient/therapeutic-
+            # community, but the same classification call's own more
+            # specific fields explicitly say there's no overnight stay —
+            # a genuine internal contradiction, not just missing data.
+            # Never silently trust the one broad label over its own more
+            # detailed evidence; a human resolves it. (A facility that
+            # ALSO offers medical detox alongside a real residential
+            # program is untouched by this — nothing here penalizes
+            # medical_detox, only an explicit outpatient/virtual setting.)
+            return MapsClientEligibility.REVIEW.value
         if geo_boundary_match == "outside_polygon":
             # Verified coordinates placing this result outside the run's
             # actual selected polygon — business classification alone
