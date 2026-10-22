@@ -1,6 +1,7 @@
 """Regression tests closing the keep/drop eligibility bypass.
 
-A preliminary keep/drop AI decision (gpt-5-nano "keep", or the Sonar
+A preliminary keep/drop AI decision (the primary Keep/Drop model's "keep",
+or the Sonar
 fallback's "review") must never be sufficient on its own to establish
 final client_eligibility — only compute_client_eligibility, called once
 real Phase 2 classification evidence exists (or an explicit, authorized

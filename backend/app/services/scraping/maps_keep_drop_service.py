@@ -1,6 +1,7 @@
 """Strict keep/drop gate for Maps census places.
 
-One low-cost AI call per facility (default ``gpt-5-nano``) using existing Google
+One low-cost AI call per facility (default ``anthropic/claude-haiku-5.5`` via
+OpenRouter) using existing Google
 Maps fields, descriptions, and already-crawled website content. When evidence is
 insufficient or confidence falls below the configured threshold, a single Sonar
 (low search context) fallback call re-judges the candidate.

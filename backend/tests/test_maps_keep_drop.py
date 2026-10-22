@@ -103,7 +103,7 @@ def _patch_models(monkeypatch, nano: _FakeProvider, sonar: _FakeProvider):
     def fake_get_model_routed(slug: str):
         if slug == "sonar":
             return SimpleNamespace(provider="sonar", provider_model="perplexity/sonar")
-        return SimpleNamespace(provider="nano", provider_model="openai/gpt-5-nano")
+        return SimpleNamespace(provider="nano", provider_model="anthropic/claude-haiku-5.5")
 
     class _RoutingRegistry:
         def get_provider(self, name):
@@ -144,6 +144,18 @@ LOW_CONF_KEEP_JSON = json.dumps(
         "evidence": [],
     }
 )
+
+
+def test_keep_drop_model_resolves_to_claude_haiku_via_openrouter():
+    """Model selection/provider routing for the primary Keep/Drop call —
+    no mocking, exercises the real catalog + settings default."""
+    from app.core.config import get_settings
+    from app.llm.catalog import get_model
+
+    settings = get_settings()
+    model = get_model(settings.maps_keep_drop_model)
+    assert model.provider == "openrouter"
+    assert model.provider_model == "anthropic/claude-haiku-5.5"
 
 
 def test_apply_keep_drop_keep_routes_to_phase2_without_granting_final_eligibility():

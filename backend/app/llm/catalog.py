@@ -46,6 +46,15 @@ MODEL_CATALOG: dict[str, ModelCatalogEntry] = {
         provider="openrouter",
         provider_model="openai/gpt-5-nano",
     ),
+    "claude-haiku": ModelCatalogEntry(
+        id="claude-haiku",
+        name="Claude Haiku 5.5",
+        vendor="Anthropic",
+        color="oklch(0.78 0.12 60)",
+        blurb="Low-cost high-volume classification",
+        provider="openrouter",
+        provider_model="anthropic/claude-haiku-5.5",
+    ),
     "sonar": ModelCatalogEntry(
         id="sonar",
         name="Sonar",
