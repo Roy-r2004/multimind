@@ -273,6 +273,33 @@ class Settings(BaseSettings):
     maps_census_country_profile_model: str = "sonar-pro"
     maps_census_country_profile_timeout_seconds: float = 90.0
 
+    # Worldwide geographic boundary resolution (ADM0/ADM1 from geoBoundaries
+    # gbOpen, cached locally — see maps_geo_boundaries.py). Never touches
+    # backend/data/; a dedicated, gitignored cache directory instead.
+    # Acquisition is a deliberate, operator-run step (scripts/fetch_geo_boundaries.py),
+    # never automatic at request time — this directory being empty or
+    # unreadable must only ever mean "fall back to text-only", not an error.
+    maps_geo_boundary_cache_dir: str = "var/geo_boundaries"
+    maps_geo_boundary_fetch_timeout_seconds: float = 20.0
+    maps_geo_boundary_max_download_bytes: int = 25_000_000
+    # Grid granularity (degrees) used by maps_geo_boundaries.polygon_cells
+    # when region-wide seed cells are distributed across the real polygon
+    # instead of all receiving one identical full bounding rectangle.
+    maps_geo_polygon_cell_degrees: float = 1.0
+
+    # Optional AI geographic search planner (Task 4) — disabled by default
+    # until reviewed. When enabled, makes at most one OpenRouter call per
+    # run to suggest search priorities/terms *within* the already-resolved
+    # boundary; it is never treated as a source of coordinates or
+    # boundaries. Cost note: default model below is a small/cheap chat
+    # model, not a research/web-search model like the country profile's
+    # Sonar — pick a different one deliberately if you want different cost
+    # characteristics, see README for the trade-off.
+    maps_geo_ai_planner_enabled: bool = False
+    maps_geo_ai_planner_model: str = "gpt-4.1-mini"
+    maps_geo_ai_planner_timeout_seconds: float = 45.0
+    maps_geo_ai_planner_max_calls_per_run: int = 1
+
     # Phase 2: AI web-search enrichment of addictions/languages (no crawling)
     maps_census_enrichment_enabled: bool = True
     # Legacy single-pass cap retained for backward compatibility; the resumable

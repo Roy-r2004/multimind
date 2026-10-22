@@ -30,6 +30,10 @@ backend/*.db
 .env
 .env.ui-test
 
+# Cached worldwide geographic boundary data (fetched deliberately via
+# scripts/fetch_geo_boundaries.py, never committed — see maps_geo_boundaries.py)
+backend/var/geo_boundaries/
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

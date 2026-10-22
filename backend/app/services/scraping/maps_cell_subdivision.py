@@ -10,7 +10,7 @@ country) and generic geography heuristics, never a hardcoded country's terms.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 # One quadrant per subdivision keeps the child-cell fan-out bounded even when
 # every strategy below fires for the same capped cell.
@@ -66,8 +66,17 @@ def subdivide_cell(
     viewport_bounds: dict[str, Any] | None = None,
     existing_query_texts: set[str] | None = None,
     max_children: int = MAX_CHILD_CELLS_PER_SUBDIVISION,
+    polygon_filter: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[ChildCellSpec]:
     """Build child-cell specs for a capped cell.
+
+    ``polygon_filter``, when given, is called with each viewport quadrant
+    (north/south/east/west dict) and must return ``True`` for it to be
+    kept — used by callers that have resolved a real verified polygon for
+    this run (``maps_geo_boundaries.bbox_intersects_polygon``) to drop a
+    quadrant that lands entirely outside the region's actual shape (e.g.
+    in a neighboring state/country still inside the bounding rectangle).
+    ``None`` keeps every quadrant, same as before this existed.
 
     Strategies, tried in order until ``max_children`` is reached:
       1. viewport_subdivision — when a bounding box is known, split it into
@@ -133,6 +142,8 @@ def subdivide_cell(
         for quadrant in _quadrants(viewport_bounds):
             if len(children) >= max_children:
                 break
+            if polygon_filter is not None and not polygon_filter(quadrant):
+                continue
             _add(
                 query_text,
                 reason="viewport_subdivision",

@@ -99,7 +99,8 @@ from app.services.scraping.maps_circuit_breaker import (
 from app.services.scraping.maps_country_profile_service import maps_country_profile_service
 from app.services.scraping.maps_eligibility import derive_is_relevant, derive_legacy_verification_verdict
 from app.services.scraping.maps_external_discovery import maps_external_discovery_coordinator
-from app.services.scraping.maps_geo_regions import resolve_geo_anchor
+from app.services.scraping import maps_geo_boundaries, maps_geo_planner_service
+from app.services.scraping.maps_geo_regions import resolve_geo_anchor_detailed
 from app.services.scraping.maps_observability import (
     log_budget_exceeded,
     log_cell_processing,
@@ -109,7 +110,11 @@ from app.services.scraping.maps_observability import (
     log_stage_start,
     timed_operation,
 )
-from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
+from app.services.scraping.maps_grid_planner import (
+    MapsGridCell,
+    MapsGridPlanningError,
+    maps_grid_planner,
+)
 from app.services.scraping.maps_places_client import (
     PlacesProviderError,
     PlacesTimeoutError,
@@ -1025,9 +1030,58 @@ class MapsCensusService:
             country_profile = run.country_profile if run is not None else None
             country_profile_status = run.country_profile_status if run is not None else None
 
-        geo_anchor = resolve_geo_anchor(
+        geo_anchor_detail = resolve_geo_anchor_detailed(
             country_code=country_code, state_code=state_code, state_name=state_name
         )
+        geo_anchor = geo_anchor_detail["bounds"]
+        # The raw verified polygon (not just its bbox) — resolved once per
+        # run, read-only from the local cache, never from the network.
+        # Used to (a) distribute real polygon-filtered sub-boxes across
+        # region-wide seed cells instead of handing every one of them the
+        # same full bounding rectangle, and (b) filter out subdivision
+        # quadrants that don't actually overlap the region. ``None``
+        # whenever no dataset-backed boundary applies — in which case
+        # behavior is byte-for-byte the pre-existing single-bbox behavior.
+        geo_polygon_record = None
+        if geo_anchor_detail["polygon_available"]:
+            try:
+                geo_polygon_record = maps_geo_boundaries.resolve_region_boundary(
+                    country_code=country_code, state_code=state_code, state_name=state_name
+                )
+            except Exception:  # noqa: BLE001
+                geo_polygon_record = None
+        # Persisted (not just logged) so this is visible to the API/UI, not
+        # only to someone reading logs: every run should clearly state
+        # whether it used real geographic cells or stayed text-only — never
+        # leave that implicit. Dataset-backed resolutions also record their
+        # source/license/boundary id; the static-table fallback and the
+        # unresolved case are each reported distinctly rather than folded
+        # into a single "resolved" boolean.
+        async with session_factory() as geo_state_db:
+            run = await geo_state_db.get(MapsCensusRun, run_id)
+            if run is not None:
+                state = dict(run.processing_state or {})
+                state["geo_anchor"] = (
+                    {
+                        "resolved": True,
+                        "country_code": country_code,
+                        "state_code": state_code,
+                        "bounds": geo_anchor,
+                        "source": geo_anchor_detail["source"],
+                        "source_license": geo_anchor_detail["source_license"],
+                        "source_boundary_id": geo_anchor_detail["source_boundary_id"],
+                        "polygon_available": geo_anchor_detail["polygon_available"],
+                    }
+                    if geo_anchor is not None
+                    else {
+                        "resolved": False,
+                        "country_code": country_code,
+                        "state_code": state_code,
+                        "reason": "no trusted boundary or bounding box for this country/state — text-only search",
+                    }
+                )
+                run.processing_state = state
+                await geo_state_db.commit()
         if geo_anchor is not None:
             logger.info(
                 "maps_census_geo_anchor_resolved run_id=%s country_code=%s state_code=%s",
@@ -1048,6 +1102,42 @@ class MapsCensusService:
                 state_code,
                 state_name,
             )
+
+        # Optional AI planning layer (Task 4) — disabled by default
+        # (settings.maps_geo_ai_planner_enabled). Runs at most once per
+        # run, never per cell, and only ever suggests priorities/terms
+        # within the region geo_anchor already verified; it is never
+        # consulted for, and cannot supply, coordinates. A failure here
+        # never fails the run — plan_geo_strategy already catches
+        # everything and returns a skipped_reason instead of raising.
+        geo_plan_result = await maps_geo_planner_service.plan_geo_strategy(
+            country_code=country_code,
+            country_name=country_name,
+            state_code=state_code,
+            state_name=state_name,
+            resolved_region_label=(
+                f"{state_name or state_code or ''} {country_name or country_code or ''}".strip()
+                if geo_anchor is not None
+                else None
+            ),
+        )
+        async with session_factory() as geo_plan_db:
+            run = await geo_plan_db.get(MapsCensusRun, run_id)
+            if run is not None:
+                state = dict(run.processing_state or {})
+                state["geo_ai_plan"] = {
+                    "used_ai": geo_plan_result.used_ai,
+                    "cached": geo_plan_result.cached,
+                    "model": geo_plan_result.model,
+                    "skipped_reason": geo_plan_result.skipped_reason,
+                    "suggestion": (
+                        geo_plan_result.suggestion.model_dump(mode="json")
+                        if geo_plan_result.suggestion is not None
+                        else None
+                    ),
+                }
+                run.processing_state = state
+                await geo_plan_db.commit()
 
         configured_cells = (
             settings.maps_census_max_cells_per_campaign or settings.maps_census_max_cells_per_run
@@ -1154,6 +1244,41 @@ class MapsCensusService:
                         await fail_db.commit()
                 return {"error": 1}
 
+            ai_added_cell_count = 0
+            ai_suggestion = geo_plan_result.suggestion
+            if ai_suggestion is not None and ai_suggestion.additional_search_terms:
+                # The ONLY way the optional AI planner is allowed to
+                # influence what actually gets searched: extra query TEXT,
+                # reusing a region name the deterministic grid planner
+                # already produced (never a new region, never city_name,
+                # never coordinates). ``priority_areas`` is deliberately
+                # NOT used here — an unverified place name from the model
+                # has no gazetteer to check it against, so turning it into
+                # a live search target would be exactly the kind of
+                # hallucinated/out-of-scope area this task forbids. Plain
+                # search terms carry no such risk: they're query
+                # vocabulary, not a claim about geography.
+                existing_regions = sorted({cell.region_name for cell in seed_cells if cell.region_name})
+                extra_terms = ai_suggestion.additional_search_terms[:5]
+                ai_added_cells = [
+                    MapsGridCell(region_name=region_name, city_name=None, query_text=term)
+                    for region_name in existing_regions
+                    for term in extra_terms
+                ]
+                if ai_added_cells:
+                    seed_cells = list(seed_cells) + ai_added_cells
+                    ai_added_cell_count = len(ai_added_cells)
+            if ai_added_cell_count:
+                async with session_factory() as geo_plan_cells_db:
+                    run = await geo_plan_cells_db.get(MapsCensusRun, run_id)
+                    if run is not None:
+                        state = dict(run.processing_state or {})
+                        plan_state = dict(state.get("geo_ai_plan") or {})
+                        plan_state["cells_added"] = ai_added_cell_count
+                        state["geo_ai_plan"] = plan_state
+                        run.processing_state = state
+                        await geo_plan_cells_db.commit()
+
             region_ids_by_name = {}
             seen_query_texts = set()
             seed_cells = _cap_to_budget(
@@ -1166,6 +1291,7 @@ class MapsCensusService:
                 region_ids_by_name=region_ids_by_name,
                 seen_query_texts=seen_query_texts,
                 geo_anchor=geo_anchor,
+                geo_polygon_record=geo_polygon_record,
             )
             campaign_cells_used = await increment_run_cells_total(
                 session_factory, run_id=run_id, by=len(cell_ids)
@@ -1216,6 +1342,7 @@ class MapsCensusService:
                 seen_query_texts=seen_query_texts,
                 execution_token=execution_token,
                 gosom_breaker=gosom_breaker,
+                geo_polygon_record=geo_polygon_record,
             )
             campaign_cells_used = campaign_budget["used"]
 
@@ -1329,6 +1456,7 @@ class MapsCensusService:
                 region_ids_by_name=region_ids_by_name,
                 seen_query_texts=seen_query_texts,
                 geo_anchor=geo_anchor,
+                geo_polygon_record=geo_polygon_record,
             )
             if not new_cell_ids:
                 stopped_reason = "no_expanding_regions"
@@ -1563,6 +1691,7 @@ class MapsCensusService:
         region_ids_by_name: dict[str, str],
         seen_query_texts: set[str],
         geo_anchor: dict[str, float] | None = None,
+        geo_polygon_record: Any = None,
     ) -> list[str]:
         """Insert planner cells as ``MapsCensusCell`` rows linked to a region,
         deduping against every query_text already persisted for this run
@@ -1582,7 +1711,29 @@ class MapsCensusService:
         coordinate source (which this codebase does not have), the only
         honest choice for a city-named cell is the pre-existing text-only
         search — never a fabricated or mismatched box.
+
+        ``geo_polygon_record``, when given, replaces that single repeated
+        bbox with real polygon-filtered sub-boxes (``maps_geo_boundaries.
+        polygon_cells``) distributed round-robin across the region-wide
+        cells — so an irregularly-shaped region's multiple seed cells cover
+        actual area instead of all pointing at the same full rectangle. If
+        the polygon yields no usable sub-boxes (e.g. a degenerate/too-small
+        geometry), this falls back to the single-bbox behavior unchanged.
         """
+        from itertools import cycle
+
+        polygon_box_cycle = None
+        if geo_polygon_record is not None:
+            settings = get_settings()
+            try:
+                polygon_boxes = maps_geo_boundaries.polygon_cells(
+                    geo_polygon_record, cell_degrees=settings.maps_geo_polygon_cell_degrees
+                )
+            except Exception:  # noqa: BLE001
+                polygon_boxes = []
+            if polygon_boxes:
+                polygon_box_cycle = cycle(polygon_boxes)
+
         cell_ids: list[str] = []
         async with session_factory() as db:
             for cell in cells:
@@ -1597,6 +1748,8 @@ class MapsCensusService:
                     region_ids_by_name=region_ids_by_name,
                 )
                 cell_geo_anchor = geo_anchor if geo_anchor and not cell.city_name else None
+                if cell_geo_anchor is not None and polygon_box_cycle is not None:
+                    cell_geo_anchor = next(polygon_box_cycle)
                 row = MapsCensusCell(
                     run_id=run_id,
                     region_id=region_id,
@@ -1718,6 +1871,7 @@ class MapsCensusService:
         seen_query_texts: set | None = None,
         execution_token: str | None = None,
         gosom_breaker: CircuitBreaker | None = None,
+        geo_polygon_record: Any = None,
     ) -> None:
         """Run a paginated Places search for each queued cell, classify newly
         discovered places immediately (so saturation reflects real
@@ -1727,8 +1881,21 @@ class MapsCensusService:
         network await. Child cells generated mid-run are appended to the same
         work queue so they execute within this call (bounded by
         ``maps_census_max_subdivision_depth`` and the campaign cell budget).
+
+        ``geo_polygon_record``, when given, filters viewport-subdivision
+        quadrants against the real verified polygon (see
+        ``maps_geo_boundaries.bbox_intersects_polygon``) so a quadrant that
+        falls entirely outside the region's actual shape is never created.
         """
         from collections import deque
+
+        polygon_filter = None
+        if geo_polygon_record is not None:
+            def polygon_filter(bbox: dict[str, Any]) -> bool:
+                try:
+                    return maps_geo_boundaries.bbox_intersects_polygon(geo_polygon_record, bbox)
+                except Exception:  # noqa: BLE001
+                    return True  # fail open — never block subdivision on a geometry bug
 
         queue: deque[str] = deque(cell_ids)
         local_seen_query_texts = seen_query_texts if seen_query_texts is not None else set()
@@ -2025,6 +2192,11 @@ class MapsCensusService:
                             region_name=region_name,
                             latitude=result.latitude,
                             longitude=result.longitude,
+                            geo_boundary_match=_geo_boundary_match(
+                                geo_polygon_record,
+                                latitude=result.latitude,
+                                longitude=result.longitude,
+                            ),
                             international_phone_number=result.international_phone_number,
                             raw_website=result.website,
                             discovered_via_query=query_text,
@@ -2144,6 +2316,7 @@ class MapsCensusService:
                         country_profile=country_profile,
                         viewport_bounds=viewport_bounds,
                         existing_query_texts=local_seen_query_texts,
+                        polygon_filter=polygon_filter,
                     )
                     if campaign_budget is not None:
                         remaining = max(0, campaign_budget["max"] - campaign_budget["used"])
@@ -3203,6 +3376,28 @@ class MapsCensusService:
         ]
 
 
+def _geo_boundary_match(
+    geo_polygon_record: Any, *, latitude: float | None, longitude: float | None
+) -> str | None:
+    """Geographic result validation (Task 6): coordinate-based targeting
+    is a discovery strategy, not proof of membership. Returns which of the
+    four honest outcomes applies — never silently treats "no coordinates"
+    or "no polygon to check against" as if the place were confirmed inside
+    the region.
+    """
+    if latitude is None or longitude is None:
+        return "no_coordinates"
+    if geo_polygon_record is None:
+        return "no_polygon_available"
+    try:
+        inside = maps_geo_boundaries.contains_point(
+            geo_polygon_record, lat=latitude, lon=longitude
+        )
+    except Exception:  # noqa: BLE001
+        return "no_polygon_available"
+    return "inside_polygon" if inside else "outside_polygon"
+
+
 def _cap_to_budget(
     cells: list, *, max_cells_per_campaign: int, already_persisted: int
 ) -> list:
@@ -3510,6 +3705,7 @@ def _cell_item(cell: MapsCensusCell) -> MapsCensusCellItem:
         parent_cell_id=cell.parent_cell_id,
         expansion_reason=cell.expansion_reason,
         expansion_depth=cell.expansion_depth,
+        viewport_bounds=cell.viewport_bounds,
         attempt_count=cell.attempt_count,
         last_error=cell.last_error,
         next_retry_at=cell.next_retry_at,
@@ -3540,6 +3736,8 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
         updated_at=run.updated_at,
         hero_image_url=run.hero_image_url,
         total_cost_usd=float((run.quota_metrics or {}).get("total_cost_usd") or 0.0),
+        geo_anchor=(run.processing_state or {}).get("geo_anchor"),
+        geo_ai_plan=(run.processing_state or {}).get("geo_ai_plan"),
     )
 
 

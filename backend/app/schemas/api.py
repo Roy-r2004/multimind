@@ -715,6 +715,15 @@ class MapsCensusRunSummary(BaseModel):
     updated_at: datetime
     hero_image_url: str | None = None
     total_cost_usd: float = 0.0
+    # Whether this run resolved a trusted geographic bounding box for its
+    # country/state (and, if not, why) — see maps_geo_regions.resolve_geo_anchor.
+    # Never implicit: a run that fell back to text-only search says so here
+    # rather than leaving it to be inferred from logs.
+    geo_anchor: dict[str, Any] | None = None
+    # Optional AI geo-planning diagnostics (disabled by default) — whether
+    # the planner ran, was cached, which model, or why it was skipped. See
+    # maps_geo_planner_service.plan_geo_strategy.
+    geo_ai_plan: dict[str, Any] | None = None
 
 
 class MapsCensusRunDetail(MapsCensusRunSummary):
@@ -767,6 +776,12 @@ class MapsCensusCellItem(BaseModel):
     parent_cell_id: str | None = None
     expansion_reason: str | None = None
     expansion_depth: int = 0
+    # Non-null exactly when this specific cell searched a real geographic
+    # box (viewport-centered @lat,lon,zoom on Gosom); null means a
+    # text-only, keyword-driven search — the per-cell half of "clearly
+    # surface geo cells vs. text-only fallback" (the run-level half is
+    # MapsCensusRunSummary.geo_anchor).
+    viewport_bounds: dict[str, float] | None = None
     # Resumable-execution diagnostics (Phase 2 gap #3).
     attempt_count: int = 0
     last_error: str | None = None

@@ -63,6 +63,12 @@ def compute_client_eligibility(place: Any) -> str:
     facility_type = _field(place, "facility_type")
     organization_scope = _field(place, "organization_scope")
     addiction_focus_confirmed = _field(place, "addiction_focus_confirmed")
+    # Geographic result validation (see maps_geo_boundaries.contains_point):
+    # only ever set when the place HAD coordinates AND a verified polygon
+    # was available to check them against — "no_coordinates" and
+    # "no_polygon_available" are deliberately NOT treated as a geographic
+    # problem here, so a facility is never penalized for missing data.
+    geo_boundary_match = _field(place, "geo_boundary_match")
 
     if operating_status == "closed" or lifecycle_status == MapsLifecycleStatus.PERMANENTLY_CLOSED.value:
         return MapsClientEligibility.EXCLUDED.value
@@ -81,10 +87,7 @@ def compute_client_eligibility(place: Any) -> str:
         MapsFacilityType.CESSATION_SERVICE.value,
         MapsFacilityType.HARM_REDUCTION_ONLY.value,
         MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
-        MapsFacilityType.TELEHEALTH_ONLY.value,
-        MapsFacilityType.SOBER_LIVING.value,
-        MapsFacilityType.WELLNESS_COACHING_CENTER.value,
-        MapsFacilityType.MENTAL_HEALTH_CLINIC.value,
+        MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value,
     }:
         return MapsClientEligibility.EXCLUDED.value
 
@@ -100,6 +103,16 @@ def compute_client_eligibility(place: Any) -> str:
         and facility_type in ELIGIBLE_FACILITY_TYPES
         and addiction_focus_confirmed is True
     ):
+        if geo_boundary_match == "outside_polygon":
+            # Verified coordinates placing this result outside the run's
+            # actual selected polygon — business classification alone
+            # must never be enough to call it "eligible" for a
+            # geographically-scoped census. Downgraded to review (never a
+            # hard exclusion — simplified boundary geometry near a border
+            # can be wrong) so a human confirms before it reaches an
+            # eligible/client-facing list. Business-classification inputs
+            # above are completely untouched by this guard.
+            return MapsClientEligibility.REVIEW.value
         return MapsClientEligibility.ELIGIBLE.value
 
     if (

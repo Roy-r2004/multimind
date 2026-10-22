@@ -132,6 +132,69 @@ def test_residential_ngo_is_eligible():
     assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
+# --- Geographic result validation guard: an otherwise-eligible facility
+# whose coordinates are VERIFIED to be outside the run's selected polygon
+# must never reach "eligible" on business classification alone. Business
+# inputs are untouched by this guard — only the final ELIGIBLE outcome is
+# downgraded to REVIEW (never excluded, never applied when coordinates or
+# a polygon are missing). ---
+
+
+def _eligible_place(**overrides):
+    return make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        operator_type=MapsOperatorType.NONPROFIT.value,
+        funding_type=MapsFundingType.DONATION_BASED.value,
+        facility_type=MapsFacilityType.RESIDENTIAL_ADDICTION_REHAB.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+        **overrides,
+    )
+
+
+def test_outside_polygon_downgrades_eligible_to_review_not_excluded():
+    place = _eligible_place(geo_boundary_match="outside_polygon")
+    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+
+
+def test_inside_polygon_stays_eligible():
+    place = _eligible_place(geo_boundary_match="inside_polygon")
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_no_coordinates_never_blocked_by_geo_guard():
+    """A facility the provider gave no coordinates for must never be
+    penalized — missing data is not evidence of being outside the region."""
+    place = _eligible_place(geo_boundary_match="no_coordinates")
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_no_polygon_available_never_blocked_by_geo_guard():
+    """No cached dataset boundary for this run (the common case today)
+    must never be treated as if the facility were out of scope."""
+    place = _eligible_place(geo_boundary_match="no_polygon_available")
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_missing_geo_boundary_match_field_never_blocked_by_geo_guard():
+    """Rows discovered before this field existed (or any place-like object
+    that simply doesn't carry it) must behave exactly as before this
+    guard was added."""
+    place = _eligible_place()  # no geo_boundary_match attribute at all
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_outside_polygon_does_not_change_an_already_excluded_outcome():
+    """The guard only ever downgrades what would have been ELIGIBLE — it
+    must never upgrade or otherwise alter an EXCLUDED business-classification
+    outcome."""
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_GOVERNMENT.value,
+        geo_boundary_match="outside_polygon",
+    )
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
 def test_probable_non_government_with_addiction_focus_goes_to_review_without_scope_or_type_gate():
     place = make_place(
         ownership_status=MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value,

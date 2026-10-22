@@ -3064,6 +3064,12 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     region_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Geographic result validation (not Phase 2 eligibility): whether this
+    # place's coordinates (when the provider gave any) were checked against
+    # the run's verified polygon, and what that check found. One of
+    # "inside_polygon" / "outside_polygon" / "no_polygon_available" /
+    # "no_coordinates" — never implicitly "confirmed" when unset.
+    geo_boundary_match: Mapped[str | None] = mapped_column(String(32), nullable=True)
     international_phone_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     raw_website: Mapped[str | None] = mapped_column(String(512), nullable=True)

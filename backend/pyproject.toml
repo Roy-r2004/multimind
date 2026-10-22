@@ -32,6 +32,15 @@ dependencies = [
     "pypdf>=5.0.0",
     "pypdfium2>=4.30.0",
     "pillow>=10.4.0",
+    # Polygon/multipolygon geometry for Maps Census geographic boundaries
+    # (point-in-polygon validation, bounding-box computation, antimeridian
+    # handling) — BSD-3-Clause, pure-geometry (bundles GEOS, no GDAL/fiona
+    # stack). No suitable geometry library already existed in this project.
+    "shapely>=2.0.6",
+    # Standard ISO 3166-1/3166-2 country and subdivision tables (LGPL-2.1) —
+    # worldwide country-code and state/province name/code resolution without
+    # a hand-maintained per-country list.
+    "pycountry>=24.6.1",
 ]
 
 [project.optional-dependencies]

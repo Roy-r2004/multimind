@@ -225,6 +225,130 @@ MAPS_OBSERVABILITY_LOG_LEVEL=INFO
 
 ---
 
+## Geographic Targeting (Boundary Dataset + Optional AI Planner)
+
+A run's geographic cells (the lat/lon/zoom bias Gosom uses) come from a
+trusted bounding box, resolved in this priority order:
+
+1. **Dataset-backed boundary** (`app/services/scraping/maps_geo_boundaries.py`)
+   — a real ADM0/ADM1 polygon cached locally from
+   [geoBoundaries gbOpen](https://www.geoboundaries.org), bbox computed from
+   the actual geometry.
+2. **Static reference table** (`app/services/scraping/maps_geo_regions.py`)
+   — a small hand-curated table of standard state bounding boxes (today:
+   US AL/MI/CO/FL), used only when no cached dataset boundary covers the
+   requested country/region.
+3. **Text-only fallback** — no geographic bias at all. This is always the
+   outcome for any country/state combination not covered by (1) or (2);
+   nothing here ever invents or guesses a boundary.
+
+Every run records which of the three applied, plus source/license/
+boundary-id when a dataset boundary was used, in
+`run.processing_state["geo_anchor"]` (surfaced on the run summary API as
+`geo_anchor`). A run that fell back to text-only always says so explicitly
+— never silently.
+
+### Dataset provenance and license
+
+- **Source:** geoBoundaries gbOpen (`gbOpen`, never `gbAuthoritative`).
+- **License:** varies by country/dataset vintage; each cached file stores
+  the license string returned by the API verbatim (do not assume Public
+  Domain for every country — check the cached file's `license` field).
+- **Coverage today:** country-code resolution covers every ISO 3166-1
+  country (via `pycountry`, not a hand-picked list), and state/province
+  matching cross-checks ISO 3166-2 whenever both a code and a name are
+  given (an actual conflict, e.g. code "AL" with name "Alaska", is
+  rejected rather than silently guessed). What's still narrow is the
+  **cache**: a country/level only resolves a dataset-backed boundary once
+  an operator has actually fetched it — see below. Everything else stays
+  on the static table or text-only.
+
+### Cache management
+
+Cached boundaries live under `settings.maps_geo_boundary_cache_dir`
+(default `backend/var/geo_boundaries/`, gitignored — never `backend/data/`
+and never committed). The cache is **never populated automatically**: a
+census run only *reads* it and falls back safely if it's empty.
+
+To populate it, run the acquisition script once per country/level you
+want dataset-backed targeting for:
+
+```bash
+cd backend
+python -m scripts.fetch_geo_boundaries US --level ADM0 ADM1
+python -m scripts.fetch_geo_boundaries CA FR --level ADM1
+```
+
+This is the *only* code path that talks to geoBoundaries (or GitHub, where
+the actual geometry files are hosted) — the download host is allowlisted,
+the request is timeout-bounded
+(`MAPS_GEO_BOUNDARY_FETCH_TIMEOUT_SECONDS`), and the response size is
+capped while streaming (`MAPS_GEO_BOUNDARY_MAX_DOWNLOAD_BYTES`, default
+25MB — enforced as bytes arrive, not after a full download), and redirects
+(geoBoundaries' GitHub-hosted downloads 302 in practice) are followed only
+between allowlisted hosts, re-validated on every hop. Re-running the
+script for an already-cached country/level is a no-op unless `--force` is
+passed — it never overwrites existing cached data otherwise. Downloaded
+geometry is validated (parseable GeoJSON, a usable `Feature`/
+`FeatureCollection`, non-empty shapely geometry) before it's ever written
+to the cache.
+
+### Optional AI search planner
+
+`MAPS_GEO_AI_PLANNER_ENABLED` (default **false**) turns on a small,
+opt-in planning step that runs at most once per run (never per cell) via
+the existing OpenRouter/model-catalog infrastructure
+(`MAPS_GEO_AI_PLANNER_MODEL`, default `gpt-4.1-mini` — a cheap chat
+model, not a research/web-search model; change it deliberately if you
+want different cost/quality trade-offs). It may only suggest search
+priorities, local-language terms, and additional query terms **within**
+the region the deterministic resolver already verified. Its response
+schema has no coordinate field at all, so it cannot supply or override a
+boundary even if it tried. On any failure, timeout, or invalid output it
+is skipped and the run continues with deterministic planning — this never
+fails a run. Results are cached on disk per (country, state, model), so a
+second run over the same geography never re-pays for a planning call.
+Diagnostics (whether it ran, was cached, which model, or why it was
+skipped) are recorded in `run.processing_state["geo_ai_plan"]` (surfaced
+as `geo_ai_plan` on the run summary API). Only `additional_search_terms`
+actually influences what gets searched (reused as extra query text on a
+region the deterministic grid planner already chose, never a new
+region, never `city_name`, never coordinates) — `priority_areas` (place
+names) is recorded for visibility but deliberately never turned into a
+search target, because there is no gazetteer in this codebase to check
+an AI-suggested place name against, and doing so would be exactly the
+"hallucinated/out-of-scope area" risk this feature must avoid.
+
+### Geographic result validation
+
+Coordinate-based targeting is a discovery *strategy*, not proof of
+membership. Every discovered place's coordinates (when the provider
+supplied any) are checked against the run's verified polygon and recorded
+on `MapsPlace.geo_boundary_match`: `inside_polygon`, `outside_polygon`,
+`no_polygon_available` (no cached dataset boundary for this run), or
+`no_coordinates` (the provider gave none). A result is never silently
+treated as "confirmed inside the region" just because its search cell was
+seeded with that region's box — only an actual point-in-polygon check
+against the real geometry earns `inside_polygon`. This does not change
+Phase 2 classification/eligibility, which remains untouched.
+
+### Known limitations
+
+- **Cache coverage is operator-driven:** country-code and state/province
+  *resolution* now covers any ISO 3166-1/3166-2 region, but a boundary
+  only becomes usable once an operator has fetched it into the cache —
+  see Cache management above. Until then, a country/state silently stays
+  on the static table or text-only, exactly as documented.
+- **ADM1 name matching has no fuzzy/alias layer:** a state/province name
+  must match the cached GeoJSON's `shapeName` exactly (case-insensitive)
+  or its ISO 3166-2 code — a differently-spelled or translated name will
+  not resolve and falls back safely rather than guessing.
+- This does **not** change the existing legal/compliance posture on
+  browser-based Google Maps scraping, which remains a separate decision
+  for the dev team.
+
+---
+
 ## Cost Estimation
 
 **Per-country estimates (before Phase 0 guards):**
