@@ -16,14 +16,18 @@ Values: "inside_polygon", "outside_polygon", "no_polygon_available",
 place discovered before this migration. Purely additive; does not touch
 Phase 2 classification/eligibility columns or logic.
 
-Revision ID: gosom062_place_geo_boundary_match
+Revision ID: gosom062_geo_boundary_match
 Revises: gosom061_pagination_token_text
+
+NOTE: revision id must be <= 32 chars (alembic_version.version_num VARCHAR(32)).
+The previous id ``gosom062_place_geo_boundary_match`` was 33 chars and broke
+``alembic upgrade head`` on deploy (API never became healthy).
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "gosom062_place_geo_boundary_match"
+revision = "gosom062_geo_boundary_match"
 down_revision = "gosom061_pagination_token_text"
 branch_labels = None
 depends_on = None
