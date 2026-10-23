@@ -63,14 +63,6 @@ const ENRICHMENT_BUSY = new Set(["pending", "running"]);
 const PHASE_PAGE_SIZE = 50;
 const EMPTY_META: MapsPaginatedMeta = { total: 0, limit: PHASE_PAGE_SIZE, offset: 0 };
 
-/** A Phase 2 row with no phone and no website is undeliverable to the client
- * — matches the same requirement the Phase 2 Excel export enforces server-side. */
-function hasPhoneAndWebsite(place: MapsPlaceItem): boolean {
-  const hasPhone = Boolean((place.international_phone_number || "").trim());
-  const hasWebsite = Boolean((place.official_website || place.raw_website || "").trim());
-  return hasPhone && hasWebsite;
-}
-
 function enrichmentStillRunning(
   run: {
     status: string;
@@ -140,7 +132,7 @@ function MapsRunDetailPage() {
           listMapsCensusCells(auth!, runId),
           listMapsCensusPlaces(auth!, runId, { limit: PHASE_PAGE_SIZE, offset: phase1Offset }),
           listMapsCensusPlaces(auth!, runId, {
-            keepDropDecision: "keep",
+            acceptedOnly: true,
             limit: PHASE_PAGE_SIZE,
             offset: phase2Offset,
           }),
@@ -291,16 +283,16 @@ function MapsRunDetailPage() {
     return sortPlacesForExport(phase1Places).map((place) => placeToExportRow(place, locationScope));
   }, [phase1Places, run, locationScope]);
 
-  const phase2ContactablePlaces = useMemo(
-    () => phase2Places.filter((place) => hasPhoneAndWebsite(place)),
-    [phase2Places],
-  );
+  // phase2Places is already server-filtered to the single authoritative
+  // "accepted rehab center" predicate (acceptedOnly — see the fetch below),
+  // the same one the Excel export uses. No client-side re-filter here: a
+  // stale duplicate of the export's old phone+website rule used to hide
+  // rows the server already counted, making the tab label and the visible
+  // table disagree.
   const phase2Rows = useMemo(() => {
     if (!run) return [];
-    return sortPlacesForExport(phase2ContactablePlaces).map((place) =>
-      placeToExportRow(place, locationScope),
-    );
-  }, [phase2ContactablePlaces, run, locationScope]);
+    return sortPlacesForExport(phase2Places).map((place) => placeToExportRow(place, locationScope));
+  }, [phase2Places, run, locationScope]);
 
   return (
     <AppShell>

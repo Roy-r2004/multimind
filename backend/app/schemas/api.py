@@ -708,6 +708,11 @@ class MapsCensusRunSummary(BaseModel):
     places_classified_relevant: int
     places_with_website: int
     places_enriched: int = 0
+    # The single authoritative "accepted rehab center" count — same
+    # predicate as the Phase 2 Eligible tab's accepted_only filter and the
+    # Excel export (client_eligibility == eligible, keep_drop_decision in
+    # {keep, review}, phone present). Computed live, never cached/stale.
+    accepted_facilities_count: int = 0
     enrichment_refresh_completed_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None

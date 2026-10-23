@@ -20,6 +20,10 @@ export type MapsCensusRunSummary = {
   places_classified_relevant: number;
   places_with_website: number;
   places_enriched: number;
+  /** The single authoritative "accepted rehab center" count — same
+   * predicate as the Phase 2 Eligible tab (acceptedOnly filter) and the
+   * Excel export. */
+  accepted_facilities_count: number;
   enrichment_refresh_completed_at: string | null;
   started_at: string | null;
   completed_at: string | null;
