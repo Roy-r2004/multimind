@@ -582,6 +582,20 @@ class MapsAdminService:
         run.completed_at = datetime.now(UTC)
         run.heartbeat_at = datetime.now(UTC)
         await db.commit()
+
+        # A cancelled run's displayed counters must be honest, not whatever
+        # an in-memory running tally last wrote (possibly from a since-
+        # superseded concurrent execution) — this is the terminal state the
+        # operator sees, so reconcile cells_total/cells_completed from the
+        # actual persisted cell rows before returning.
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        from app.services.scraping.maps_cell_runner import reconcile_run_cell_counters
+
+        bind = db.bind if db.bind is not None else db.get_bind()
+        session_factory = async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
+        await reconcile_run_cell_counters(session_factory, run_id=run_id)
+        await db.refresh(run)
         return MapsCampaignActionResponse(
             run_id=run.id,
             status=MapsCensusStatus.CANCELLED.value,
@@ -1103,12 +1117,12 @@ class MapsAdminService:
             _sync_place_legacy_fields(place)
             if action == "mark_excluded":
                 place.manually_excluded_at = datetime.now(UTC)
-                # A place already judged "keep" by the strict gate must drop
-                # out of the Phase 2 eligible list immediately — otherwise a
-                # user-removed row would still show up there until the next
-                # keep/drop pass (which never re-judges an already-decided
-                # place).
-                if place.keep_drop_decision == "keep":
+                # A place already judged "keep" or "review" by the strict
+                # gate must drop out of the Phase 2 eligible list
+                # immediately — otherwise a user-removed row would still
+                # show up there until the next keep/drop pass (which never
+                # re-judges an already-decided place).
+                if place.keep_drop_decision in {"keep", "review"}:
                     place.keep_drop_decision = "drop"
                     place.keep_drop_reason = "manually excluded after keep/drop"
                     place.keep_drop_source = "manual_override"

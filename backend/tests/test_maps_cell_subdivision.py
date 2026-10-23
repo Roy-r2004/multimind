@@ -104,6 +104,42 @@ def test_subdivide_cell_viewport_subdivision_splits_into_quadrants():
         assert child.viewport_bounds["south"] >= 48.0
 
 
+def test_subdivide_cell_polygon_filter_drops_non_intersecting_quadrants():
+    bounds = {"north": 49.0, "south": 48.0, "east": 3.0, "west": 2.0}
+
+    def polygon_filter(quadrant):
+        # Only accept the southwest quadrant — simulates a real polygon
+        # that only covers part of the bounding rectangle.
+        return quadrant["south"] < 48.5 and quadrant["west"] < 2.5
+
+    children = subdivide_cell(
+        region_name="Ile-de-France",
+        city_name="Paris",
+        query_text="rehab center Paris",
+        viewport_bounds=bounds,
+        max_children=100,
+        polygon_filter=polygon_filter,
+    )
+
+    quadrant_children = [c for c in children if c.expansion_reason == "viewport_subdivision"]
+    assert len(quadrant_children) == 1
+    assert quadrant_children[0].viewport_bounds["south"] < 48.5
+    assert quadrant_children[0].viewport_bounds["west"] < 2.5
+
+
+def test_subdivide_cell_no_polygon_filter_keeps_all_quadrants():
+    bounds = {"north": 49.0, "south": 48.0, "east": 3.0, "west": 2.0}
+    children = subdivide_cell(
+        region_name="Ile-de-France",
+        city_name="Paris",
+        query_text="rehab center Paris",
+        viewport_bounds=bounds,
+        max_children=100,
+        polygon_filter=None,
+    )
+    assert len([c for c in children if c.expansion_reason == "viewport_subdivision"]) == 4
+
+
 def test_subdivide_cell_respects_max_children_cap():
     country_profile = {
         "provider_terms": {

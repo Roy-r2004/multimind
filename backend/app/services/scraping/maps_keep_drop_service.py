@@ -1,13 +1,22 @@
 """Strict keep/drop gate for Maps census places.
 
-One low-cost AI call per facility (default ``gpt-5-nano``) using existing Google
+One low-cost AI call per facility (default ``anthropic/claude-haiku-5.5`` via
+OpenRouter) using existing Google
 Maps fields, descriptions, and already-crawled website content. When evidence is
 insufficient or confidence falls below the configured threshold, a single Sonar
-(low search context) fallback call re-judges the candidate. Uncertain results
-always resolve to ``drop`` — a false keep is worse than a false drop.
+(low search context) fallback call re-judges the candidate.
 
-Keep rows become ``confirmed_eligible`` + ``eligible`` (Eligible export sheet,
-detail enrichment). Drop rows become ``unrelated`` + ``excluded`` and are never
+Three outcomes, not two: ``keep`` (confident match), ``drop`` (confidently
+matches one of the exclusion conditions — government, outpatient-only, solo
+practitioner, unrelated business, etc.), and ``review`` (genuine
+addiction-treatment signal but not yet confirmed residential/ownership —
+preserved for Phase 2's real evidence-gathering rather than guessed away).
+Both ``keep`` and ``review`` route to Phase 2 detail enrichment/classification;
+only ``drop`` stops here. Neither ``keep`` nor ``review`` stamps
+``client_eligibility`` as ``eligible`` — that is Phase 1 metadata, not
+verified evidence, so the authoritative ``compute_client_eligibility`` result
+(and hence export inclusion) is decided once by Phase 2's real classification,
+not guessed here. Drop rows become ``unrelated`` + ``excluded`` and are never
 enriched further. Nothing is deleted; the decision payload is persisted on the
 place for audit.
 """
@@ -43,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 KEEP = "keep"
 DROP = "drop"
+REVIEW = "review"
 
 _NANO_SOURCE = "nano"
 _SONAR_SOURCE = "sonar"
@@ -59,7 +69,7 @@ class KeepDropEvidence(BaseModel):
 class KeepDropDecision(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    decision: Literal["keep", "drop"]
+    decision: Literal["keep", "drop", "review"]
     reason: str = Field(default="", max_length=400)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     evidence: list[KeepDropEvidence] = Field(default_factory=list)
@@ -162,8 +172,8 @@ async def classify_place_keep_drop(
         decision = await _call_model(
             prompt_name="scraping/maps_keep_drop.j2",
             system=(
-                "You return strict JSON keep/drop decisions for addiction-treatment "
-                "facility candidates. Uncertain means drop."
+                "You return strict JSON keep/drop/review decisions for addiction-treatment "
+                "facility candidates. Genuinely uncertain means review, not drop."
             ),
             model_slug=nano_model.provider_model,
             provider=nano_provider,
@@ -180,9 +190,7 @@ async def classify_place_keep_drop(
             "maps_keep_drop_nano_failed place_id=%s error=%s", place.id, exc
         )
 
-    if decision is not None and decision.decision == KEEP and decision.confidence >= threshold:
-        return decision, _NANO_SOURCE
-    if decision is not None and decision.decision == DROP and decision.confidence >= threshold:
+    if decision is not None and decision.confidence >= threshold:
         return decision, _NANO_SOURCE
 
     # Insufficient evidence or low confidence → one Sonar fallback (low search
@@ -194,8 +202,9 @@ async def classify_place_keep_drop(
             sonar_decision = await _call_model(
                 prompt_name="scraping/maps_keep_drop_sonar.j2",
                 system=(
-                    "You have live web search. Return a strict JSON keep/drop verdict "
-                    "for one addiction-treatment facility candidate. Uncertain means drop."
+                    "You have live web search. Return a strict JSON keep/drop/review verdict "
+                    "for one addiction-treatment facility candidate. Genuinely uncertain means "
+                    "review, not drop."
                 ),
                 model_slug=sonar_model.provider_model,
                 provider=sonar_provider,
@@ -218,10 +227,16 @@ async def classify_place_keep_drop(
     if decision is not None and decision.decision == DROP:
         return decision, _SONAR_SOURCE
     if decision is not None:
-        # Keep below threshold — force drop, preserve the model's reasoning.
+        # Below-threshold confidence on a keep/review verdict: genuine
+        # ambiguity, not a confident match to any DROP condition — preserve
+        # it for Phase 2's real evidence-gathering (review) instead of
+        # guessing it away. A false drop here costs a genuine rehab its
+        # only chance to be verified; review costs nothing but one Phase 2
+        # classification pass, already bounded by the same batch/call
+        # budgets as every other kept candidate.
         return (
             KeepDropDecision(
-                decision=DROP,
+                decision=REVIEW,
                 reason=f"uncertain: {decision.reason}"[:400],
                 confidence=decision.confidence,
                 evidence=decision.evidence,
@@ -246,13 +261,38 @@ def apply_keep_drop(place: MapsPlace, decision: KeepDropDecision, *, source: str
     place.classification_confidence = decision.confidence
 
     if decision.decision == KEEP:
-        place.lifecycle_status = MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
-        place.client_eligibility = MapsClientEligibility.ELIGIBLE.value
+        # A confident keep/drop verdict is Phase 1 metadata, not verified
+        # classification evidence — it must NEVER independently establish
+        # final client_eligibility (that would let a facility reach the
+        # accepted export if Phase 2 classification is slow, fails, is
+        # skipped, or simply hasn't run yet). Only compute_client_eligibility,
+        # called once real classification evidence exists, is allowed to
+        # set ELIGIBLE. PROBABLE_ELIGIBLE (not NEEDS_REVIEW) keeps a
+        # confident keep visibly distinct from a genuinely uncertain
+        # review while still being a pending, non-final state.
+        place.lifecycle_status = MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
+        place.client_eligibility = MapsClientEligibility.REVIEW.value
         place.is_relevant = True
-        place.verification_verdict = "confirmed"
+        place.verification_verdict = "unknown"
         place.addiction_focus_confirmed = True
         if place.enrichment_status != MapsPlaceEnrichmentStatus.COMPLETED.value:
             # Route straight to Phase 2 detail enrichment (Phase 1 skips this state).
+            place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
+            place.enrichment_pipeline_state = (
+                MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
+            )
+    elif decision.decision == REVIEW:
+        # Genuine addiction-treatment signal but not yet confirmed — unlike a
+        # confident KEEP, this must NOT stamp client_eligibility as eligible
+        # (that would let an unverified candidate reach the accepted export
+        # before Phase 2 ever actually confirms it). Still routes to Phase 2
+        # exactly like KEEP, since review's whole point is to let real
+        # evidence-gathering resolve it rather than guessing here.
+        place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+        place.client_eligibility = MapsClientEligibility.REVIEW.value
+        place.is_relevant = True
+        place.verification_verdict = "unknown"
+        if place.enrichment_status != MapsPlaceEnrichmentStatus.COMPLETED.value:
             place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
             place.enrichment_pipeline_state = (
                 MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
@@ -396,6 +436,7 @@ async def run_keep_drop_pass(
 
     kept = 0
     dropped = 0
+    reviewed = 0
     sonar_used = 0
 
     while True:
@@ -477,6 +518,8 @@ async def run_keep_drop_pass(
                 apply_keep_drop(place, decision, source=source)
                 if decision.decision == KEEP:
                     kept += 1
+                elif decision.decision == REVIEW:
+                    reviewed += 1
                 else:
                     dropped += 1
                 if source == _SONAR_SOURCE:
@@ -492,6 +535,7 @@ async def run_keep_drop_pass(
             state["keep_drop_stats"] = {
                 "kept": kept,
                 "dropped": dropped,
+                "reviewed": reviewed,
                 "sonar": sonar_used,
                 "prefiltered": prefiltered,
             }
@@ -499,23 +543,26 @@ async def run_keep_drop_pass(
             await session.commit()
 
     logger.info(
-        "maps_keep_drop_pass_complete run_id=%s kept=%s dropped=%s sonar=%s prefiltered=%s",
+        "maps_keep_drop_pass_complete run_id=%s kept=%s dropped=%s reviewed=%s sonar=%s prefiltered=%s",
         run_id,
         kept,
         dropped,
+        reviewed,
         sonar_used,
         prefiltered,
     )
     return {
         "kept": kept,
         "dropped": dropped,
+        "reviewed": reviewed,
         "sonar": sonar_used,
         "prefiltered": prefiltered,
     }
 
 
 async def count_keeps_awaiting_enrichment(session: AsyncSession, *, run_id: str) -> int:
-    """Keep places still queued for detail enrichment (any pass, not just this one)."""
+    """Keep OR review places still queued for detail enrichment (any pass,
+    not just this one) — both route to Phase 2, see apply_keep_drop."""
     return int(
         (
             await session.execute(
@@ -523,7 +570,7 @@ async def count_keeps_awaiting_enrichment(session: AsyncSession, *, run_id: str)
                 .select_from(MapsPlace)
                 .where(
                     MapsPlace.run_id == run_id,
-                    MapsPlace.keep_drop_decision == KEEP,
+                    MapsPlace.keep_drop_decision.in_([KEEP, REVIEW]),
                     MapsPlace.enrichment_status.in_(
                         [
                             MapsPlaceEnrichmentStatus.PENDING.value,

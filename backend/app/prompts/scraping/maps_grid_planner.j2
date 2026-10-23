@@ -73,6 +73,13 @@ Rules:
 - Each query_text must include the city (or region) name so Google Places can geographically scope the text search.
 - When a query clearly matches one of the profile's query families, set query_family to that family's name (e.g. "outpatient"); otherwise omit it or set it to null.
 - Set query_language to the language used in query_text (e.g. "en" or the local language name/code) when known; otherwise omit it or set it to null.
+{% if full_coverage %}
+- FULL COVERAGE: include major metros, medium cities, smaller municipalities, suburbs, and rural towns that realistically have health services. Do not stop after the largest cities.
+- Use several query formulations per area, in the local language and in English, covering residential rehab, inpatient detox, alcohol and drug treatment, and therapeutic communities. Do not search outpatient-only.
+{% if avoid_region_names %}
+- Do not repeat these regions already searched: {{ avoid_region_names | join(", ") }}.
+{% endif %}
+{% endif %}
 - Do not exceed {{ max_cells }} total cells.
 {% if state_name %}
 - Do not invent regions/cities that do not exist in {{ state_name }}, {{ country_name }}.

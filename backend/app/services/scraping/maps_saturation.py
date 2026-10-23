@@ -49,6 +49,15 @@ def _coerce_cell_result(item: CellWindowResult | Mapping[str, Any] | _CellWindow
     )
 
 
+def is_coverage_evidence(*, status: str, pagination_error: str | None) -> bool:
+    """Failed or incomplete searches are not evidence that an area is covered."""
+    if status == "failed":
+        return False
+    if pagination_error and str(pagination_error).strip():
+        return False
+    return True
+
+
 def compute_window_metrics(
     cell_results: Sequence[CellWindowResult | Mapping[str, Any] | _CellWindowLike],
     *,

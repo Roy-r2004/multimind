@@ -2894,6 +2894,11 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     processing_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # Cumulative provider/model call counters — see maps_quota_tracker.py.
     quota_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Fencing token: each run_census() call stamps its own value here on start.
+    # Any in-flight execution that later notices this no longer matches its own
+    # token knows a newer execution has taken over and aborts before writing a
+    # terminal status or enqueuing Phase 2 — see maps_cell_runner.claim_run_execution.
+    execution_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     regions: Mapped[list["MapsCensusRegion"]] = relationship(
         back_populates="run",
@@ -2997,7 +3002,13 @@ class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     viewport_bounds: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # --- Google Places pagination state (gap #1) ---
-    pagination_resume_token: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # Text, not a bounded String: Google's nextPageToken has no documented
+    # length cap and has been observed over 2048 characters in dense result
+    # sets (verified — a VARCHAR(2048) column raised a DataError on commit,
+    # which rolled back the whole transaction, including that page's
+    # already-flushed new places, and marked the cell FAILED even though
+    # Google Places had returned valid results).
+    pagination_resume_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     pages_fetched: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     raw_results_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     unique_results_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -3013,6 +3024,11 @@ class MapsCensusCell(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     claimed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Set once, on the very first claim, and never touched again (unlike
+    # started_at, which is overwritten on every claim/retry). This is the
+    # reference point for the absolute per-cell deadline — persisted so it
+    # survives a worker crash/restart, unlike an in-process monotonic clock.
+    first_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped["MapsCensusRun"] = relationship(back_populates="cells")
     region: Mapped["MapsCensusRegion | None"] = relationship(back_populates="cells")
@@ -3048,6 +3064,12 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     region_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Geographic result validation (not Phase 2 eligibility): whether this
+    # place's coordinates (when the provider gave any) were checked against
+    # the run's verified polygon, and what that check found. One of
+    # "inside_polygon" / "outside_polygon" / "no_polygon_available" /
+    # "no_coordinates" — never implicitly "confirmed" when unset.
+    geo_boundary_match: Mapped[str | None] = mapped_column(String(32), nullable=True)
     international_phone_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     raw_website: Mapped[str | None] = mapped_column(String(512), nullable=True)

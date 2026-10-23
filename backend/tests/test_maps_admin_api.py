@@ -215,6 +215,52 @@ async def test_admin_review_action_persists_override(db: AsyncSession, auth: Aut
 
 
 @pytest.mark.asyncio
+async def test_admin_mark_excluded_forces_review_keep_drop_to_drop(
+    db: AsyncSession, auth: AuthContext
+):
+    """Manual override takes precedence over an uncertain Phase 1 verdict:
+    a place keep/drop left in "review" (not yet confirmed by Phase 2) must
+    be forced to "drop" on manual exclusion, same as an already-"keep"
+    place — otherwise it would still be eligible for export the moment
+    Phase 2 later confirms it, silently undoing the manual decision."""
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="FI",
+        country_name="Finland",
+        status=MapsCensusStatus.COMPLETED,
+    )
+    db.add(run)
+    await db.flush()
+    place = MapsPlace(
+        run_id=run.id,
+        google_place_id="review-pending",
+        raw_name="Ambiguous Candidate",
+        canonical_name="Ambiguous Candidate",
+        lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
+        client_eligibility=MapsClientEligibility.REVIEW.value,
+        keep_drop_decision="review",
+    )
+    db.add(place)
+    await db.commit()
+
+    app = _admin_client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/maps/runs/{run.id}/places/{place.id}/review",
+            json={"action": "mark_excluded", "reason": "Confirmed outpatient-only on review"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["client_eligibility"] == MapsClientEligibility.EXCLUDED.value
+    await db.refresh(place)
+    assert place.keep_drop_decision == "drop"
+    assert place.manually_excluded_at is not None
+
+
+@pytest.mark.asyncio
 async def test_admin_reopen_for_keep_drop_reopens_regardless_of_current_reason(
     db: AsyncSession, auth: AuthContext
 ):

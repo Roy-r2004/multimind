@@ -139,10 +139,28 @@ class Settings(BaseSettings):
     google_places_api_key: str | None = None
     google_places_base_url: str = "https://places.googleapis.com/v1"
     google_places_timeout_seconds: float = 20.0
+    # Discovery provider for Maps Census text search. google_places keeps the
+    # official Places API. gosom uses the self-hosted gosom REST scraper and
+    # must not call places.googleapis.com.
+    maps_discovery_provider: str = "google_places"
+    gosom_base_url: str = "http://gosom:8080"
+    gosom_timeout_seconds: float = 60.0
+    gosom_poll_interval_seconds: float = 5.0
+    # gosom's API treats max_time as seconds and its UI requires at least 3 minutes.
+    gosom_job_max_time_seconds: int = 900
+    # 10 matches gosom's web UI scroll default. 0 derives depth from
+    # maps_census_max_pages_per_cell (the shallow Places page cap).
+    gosom_depth: int = 10
+    gosom_language: str = "en"
+    # bounded: existing cell ceiling and saturation stop.
+    # full: gosom only. Walk a broader planned grid up to maps_gosom_full_max_cells.
+    # Google Places ignores this and keeps its own campaign ceiling.
+    maps_census_coverage_mode: str = "bounded"
+    maps_gosom_full_max_cells: int = 1500
     maps_census_model: str = "gpt-4.1"
     # Strict keep/drop gate: one low-cost call per facility, Sonar fallback only
     # when evidence is insufficient or confidence is below the threshold.
-    maps_keep_drop_model: str = "gpt-5-nano"
+    maps_keep_drop_model: str = "claude-haiku"
     maps_keep_drop_confidence_threshold: float = 0.85
     maps_keep_drop_sonar_fallback_enabled: bool = True
     maps_keep_drop_concurrency: int = 5
@@ -167,6 +185,24 @@ class Settings(BaseSettings):
     # atomic UPDATE elsewhere) so multiple workers never double-process a cell.
     maps_census_cell_stale_seconds: int = 300
     maps_census_cell_max_attempts: int = 3
+    # A provider timeout (e.g. a 900s Gosom job) gets its own, tighter retry
+    # policy than a generic transient failure: repeatedly re-running an
+    # expensive, already-saturated 900s operation is a poor trade (verified
+    # in production — a shared gosom backlog made several unrelated queries
+    # time out back to back), so timeouts get fewer attempts and a much
+    # longer backoff, giving the backend real wall-clock time to drain
+    # before the retry is even attempted.
+    maps_census_cell_timeout_max_attempts: int = 2
+    maps_census_cell_timeout_retry_base_seconds: int = 300
+    # Hard ceiling on one cell's total wall-clock cost — across every
+    # attempt, every retry's backoff wait, and every poll — measured from
+    # its first claim (MapsCensusCell.first_attempted_at), never reset by a
+    # heartbeat. Enforced independently of Gosom's own max_time/status, so a
+    # provider that stops reporting back (verified: gosom's internal
+    # dispatcher can silently stop progressing jobs while its REST API
+    # keeps responding — see github.com/gosom/google-maps-scraper#328)
+    # cannot keep a cell "in progress" indefinitely.
+    maps_census_cell_absolute_deadline_seconds: int = 1200
     # Cap on how deep capped-cell subdivision can recurse before giving up on
     # a single geography instead of subdividing forever.
     maps_census_max_subdivision_depth: int = 2
@@ -190,6 +226,15 @@ class Settings(BaseSettings):
     maps_circuit_breaker_enabled: bool = True
     maps_circuit_breaker_failure_threshold: int = 5
     maps_circuit_breaker_recovery_timeout_seconds: int = 60
+    # Gosom gets its own, more conservative breaker: a responsive-but-
+    # non-dispatching internal queue (see github.com/gosom/google-maps-
+    # scraper#328 — the REST API can keep responding while the internal
+    # job dispatcher stops making progress) looks like several consecutive
+    # job timeouts, each already an 8-minute wait, so the generic 5-failure/
+    # 60s-recovery defaults (tuned for fast API rate limits) are both too
+    # slow to trip and too quick to re-probe for this failure mode.
+    maps_gosom_circuit_breaker_failure_threshold: int = 3
+    maps_gosom_circuit_breaker_recovery_timeout_seconds: int = 900
 
     # LLM call budget per cell (prevent cost spiral)
     maps_cell_llm_budget_max_calls: int = 10
@@ -227,6 +272,33 @@ class Settings(BaseSettings):
     # Phase 2: live-web country discovery profile, built once per run before grid planning
     maps_census_country_profile_model: str = "sonar-pro"
     maps_census_country_profile_timeout_seconds: float = 90.0
+
+    # Worldwide geographic boundary resolution (ADM0/ADM1 from geoBoundaries
+    # gbOpen, cached locally — see maps_geo_boundaries.py). Never touches
+    # backend/data/; a dedicated, gitignored cache directory instead.
+    # Acquisition is a deliberate, operator-run step (scripts/fetch_geo_boundaries.py),
+    # never automatic at request time — this directory being empty or
+    # unreadable must only ever mean "fall back to text-only", not an error.
+    maps_geo_boundary_cache_dir: str = "var/geo_boundaries"
+    maps_geo_boundary_fetch_timeout_seconds: float = 20.0
+    maps_geo_boundary_max_download_bytes: int = 25_000_000
+    # Grid granularity (degrees) used by maps_geo_boundaries.polygon_cells
+    # when region-wide seed cells are distributed across the real polygon
+    # instead of all receiving one identical full bounding rectangle.
+    maps_geo_polygon_cell_degrees: float = 1.0
+
+    # Optional AI geographic search planner (Task 4) — disabled by default
+    # until reviewed. When enabled, makes at most one OpenRouter call per
+    # run to suggest search priorities/terms *within* the already-resolved
+    # boundary; it is never treated as a source of coordinates or
+    # boundaries. Cost note: default model below is a small/cheap chat
+    # model, not a research/web-search model like the country profile's
+    # Sonar — pick a different one deliberately if you want different cost
+    # characteristics, see README for the trade-off.
+    maps_geo_ai_planner_enabled: bool = False
+    maps_geo_ai_planner_model: str = "gpt-4.1-mini"
+    maps_geo_ai_planner_timeout_seconds: float = 45.0
+    maps_geo_ai_planner_max_calls_per_run: int = 1
 
     # Phase 2: AI web-search enrichment of addictions/languages (no crawling)
     maps_census_enrichment_enabled: bool = True
@@ -395,6 +467,30 @@ class Settings(BaseSettings):
     # Observability
     log_level: str = "INFO"
     log_json: bool = False
+
+    @field_validator("maps_discovery_provider")
+    @classmethod
+    def validate_maps_discovery_provider(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"google_places", "gosom"}:
+            raise ValueError("MAPS_DISCOVERY_PROVIDER must be 'google_places' or 'gosom'")
+        return normalized
+
+    @field_validator("maps_census_coverage_mode")
+    @classmethod
+    def validate_maps_census_coverage_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"bounded", "full"}:
+            raise ValueError("MAPS_CENSUS_COVERAGE_MODE must be 'bounded' or 'full'")
+        return normalized
+
+    @field_validator("gosom_language")
+    @classmethod
+    def validate_gosom_language(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if len(normalized) != 2 or not normalized.isalpha():
+            raise ValueError("GOSOM_LANGUAGE must be a 2-letter language code")
+        return normalized
 
     @field_validator("cors_origins", mode="before")
     @classmethod

@@ -1,8 +1,13 @@
 """Excel workbook export for a Maps Census run.
 
 Client-facing export is a single sheet: ``Eligible Centers`` — only facilities
-that passed the strict keep/drop gate (``keep_drop_decision == "keep"``). No
-review / excluded / audit sheets are produced for the client workbook.
+that passed the strict keep/drop gate AND were computed ``client_eligibility
+== "eligible"`` by ``compute_client_eligibility`` (the same rule engine the
+admin review UI's mark_eligible/mark_review/mark_excluded actions operate
+on) AND have a phone number. No review / excluded / audit sheets are
+produced for the client workbook. The run's dashboard summary
+(``get_export_summary``) counts by the identical ``client_eligibility``
+rule, so the two are always consistent with each other.
 """
 
 from __future__ import annotations
@@ -100,15 +105,27 @@ class MapsExportService:
             table_name = "Phase1Results"
             scoped_places = [place for place in places if place.manually_excluded_at is None]
         else:
-            # Client workbook = only the strict keep/drop "keep" rows that
-            # are actually deliverable — no phone and no website means the
-            # client has no way to contact the facility, so it is dropped.
+            # Client workbook = the authoritative eligibility decision
+            # (compute_client_eligibility, same rule engine the admin
+            # review UI acts on) is what actually controls inclusion here —
+            # keep_drop_decision in {"keep","review"} alone is a necessary
+            # but NOT sufficient condition (it only means Phase 2
+            # classification ran at all; a kept OR reviewed candidate that
+            # turned out to be outpatient, detox-only, an admin office, or
+            # otherwise not eligible must never appear here just because it
+            # passed that earlier gate — and a "review" candidate that
+            # Phase 2 later verified as genuinely eligible must not be
+            # excluded just for having started out uncertain). A missing
+            # website never excludes an otherwise-eligible facility; a
+            # missing phone does, per our acceptance criteria.
             sheet_name = ELIGIBLE_CENTERS_SHEET
             table_name = "EligibleCenters"
             scoped_places = [
                 place
                 for place in places
-                if place.keep_drop_decision == "keep" and _has_contact_info(place)
+                if place.keep_drop_decision in {"keep", "review"}
+                and _is_eligible_center(place)
+                and _has_required_contact_info(place)
             ]
 
         self._write_sheet(
@@ -382,10 +399,12 @@ def _is_eligible_center(place: MapsPlace) -> bool:
     return place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
 
 
-def _has_contact_info(place: MapsPlace) -> bool:
-    has_phone = bool((place.international_phone_number or "").strip())
-    has_website = bool((place.official_website or place.raw_website or "").strip())
-    return has_phone and has_website
+def _has_required_contact_info(place: MapsPlace) -> bool:
+    """Phone is the one mandatory contact field for the accepted-facilities
+    export (per our acceptance criteria); website is informative but
+    optional and must never independently exclude an otherwise-eligible
+    facility."""
+    return bool((place.international_phone_number or "").strip())
 
 
 maps_export_service = MapsExportService()

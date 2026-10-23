@@ -74,9 +74,17 @@ from app.services.scraping.maps_manual_overrides import (
     set_unless_overridden,
 )
 from app.services.scraping.maps_cell_runner import (
+    DEFAULT_RETRY_BASE_SECONDS,
+    RunExecutionSuperseded,
+    claim_cell_by_id,
+    ensure_run_execution_current,
     fail_cell_for_retry,
+    heartbeat_cell,
+    heartbeat_run,
+    increment_run_cells_total,
     is_campaign_paused,
     is_run_cancelled,
+    reconcile_run_cell_counters,
     recover_stale_running_cells,
 )
 from app.services.scraping.maps_cell_subdivision import ChildCellSpec, subdivide_cell
@@ -84,12 +92,15 @@ from app.services.scraping.maps_circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerConfig,
     CircuitBreakerOpenError,
+    CircuitState,
     LLMBudgetExhaustedError,
     LLMCallBudget,
 )
 from app.services.scraping.maps_country_profile_service import maps_country_profile_service
 from app.services.scraping.maps_eligibility import derive_is_relevant, derive_legacy_verification_verdict
 from app.services.scraping.maps_external_discovery import maps_external_discovery_coordinator
+from app.services.scraping import maps_geo_boundaries, maps_geo_planner_service
+from app.services.scraping.maps_geo_regions import resolve_geo_anchor_detailed
 from app.services.scraping.maps_observability import (
     log_budget_exceeded,
     log_cell_processing,
@@ -99,8 +110,16 @@ from app.services.scraping.maps_observability import (
     log_stage_start,
     timed_operation,
 )
-from app.services.scraping.maps_grid_planner import MapsGridPlanningError, maps_grid_planner
-from app.services.scraping.maps_places_client import PlacesProviderError, create_places_client
+from app.services.scraping.maps_grid_planner import (
+    MapsGridCell,
+    MapsGridPlanningError,
+    maps_grid_planner,
+)
+from app.services.scraping.maps_places_client import (
+    PlacesProviderError,
+    PlacesTimeoutError,
+    create_places_client,
+)
 from app.services.scraping.maps_quota_tracker import (
     MapsQuotaTracker,
     merge_quota_metrics,
@@ -110,6 +129,7 @@ from app.services.scraping.maps_saturation import (
     CellWindowResult,
     compute_window_metrics,
     decide_region_saturation,
+    is_coverage_evidence,
     should_stop_campaign,
 )
 from app.services.scraping.pexels_client import create_pexels_client
@@ -130,6 +150,9 @@ CLASSIFICATION_FALLBACK_REASONS = frozenset({"classification_failed", "missing_d
 # country-specific facility count. Adaptive expansion (see ``run_census``)
 # grows productive regions beyond this up to the campaign ceiling.
 MAPS_CENSUS_SEED_CELLS = 120
+# First gosom full-coverage wave. Saturation is checked after this batch, so a
+# small geography can stop here instead of planning toward the 1500 ceiling.
+MAPS_CENSUS_ADAPTIVE_SEED_CELLS = 30
 # Cap on how many extra cells one expansion round asks the planner for, so a
 # single expansion pass can't consume the whole remaining campaign budget.
 MAPS_CENSUS_EXPANSION_BATCH_CAP = 40
@@ -257,7 +280,10 @@ class MapsCensusService:
         state_name: str | None = None,
     ) -> MapsCensusRunDetail:
         settings = get_settings()
-        if not settings.google_places_enabled:
+        if settings.maps_discovery_provider == "gosom":
+            if not (settings.gosom_base_url or "").strip():
+                raise ValidationError("Gosom Maps census is not configured (GOSOM_BASE_URL).")
+        elif not settings.google_places_enabled:
             raise ValidationError("Google Places Maps census is disabled.")
         country = resolve_country(country_code)
         clean_state_code = state_code.strip().upper() if state_code and state_code.strip() else None
@@ -854,6 +880,7 @@ class MapsCensusService:
         openrouter_breaker: CircuitBreaker | None = None
         google_breaker: CircuitBreaker | None = None
         sonar_breaker: CircuitBreaker | None = None
+        gosom_breaker: CircuitBreaker | None = None
         if settings.maps_circuit_breaker_enabled:
             breaker_config = CircuitBreakerConfig(
                 failure_threshold=settings.maps_circuit_breaker_failure_threshold,
@@ -862,6 +889,14 @@ class MapsCensusService:
             openrouter_breaker = CircuitBreaker("openrouter", breaker_config)
             google_breaker = CircuitBreaker("google_places", breaker_config)
             sonar_breaker = CircuitBreaker("sonar", breaker_config)
+            if settings.maps_discovery_provider == "gosom":
+                gosom_breaker = CircuitBreaker(
+                    "gosom",
+                    CircuitBreakerConfig(
+                        failure_threshold=settings.maps_gosom_circuit_breaker_failure_threshold,
+                        recovery_timeout_seconds=settings.maps_gosom_circuit_breaker_recovery_timeout_seconds,
+                    ),
+                )
 
         # LLM call budget per-run (hard ceiling to prevent cost spirals)
         run_llm_budget = LLMCallBudget(
@@ -961,6 +996,14 @@ class MapsCensusService:
                     },
                 )
 
+            # Fencing token: claimed unconditionally (last writer wins) so a
+            # watchdog-triggered duplicate run_census() for this run_id can
+            # never race this execution to completion — it stamps its own
+            # token and this execution notices the mismatch (via
+            # ensure_run_execution_current) and stops instead of also
+            # finishing the campaign and enqueuing Phase 2.
+            execution_token = uuid4().hex
+            run.execution_token = execution_token
             run.status = MapsCensusStatus.RUNNING
             if run.started_at is None:
                 run.started_at = datetime.now(UTC)
@@ -987,12 +1030,144 @@ class MapsCensusService:
             country_profile = run.country_profile if run is not None else None
             country_profile_status = run.country_profile_status if run is not None else None
 
-        max_cells_per_campaign = (
+        geo_anchor_detail = resolve_geo_anchor_detailed(
+            country_code=country_code, state_code=state_code, state_name=state_name
+        )
+        geo_anchor = geo_anchor_detail["bounds"]
+        # The raw verified polygon (not just its bbox) — resolved once per
+        # run, read-only from the local cache, never from the network.
+        # Used to (a) distribute real polygon-filtered sub-boxes across
+        # region-wide seed cells instead of handing every one of them the
+        # same full bounding rectangle, and (b) filter out subdivision
+        # quadrants that don't actually overlap the region. ``None``
+        # whenever no dataset-backed boundary applies — in which case
+        # behavior is byte-for-byte the pre-existing single-bbox behavior.
+        geo_polygon_record = None
+        if geo_anchor_detail["polygon_available"]:
+            try:
+                geo_polygon_record = maps_geo_boundaries.resolve_region_boundary(
+                    country_code=country_code, state_code=state_code, state_name=state_name
+                )
+            except Exception:  # noqa: BLE001
+                geo_polygon_record = None
+        # Persisted (not just logged) so this is visible to the API/UI, not
+        # only to someone reading logs: every run should clearly state
+        # whether it used real geographic cells or stayed text-only — never
+        # leave that implicit. Dataset-backed resolutions also record their
+        # source/license/boundary id; the static-table fallback and the
+        # unresolved case are each reported distinctly rather than folded
+        # into a single "resolved" boolean.
+        async with session_factory() as geo_state_db:
+            run = await geo_state_db.get(MapsCensusRun, run_id)
+            if run is not None:
+                state = dict(run.processing_state or {})
+                state["geo_anchor"] = (
+                    {
+                        "resolved": True,
+                        "country_code": country_code,
+                        "state_code": state_code,
+                        "bounds": geo_anchor,
+                        "source": geo_anchor_detail["source"],
+                        "source_license": geo_anchor_detail["source_license"],
+                        "source_boundary_id": geo_anchor_detail["source_boundary_id"],
+                        "polygon_available": geo_anchor_detail["polygon_available"],
+                    }
+                    if geo_anchor is not None
+                    else {
+                        "resolved": False,
+                        "country_code": country_code,
+                        "state_code": state_code,
+                        "reason": "no trusted boundary or bounding box for this country/state — text-only search",
+                    }
+                )
+                run.processing_state = state
+                await geo_state_db.commit()
+        if geo_anchor is not None:
+            logger.info(
+                "maps_census_geo_anchor_resolved run_id=%s country_code=%s state_code=%s",
+                run_id,
+                country_code,
+                state_code,
+            )
+        else:
+            # Honest fallback, logged rather than silently claimed as
+            # geographic coverage: every cell in this run will carry no
+            # viewport_bounds, so Gosom gets no lat/lon/zoom bias and the
+            # search stays purely keyword-driven, same as before this fix.
+            logger.info(
+                "maps_census_geo_anchor_unavailable run_id=%s country_code=%s state_code=%s "
+                "state_name=%s — falling back to text-only search, no geographic bias",
+                run_id,
+                country_code,
+                state_code,
+                state_name,
+            )
+
+        # Optional AI planning layer (Task 4) — disabled by default
+        # (settings.maps_geo_ai_planner_enabled). Runs at most once per
+        # run, never per cell, and only ever suggests priorities/terms
+        # within the region geo_anchor already verified; it is never
+        # consulted for, and cannot supply, coordinates. A failure here
+        # never fails the run — plan_geo_strategy already catches
+        # everything and returns a skipped_reason instead of raising.
+        geo_plan_result = await maps_geo_planner_service.plan_geo_strategy(
+            country_code=country_code,
+            country_name=country_name,
+            state_code=state_code,
+            state_name=state_name,
+            resolved_region_label=(
+                f"{state_name or state_code or ''} {country_name or country_code or ''}".strip()
+                if geo_anchor is not None
+                else None
+            ),
+        )
+        async with session_factory() as geo_plan_db:
+            run = await geo_plan_db.get(MapsCensusRun, run_id)
+            if run is not None:
+                state = dict(run.processing_state or {})
+                state["geo_ai_plan"] = {
+                    "used_ai": geo_plan_result.used_ai,
+                    "cached": geo_plan_result.cached,
+                    "model": geo_plan_result.model,
+                    "skipped_reason": geo_plan_result.skipped_reason,
+                    "suggestion": (
+                        geo_plan_result.suggestion.model_dump(mode="json")
+                        if geo_plan_result.suggestion is not None
+                        else None
+                    ),
+                }
+                run.processing_state = state
+                await geo_plan_db.commit()
+
+        configured_cells = (
             settings.maps_census_max_cells_per_campaign or settings.maps_census_max_cells_per_run
         )
-        seed_max = min(MAPS_CENSUS_SEED_CELLS, max_cells_per_campaign)
+        gosom_full_coverage = (
+            settings.maps_discovery_provider == "gosom"
+            and settings.maps_census_coverage_mode == "full"
+        )
+        # 1500 is a ceiling. A lower campaign setting still wins, so a 50-cell
+        # run remains possible. Full mode does not raise the seed to that ceiling.
+        if gosom_full_coverage:
+            max_cells_per_campaign = min(
+                max(1, int(configured_cells)),
+                max(1, int(settings.maps_gosom_full_max_cells)),
+            )
+            seed_max = min(MAPS_CENSUS_ADAPTIVE_SEED_CELLS, max_cells_per_campaign)
+        else:
+            max_cells_per_campaign = max(1, int(configured_cells))
+            seed_max = min(MAPS_CENSUS_SEED_CELLS, max_cells_per_campaign)
 
         if resume_existing:
+            # Self-heal cells_total/cells_completed before resuming: a worker
+            # crash, a watchdog-triggered duplicate execution, or any other
+            # prior write-path bug could have left them inconsistent with
+            # the actual persisted cell rows. Resuming is the natural, cheap
+            # checkpoint to reconcile — every resume starts from a
+            # trustworthy baseline instead of carrying stale corruption
+            # forward indefinitely.
+            await reconcile_run_cell_counters(session_factory, run_id=run_id)
+
             # Resume pending/in-progress cells only — never call the seed planner
             # again (that path destroyed terminal campaigns via false failures).
             async with session_factory() as resume_db:
@@ -1028,6 +1203,7 @@ class MapsCensusService:
                     country_profile=country_profile,
                     state_code=state_code,
                     state_name=state_name,
+                    full_coverage=gosom_full_coverage,
                 )
             except MapsGridPlanningError as exc:
                 async with session_factory() as fail_db:
@@ -1068,6 +1244,41 @@ class MapsCensusService:
                         await fail_db.commit()
                 return {"error": 1}
 
+            ai_added_cell_count = 0
+            ai_suggestion = geo_plan_result.suggestion
+            if ai_suggestion is not None and ai_suggestion.additional_search_terms:
+                # The ONLY way the optional AI planner is allowed to
+                # influence what actually gets searched: extra query TEXT,
+                # reusing a region name the deterministic grid planner
+                # already produced (never a new region, never city_name,
+                # never coordinates). ``priority_areas`` is deliberately
+                # NOT used here — an unverified place name from the model
+                # has no gazetteer to check it against, so turning it into
+                # a live search target would be exactly the kind of
+                # hallucinated/out-of-scope area this task forbids. Plain
+                # search terms carry no such risk: they're query
+                # vocabulary, not a claim about geography.
+                existing_regions = sorted({cell.region_name for cell in seed_cells if cell.region_name})
+                extra_terms = ai_suggestion.additional_search_terms[:5]
+                ai_added_cells = [
+                    MapsGridCell(region_name=region_name, city_name=None, query_text=term)
+                    for region_name in existing_regions
+                    for term in extra_terms
+                ]
+                if ai_added_cells:
+                    seed_cells = list(seed_cells) + ai_added_cells
+                    ai_added_cell_count = len(ai_added_cells)
+            if ai_added_cell_count:
+                async with session_factory() as geo_plan_cells_db:
+                    run = await geo_plan_cells_db.get(MapsCensusRun, run_id)
+                    if run is not None:
+                        state = dict(run.processing_state or {})
+                        plan_state = dict(state.get("geo_ai_plan") or {})
+                        plan_state["cells_added"] = ai_added_cell_count
+                        state["geo_ai_plan"] = plan_state
+                        run.processing_state = state
+                        await geo_plan_cells_db.commit()
+
             region_ids_by_name = {}
             seen_query_texts = set()
             seed_cells = _cap_to_budget(
@@ -1079,22 +1290,25 @@ class MapsCensusService:
                 cells=seed_cells,
                 region_ids_by_name=region_ids_by_name,
                 seen_query_texts=seen_query_texts,
+                geo_anchor=geo_anchor,
+                geo_polygon_record=geo_polygon_record,
             )
-            campaign_cells_used = len(cell_ids)
-            async with session_factory() as cells_db:
-                run = await cells_db.get(MapsCensusRun, run_id)
-                if run is not None:
-                    run.cells_total = campaign_cells_used
-                    await cells_db.commit()
+            campaign_cells_used = await increment_run_cells_total(
+                session_factory, run_id=run_id, by=len(cell_ids)
+            )
 
         client = create_places_client()
         summary = {"cells": campaign_cells_used, "places_found": 0, "cell_failures": 0}
         if not client.is_configured():
+            if settings.maps_discovery_provider == "gosom":
+                config_error = "Gosom scraper is not configured (GOSOM_BASE_URL)."
+            else:
+                config_error = "Google Places API key is not configured."
             async with session_factory() as fail_db:
                 run = await fail_db.get(MapsCensusRun, run_id)
                 if run is not None:
                     run.status = MapsCensusStatus.FAILED
-                    run.error_message = "Google Places API key is not configured."
+                    run.error_message = config_error
                     run.completed_at = datetime.now(UTC)
                     await fail_db.commit()
             return summary
@@ -1126,6 +1340,9 @@ class MapsCensusService:
                 tracker=tracker,
                 campaign_budget=campaign_budget,
                 seen_query_texts=seen_query_texts,
+                execution_token=execution_token,
+                gosom_breaker=gosom_breaker,
+                geo_polygon_record=geo_polygon_record,
             )
             campaign_cells_used = campaign_budget["used"]
 
@@ -1199,6 +1416,7 @@ class MapsCensusService:
                     focus_region_names=expanding_names,
                     state_code=state_code,
                     state_name=state_name,
+                    full_coverage=gosom_full_coverage,
                 )
             except MapsGridPlanningError as exc:
                 logger.warning(
@@ -1237,18 +1455,62 @@ class MapsCensusService:
                 cells=expansion_cells,
                 region_ids_by_name=region_ids_by_name,
                 seen_query_texts=seen_query_texts,
+                geo_anchor=geo_anchor,
+                geo_polygon_record=geo_polygon_record,
             )
             if not new_cell_ids:
                 stopped_reason = "no_expanding_regions"
                 break
 
-            campaign_cells_used += len(new_cell_ids)
-            async with session_factory() as expand_run_db:
-                run = await expand_run_db.get(MapsCensusRun, run_id)
-                if run is not None:
-                    run.cells_total = campaign_cells_used
-                    await expand_run_db.commit()
+            campaign_cells_used = await increment_run_cells_total(
+                session_factory, run_id=run_id, by=len(new_cell_ids)
+            )
+            # Re-sync the shared budget tracker to the authoritative DB
+            # value too — without this, campaign_budget["used"] only ever
+            # grew from _execute_cells's own subdivision increments and
+            # silently drifted from (undercounted) the true total every
+            # time an expansion wave like this one added cells, letting the
+            # campaign-ceiling check below under-enforce the real limit.
+            if campaign_budget is not None:
+                campaign_budget["used"] = campaign_cells_used
             work_queue = new_cell_ids
+
+        # A newer run_census() execution may have taken over while this one
+        # was finishing its last batch of cells — never run keep/drop,
+        # website validation, or mark the campaign COMPLETED (which would
+        # enqueue Phase 2) on a superseded execution's stale, partial view.
+        await ensure_run_execution_current(session_factory, run_id=run_id, token=execution_token)
+
+        # The while-loop's own cells_completed/cells_total counters can be
+        # thrown off by a (now-fenced-out) concurrent execution, so the gate
+        # for "is discovery actually done" is a direct count of non-terminal
+        # cell rows, not those counters. A batch completing — or this
+        # execution's local view of the loop ending — must never be enough
+        # on its own to start keep/drop, website validation, or Phase 2.
+        async with session_factory() as pending_check_db:
+            non_terminal_cells = int(
+                (
+                    await pending_check_db.execute(
+                        select(func.count())
+                        .select_from(MapsCensusCell)
+                        .where(
+                            MapsCensusCell.run_id == run_id,
+                            MapsCensusCell.status.in_(
+                                [MapsCensusCellStatus.PENDING, MapsCensusCellStatus.IN_PROGRESS]
+                            ),
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+        if non_terminal_cells > 0:
+            logger.warning(
+                "maps_census_discovery_not_terminal run_id=%s non_terminal_cells=%s; "
+                "leaving run RUNNING instead of completing the campaign",
+                run_id,
+                non_terminal_cells,
+            )
+            return summary
 
         # Strict keep/drop gate replaces the old batch relevance classifier:
         # one low-cost call per facility, Sonar fallback on low confidence,
@@ -1295,6 +1557,23 @@ class MapsCensusService:
                         select(MapsCensusCell).where(MapsCensusCell.run_id == run_id)
                     )
                 ).scalars().all()
+                # Authoritative counters: derive cells_total/cells_completed
+                # from the actual persisted cell rows rather than trust the
+                # incrementally-maintained run.cells_total/cells_completed,
+                # which (even with atomic per-cell claiming) is still a
+                # running tally that could drift from a crash between
+                # claiming a cell and committing its completion. This is the
+                # one place the campaign's final numbers get written, so it
+                # is also the one place they must be unconditionally correct.
+                terminal_cell_statuses = {
+                    MapsCensusCellStatus.COMPLETED,
+                    MapsCensusCellStatus.CAPPED,
+                    MapsCensusCellStatus.FAILED,
+                }
+                run.cells_total = len(all_cells)
+                run.cells_completed = sum(
+                    1 for c in all_cells if c.status in terminal_cell_statuses
+                )
                 capped_cells = sum(1 for c in all_cells if c.status == MapsCensusCellStatus.CAPPED)
                 subdivision_cells = sum(1 for c in all_cells if c.parent_cell_id is not None)
                 pages_fetched_total = sum(c.pages_fetched or 0 for c in all_cells)
@@ -1357,7 +1636,20 @@ class MapsCensusService:
                         for region in regions
                     ],
                 }
-                run.status = MapsCensusStatus.COMPLETED
+                permanently_failed_cells = sum(
+                    1 for c in all_cells if c.status == MapsCensusCellStatus.FAILED
+                )
+                # Honest partial-coverage signal: some cells never produced
+                # results (exhausted retries, hit the absolute per-cell
+                # deadline, or were left pending when the Gosom circuit
+                # breaker opened and the campaign still reached a terminal
+                # state around them) — this run must not read as full,
+                # clean coverage.
+                run.status = (
+                    MapsCensusStatus.COMPLETED_WITH_WARNINGS
+                    if permanently_failed_cells > 0
+                    else MapsCensusStatus.COMPLETED
+                )
                 run.completed_at = datetime.now(UTC)
                 run.heartbeat_at = datetime.now(UTC)
                 await final_db.commit()
@@ -1398,10 +1690,50 @@ class MapsCensusService:
         cells: list,
         region_ids_by_name: dict[str, str],
         seen_query_texts: set[str],
+        geo_anchor: dict[str, float] | None = None,
+        geo_polygon_record: Any = None,
     ) -> list[str]:
         """Insert planner cells as ``MapsCensusCell`` rows linked to a region,
         deduping against every query_text already persisted for this run
-        (across seed and prior expansion rounds)."""
+        (across seed and prior expansion rounds).
+
+        ``geo_anchor``, when the run's country/state is in
+        ``maps_geo_regions``'s trusted static table, seeds a cell's
+        ``viewport_bounds`` with that box — but ONLY for cells with no
+        ``city_name`` (genuinely region/state-wide queries). A city-named
+        cell (the normal case — the grid planner always names a city) never
+        gets the state-wide box: that box is not a valid bounding area for
+        any specific city in the state, and attaching it would point Gosom's
+        ``@lat,lon,zoom`` targeting at a location the query text never named
+        (verified in production data — a Phenix City query, in the state's
+        southeast corner, subdivided into quadrants covering the state's
+        northwest, nowhere near Phenix City). Without a verified per-city
+        coordinate source (which this codebase does not have), the only
+        honest choice for a city-named cell is the pre-existing text-only
+        search — never a fabricated or mismatched box.
+
+        ``geo_polygon_record``, when given, replaces that single repeated
+        bbox with real polygon-filtered sub-boxes (``maps_geo_boundaries.
+        polygon_cells``) distributed round-robin across the region-wide
+        cells — so an irregularly-shaped region's multiple seed cells cover
+        actual area instead of all pointing at the same full rectangle. If
+        the polygon yields no usable sub-boxes (e.g. a degenerate/too-small
+        geometry), this falls back to the single-bbox behavior unchanged.
+        """
+        from itertools import cycle
+
+        polygon_box_cycle = None
+        if geo_polygon_record is not None:
+            settings = get_settings()
+            try:
+                polygon_boxes = maps_geo_boundaries.polygon_cells(
+                    geo_polygon_record, cell_degrees=settings.maps_geo_polygon_cell_degrees
+                )
+            except Exception:  # noqa: BLE001
+                polygon_boxes = []
+            if polygon_boxes:
+                polygon_box_cycle = cycle(polygon_boxes)
+
         cell_ids: list[str] = []
         async with session_factory() as db:
             for cell in cells:
@@ -1415,6 +1747,9 @@ class MapsCensusService:
                     region_name=cell.region_name,
                     region_ids_by_name=region_ids_by_name,
                 )
+                cell_geo_anchor = geo_anchor if geo_anchor and not cell.city_name else None
+                if cell_geo_anchor is not None and polygon_box_cycle is not None:
+                    cell_geo_anchor = next(polygon_box_cycle)
                 row = MapsCensusCell(
                     run_id=run_id,
                     region_id=region_id,
@@ -1423,6 +1758,7 @@ class MapsCensusService:
                     query_text=cell.query_text,
                     query_family=cell.query_family,
                     query_language=cell.query_language,
+                    viewport_bounds=dict(cell_geo_anchor) if cell_geo_anchor else None,
                 )
                 db.add(row)
                 await db.flush()
@@ -1488,6 +1824,9 @@ class MapsCensusService:
                             new_plausible_places=c.new_plausible_places,
                         )
                         for c in cell_rows
+                        if is_coverage_evidence(
+                            status=c.status, pagination_error=c.pagination_error
+                        )
                     ],
                     saturation_window=settings.maps_census_saturation_window,
                 )
@@ -1530,6 +1869,9 @@ class MapsCensusService:
         tracker: MapsQuotaTracker,
         campaign_budget: dict[str, int] | None = None,
         seen_query_texts: set | None = None,
+        execution_token: str | None = None,
+        gosom_breaker: CircuitBreaker | None = None,
+        geo_polygon_record: Any = None,
     ) -> None:
         """Run a paginated Places search for each queued cell, classify newly
         discovered places immediately (so saturation reflects real
@@ -1539,13 +1881,28 @@ class MapsCensusService:
         network await. Child cells generated mid-run are appended to the same
         work queue so they execute within this call (bounded by
         ``maps_census_max_subdivision_depth`` and the campaign cell budget).
+
+        ``geo_polygon_record``, when given, filters viewport-subdivision
+        quadrants against the real verified polygon (see
+        ``maps_geo_boundaries.bbox_intersects_polygon``) so a quadrant that
+        falls entirely outside the region's actual shape is never created.
         """
         from collections import deque
+
+        polygon_filter = None
+        if geo_polygon_record is not None:
+            def polygon_filter(bbox: dict[str, Any]) -> bool:
+                try:
+                    return maps_geo_boundaries.bbox_intersects_polygon(geo_polygon_record, bbox)
+                except Exception:  # noqa: BLE001
+                    return True  # fail open — never block subdivision on a geometry bug
 
         queue: deque[str] = deque(cell_ids)
         local_seen_query_texts = seen_query_texts if seen_query_texts is not None else set()
         max_depth = max(0, int(settings.maps_census_max_subdivision_depth))
         max_cell_attempts = max(1, int(settings.maps_census_cell_max_attempts))
+        max_cell_timeout_attempts = max(1, int(settings.maps_census_cell_timeout_max_attempts))
+        timeout_retry_base_seconds = max(1, int(settings.maps_census_cell_timeout_retry_base_seconds))
 
         while queue:
             cell_id = queue.popleft()
@@ -1555,23 +1912,65 @@ class MapsCensusService:
             if await is_campaign_paused(session_factory, run_id=run_id):
                 break
 
+            if gosom_breaker is not None and gosom_breaker.state == CircuitState.OPEN:
+                if not gosom_breaker._should_attempt_recovery():
+                    # Several consecutive job timeouts already recorded —
+                    # treat that as "gosom's internal dispatcher is not
+                    # making real progress even though its REST API may
+                    # still answer" (see github.com/gosom/google-maps-
+                    # scraper#328) and stop submitting new jobs into an
+                    # already-saturated queue. The cell stays PENDING
+                    # (never claimed) — left for a later run_census
+                    # invocation, once the breaker's recovery window has
+                    # passed, to probe again.
+                    logger.error(
+                        "maps_census_gosom_breaker_open run_id=%s failures=%s "
+                        "recovery_in_seconds=%s — pausing new Gosom submissions; "
+                        "if this persists across multiple campaign resumes, the "
+                        "gosom service likely needs an operator restart",
+                        run_id,
+                        gosom_breaker.metrics.failures,
+                        gosom_breaker._seconds_until_recovery(),
+                    )
+                    break
+                # Recovery window elapsed: let exactly one job through as a
+                # health probe (the breaker itself flips to HALF_OPEN on
+                # the next call) rather than resuming full-speed submission
+                # before we know the dispatcher is actually back.
+
             async with session_factory() as heartbeat_db:
                 run = await heartbeat_db.get(MapsCensusRun, run_id)
                 if run is not None:
                     run.heartbeat_at = datetime.now(UTC)
                     await heartbeat_db.commit()
 
+            if execution_token is not None:
+                # A newer run_census() call for this run_id has taken over
+                # (e.g. the stale-heartbeat watchdog fired while this
+                # execution was just slow, not dead) — stop claiming cells
+                # instead of racing that execution to completion.
+                await ensure_run_execution_current(
+                    session_factory, run_id=run_id, token=execution_token
+                )
+
+            # Atomic claim (guarded UPDATE ... WHERE status = 'pending', the
+            # same primitive maps_cell_runner.claim_cells uses) instead of a
+            # plain read-then-write: a concurrent execution that already
+            # claimed this exact cell_id makes this a no-op skip rather than
+            # both executions processing (and double-subdividing) the same
+            # cell. A cell already COMPLETED/CAPPED/FAILED, or already
+            # IN_PROGRESS under a concurrent claim, is simply not PENDING
+            # anymore, so the guarded UPDATE naturally claims nothing for it.
+            claimed = await claim_cell_by_id(
+                session_factory, cell_id=cell_id, worker_id=execution_token or "unknown"
+            )
+            if not claimed:
+                continue
+
             async with session_factory() as cell_db:
                 cell = await cell_db.get(MapsCensusCell, cell_id)
-                if cell is None or cell.status in (
-                    MapsCensusCellStatus.COMPLETED,
-                    MapsCensusCellStatus.CAPPED,
-                ):
+                if cell is None:
                     continue
-                cell.status = MapsCensusCellStatus.IN_PROGRESS
-                cell.attempt_count = (cell.attempt_count or 0) + 1
-                cell.started_at = cell.started_at or datetime.now(UTC)
-                cell.heartbeat_at = datetime.now(UTC)
                 query_text = cell.query_text
                 region_name = cell.region_name
                 city_name = cell.city_name
@@ -1581,22 +1980,177 @@ class MapsCensusService:
                 expansion_depth = cell.expansion_depth or 0
                 viewport_bounds = cell.viewport_bounds
                 resume_token = cell.pagination_resume_token
-                await cell_db.commit()
+                parent_cell_id = cell.parent_cell_id
+                current_attempt_count = cell.attempt_count or 0
+                # Set once, on this cell's very first claim, and never
+                # touched again — the fixed reference point for the
+                # absolute deadline below. Persisted (not just an
+                # in-process monotonic clock) so it survives a worker
+                # crash/restart: a cell resumed by a new process still
+                # can't get a fresh 20 minutes just because the process
+                # that was working it died.
+                if cell.first_attempted_at is None:
+                    cell.first_attempted_at = datetime.now(UTC)
+                    await cell_db.commit()
+                first_attempted_at = cell.first_attempted_at
+
+            absolute_deadline_seconds = max(
+                1, int(settings.maps_census_cell_absolute_deadline_seconds)
+            )
+            # SQLite (tests/local dev) returns naive datetimes even for a
+            # DateTime(timezone=True) column — strip tzinfo on both sides so
+            # this subtraction is correct on SQLite and Postgres alike (same
+            # pattern used by the watchdog's cell-heartbeat freshness check).
+            elapsed_seconds = (
+                datetime.now(UTC).replace(tzinfo=None) - first_attempted_at.replace(tzinfo=None)
+            ).total_seconds()
+            remaining_budget_seconds = absolute_deadline_seconds - elapsed_seconds
+
+            if remaining_budget_seconds <= 0:
+                # Already past the absolute per-cell deadline (e.g. resumed
+                # after a crash having already burned the whole budget) —
+                # terminal now, without even attempting another call.
+                summary["cell_failures"] += 1
+                async with session_factory() as deadline_db:
+                    cell = await deadline_db.get(MapsCensusCell, cell_id)
+                    if cell is not None:
+                        cell.status = MapsCensusCellStatus.FAILED
+                        cell.completed_at = datetime.now(UTC)
+                        cell.last_error = (
+                            f"absolute per-cell deadline ({absolute_deadline_seconds}s) "
+                            "exceeded before this attempt could start"
+                        )[:2000]
+                        cell.claimed_by = None
+                    run = await deadline_db.get(MapsCensusRun, run_id)
+                    if run is not None:
+                        run.cells_completed += 1
+                    if region_id:
+                        region = await deadline_db.get(MapsCensusRegion, region_id)
+                        if region is not None:
+                            region.cells_completed += 1
+                    await deadline_db.commit()
+                continue
+
+            heartbeat_budget = {"last": datetime.now(UTC)}
+
+            async def _keep_heartbeat_warm() -> None:
+                # Throttled: a long Gosom poll loop ticks every few seconds
+                # for up to ~900s — refreshing on every tick would be a lot
+                # of DB writes for no benefit. Once every 30s is plenty to
+                # stay well inside the watchdog's 10-minute cutoff.
+                now = datetime.now(UTC)
+                if (now - heartbeat_budget["last"]).total_seconds() < 30:
+                    return
+                heartbeat_budget["last"] = now
+                await heartbeat_cell(session_factory, cell_id=cell_id)
+                await heartbeat_run(session_factory, run_id=run_id)
+
+            async def _call_provider() -> Any:
+                # The outer wait_for is the absolute, independent backstop:
+                # no heartbeat, no gosom-side max_time, and no retry-backoff
+                # arithmetic can push a cell's total wall-clock cost past
+                # this — it is always exactly "whatever's left of the 20
+                # minutes since this cell's first attempt."
+                return await asyncio.wait_for(
+                    client.search_text_paginated(
+                        query=query_text,
+                        region_code=country_code,
+                        page_size=settings.maps_census_places_page_size,
+                        max_pages=settings.maps_census_max_pages_per_cell,
+                        resume_page_token=resume_token,
+                        heartbeat_cb=_keep_heartbeat_warm,
+                        viewport_bounds=viewport_bounds,
+                    ),
+                    timeout=remaining_budget_seconds,
+                )
 
             try:
-                outcome = await client.search_text_paginated(
-                    query=query_text,
-                    region_code=country_code,
-                    page_size=settings.maps_census_places_page_size,
-                    max_pages=settings.maps_census_max_pages_per_cell,
-                    resume_page_token=resume_token,
+                if gosom_breaker is not None:
+                    # Routes success/failure into the breaker automatically
+                    # (CircuitBreakerOpenError on the recovery probe's own
+                    # failure is re-raised as the original exception by
+                    # .call(), so the existing except blocks below still
+                    # see PlacesProviderError/TimeoutError as normal).
+                    outcome = await gosom_breaker.call(_call_provider)
+                else:
+                    outcome = await _call_provider()
+            except CircuitBreakerOpenError:
+                # Defense in depth: the pre-loop check above should already
+                # have stopped us before reaching here, but if the breaker
+                # opened mid-iteration, defer rather than fail this cell —
+                # it stays PENDING, unclaimed.
+                logger.warning(
+                    "maps_census_gosom_breaker_open_mid_iteration run_id=%s cell_id=%s",
+                    run_id,
+                    cell_id,
                 )
+                break
+            except TimeoutError:
+                # Our own absolute-deadline cutoff fired (distinct from
+                # PlacesTimeoutError, gosom's own 8-minute job timeout) —
+                # the budget for this cell is exhausted; terminal now, no
+                # further retry regardless of attempt_count.
+                summary["cell_failures"] += 1
+                async with session_factory() as cell_db:
+                    cell = await cell_db.get(MapsCensusCell, cell_id)
+                    if cell is not None:
+                        cell.status = MapsCensusCellStatus.FAILED
+                        cell.completed_at = datetime.now(UTC)
+                        cell.last_error = (
+                            f"absolute per-cell deadline ({absolute_deadline_seconds}s) "
+                            "exceeded"
+                        )[:2000]
+                        cell.claimed_by = None
+                    run = await cell_db.get(MapsCensusRun, run_id)
+                    if run is not None:
+                        run.cells_completed += 1
+                    if region_id:
+                        region = await cell_db.get(MapsCensusRegion, region_id)
+                        if region is not None:
+                            region.cells_completed += 1
+                    await cell_db.commit()
+                continue
             except PlacesProviderError as exc:
+                # A provider timeout (e.g. an 8-minute Gosom job that never
+                # reported back — verified in production as gosom's own
+                # shared job queue backing up, not a slow query) gets a
+                # tighter attempt cap and a much longer backoff than a
+                # generic transient error: repeatedly re-running an already
+                # expensive, already-saturated operation wastes wall-clock
+                # for little chance of success, and 30s (the general retry
+                # base) gives a saturated backend no real time to drain.
+                #
+                # Either way, a retry is only worth scheduling if the
+                # cell's absolute 20-minute budget actually has room left
+                # for the backoff wait itself — "at most one retry after a
+                # timeout, only when the remaining time budget ... permit
+                # it." Recomputed fresh (not reused from before the call)
+                # since real time has now elapsed.
+                budget_after_failure = absolute_deadline_seconds - (
+                    datetime.now(UTC).replace(tzinfo=None)
+                    - first_attempted_at.replace(tzinfo=None)
+                ).total_seconds()
+                is_timeout = isinstance(exc, PlacesTimeoutError)
+                configured_max_attempts = (
+                    max_cell_timeout_attempts if is_timeout else max_cell_attempts
+                )
+                backoff_base = timeout_retry_base_seconds if is_timeout else None
+                effective_max_attempts = configured_max_attempts
+                if budget_after_failure <= (backoff_base or DEFAULT_RETRY_BASE_SECONDS):
+                    # Not enough budget left to even wait out the backoff,
+                    # let alone attempt again — force terminal now instead
+                    # of scheduling a retry that can never actually fire.
+                    effective_max_attempts = current_attempt_count
+                retry_kwargs: dict[str, Any] = {
+                    "max_attempts": max(1, effective_max_attempts),
+                }
+                if backoff_base is not None:
+                    retry_kwargs["base_backoff_seconds"] = backoff_base
                 retry_info = await fail_cell_for_retry(
                     session_factory,
                     cell_id=cell_id,
                     error=str(exc),
-                    max_attempts=max_cell_attempts,
+                    **retry_kwargs,
                 )
                 if retry_info["terminal"]:
                     summary["cell_failures"] += 1
@@ -1638,10 +2192,18 @@ class MapsCensusService:
                             region_name=region_name,
                             latitude=result.latitude,
                             longitude=result.longitude,
+                            geo_boundary_match=_geo_boundary_match(
+                                geo_polygon_record,
+                                latitude=result.latitude,
+                                longitude=result.longitude,
+                            ),
                             international_phone_number=result.international_phone_number,
                             raw_website=result.website,
                             discovered_via_query=query_text,
                             photo_reference=result.photo_reference,
+                            discovery_sources=(
+                                [result.maps_url] if getattr(result, "maps_url", None) else None
+                            ),
                         )
                         write_db.add(row)
                         await write_db.flush()
@@ -1681,6 +2243,67 @@ class MapsCensusService:
                 needs_subdivision = outcome.result_cap_reached and expansion_depth < max_depth
                 child_ids: list[str] = []
                 if needs_subdivision:
+                    async with session_factory() as children_check_db:
+                        already_subdivided = bool(
+                            await children_check_db.scalar(
+                                select(func.count())
+                                .select_from(MapsCensusCell)
+                                .where(MapsCensusCell.parent_cell_id == cell_id)
+                            )
+                        )
+                    if already_subdivided:
+                        # This cell was already subdivided once — a cell
+                        # claimed and processed more than once (e.g. by a
+                        # since-superseded concurrent execution, or a crash
+                        # between persisting children and marking this cell
+                        # CAPPED) must never subdivide twice and persist a
+                        # duplicate set of child queries.
+                        logger.warning(
+                            "maps_census_cell_already_subdivided run_id=%s cell_id=%s",
+                            run_id,
+                            cell_id,
+                        )
+                        needs_subdivision = False
+                if needs_subdivision and expansion_depth > 0 and new_places == 0 and parent_cell_id:
+                    # This cell is itself a subdivision child (not an
+                    # original seed cell) and found zero new places. Before
+                    # recursing into yet another round of (mostly
+                    # query-text-only) subdivision, check whether its whole
+                    # sibling batch — the cells created alongside it from the
+                    # same parent — was unproductive too. If so, the strategy
+                    # that produced this batch (e.g. appending a directional
+                    # qualifier to the query text) is empirically not
+                    # narrowing anything for this lineage, so stop recursing
+                    # down it instead of repeatedly executing equivalent
+                    # searches for more cells with the same near-zero yield.
+                    async with session_factory() as siblings_db:
+                        sibling_new_unique_total = int(
+                            await siblings_db.scalar(
+                                select(
+                                    func.coalesce(func.sum(MapsCensusCell.new_unique_places), 0)
+                                ).where(
+                                    MapsCensusCell.parent_cell_id == parent_cell_id,
+                                    MapsCensusCell.status.in_(
+                                        [
+                                            MapsCensusCellStatus.COMPLETED,
+                                            MapsCensusCellStatus.CAPPED,
+                                        ]
+                                    ),
+                                )
+                            )
+                            or 0
+                        )
+                    if sibling_new_unique_total == 0:
+                        logger.info(
+                            "maps_census_subdivision_ineffective run_id=%s cell_id=%s "
+                            "parent_cell_id=%s expansion_depth=%s",
+                            run_id,
+                            cell_id,
+                            parent_cell_id,
+                            expansion_depth,
+                        )
+                        needs_subdivision = False
+                if needs_subdivision:
                     async with session_factory() as profile_db:
                         run = await profile_db.get(MapsCensusRun, run_id)
                         country_profile = run.country_profile if run is not None else None
@@ -1693,6 +2316,7 @@ class MapsCensusService:
                         country_profile=country_profile,
                         viewport_bounds=viewport_bounds,
                         existing_query_texts=local_seen_query_texts,
+                        polygon_filter=polygon_filter,
                     )
                     if campaign_budget is not None:
                         remaining = max(0, campaign_budget["max"] - campaign_budget["used"])
@@ -1707,8 +2331,17 @@ class MapsCensusService:
                             specs=specs,
                             seen_query_texts=local_seen_query_texts,
                         )
-                        if campaign_budget is not None:
-                            campaign_budget["used"] += len(child_ids)
+                        if child_ids:
+                            # Atomic SQL-level increment (see
+                            # increment_run_cells_total) — not a Python-level
+                            # read-modify-write — so this can never be
+                            # clobbered back down by another concurrent
+                            # execution's own stale local total.
+                            new_total = await increment_run_cells_total(
+                                session_factory, run_id=run_id, by=len(child_ids)
+                            )
+                            if campaign_budget is not None:
+                                campaign_budget["used"] = new_total
 
                 capped = bool(needs_subdivision and child_ids)
                 async with session_factory() as write_db:
@@ -1723,8 +2356,6 @@ class MapsCensusService:
                         )
                     if run is not None:
                         run.cells_completed += 1
-                        if child_ids:
-                            run.cells_total += len(child_ids)
                     if region is not None:
                         region.unique_places_found += new_places
                         region.plausible_providers_found += new_plausible
@@ -2745,6 +3376,28 @@ class MapsCensusService:
         ]
 
 
+def _geo_boundary_match(
+    geo_polygon_record: Any, *, latitude: float | None, longitude: float | None
+) -> str | None:
+    """Geographic result validation (Task 6): coordinate-based targeting
+    is a discovery strategy, not proof of membership. Returns which of the
+    four honest outcomes applies — never silently treats "no coordinates"
+    or "no polygon to check against" as if the place were confirmed inside
+    the region.
+    """
+    if latitude is None or longitude is None:
+        return "no_coordinates"
+    if geo_polygon_record is None:
+        return "no_polygon_available"
+    try:
+        inside = maps_geo_boundaries.contains_point(
+            geo_polygon_record, lat=latitude, lon=longitude
+        )
+    except Exception:  # noqa: BLE001
+        return "no_polygon_available"
+    return "inside_polygon" if inside else "outside_polygon"
+
+
 def _cap_to_budget(
     cells: list, *, max_cells_per_campaign: int, already_persisted: int
 ) -> list:
@@ -3052,6 +3705,7 @@ def _cell_item(cell: MapsCensusCell) -> MapsCensusCellItem:
         parent_cell_id=cell.parent_cell_id,
         expansion_reason=cell.expansion_reason,
         expansion_depth=cell.expansion_depth,
+        viewport_bounds=cell.viewport_bounds,
         attempt_count=cell.attempt_count,
         last_error=cell.last_error,
         next_retry_at=cell.next_retry_at,
@@ -3082,6 +3736,8 @@ def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
         updated_at=run.updated_at,
         hero_image_url=run.hero_image_url,
         total_cost_usd=float((run.quota_metrics or {}).get("total_cost_usd") or 0.0),
+        geo_anchor=(run.processing_state or {}).get("geo_anchor"),
+        geo_ai_plan=(run.processing_state or {}).get("geo_ai_plan"),
     )
 
 
@@ -3471,6 +4127,11 @@ async def run_maps_census_job(ctx: dict, run_id: str) -> None:
     logger.info("maps_census_job_entered", extra={"run_id": run_id})
     try:
         await maps_census_service.run_census(None, run_id=run_id)
+    except RunExecutionSuperseded:
+        # A newer run_census() execution for this run_id took over (the
+        # stale-heartbeat watchdog fired while this one was only slow, not
+        # dead). Not a failure — the newer execution owns the run now.
+        logger.info("maps_census_job_superseded", extra={"run_id": run_id})
     except Exception as exc:  # noqa: BLE001
         logger.exception("maps_census_job_failed", extra={"run_id": run_id})
         from app.db.session import AsyncSessionLocal
@@ -3636,19 +4297,25 @@ async def recover_maps_census_runs(ctx: dict) -> None:
     - enrichment heartbeat is stale
     without requiring a destructive Recover reset.
 
-    KNOWN FOLLOW-UP (not fixed here): this can re-enqueue a second, concurrent
-    run_census() execution for a run whose status is still RUNNING with a
-    stale heartbeat — run_census's own top-of-function guard only rejects
-    terminal statuses (COMPLETED/COMPLETED_WITH_WARNINGS/CANCELLED), not
-    RUNNING. Combined with _execute_cells's non-atomic read-then-write cell
-    claim (an atomic SELECT...FOR UPDATE SKIP LOCKED claim already exists,
-    unused, in maps_cell_runner.claim_cells), two concurrent executions could
-    double-claim and double-process cells. This did not cause the Andorra
-    keep/drop-bypass incident (that's fixed by the keep_drop_decision gate in
-    build_classification_query/build_expensive_pipeline_query), but is a
-    related concurrency gap worth closing separately — route _execute_cells's
-    claiming through claim_cells, and/or reject RUNNING-with-fresh-heartbeat
-    here too.
+    A run's own ``heartbeat_at`` is refreshed before every cell and — via
+    ``heartbeat_cb`` threaded into the Places/Gosom client — periodically
+    *during* a single cell's external call, so it should never go stale while
+    an execution is genuinely alive, even across a ~900s Gosom scrape. As a
+    second, independent check (the run-level heartbeat write could in
+    principle be skipped by a bug, a crash between writes, or clock skew),
+    this also looks at each candidate run's own cell-level heartbeats before
+    concluding it is dead: any ``IN_PROGRESS`` cell heartbeat-ed more
+    recently than ``cutoff`` means a worker is actively claiming/processing
+    cells for this run right now, so a duplicate ``run_maps_census_job`` is
+    never enqueued on top of it. ``_execute_cells`` also now claims cells via
+    the same atomic guarded-UPDATE primitive as ``maps_cell_runner.claim_cells``
+    (``claim_cell_by_id``), and ``run_census`` stamps/checks a fencing token
+    (``maps_cell_runner.claim_run_execution`` /
+    ``ensure_run_execution_current``) around the post-discovery stages — so
+    even in the residual case where this watchdog does enqueue a second
+    execution (e.g. a genuine crash mid-batch), two concurrent executions can
+    no longer double-claim/double-process a cell, double-subdivide, or both
+    reach the COMPLETED/Phase-2 transition.
     """
     del ctx
     from datetime import timedelta
@@ -3716,6 +4383,29 @@ async def recover_maps_census_runs(ctx: dict) -> None:
                     "maps_census_skip_stale_recover_discovery_done run_id=%s cells=%s",
                     run.id,
                     total_cells,
+                )
+                continue
+            freshest_cell_heartbeat = await db.scalar(
+                select(func.max(MapsCensusCell.heartbeat_at)).where(
+                    MapsCensusCell.run_id == run.id,
+                    MapsCensusCell.status == MapsCensusCellStatus.IN_PROGRESS,
+                )
+            )
+            # SQLite (tests/local dev) returns naive datetimes even for a
+            # DateTime(timezone=True) column — strip tzinfo on both sides so
+            # this comparison is correct on SQLite and Postgres alike.
+            if (
+                freshest_cell_heartbeat is not None
+                and freshest_cell_heartbeat.replace(tzinfo=None) >= cutoff.replace(tzinfo=None)
+            ):
+                # A cell is actively being worked right now (its own
+                # heartbeat is fresh, kept warm during the external call by
+                # heartbeat_cb) even though the coarser run-level heartbeat
+                # looks stale — this run is alive, not dead. Never duplicate
+                # a healthy execution just because one scrape is slow.
+                logger.info(
+                    "maps_census_skip_stale_recover_cell_heartbeat_fresh run_id=%s",
+                    run.id,
                 )
                 continue
             stale_discovery_ids.append(run.id)

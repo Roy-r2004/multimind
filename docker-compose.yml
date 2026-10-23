@@ -32,6 +32,14 @@ services:
       DATABASE_URL: postgresql+asyncpg://multiai:multiai@postgres:5432/multiai
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+      MAPS_DISCOVERY_PROVIDER: ${MAPS_DISCOVERY_PROVIDER:-google_places}
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      GOSOM_BASE_URL: ${GOSOM_BASE_URL:-http://gosom:8080}
+      GOSOM_TIMEOUT_SECONDS: ${GOSOM_TIMEOUT_SECONDS:-60}
+      GOSOM_POLL_INTERVAL_SECONDS: ${GOSOM_POLL_INTERVAL_SECONDS:-5}
+      GOSOM_JOB_MAX_TIME_SECONDS: ${GOSOM_JOB_MAX_TIME_SECONDS:-600}
+      GOSOM_DEPTH: ${GOSOM_DEPTH:-0}
+      GOSOM_LANGUAGE: ${GOSOM_LANGUAGE:-en}
       CORS_ORIGINS: http://localhost:3080,http://127.0.0.1:3080
       PUBLIC_APP_URL: http://localhost:3080
 
@@ -134,6 +142,14 @@ services:
       DATABASE_URL: postgresql+asyncpg://multiai:multiai@postgres:5432/multiai
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+      MAPS_DISCOVERY_PROVIDER: ${MAPS_DISCOVERY_PROVIDER:-google_places}
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      GOSOM_BASE_URL: ${GOSOM_BASE_URL:-http://gosom:8080}
+      GOSOM_TIMEOUT_SECONDS: ${GOSOM_TIMEOUT_SECONDS:-60}
+      GOSOM_POLL_INTERVAL_SECONDS: ${GOSOM_POLL_INTERVAL_SECONDS:-5}
+      GOSOM_JOB_MAX_TIME_SECONDS: ${GOSOM_JOB_MAX_TIME_SECONDS:-600}
+      GOSOM_DEPTH: ${GOSOM_DEPTH:-0}
+      GOSOM_LANGUAGE: ${GOSOM_LANGUAGE:-en}
 
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_SITE_URL: http://localhost:3080
@@ -236,6 +252,29 @@ services:
       retries: 3
       start_period: 60s
 
+  # Gosom is an alternative Maps Census discovery provider (see
+  # MAPS_DISCOVERY_PROVIDER in .env.example), not a mandatory service — a
+  # normal google_places deployment never needs a browser-based scraper
+  # running. The "gosom" profile keeps it out of the default `docker compose
+  # up` service set entirely; it only starts when explicitly requested (see
+  # README/below for the exact commands). Nothing else in this file
+  # declares a depends_on against it, so omitting it changes no other
+  # service's startup ordering or health checks.
+  gosom:
+    image: gosom/google-maps-scraper:v1.18.1
+    profiles: ["gosom"]
+    command: ["-web", "-addr", ":8080", "-data-folder", "/gmapsdata", "-c", "1"]
+    environment:
+      PLAYWRIGHT_BROWSERS_PATH: /opt/browsers
+    volumes:
+      - gosom_data:/gmapsdata
+      - gosom_playwright_cache:/opt
+    mem_limit: 2g
+    cpus: 2
+    expose:
+      - "8080"
+    restart: unless-stopped
+
   document-worker:
     build:
       context: ./backend
@@ -288,4 +327,6 @@ volumes:
   postgres_data:
   whisper_models:
   chat_attachments:
+  gosom_data:
+  gosom_playwright_cache:
   library_files:

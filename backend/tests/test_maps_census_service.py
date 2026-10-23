@@ -123,9 +123,13 @@ class _FakePlacesClient:
         max_pages: int | None = None,
         resume_page_token: str | None = None,
         cancel_check=None,
+        heartbeat_cb=None,
+        viewport_bounds=None,
     ) -> PlacesSearchOutcome:
         del region_code, page_size, max_pages, resume_page_token, cancel_check
-        self.paginated_calls.append({"query": query})
+        if heartbeat_cb is not None:
+            await heartbeat_cb()
+        self.paginated_calls.append({"query": query, "viewport_bounds": viewport_bounds})
         error = self._errors_by_query.get(query)
         if error is not None:
             raise error
@@ -2691,14 +2695,21 @@ async def test_run_census_contains_unexpected_cell_error(db, auth, monkeypatch):
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
 
-    # 3 attempts (maps_census_cell_max_attempts default) then the cell is
-    # terminally failed — the run itself survives and completes.
-    assert classify_calls["count"] == 3
-    assert summary["cell_failures"] == 1
+    # The cell is attempted once per run_census call — retries now correctly
+    # wait out their backoff (claim_cell_by_id respects next_retry_at)
+    # instead of firing again immediately within the same call, so no real
+    # wall-clock time has passed for the second of the 3 allowed attempts to
+    # become due yet. The run itself survives (does not crash, is not
+    # falsely marked COMPLETED while a bounded retry is still pending) —
+    # that is the behavior this test exists to protect.
+    assert classify_calls["count"] == 1
+    assert summary["cell_failures"] == 0
     await db.refresh(run)
-    assert run.status == MapsCensusStatus.COMPLETED
+    assert run.status == MapsCensusStatus.RUNNING
     cell = (
         await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
     ).scalar_one()
-    assert cell.status == MapsCensusCellStatus.FAILED
+    assert cell.status == MapsCensusCellStatus.PENDING
+    assert cell.next_retry_at is not None
+    assert cell.attempt_count == 1
     assert "classifier exploded" in (cell.last_error or "")

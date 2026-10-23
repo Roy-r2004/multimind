@@ -71,8 +71,12 @@ class _FrancePlacesClient:
         max_pages: int | None = None,
         resume_page_token: str | None = None,
         cancel_check=None,
+        heartbeat_cb=None,
+        viewport_bounds=None,
     ) -> PlacesSearchOutcome:
-        del region_code, page_size, max_pages, resume_page_token, cancel_check
+        del region_code, page_size, max_pages, resume_page_token, cancel_check, viewport_bounds
+        if heartbeat_cb is not None:
+            await heartbeat_cb()
         return self._outcomes.get(query, PlacesSearchOutcome())
 
 

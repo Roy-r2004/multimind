@@ -1,0 +1,27 @@
+# Isolated gosom scraper for a manual Maps Census experiment.
+# Does not start Postgres, Redis, the API, or the existing MultiMind stack.
+#
+#   docker compose -p multimind-gosom-test -f docker-compose.gosom.yml up -d
+#   docker compose -p multimind-gosom-test -f docker-compose.gosom.yml down
+#
+# Job CSV and the Playwright browser cache live in this project's own volumes.
+# The API is bound to loopback only.
+
+services:
+  gosom:
+    image: gosom/google-maps-scraper:v1.18.1
+    command: ["-web", "-addr", ":8080", "-data-folder", "/gmapsdata", "-c", "1"]
+    environment:
+      PLAYWRIGHT_BROWSERS_PATH: /opt/browsers
+    volumes:
+      - gosom_data:/gmapsdata
+      - gosom_playwright_cache:/opt
+    ports:
+      - "127.0.0.1:18080:8080"
+    mem_limit: 2g
+    cpus: 2
+    restart: unless-stopped
+
+volumes:
+  gosom_data:
+  gosom_playwright_cache:

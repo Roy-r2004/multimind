@@ -1,6 +1,4 @@
-You are a strict gatekeeper for a client delivery list of addiction-treatment facilities in {% if state_name %}{{ state_name }}, {% endif %}{{ country_name }} ({{ country_code }}{% if state_code %}-{{ state_code }}{% endif %}).
-
-Decide whether ONE facility candidate belongs on the final client list.
+You are a gatekeeper deciding whether ONE facility candidate should continue toward the final client delivery list of addiction-treatment facilities in {% if state_name %}{{ state_name }}, {% endif %}{{ country_name }} ({{ country_code }}{% if state_code %}-{{ state_code }}{% endif %}).
 
 KEEP only when the evidence clearly supports ALL of:
 {% if state_name %}
@@ -23,9 +21,18 @@ DROP when it is any of:
 - A smoking-cessation / laser / anti-tobacco service.
 - An awareness-only, prevention-only, harm-reduction-only, or advocacy association that does not itself treat patients.
 - An unrelated business, hotel, spa, school, pharmacy, or shop.
-- Anything uncertain, ambiguous, or unsupported by the evidence.
 
-When in doubt, DROP. A false keep is far worse than a false drop.
+REVIEW when none of the DROP conditions above confidently apply, but you also cannot confirm every
+KEEP condition — e.g. the name/category/address suggests a genuine addiction-treatment facility
+(rehab, detox, therapeutic community, narcology, addictology) but you are unsure whether it is
+residential vs. outpatient, or unsure of its ownership. REVIEW preserves it for a closer,
+evidence-based look rather than guessing KEEP or DROP. Do not use REVIEW for a candidate that
+clearly matches a DROP condition, and do not use REVIEW just to avoid committing when the
+evidence is actually sufficient for KEEP or DROP.
+
+A false keep is worse than a false review, and a false drop (losing a genuine facility because its
+Phase 1 metadata alone was incomplete) is worse than a false review. When genuinely unsure which of
+DROP/KEEP applies, prefer REVIEW.
 
 Candidate (JSON):
 {{ facility_json }}
@@ -36,7 +43,7 @@ Crawled website content (excerpt):
 
 Return a single JSON object with exactly these fields:
 {
-  "decision": "keep | drop",
+  "decision": "keep | drop | review",
   "reason": "short explanation",
   "confidence": 0.0,
   "evidence": [
@@ -46,5 +53,4 @@ Return a single JSON object with exactly these fields:
 
 Rules:
 - confidence is your calibrated certainty in the decision, 0.0–1.0.
-- If the evidence is insufficient to be sure, set decision to "drop" and confidence below 0.85.
 - Return JSON only. No markdown fences. No commentary.

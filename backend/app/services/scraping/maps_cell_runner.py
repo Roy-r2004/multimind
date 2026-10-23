@@ -15,11 +15,46 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 
-from app.db.models import MapsCensusCell, MapsCensusCellStatus
+from app.db.models import MapsCensusCell, MapsCensusCellStatus, MapsCensusRun
 
 DEFAULT_RETRY_BASE_SECONDS = 30
+
+
+class RunExecutionSuperseded(Exception):
+    """Raised when an execution notices a newer run_census() call has taken
+    over its run_id, so it must stop without writing a terminal status or
+    enqueuing Phase 2."""
+
+
+async def claim_run_execution(session_factory, *, run_id: str, token: str) -> None:
+    """Unconditionally stamp ``token`` as the current owner of ``run_id``.
+
+    The latest caller always wins (last-writer-wins fencing). Any earlier
+    execution still running will notice the mismatch next time it checks
+    ``is_run_execution_current`` and stop itself — this is what makes a
+    watchdog-triggered duplicate ``run_census()`` harmless instead of racing
+    the original to completion.
+    """
+    async with session_factory() as db:
+        await db.execute(
+            update(MapsCensusRun).where(MapsCensusRun.id == run_id).values(execution_token=token)
+        )
+        await db.commit()
+
+
+async def is_run_execution_current(session_factory, *, run_id: str, token: str) -> bool:
+    async with session_factory() as db:
+        current = await db.scalar(
+            select(MapsCensusRun.execution_token).where(MapsCensusRun.id == run_id)
+        )
+        return current == token
+
+
+async def ensure_run_execution_current(session_factory, *, run_id: str, token: str) -> None:
+    if not await is_run_execution_current(session_factory, run_id=run_id, token=token):
+        raise RunExecutionSuperseded(run_id)
 
 
 async def claim_cells(
@@ -74,11 +109,61 @@ async def claim_cells(
         return claimed
 
 
+async def claim_cell_by_id(session_factory, *, cell_id: str, worker_id: str) -> bool:
+    """Atomically transition one specific, already-known cell from PENDING to
+    IN_PROGRESS — the same guarded ``UPDATE ... WHERE status = 'pending'``
+    primitive as ``claim_cells``, just targeted at a cell id the caller
+    already has (e.g. from its own local work queue) instead of selecting
+    candidates by query. Also respects ``next_retry_at`` (same as
+    ``claim_cells``) — a cell scheduled for a backed-off retry is not due
+    yet, so this returns ``False`` for it exactly as if someone else had
+    already claimed it. This matters: without it, a cell that failed with a
+    retry delay could be re-claimed and re-attempted the moment it cycles
+    back around an in-memory work queue, immediately burning another full
+    attempt against whatever made it fail in the first place, instead of
+    actually waiting out the backoff.
+
+    Returns ``False`` without raising when the cell is no longer PENDING,
+    not yet due for retry, or missing — the caller must skip it rather than
+    process it again.
+    """
+    now = datetime.now(UTC)
+    async with session_factory() as db:
+        result = await db.execute(
+            update(MapsCensusCell)
+            .where(
+                MapsCensusCell.id == cell_id,
+                MapsCensusCell.status == MapsCensusCellStatus.PENDING,
+                or_(MapsCensusCell.next_retry_at.is_(None), MapsCensusCell.next_retry_at <= now),
+            )
+            .values(
+                status=MapsCensusCellStatus.IN_PROGRESS,
+                claimed_by=worker_id,
+                attempt_count=MapsCensusCell.attempt_count + 1,
+                started_at=now,
+                heartbeat_at=now,
+                next_retry_at=None,
+            )
+        )
+        await db.commit()
+        return bool(result.rowcount)
+
+
 async def heartbeat_cell(session_factory, *, cell_id: str) -> None:
     async with session_factory() as db:
         await db.execute(
             update(MapsCensusCell)
             .where(MapsCensusCell.id == cell_id)
+            .values(heartbeat_at=datetime.now(UTC))
+        )
+        await db.commit()
+
+
+async def heartbeat_run(session_factory, *, run_id: str) -> None:
+    async with session_factory() as db:
+        await db.execute(
+            update(MapsCensusRun)
+            .where(MapsCensusRun.id == run_id)
             .values(heartbeat_at=datetime.now(UTC))
         )
         await db.commit()
@@ -136,6 +221,100 @@ async def recover_stale_running_cells(
         )
         await db.commit()
         return int(result.rowcount or 0)
+
+
+async def increment_run_cells_total(session_factory, *, run_id: str, by: int) -> int:
+    """Atomically add ``by`` to ``maps_census_runs.cells_total`` via a single
+    SQL ``UPDATE ... SET cells_total = cells_total + :by`` — not a Python-
+    level read-modify-write.
+
+    This matters: an ORM assignment like ``run.cells_total = some_local_sum``
+    (or even ``run.cells_total += by`` on a fetched ORM instance) computes the
+    new value in Python from whatever was last read and issues an absolute
+    ``SET`` at flush time. Under a watchdog-triggered duplicate execution (or
+    any other concurrent writer), that absolute SET can silently clobber
+    ``cells_total`` back down to a stale, smaller number — this was the
+    confirmed root cause of runs observed with ``cells_completed`` far
+    exceeding ``cells_total`` (531 vs 58 in one case). A SQL-level relative
+    update can only ever add to whatever the current value genuinely is,
+    regardless of how many writers are doing this concurrently — there is no
+    "stale local total" for it to overwrite with.
+
+    Returns the new, authoritative value so callers can re-sync any local
+    budget-tracking variable instead of trusting their own running sum.
+    """
+    async with session_factory() as db:
+        if by == 0:
+            current = await db.scalar(
+                select(MapsCensusRun.cells_total).where(MapsCensusRun.id == run_id)
+            )
+            return int(current or 0)
+        result = await db.execute(
+            update(MapsCensusRun)
+            .where(MapsCensusRun.id == run_id)
+            .values(cells_total=MapsCensusRun.cells_total + by)
+            .returning(MapsCensusRun.cells_total)
+        )
+        await db.commit()
+        row = result.first()
+        return int(row[0]) if row is not None else 0
+
+
+async def reconcile_run_cell_counters(session_factory, *, run_id: str) -> dict[str, int]:
+    """Recompute ``cells_total``/``cells_completed`` from the actual
+    persisted ``maps_census_cells`` rows and write them back — the
+    authoritative source of truth, not whatever an in-memory counter
+    accumulated across however many (possibly concurrent, possibly crashed
+    and resumed) executions touched this run.
+
+    ``cells_total`` = every cell row ever persisted for this run.
+    ``cells_completed`` = every cell row in a terminal status (COMPLETED,
+    CAPPED, or FAILED) — pending/in-progress cells are never counted as
+    completed, and a cell is never double-counted since each one only ever
+    reaches one terminal status once.
+
+    Both counts are ``WHERE run_id = :run_id`` — an index-scoped count on
+    this run's own rows (``ix_maps_census_cells_run_id``), not a full-table
+    scan — so this is cheap enough for a low-frequency checkpoint (resume,
+    cancel, watchdog recovery) but is deliberately NOT called in the
+    per-cell hot path, where the atomic increment above is used instead.
+    """
+    async with session_factory() as db:
+        total = int(
+            (
+                await db.scalar(
+                    select(func.count())
+                    .select_from(MapsCensusCell)
+                    .where(MapsCensusCell.run_id == run_id)
+                )
+            )
+            or 0
+        )
+        completed = int(
+            (
+                await db.scalar(
+                    select(func.count())
+                    .select_from(MapsCensusCell)
+                    .where(
+                        MapsCensusCell.run_id == run_id,
+                        MapsCensusCell.status.in_(
+                            [
+                                MapsCensusCellStatus.COMPLETED,
+                                MapsCensusCellStatus.CAPPED,
+                                MapsCensusCellStatus.FAILED,
+                            ]
+                        ),
+                    )
+                )
+            )
+            or 0
+        )
+        run = await db.get(MapsCensusRun, run_id)
+        if run is not None:
+            run.cells_total = total
+            run.cells_completed = completed
+            await db.commit()
+    return {"cells_total": total, "cells_completed": completed}
 
 
 async def is_run_cancelled(session_factory, *, run_id: str) -> bool:

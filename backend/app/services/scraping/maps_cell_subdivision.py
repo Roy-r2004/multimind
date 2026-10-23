@@ -10,7 +10,7 @@ country) and generic geography heuristics, never a hardcoded country's terms.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 # One quadrant per subdivision keeps the child-cell fan-out bounded even when
 # every strategy below fires for the same capped cell.
@@ -66,19 +66,36 @@ def subdivide_cell(
     viewport_bounds: dict[str, Any] | None = None,
     existing_query_texts: set[str] | None = None,
     max_children: int = MAX_CHILD_CELLS_PER_SUBDIVISION,
+    polygon_filter: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[ChildCellSpec]:
     """Build child-cell specs for a capped cell.
 
+    ``polygon_filter``, when given, is called with each viewport quadrant
+    (north/south/east/west dict) and must return ``True`` for it to be
+    kept — used by callers that have resolved a real verified polygon for
+    this run (``maps_geo_boundaries.bbox_intersects_polygon``) to drop a
+    quadrant that lands entirely outside the region's actual shape (e.g.
+    in a neighboring state/country still inside the bounding rectangle).
+    ``None`` keeps every quadrant, same as before this existed.
+
     Strategies, tried in order until ``max_children`` is reached:
-      1. alternate_query_family — other query families from the country
+      1. viewport_subdivision — when a bounding box is known, split it into
+         four quadrants and re-issue the same query per quadrant. Tried
+         first and given a reserved share of ``max_children``: this is the
+         only strategy that changes what Gosom actually searches
+         geographically (see maps_gosom_client._center_and_zoom_from_viewport)
+         — the text-only strategies below can easily fill every remaining
+         slot with query variants that don't narrow the area at all (that
+         was the "more cells, same places" failure mode this product hit in
+         practice), so a known bounding box must never be starved out by
+         them running first.
+      2. alternate_query_family — other query families from the country
          profile that this cell's query didn't already use.
-      2. additional_local_term — another term from the *same* family/locale.
-      3. city_subdivision — generic directional/locality qualifiers appended
+      3. additional_local_term — another term from the *same* family/locale.
+      4. city_subdivision — generic directional/locality qualifiers appended
          to the original query (no country-specific vocabulary).
-      4. smaller_city_variant — narrows to just the city (or region) name so
+      5. smaller_city_variant — narrows to just the city (or region) name so
          a following pass can pair it with fresh terms.
-      5. viewport_subdivision — when a bounding box is known, split it into
-         four quadrants and re-issue the same query per quadrant.
     """
     locality = (city_name or region_name or "").strip()
     seen = {t.strip().casefold() for t in (existing_query_texts or set())}
@@ -118,11 +135,26 @@ def subdivide_cell(
         )
         return True
 
+    # Strategy 1: viewport quadrant subdivision — reserved first, ahead of
+    # every text-only strategy below, so a known bounding box always
+    # produces real geographic children instead of being crowded out.
+    if viewport_bounds:
+        for quadrant in _quadrants(viewport_bounds):
+            if len(children) >= max_children:
+                break
+            if polygon_filter is not None and not polygon_filter(quadrant):
+                continue
+            _add(
+                query_text,
+                reason="viewport_subdivision",
+                bounds=quadrant,
+            )
+
     provider_terms = (country_profile or {}).get("provider_terms")
     provider_terms = provider_terms if isinstance(provider_terms, dict) else {}
     current_family_key = (query_family or "").strip().casefold()
 
-    # Strategy 1: alternate query-family terms.
+    # Strategy 2: alternate query-family terms.
     for family, terms in provider_terms.items():
         if len(children) >= max_children:
             break
@@ -137,7 +169,7 @@ def subdivide_cell(
         if not _add(candidate, reason="alternate_query_family", family=str(family).strip()[:64]):
             break
 
-    # Strategy 2: additional local terms from the same family.
+    # Strategy 3: additional local terms from the same family.
     if len(children) < max_children and current_family_key:
         same_family_terms = provider_terms.get(query_family) or []
         if isinstance(same_family_terms, list):
@@ -149,7 +181,7 @@ def subdivide_cell(
                 if not _add(candidate, reason="additional_local_term"):
                     break
 
-    # Strategy 3: generic city/locality subdivision qualifiers.
+    # Strategy 4: generic city/locality subdivision qualifiers.
     for qualifier in _GENERIC_LOCALITY_QUALIFIERS:
         if len(children) >= max_children:
             break
@@ -157,20 +189,9 @@ def subdivide_cell(
         if not _add(candidate, reason="city_subdivision"):
             break
 
-    # Strategy 4: smaller-city variant — narrow the query to just the locality
+    # Strategy 5: smaller-city variant — narrow the query to just the locality
     # name so a later planning pass can pair it with a fresh term.
     if locality and len(children) < max_children:
         _add(locality, reason="smaller_city_variant")
-
-    # Strategy 5: viewport quadrant subdivision.
-    if viewport_bounds and len(children) < max_children:
-        for quadrant in _quadrants(viewport_bounds):
-            if len(children) >= max_children:
-                break
-            _add(
-                query_text,
-                reason="viewport_subdivision",
-                bounds=quadrant,
-            )
 
     return children[:max_children]
