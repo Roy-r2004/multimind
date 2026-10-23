@@ -104,7 +104,7 @@ export function MapsRunCard({
               {run.places_found} places found
             </StatPill>
             <StatPill icon={<Building2 className="size-3.5" />}>
-              {run.places_with_website} verified locations
+              {run.accepted_facilities_count} eligible rehab centers
             </StatPill>
             <StatPill icon={<DollarSign className="size-3.5" />}>
               {formatCost(run.total_cost_usd)} spent

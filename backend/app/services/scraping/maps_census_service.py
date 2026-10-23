@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
@@ -344,7 +344,22 @@ class MapsCensusService:
                 .order_by(MapsCensusRun.created_at.desc())
             )
         ).scalars().all()
-        return [_run_summary(run) for run in rows]
+        # One grouped query for every run's accepted-facility count rather
+        # than one query per run (N+1) — same authoritative predicate the
+        # Phase 2 tab and Excel export use.
+        counts_by_run: dict[str, int] = {}
+        if rows:
+            run_ids = [run.id for run in rows]
+            count_rows = await db.execute(
+                select(MapsPlace.run_id, func.count())
+                .where(MapsPlace.run_id.in_(run_ids), _accepted_facility_filter())
+                .group_by(MapsPlace.run_id)
+            )
+            counts_by_run = {run_id: int(count) for run_id, count in count_rows.all()}
+        return [
+            _run_summary(run, accepted_facilities_count=counts_by_run.get(run.id, 0))
+            for run in rows
+        ]
 
     async def get_run(
         self, db: AsyncSession, auth: AuthContext, run_id: str
@@ -352,7 +367,15 @@ class MapsCensusService:
         run = await db.get(MapsCensusRun, run_id)
         if run is None or run.organization_id != auth.org_id:
             raise NotFoundError("Maps census run", run_id)
-        summary = _run_summary(run)
+        accepted_count = int(
+            await db.scalar(
+                select(func.count())
+                .select_from(MapsPlace)
+                .where(MapsPlace.run_id == run_id, _accepted_facility_filter())
+            )
+            or 0
+        )
+        summary = _run_summary(run, accepted_facilities_count=accepted_count)
         return MapsCensusRunDetail(**summary.model_dump())
 
     async def get_run_live_stats(
@@ -444,6 +467,7 @@ class MapsCensusService:
         client_eligibility: str | None = None,
         lifecycle_status: str | None = None,
         keep_drop_decision: str | None = None,
+        accepted_only: bool = False,
         include_removed: bool = False,
         limit: int = 50,
         offset: int = 0,
@@ -462,6 +486,12 @@ class MapsCensusService:
         if with_website_only:
             query = query.where(MapsPlace.official_website.is_not(None))
             count_query = count_query.where(MapsPlace.official_website.is_not(None))
+        if accepted_only:
+            # Applied in SQL before LIMIT/OFFSET so the total stays
+            # accurate under pagination — see _accepted_facility_filter.
+            accepted_filter = _accepted_facility_filter()
+            query = query.where(accepted_filter)
+            count_query = count_query.where(accepted_filter)
         if client_eligibility is not None:
             eligibility_filter = MapsPlace.client_eligibility == client_eligibility.strip().lower()
             query = query.where(eligibility_filter)
@@ -3609,6 +3639,23 @@ def has_contact_channel(place: MapsPlace | Any) -> bool:
     return bool(phone or website)
 
 
+def _accepted_facility_filter():
+    """The single authoritative "accepted rehab center" predicate — must
+    mirror maps_export_service.py's _is_eligible_center /
+    _has_required_contact_info exactly: client_eligibility == eligible,
+    keep_drop_decision in {keep, review}, phone present (website
+    optional). Shared by list_places' accepted_only filter and the
+    accepted-facility counts surfaced on run summaries, so the banner
+    count, the Phase 2 tab, and the Excel export can never disagree.
+    """
+    return and_(
+        MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
+        MapsPlace.keep_drop_decision.in_(["keep", "review"]),
+        MapsPlace.international_phone_number.is_not(None),
+        func.trim(MapsPlace.international_phone_number) != "",
+    )
+
+
 def _export_location(place: MapsPlace, *, country_name: str) -> str:
     address = (place.formatted_address or "").strip()
     if address:
@@ -3714,9 +3761,12 @@ def _cell_item(cell: MapsCensusCell) -> MapsCensusCellItem:
     )
 
 
-def _run_summary(run: MapsCensusRun) -> MapsCensusRunSummary:
+def _run_summary(
+    run: MapsCensusRun, *, accepted_facilities_count: int = 0
+) -> MapsCensusRunSummary:
     return MapsCensusRunSummary(
         id=run.id,
+        accepted_facilities_count=accepted_facilities_count,
         country_code=run.country_code,
         country_name=run.country_name,
         state_code=run.state_code,

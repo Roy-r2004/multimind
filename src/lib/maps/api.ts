@@ -56,7 +56,13 @@ export function listMapsCensusPlaces(
   filters: {
     relevantOnly?: boolean;
     withWebsiteOnly?: boolean;
-    keepDropDecision?: "keep" | "drop";
+    keepDropDecision?: "keep" | "drop" | "review";
+    /** The single authoritative "accepted rehab center" filter — same
+     * predicate as the Excel export (client_eligibility == eligible,
+     * keep_drop_decision in {keep, review}, phone present). Use this for
+     * any "final accepted facilities" count or list; it supersedes
+     * keepDropDecision for that purpose. */
+    acceptedOnly?: boolean;
     includeRemoved?: boolean;
     limit?: number;
     offset?: number;
@@ -66,6 +72,7 @@ export function listMapsCensusPlaces(
   if (filters.relevantOnly) params.set("relevant_only", "true");
   if (filters.withWebsiteOnly) params.set("with_website_only", "true");
   if (filters.keepDropDecision) params.set("keep_drop_decision", filters.keepDropDecision);
+  if (filters.acceptedOnly) params.set("accepted_only", "true");
   if (filters.includeRemoved) params.set("include_removed", "true");
   if (filters.limit !== undefined) params.set("limit", String(filters.limit));
   if (filters.offset !== undefined) params.set("offset", String(filters.offset));
