@@ -10,6 +10,7 @@ import {
   Bookmark,
   FileText,
   Map as MapIcon,
+  MapPinned,
   Menu,
   MessageSquare,
   MessageSquareText,
@@ -40,6 +41,7 @@ const NAV = [
 const ALL_WORKSPACES = [
   { to: "/chat", label: "Chat Council", icon: MessageSquare },
   { to: "/maps", label: "Maps Census", icon: MapIcon },
+  { to: "/maps/gosom", label: "Maps Census (Gosom)", icon: MapPinned },
 ];
 
 // Orgs that don't get the Maps Census workspace. Every org shares one route
@@ -56,12 +58,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const orgSlug = session?.organization.slug ?? "";
   const showMaps = !ORGS_WITHOUT_MAPS.has(orgSlug);
   const WORKSPACES = useMemo(
-    () => (showMaps ? ALL_WORKSPACES : ALL_WORKSPACES.filter((w) => w.to !== "/maps")),
+    () => (showMaps ? ALL_WORKSPACES : ALL_WORKSPACES.filter((w) => !w.to.startsWith("/maps"))),
     [showMaps],
   );
 
   const isScraping = path.startsWith("/scraping");
   const isMaps = path.startsWith("/maps");
+  const isGosomMaps = path === "/maps/gosom";
 
   function closeSidebar() {
     setOpen(false);
@@ -113,9 +116,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             const active =
               n.to === "/scraping"
                 ? isScraping
-                : n.to === "/maps"
-                  ? isMaps
-                  : !isScraping && !isMaps;
+                : n.to === "/maps/gosom"
+                  ? isGosomMaps
+                  : n.to === "/maps"
+                    ? isMaps && !isGosomMaps
+                    : !isScraping && !isMaps;
             return (
               <Link
                 key={n.to}

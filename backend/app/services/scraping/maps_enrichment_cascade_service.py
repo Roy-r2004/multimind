@@ -481,7 +481,60 @@ class MapsEnrichmentCascadeService:
     async def run_one_small_batch(
         self, db: AsyncSession | None, *, run_id: str, batch_id: str
     ) -> dict[str, Any]:
-        """Claim and process exactly one small classification-or-detail batch.
+        """Claim and process exactly one small classification-or-detail batch,
+        holding the run's batch lock for the duration.
+
+        The lock is a best-effort compare-and-swap keyed by ``batch_id``
+        (``maps_enrichment_progress.try_acquire_batch_lock``). It was
+        previously only ever acquired by the watchdog cron, so any other
+        trigger of ``run_maps_enrichment_batch_job`` for the same run — the
+        auto-enrichment kicked off right after a keep/drop pass, a manual
+        "Enrich with AI"/retry click, and the watchdog — could run fully
+        concurrently with an already-in-flight batch. Observed in production
+        (Belarus run 5acff6f7): overlapping ticks each read a stale
+        ``sonar_classify_budget.calls_used`` snapshot and spent their own
+        allowance independently, so the run-wide Sonar cap was exceeded in
+        practice, and whichever tick committed ``processing_state`` last
+        clobbered the others' ``classification_stats``/``sonar_classify_stats``.
+        Acquiring this lock here, for every trigger, closes that race: only
+        one tick may be actively processing a given run at a time. A tick
+        that cannot acquire it skips cleanly (``has_more=False``) rather than
+        running a concurrent batch — the already-in-flight tick's own
+        self-enqueue continues the work.
+        """
+        from app.services.scraping.maps_enrichment_progress import (
+            release_batch_lock,
+            try_acquire_batch_lock,
+        )
+
+        settings = get_settings()
+        acquired = await try_acquire_batch_lock(
+            maps_place_enrichment_service._session_factory(db),
+            run_id=run_id,
+            batch_id=batch_id,
+            ttl_seconds=settings.maps_enrichment_batch_lock_ttl_seconds,
+        )
+        if not acquired:
+            logger.info(
+                "maps_enrichment_batch_skipped_lock_busy",
+                extra={"run_id": run_id, "batch_id": batch_id},
+            )
+            return {"has_more": False, "phase": "lock_busy", "skipped_due_to_lock": True}
+        try:
+            return await self._run_one_small_batch_locked(db, run_id=run_id, batch_id=batch_id)
+        finally:
+            await release_batch_lock(
+                maps_place_enrichment_service._session_factory(db),
+                run_id=run_id,
+                batch_id=batch_id,
+            )
+
+    async def _run_one_small_batch_locked(
+        self, db: AsyncSession | None, *, run_id: str, batch_id: str
+    ) -> dict[str, Any]:
+        """The actual single-batch body; see ``run_one_small_batch`` for the
+        batch-lock wrapper that makes calling this concurrently for the same
+        run safe.
 
         Called from a short-lived ARQ job that self-enqueues the next batch
         when work remains, instead of one long-lived job holding hundreds of
@@ -605,7 +658,27 @@ class MapsEnrichmentCascadeService:
             run = await session.get(MapsCensusRun, run_id)
             if run is not None:
                 state = dict(run.processing_state or {})
-                state["sonar_classify_stats"] = sonar_stats.as_dict()
+                # Accumulate onto the run-wide total rather than overwriting it:
+                # `sonar_stats` only ever holds THIS tick's own local counters
+                # (it is constructed fresh per tick, never seeded from `state`),
+                # so a plain overwrite here discarded every earlier tick's
+                # counters whenever a later tick made zero Sonar calls of its
+                # own (e.g. because the budget was already exhausted).
+                existing_stats_raw = dict(state.get("sonar_classify_stats") or {})
+                existing_stats = SonarFallbackStats(
+                    sonar_calls=int(existing_stats_raw.get("sonar_calls") or 0),
+                    sonar_parse_failures=int(existing_stats_raw.get("sonar_parse_failures") or 0),
+                    sonar_repair_attempts=int(existing_stats_raw.get("sonar_repair_attempts") or 0),
+                    sonar_repair_successes=int(
+                        existing_stats_raw.get("sonar_repair_successes") or 0
+                    ),
+                    sonar_final_failures=int(existing_stats_raw.get("sonar_final_failures") or 0),
+                    sonar_input_tokens=int(existing_stats_raw.get("sonar_input_tokens") or 0),
+                    sonar_output_tokens=int(existing_stats_raw.get("sonar_output_tokens") or 0),
+                    sonar_actual_cost=float(existing_stats_raw.get("sonar_actual_cost") or 0.0),
+                    budget_exhausted=bool(existing_stats_raw.get("budget_exhausted") or False),
+                )
+                state["sonar_classify_stats"] = existing_stats.merge(sonar_stats).as_dict()
                 state["sonar_classify_budget"] = {
                     "enabled": sonar_budget.enabled,
                     "max_calls": sonar_budget.max_calls,
@@ -1273,6 +1346,7 @@ class MapsEnrichmentCascadeService:
             place.addiction_focus_confirmed = None
             place.medical_detox = None
             place.residential_accommodation = None
+            place.inpatient_treatment = None
             place.classification_evidence = None
             place.classification_confidence = None
             place.client_eligibility = MapsClientEligibility.EXCLUDED.value

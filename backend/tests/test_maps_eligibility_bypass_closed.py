@@ -1,13 +1,10 @@
-"""Regression tests closing the keep/drop eligibility bypass.
+"""The strict keep/drop gate decides eligibility, as in the Google Places runs.
 
-A preliminary keep/drop AI decision (the primary Keep/Drop model's "keep",
-or the Sonar
-fallback's "review") must never be sufficient on its own to establish
-final client_eligibility — only compute_client_eligibility, called once
-real Phase 2 classification evidence exists (or an explicit, authorized
-manual override), may set it to "eligible". These tests exercise the
-real production functions end to end: apply_keep_drop ->
-compute_client_eligibility -> maps_export_service.build_workbook.
+A confident "keep" makes a place eligible; Phase 2 classification can only
+remove it on hard negative evidence. Delivery to the client export also needs
+a phone and a website. These tests exercise the real production functions end
+to end: apply_keep_drop -> compute_client_eligibility ->
+maps_export_service.build_workbook.
 """
 
 from __future__ import annotations
@@ -42,6 +39,8 @@ KEEP_JSON = json.dumps(
 REVIEW_JSON = json.dumps(
     {"decision": "review", "reason": "uncertain residential status", "confidence": 0.6, "evidence": []}
 )
+PHONE = "+358 40 000 0001"
+WEBSITE = "https://rehab.example.fi"
 
 
 def _place(run_id: str, google_place_id: str, name: str, **overrides) -> MapsPlace:
@@ -80,155 +79,125 @@ def _completed_classification_fields(**overrides) -> dict:
     return fields
 
 
-# --- 1. Confident keep before classification -> NOT exportable. ---
+async def _exported_names(db, auth, run_id: str) -> list[str]:
+    content, _ = await maps_export_service.build_workbook(db, auth, run_id)
+    return [
+        row[0].value
+        for row in load_workbook(BytesIO(content))[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2)
+        if row[0].value
+    ]
 
 
 @pytest.mark.asyncio
-async def test_confident_keep_before_classification_not_exportable(db, auth):
+async def test_confident_keep_with_contact_details_exports(db, auth):
     run = await _create_run(db, auth)
     place = _place(run.id, "g1", "Fresh Keep")
     db.add(place)
     await db.commit()
 
-    decision = KeepDropDecision.model_validate(json.loads(KEEP_JSON))
-    apply_keep_drop(place, decision, source="nano")
-    place.international_phone_number = "+358 40 000 0001"
+    apply_keep_drop(place, KeepDropDecision.model_validate(json.loads(KEEP_JSON)), source="nano")
+    place.international_phone_number = PHONE
+    place.raw_website = WEBSITE
     await db.commit()
 
-    assert place.client_eligibility != MapsClientEligibility.ELIGIBLE.value
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    names = [
-        row[0].value
-        for row in load_workbook(BytesIO(content))[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2)
-        if row[0].value
-    ]
-    assert "Fresh Keep" not in names
-
-
-# --- 2. Keep + classification failure -> NOT exportable. ---
+    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+    assert "Fresh Keep" in await _exported_names(db, auth, run.id)
 
 
 @pytest.mark.asyncio
-async def test_keep_with_classification_failure_not_exportable(db, auth):
-    """A classification failure leaves facility_type/ownership unresolved;
-    compute_client_eligibility must fall into its "unresolved -> review"
-    branch, never ELIGIBLE, so the place still cannot export."""
+async def test_keep_without_website_is_eligible_but_not_exported(db, auth):
     run = await _create_run(db, auth)
-    place = _place(run.id, "g2", "Keep Then Failed Classification")
+    place = _place(run.id, "g2", "Keep Without Website")
     db.add(place)
     await db.commit()
 
-    decision = KeepDropDecision.model_validate(json.loads(KEEP_JSON))
-    apply_keep_drop(place, decision, source="nano")
-    place.international_phone_number = "+358 40 000 0002"
-    # Simulate a classification attempt that failed before setting any
-    # structured fields, then re-running compute_client_eligibility exactly
-    # as maps_classification_service.py does unconditionally after its
-    # try/except, regardless of success.
+    apply_keep_drop(place, KeepDropDecision.model_validate(json.loads(KEEP_JSON)), source="nano")
+    place.international_phone_number = PHONE
+    await db.commit()
+
+    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+    assert "Keep Without Website" not in await _exported_names(db, auth, run.id)
+
+
+@pytest.mark.asyncio
+async def test_keep_with_classification_failure_stays_eligible(db, auth):
+    """A failed classification is missing evidence, not a disqualification."""
+    run = await _create_run(db, auth)
+    place = _place(run.id, "g3", "Keep Then Failed Classification")
+    db.add(place)
+    await db.commit()
+
+    apply_keep_drop(place, KeepDropDecision.model_validate(json.loads(KEEP_JSON)), source="nano")
+    place.international_phone_number = PHONE
+    place.raw_website = WEBSITE
     place.enrichment_error_message = "classification provider timeout"
     place.client_eligibility = compute_client_eligibility(place)
     await db.commit()
 
-    assert place.client_eligibility != MapsClientEligibility.ELIGIBLE.value
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    names = [
-        row[0].value
-        for row in load_workbook(BytesIO(content))[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2)
-        if row[0].value
-    ]
-    assert "Keep Then Failed Classification" not in names
-
-
-# --- 3. Keep + completed verified-eligible classification -> exportable
-# if phone exists. ---
+    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+    assert "Keep Then Failed Classification" in await _exported_names(db, auth, run.id)
 
 
 @pytest.mark.asyncio
-async def test_keep_with_completed_eligible_classification_exports_with_phone(db, auth):
+async def test_keep_with_completed_eligible_classification_exports(db, auth):
     run = await _create_run(db, auth)
-    place = _place(run.id, "g3", "Keep Then Verified Eligible")
+    place = _place(run.id, "g4", "Keep Then Verified Eligible")
     db.add(place)
     await db.commit()
 
-    decision = KeepDropDecision.model_validate(json.loads(KEEP_JSON))
-    apply_keep_drop(place, decision, source="nano")
+    apply_keep_drop(place, KeepDropDecision.model_validate(json.loads(KEEP_JSON)), source="nano")
     for key, value in _completed_classification_fields().items():
         setattr(place, key, value)
     place.client_eligibility = compute_client_eligibility(place)
-    place.international_phone_number = "+358 40 000 0003"
+    place.international_phone_number = PHONE
+    place.raw_website = WEBSITE
     await db.commit()
 
     assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    names = [
-        row[0].value
-        for row in load_workbook(BytesIO(content))[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2)
-        if row[0].value
-    ]
-    assert "Keep Then Verified Eligible" in names
-
-
-# --- 4. Keep + completed review/excluded classification -> NOT exportable. ---
+    assert "Keep Then Verified Eligible" in await _exported_names(db, auth, run.id)
 
 
 @pytest.mark.asyncio
-async def test_keep_with_completed_excluded_classification_not_exportable(db, auth):
+async def test_keep_with_hard_negative_classification_not_exportable(db, auth):
     run = await _create_run(db, auth)
-    place = _place(run.id, "g4", "Keep Then Turned Out Outpatient")
+    place = _place(run.id, "g5", "Keep Then Turned Out Outpatient")
     db.add(place)
     await db.commit()
 
-    decision = KeepDropDecision.model_validate(json.loads(KEEP_JSON))
-    apply_keep_drop(place, decision, source="nano")
+    apply_keep_drop(place, KeepDropDecision.model_validate(json.loads(KEEP_JSON)), source="nano")
     for key, value in _completed_classification_fields(
         facility_type=MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value
     ).items():
         setattr(place, key, value)
     place.client_eligibility = compute_client_eligibility(place)
-    place.international_phone_number = "+358 40 000 0004"
+    place.international_phone_number = PHONE
+    place.raw_website = WEBSITE
     await db.commit()
 
     assert place.client_eligibility == MapsClientEligibility.EXCLUDED.value
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    names = [
-        row[0].value
-        for row in load_workbook(BytesIO(content))[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2)
-        if row[0].value
-    ]
-    assert "Keep Then Turned Out Outpatient" not in names
-
-
-# --- 5. Review + completed verified-eligible classification -> exportable. ---
+    assert "Keep Then Turned Out Outpatient" not in await _exported_names(db, auth, run.id)
 
 
 @pytest.mark.asyncio
 async def test_review_with_completed_eligible_classification_exports(db, auth):
     run = await _create_run(db, auth)
-    place = _place(run.id, "g5", "Review Then Verified Eligible")
+    place = _place(run.id, "g6", "Review Then Verified Eligible")
     db.add(place)
     await db.commit()
 
-    decision = KeepDropDecision.model_validate(json.loads(REVIEW_JSON))
-    apply_keep_drop(place, decision, source="sonar")
+    apply_keep_drop(
+        place, KeepDropDecision.model_validate(json.loads(REVIEW_JSON)), source="sonar"
+    )
     assert place.keep_drop_decision == "review"
+    assert place.client_eligibility == MapsClientEligibility.REVIEW.value
     for key, value in _completed_classification_fields().items():
         setattr(place, key, value)
     place.client_eligibility = compute_client_eligibility(place)
-    place.international_phone_number = "+358 40 000 0005"
+    place.international_phone_number = PHONE
+    place.raw_website = WEBSITE
     await db.commit()
 
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    names = [
-        row[0].value
-        for row in load_workbook(BytesIO(content))[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2)
-        if row[0].value
-    ]
-    assert "Review Then Verified Eligible" in names
-
-
-# --- 6. Manual eligible override -> respects existing authorization and
-# audit semantics (compute_client_eligibility is bypassed deliberately by
-# an explicit, human-authorized action, not by a bare AI keep/drop call). ---
+    assert "Review Then Verified Eligible" in await _exported_names(db, auth, run.id)
 
 
 @pytest.mark.asyncio
@@ -236,82 +205,20 @@ async def test_manual_eligible_override_still_exports(db, auth):
     run = await _create_run(db, auth)
     place = _place(
         run.id,
-        "g6",
+        "g7",
         "Manually Confirmed",
-        keep_drop_decision="keep",
-        lifecycle_status=MapsLifecycleStatus.PROBABLE_ELIGIBLE.value,
+        keep_drop_decision="review",
+        lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
         client_eligibility=MapsClientEligibility.REVIEW.value,
-        international_phone_number="+358 40 000 0006",
+        international_phone_number=PHONE,
+        raw_website=WEBSITE,
     )
     db.add(place)
     await db.commit()
 
-    # Same action the admin review endpoint performs for mark_eligible —
-    # an explicit, authorized human decision, not a bare AI guess.
+    # Same action the admin review endpoint performs for mark_eligible.
     place.client_eligibility = MapsClientEligibility.ELIGIBLE.value
     place.lifecycle_status = MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
     await db.commit()
 
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    names = [
-        row[0].value
-        for row in load_workbook(BytesIO(content))[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2)
-        if row[0].value
-    ]
-    assert "Manually Confirmed" in names
-
-
-# --- 7. Retry/resume -> no premature eligibility. A place re-judged after
-# a prior incomplete attempt must not inherit a stale ELIGIBLE value. ---
-
-
-@pytest.mark.asyncio
-async def test_retry_after_incomplete_attempt_does_not_leave_premature_eligible(db, auth):
-    run = await _create_run(db, auth)
-    place = _place(
-        run.id,
-        "g7",
-        "Retried Candidate",
-        enrichment_status="failed",
-        enrichment_error_message="previous attempt timed out",
-    )
-    db.add(place)
-    await db.commit()
-
-    decision = KeepDropDecision.model_validate(json.loads(KEEP_JSON))
-    apply_keep_drop(place, decision, source="nano")
-    await db.commit()
-
-    # Re-running keep/drop's apply step (as a retry would) must still never
-    # produce ELIGIBLE on its own.
-    assert place.client_eligibility != MapsClientEligibility.ELIGIBLE.value
-    assert place.enrichment_status == "pending"
-
-
-# --- 8. Export requested while classification is in progress -> no
-# premature eligibility (the export simply reads current DB state; a
-# place mid-classification has not yet had compute_client_eligibility
-# called with real evidence, so it stays REVIEW/PROBABLE_ELIGIBLE and is
-# correctly excluded). ---
-
-
-@pytest.mark.asyncio
-async def test_export_while_classification_in_progress_excludes_place(db, auth):
-    run = await _create_run(db, auth)
-    place = _place(run.id, "g8", "Mid Classification")
-    db.add(place)
-    await db.commit()
-
-    decision = KeepDropDecision.model_validate(json.loads(KEEP_JSON))
-    apply_keep_drop(place, decision, source="nano")
-    place.international_phone_number = "+358 40 000 0008"
-    place.enrichment_status = "running"
-    await db.commit()
-
-    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
-    names = [
-        row[0].value
-        for row in load_workbook(BytesIO(content))[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2)
-        if row[0].value
-    ]
-    assert "Mid Classification" not in names
+    assert "Manually Confirmed" in await _exported_names(db, auth, run.id)

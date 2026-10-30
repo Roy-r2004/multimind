@@ -175,7 +175,7 @@ async def test_france_census_run_produces_full_funnel_report(db, auth, monkeypat
     # not in ``outcomes``.
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FrancePlacesClient(outcomes),
+        lambda *_args, **_kwargs: _FrancePlacesClient(outcomes),
     )
 
     async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
@@ -219,6 +219,21 @@ async def test_france_census_run_produces_full_funnel_report(db, auth, monkeypat
                 complete=lambda **_kwargs: _empty_decisions_response()
             )
         ),
+    )
+
+    # Never call the real keep/drop model from a test (it would bill the
+    # configured OpenRouter key and depend on a live model's judgment).
+    async def fake_classify_keep_drop(_session, place, **_kwargs):
+        from app.services.scraping.maps_keep_drop_service import KeepDropDecision
+
+        return (
+            KeepDropDecision(decision="keep", reason="test keep", confidence=0.95),
+            "nano",
+        )
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.classify_place_keep_drop",
+        fake_classify_keep_drop,
     )
 
     census_summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -373,10 +388,15 @@ async def test_france_census_run_produces_full_funnel_report(db, auth, monkeypat
     assert run.quota_metrics.get("enrichment_calls", 0) > 0
 
     # --- Processing limits reached (both phases completed under budget) ---
-    assert run.processing_state.get("limits_reached") == {
-        "website_search": False,
-        "enrichment": False,
-    }
+    # limits_reached has grown more granular sub-trackers since this
+    # assertion was written (classification/detail_enrichment/sonar_*,
+    # tracked separately from the original website_search/enrichment pair)
+    # — check every key is present and False, rather than an exact dict
+    # equality that breaks on any new, equally-false key.
+    limits_reached = run.processing_state.get("limits_reached") or {}
+    assert limits_reached.get("website_search") is False
+    assert limits_reached.get("enrichment") is False
+    assert all(value is False for value in limits_reached.values())
 
 
 async def _empty_decisions_response():

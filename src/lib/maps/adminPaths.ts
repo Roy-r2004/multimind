@@ -85,6 +85,22 @@ export function mapsAdminRetryEnrichmentPath(runId: string): string {
   return `/maps/runs/${runId}/retry-enrichment`;
 }
 
+export function mapsAdminKeepDropRetryProjectionPath(runId: string): string {
+  return `/maps/runs/${runId}/keep-drop-retry-projection`;
+}
+
+export function mapsAdminRetryFailedKeepDropPath(runId: string): string {
+  return `/maps/runs/${runId}/retry-failed-keep-drop`;
+}
+
+export function mapsAdminEligibilityRetryProjectionPath(runId: string): string {
+  return `/maps/runs/${runId}/eligibility-retry-projection`;
+}
+
+export function mapsAdminRetryUnresolvedEligibilityEvidencePath(runId: string): string {
+  return `/maps/runs/${runId}/retry-unresolved-eligibility-evidence`;
+}
+
 export function mapsAdminReconcileFinalizationPath(runId: string, force = false): string {
   const params = new URLSearchParams();
   if (force) params.set("force", "true");

@@ -42,6 +42,57 @@ def _stub_enrichment_enqueue(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_country_profile_is_not_rebuilt_on_watchdog_resume(db, auth, monkeypatch):
+    """Regression for run 0afe4ca7-2dd3-47aa-a2cd-566e6b19b208: every
+    watchdog-triggered resume of a stalled (Gosom breaker open) campaign
+    previously re-ran build_profile_for_run unconditionally — a real paid
+    sonar-pro country-profile call repeated on every ~10-minute recovery
+    cycle for as long as Gosom stayed unavailable, confirmed via worker
+    logs re-rendering maps_country_profile.j2 on each resume. Once the
+    profile has genuinely completed, a second run_census() call for the
+    same run_id must not call it again.
+    """
+    from app.db.models import MapsCensusRun as _MapsCensusRun
+    from app.db.models import MapsCountryProfileStatus
+
+    calls: list[str] = []
+
+    async def fake_build_profile(_db, *, run_id: str):
+        calls.append(run_id)
+        run = await db.get(_MapsCensusRun, run_id)
+        run.country_profile_status = MapsCountryProfileStatus.COMPLETED.value
+        await db.commit()
+
+    monkeypatch.setattr(maps_country_profile_service, "build_profile_for_run", fake_build_profile)
+
+    run = await _create_run(db, auth)
+    seed = [MapsGridCell(region_name="Finland", city_name="Helsinki", query_text="rehab Helsinki")]
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner", _FakeGridPlanner(seed)
+    )
+
+    from app.services.scraping.maps_places_client import PlaceResult
+
+    client = _FakePlacesClient(
+        by_query={"rehab Helsinki": [PlaceResult(google_place_id="g1", raw_name="Facility", formatted_address="x")]}
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+    assert calls == [run.id]  # first entry: the profile genuinely gets built
+
+    # Simulate a watchdog-triggered resume for the same run_id (e.g. after
+    # Gosom wedged and the stale-heartbeat recovery relaunched this job) —
+    # no new cells, just a second call into the same resumable run_census.
+    summary2 = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary2.get("error") is None
+    assert calls == [run.id]  # unchanged — not called a second time
+
+
+@pytest.mark.asyncio
 async def test_timeout_terminates_after_configured_attempts_without_blocking_other_cells(
     db, auth, monkeypatch
 ):
@@ -75,7 +126,7 @@ async def test_timeout_terminates_after_configured_attempts_without_blocking_oth
         errors_by_query={"addiction treatment Decatur": PlacesTimeoutError("gosom job exceeded 900s")},
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -136,7 +187,7 @@ async def test_responsive_but_non_dispatching_gosom_stops_feeding_new_work(db, a
         },
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -200,7 +251,7 @@ async def test_absolute_deadline_fires_independently_of_gosom_and_heartbeat(db, 
 
     client = _WedgedClient({})
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -220,6 +271,189 @@ async def test_absolute_deadline_fires_independently_of_gosom_and_heartbeat(db, 
     # honestly as COMPLETED_WITH_WARNINGS, not a clean COMPLETED — one
     # cell never produced results.
     assert run.status == MapsCensusStatus.COMPLETED_WITH_WARNINGS
+
+
+@pytest.mark.asyncio
+async def test_breaker_open_stops_expansion_planning_not_just_cell_execution(db, auth, monkeypatch):
+    """Regression for the Finland incident (run 72198d39-307e-4854-a6c5-
+    101d3815bbae): _execute_cells correctly stops feeding new Gosom work
+    once its breaker opens (see the sibling test above), but the OUTER
+    campaign loop did not check that before deciding whether to expand —
+    it only looked at campaign_cells_used/expanding_names, which still
+    looked "not yet saturated" because the two cells that succeeded before
+    the breaker tripped each found a new place. That let it call the paid
+    grid planner again every iteration, manufacturing more PENDING cells
+    that could never be executed, forever (or until the 1500-cell campaign
+    cap). This must never call the planner a second time, and cells_total
+    must never grow past the seed wave while the breaker is open.
+    """
+    from app.services.scraping.maps_places_client import PlaceResult, PlacesTimeoutError
+
+    monkeypatch.setattr(get_settings(), "maps_discovery_provider", "gosom")
+    monkeypatch.setattr(get_settings(), "maps_gosom_circuit_breaker_failure_threshold", 1)
+    monkeypatch.setattr(get_settings(), "maps_census_cell_timeout_max_attempts", 1)
+    monkeypatch.setattr(get_settings(), "maps_census_saturation_window", 20)
+    monkeypatch.setattr(get_settings(), "maps_census_min_new_unique_for_expansion", 1)
+
+    run = await _create_run(db, auth)
+    seed = [
+        MapsGridCell(region_name="Finland", city_name="Helsinki", query_text="rehab Helsinki 1"),
+        MapsGridCell(region_name="Finland", city_name="Helsinki", query_text="rehab Helsinki 2"),
+        MapsGridCell(region_name="Finland", city_name="Helsinki", query_text="rehab Helsinki 3"),
+        MapsGridCell(region_name="Finland", city_name="Helsinki", query_text="rehab Helsinki 4"),
+    ]
+    # A second wave the planner would hand out IF asked again — the bug
+    # under test is exactly whether it ever gets asked.
+    wave2 = [
+        MapsGridCell(region_name="Finland", city_name="Helsinki", query_text="rehab Helsinki expansion")
+    ]
+    from tests.test_maps_census_service import _CountingGridPlanner
+
+    planner = _CountingGridPlanner([seed, wave2])
+    monkeypatch.setattr("app.services.scraping.maps_census_service.maps_grid_planner", planner)
+
+    timeout_error = PlacesTimeoutError("gosom job exceeded 480s")
+    client = _FakePlacesClient(
+        by_query={
+            "rehab Helsinki 1": [PlaceResult(google_place_id="h1", raw_name="Facility 1", formatted_address="x")],
+            "rehab Helsinki 2": [PlaceResult(google_place_id="h2", raw_name="Facility 2", formatted_address="x")],
+        },
+        errors_by_query={
+            "rehab Helsinki 3": timeout_error,
+            "rehab Helsinki 4": timeout_error,
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    # The planner was asked for the seed wave only — never asked again for
+    # an expansion wave while the breaker stayed open.
+    assert len(planner.calls) == 1
+
+    cells = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalars().all()
+    # Exactly the 4 seed cells — no expansion-wave cell was ever persisted.
+    assert len(cells) == 4
+    by_query = {c.query_text: c for c in cells}
+    assert by_query["rehab Helsinki 1"].status == MapsCensusCellStatus.COMPLETED
+    assert by_query["rehab Helsinki 2"].status == MapsCensusCellStatus.COMPLETED
+    assert by_query["rehab Helsinki 3"].status == MapsCensusCellStatus.FAILED
+    # Never attempted — the breaker opened on cell 3's failure, before
+    # cell 4's turn — and released back to PENDING, not left IN_PROGRESS.
+    assert by_query["rehab Helsinki 4"].status == MapsCensusCellStatus.PENDING
+    assert by_query["rehab Helsinki 4"].claimed_by is None
+
+    await db.refresh(run)
+    # Still genuinely pending work behind the open breaker — never falsely
+    # marked COMPLETED, and cells_total must equal the real row count
+    # rather than having grown from a phantom expansion wave.
+    assert run.status == MapsCensusStatus.RUNNING
+    assert run.cells_total == 4
+
+
+@pytest.mark.asyncio
+async def test_cancellation_stops_expansion_planning_not_just_cell_execution(db, auth, monkeypatch):
+    """The same outer-loop blind spot, for cancellation instead of an open
+    breaker: a run cancelled between _execute_cells calls must not trigger
+    one more paid grid-planner call before the campaign notices and stops.
+    """
+    from app.db.models import MapsCensusStatus as _Status
+    from app.services.scraping.maps_places_client import PlaceResult
+
+    monkeypatch.setattr(get_settings(), "maps_census_saturation_window", 20)
+    monkeypatch.setattr(get_settings(), "maps_census_min_new_unique_for_expansion", 1)
+
+    run = await _create_run(db, auth)
+    seed = [MapsGridCell(region_name="Finland", city_name="Turku", query_text="rehab Turku 1")]
+    wave2 = [MapsGridCell(region_name="Finland", city_name="Turku", query_text="rehab Turku expansion")]
+    from tests.test_maps_census_service import _CountingGridPlanner
+
+    planner = _CountingGridPlanner([seed, wave2])
+    monkeypatch.setattr("app.services.scraping.maps_census_service.maps_grid_planner", planner)
+
+    place = PlaceResult(google_place_id="t1", raw_name="Facility 1", formatted_address="x")
+
+    class _CancellingClient(_FakePlacesClient):
+        """Cancels the run from inside the one seed cell's own call — the
+        cell loop's own cancellation check (checked at the top of each
+        iteration) only notices on its *next* pass, so this simulates
+        cancellation landing exactly between _execute_cells finishing its
+        batch and the outer loop deciding whether to expand."""
+
+        async def search_text_paginated(self, **kwargs):
+            outcome = await super().search_text_paginated(**kwargs)
+            run.status = _Status.CANCELLED
+            await db.commit()
+            return outcome
+
+    client = _CancellingClient({"rehab Turku 1": [place]})
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    # Cancelled right after the seed wave — the expansion wave must never
+    # have been planned.
+    assert len(planner.calls) == 1
+
+    cells = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalars().all()
+    assert len(cells) == 1
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_open_mid_iteration_releases_the_claimed_cell(db, auth, monkeypatch):
+    """Task 3: a cell that was already claimed (PENDING -> IN_PROGRESS) when
+    CircuitBreakerOpenError fires from inside gosom_breaker.call() itself —
+    the defense-in-depth path, distinct from the pre-loop check that
+    normally stops a cell from ever being claimed in the first place — must
+    be released back to PENDING/unclaimed, not left stuck IN_PROGRESS
+    forever (nothing else will ever claim or heartbeat it again).
+    """
+    from app.services.scraping.maps_circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
+
+    monkeypatch.setattr(get_settings(), "maps_discovery_provider", "gosom")
+
+    run = await _create_run(db, auth)
+    seed = [MapsGridCell(region_name="Finland", city_name="Oulu", query_text="rehab Oulu")]
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner", _FakeGridPlanner(seed)
+    )
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
+    )
+
+    async def _raise_open(self, fn):
+        del fn
+        raise CircuitBreakerOpenError("forced mid-iteration for this test")
+
+    # The breaker's own state stays CLOSED throughout — this specifically
+    # exercises the "opened mid-iteration" defensive except block, not the
+    # ordinary pre-loop check (which only ever fires when state == OPEN and
+    # would stop the cell from being claimed at all).
+    monkeypatch.setattr(CircuitBreaker, "call", _raise_open)
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    cells = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalars().all()
+    assert len(cells) == 1
+    assert cells[0].status == MapsCensusCellStatus.PENDING
+    assert cells[0].claimed_by is None
+
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.RUNNING
 
 
 @pytest.mark.asyncio
@@ -244,7 +478,7 @@ async def test_timeout_retry_is_not_attempted_before_its_backoff_is_due(db, auth
         errors_by_query={"addiction treatment Decatur": PlacesTimeoutError("gosom job exceeded 900s")},
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)

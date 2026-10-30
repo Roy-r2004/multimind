@@ -2853,6 +2853,9 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     country_name: Mapped[str] = mapped_column(String(120), nullable=False)
     state_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
     state_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # google_places | gosom, chosen per run. NULL (runs created before this
+    # column) falls back to the MAPS_DISCOVERY_PROVIDER setting.
+    discovery_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[MapsCensusStatus] = mapped_column(
         Enum(
             MapsCensusStatus,
@@ -3117,6 +3120,15 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     addiction_focus_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     medical_detox: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     residential_accommodation: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Confirmed inpatient addiction treatment (patient admitted and cared for
+    # on-site under the facility's own program) — a facility satisfying
+    # this already satisfies the mandatory residential/inpatient-treatment
+    # requirement on its own; it is NOT a stricter/additional bar on top of
+    # residential_accommodation. Previously captured by the AI classifier
+    # but discarded before ever reaching this model — see
+    # compute_client_eligibility's confirmed_residential logic, which this
+    # feeds alongside residential_accommodation and care_setting.
+    inpatient_treatment: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     operating_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     website_languages: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     classification_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -3150,11 +3162,19 @@ class MapsWebsiteCrawlCache(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "maps_website_crawl_cache"
     __table_args__ = (
-        UniqueConstraint("normalized_domain", name="uq_maps_website_crawl_cache_domain"),
+        UniqueConstraint(
+            "normalized_domain", "seed_path", name="uq_maps_website_crawl_cache_domain_path"
+        ),
+        Index("ix_maps_website_crawl_cache_domain", "normalized_domain"),
         Index("ix_maps_website_crawl_cache_expires_at", "expires_at"),
     )
 
     normalized_domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Normalized path of the crawl's seed URL (e.g. "/toimipisteet/paihdesairaala").
+    # One cache row per (domain, seed_path) pair, not per domain — a shared
+    # multi-branch domain must not let one branch's crawl silently serve its
+    # pages to every other branch resolved to a different path on that domain.
+    seed_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="/", server_default="/")
     pages: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -3447,3 +3467,53 @@ class PlaybookExcludedSource(Base, UUIDPrimaryKeyMixin):
     )
 
     playbook: Mapped["Playbook"] = relationship(back_populates="excluded_sources")
+
+
+class GosomHealthState(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Singleton, DB-persisted health counters for the self-hosted Gosom
+    scraper's internal job dispatcher — distinct from the in-memory
+    ``CircuitBreaker`` (``maps_circuit_breaker.py``), which is re-created
+    fresh on every ``run_census()`` call and so cannot by itself detect a
+    freeze that spans a watchdog relaunch.
+
+    Exactly one row is expected to exist (get-or-create by
+    ``gosom_health_monitor``); it is not scoped per-run because the
+    dispatcher freeze this tracks is a property of the shared Gosom
+    container, not of any one census run.
+    """
+
+    __tablename__ = "gosom_health_state"
+
+    # Fixed, well-known id (not the mixin's random UUID) — makes the
+    # singleton invariant itself enforceable: two concurrent "create if
+    # missing" attempts collide on this same primary key (caught in
+    # gosom_health_monitor.get_or_create_state) instead of each succeeding
+    # with its own distinct UUID and silently producing two "singleton" rows.
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default="global")
+    consecutive_timeouts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    consecutive_successes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_timeout_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set by the host-side supervisor's /restart/begin call, before it runs
+    # `docker ... restart gosom`, so new Gosom job submissions pause instead
+    # of racing the restart; cleared by /restart/complete.
+    restart_in_progress: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    restart_in_progress_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_restart_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_restart_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Every completed restart ATTEMPT (success or failure — see
+    # gosom_health_monitor.complete_restart), newest last, trimmed to the
+    # trailing 24h — lets /status report "restarts in the last hour" without
+    # the host-side script needing its own persisted history. Each entry is
+    # "<iso timestamp>|ok" or "<iso timestamp>|failed".
+    restart_history: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # Consecutive restarts where Gosom never became HTTP-responsive again.
+    # Reset to 0 on an HTTP-responsive restart; NOT affected by whether a
+    # real scrape job subsequently succeeds (that is consecutive_timeouts'
+    # job) — this axis only tracks "did the restart itself work."
+    consecutive_failed_restarts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    restart_exhausted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    restart_exhausted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    restart_exhausted_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

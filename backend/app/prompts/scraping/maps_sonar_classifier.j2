@@ -4,16 +4,27 @@ Classification only — do NOT list addictions, languages, price, or detailed tr
 Facility (JSON):
 {{ facility_json }}
 
+Before citing ANY source, verify it actually refers to THIS specific facility — not a
+similarly-named organization, a different branch of the same chain, or an unrelated business.
+Check the source against the facility's name (including transliterations/alternate spellings of
+a non-Latin name), address, city, and phone number. If a source does not clearly match, do not
+cite it.
+
 Return a single JSON object with exactly these fields:
 {
   "classification_bucket": "eligible_candidate | needs_review | public | individual | unrelated",
   "facility_type": "string or null",
   "operator_type": "string or null",
+  "ownership_status": "confirmed_non_government | probable_non_government | confirmed_government | unknown",
   "addiction_treatment_mission": "confirmed | contradicted | unknown",
+  "inpatient_treatment": true | false | null,
+  "residential_accommodation": true | false | null,
+  "medical_detox": true | false | null,
   "confidence": 0.0,
   "reason": "short string",
   "evidence": [
-    {"quote": "short quote", "source_url": "https://..."}
+    {"field": "facility_type | ownership_status | inpatient_treatment | residential_accommodation | medical_detox | classification_bucket",
+     "quote": "short quote", "source_url": "https://..."}
   ]
 }
 
@@ -23,4 +34,34 @@ Rules:
 - Use individual for solo practitioners / cabinets.
 - Use unrelated for shops, hotels, schools, spas, and non-treatment businesses.
 - Use eligible_candidate only when evidence supports a non-government addiction-treatment center.
+- `addiction_treatment_mission` means the facility genuinely provides treatment for alcohol,
+  drug, and/or behavioral addictions — NOT that addiction is its primary, main, or only
+  specialty. A general psychiatric hospital or multidisciplinary facility can still be
+  "confirmed" if it runs its own actual addiction-treatment program alongside other services.
+  Merely mentioning addiction, offering referrals elsewhere, or treating unrelated
+  psychiatric/mental-health conditions is NOT sufficient for "confirmed". Use "unknown" when
+  evidence is insufficient either way — do not use "contradicted" just because you found nothing;
+  reserve "contradicted" for evidence that actively rules out addiction treatment.
+- `inpatient_treatment` / `residential_accommodation`: true only when a verified source
+  explicitly confirms clients can stay overnight / live at the facility during treatment, for
+  THIS facility specifically (not a parent organization's other locations). `medical_detox`:
+  true only when a verified source explicitly describes supervised/medical withdrawal
+  management. Use null — never a guess — whenever the evidence is missing, ambiguous, or only
+  describes outpatient/day-program services. A false claim here is worse than leaving it null.
+- Every `true` value for inpatient_treatment, residential_accommodation, or medical_detox MUST
+  have a matching evidence item (same "field") with a real quote and a real, verifiable
+  source_url — never assert one of these without citing exactly where it came from.
+- `ownership_status`: use "confirmed_non_government" ONLY when a verified source states an actual
+  ownership/operator FACT for THIS specific facility — e.g. it is operated by a named registered
+  NGO, charity, foundation, association, religious organization, or private company, or an
+  explicit acquisition/parent-company/ownership-transfer statement. Use "confirmed_government"
+  only when a verified source confirms it is run by a government ministry, municipal authority,
+  public hospital system, or other state body. Never use either "confirmed_*" value merely
+  because the facility's own NAME sounds private, religious, or nonprofit, or because of a
+  business-suffix pattern (e.g. a name containing "Oy", "ry", "Foundation") with no other
+  evidence — that is a guess, not a fact, and must be "probable_non_government" or "unknown"
+  instead. Use "unknown" when there is no usable ownership evidence at all. Every
+  "confirmed_non_government"/"confirmed_government" value MUST have a matching evidence item
+  (field "ownership_status") with a real quote stating the actual ownership fact and a real,
+  verifiable source_url.
 - Return JSON only. No markdown fences. No results array wrapper.

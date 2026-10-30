@@ -3,7 +3,9 @@ import {
   mapsAdminCancelPath,
   mapsAdminCellsPath,
   mapsAdminDashboardPath,
+  mapsAdminEligibilityRetryProjectionPath,
   mapsAdminExportSummaryPath,
+  mapsAdminKeepDropRetryProjectionPath,
   mapsAdminPausePath,
   mapsAdminPlaceDetailPath,
   mapsAdminPlaceReviewPath,
@@ -12,6 +14,8 @@ import {
   mapsAdminReconcileFinalizationPath,
   mapsAdminRetryEnrichmentPath,
   mapsAdminRetryFailedCellsPath,
+  mapsAdminRetryFailedKeepDropPath,
+  mapsAdminRetryUnresolvedEligibilityEvidencePath,
   mapsAdminRetryWebsitesPath,
   mapsAdminResumePath,
 } from "@/lib/maps/adminPaths";
@@ -21,7 +25,9 @@ import type {
   MapsCampaignActionResponse,
   MapsCellListResponse,
   MapsCensusRunAdminDetail,
+  MapsEligibilityRetryProjection,
   MapsExportSummaryResponse,
+  MapsKeepDropRetryProjection,
   MapsPlaceDetail,
   MapsPlaceListResponse,
   MapsPlaceReviewRequest,
@@ -32,7 +38,9 @@ export {
   mapsAdminCancelPath,
   mapsAdminCellsPath,
   mapsAdminDashboardPath,
+  mapsAdminEligibilityRetryProjectionPath,
   mapsAdminExportSummaryPath,
+  mapsAdminKeepDropRetryProjectionPath,
   mapsAdminPausePath,
   mapsAdminPlaceDetailPath,
   mapsAdminPlaceReviewPath,
@@ -41,6 +49,8 @@ export {
   mapsAdminReconcileFinalizationPath,
   mapsAdminRetryEnrichmentPath,
   mapsAdminRetryFailedCellsPath,
+  mapsAdminRetryFailedKeepDropPath,
+  mapsAdminRetryUnresolvedEligibilityEvidencePath,
   mapsAdminRetryWebsitesPath,
   mapsAdminResumePath,
 } from "@/lib/maps/adminPaths";
@@ -139,6 +149,39 @@ export function retryMapsCensusEnrichment(auth: Auth, runId: string) {
     token: auth.token,
     orgId: auth.orgId,
   });
+}
+
+export function getMapsCensusKeepDropRetryProjection(auth: Auth, runId: string) {
+  return apiRequest<MapsKeepDropRetryProjection>(mapsAdminKeepDropRetryProjectionPath(runId), {
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function retryMapsCensusFailedKeepDrop(auth: Auth, runId: string) {
+  return apiRequest<MapsCampaignActionResponse>(mapsAdminRetryFailedKeepDropPath(runId), {
+    method: "POST",
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+export function getMapsCensusEligibilityRetryProjection(auth: Auth, runId: string) {
+  return apiRequest<MapsEligibilityRetryProjection>(
+    mapsAdminEligibilityRetryProjectionPath(runId),
+    { token: auth.token, orgId: auth.orgId },
+  );
+}
+
+export function retryMapsCensusUnresolvedEligibilityEvidence(auth: Auth, runId: string) {
+  return apiRequest<MapsCampaignActionResponse>(
+    mapsAdminRetryUnresolvedEligibilityEvidencePath(runId),
+    {
+      method: "POST",
+      token: auth.token,
+      orgId: auth.orgId,
+    },
+  );
 }
 
 export function reconcileMapsCensusFinalization(

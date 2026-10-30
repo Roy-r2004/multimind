@@ -180,6 +180,7 @@ def map_primary_to_enrichment_fields(result: MapsPrimaryExtractionResult) -> dic
         "addiction_focus_confirmed": result.addiction_treatment_mission,
         "medical_detox": result.medical_detox,
         "residential_accommodation": result.residential_accommodation,
+        "inpatient_treatment": result.inpatient_treatment,
         "operating_status": "unknown",
         "classification_evidence": evidence_map,
         "classification_confidence": _average_confidence(result.evidence),

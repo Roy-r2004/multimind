@@ -249,7 +249,7 @@ async def test_run_census_dedupes_places_and_applies_website_validation(db, auth
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient(by_query),
+        lambda *_args, **_kwargs: _FakePlacesClient(by_query),
     )
 
     decisions_payload = json.dumps(
@@ -358,7 +358,7 @@ async def test_run_census_falls_back_to_llm_when_places_has_no_website(db, auth,
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient(by_query),
+        lambda *_args, **_kwargs: _FakePlacesClient(by_query),
     )
 
     async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
@@ -443,7 +443,7 @@ async def test_run_census_keeps_failed_classification_discovered_and_skips_websi
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({"rehab Minsk": [place_with_raw_site]}),
+        lambda *_args, **_kwargs: _FakePlacesClient({"rehab Minsk": [place_with_raw_site]}),
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.get_model",
@@ -517,7 +517,7 @@ async def test_run_census_passes_stored_country_profile_into_grid_planner(db, au
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -543,7 +543,7 @@ async def test_run_census_persists_query_family_and_language_on_cells(db, auth, 
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     await maps_census_service.run_census(db, run_id=run.id)
@@ -572,7 +572,7 @@ async def test_run_census_fails_when_places_api_key_missing(db, auth, monkeypatc
 
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _UnconfiguredClient(),
+        lambda *_args, **_kwargs: _UnconfiguredClient(),
     )
 
     await maps_census_service.run_census(db, run_id=run.id)
@@ -678,7 +678,7 @@ async def test_run_census_creates_regions_linked_to_cells(db, auth, monkeypatch)
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -715,7 +715,7 @@ async def test_run_census_stops_expanding_unproductive_region(db, auth, monkeypa
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),  # every query returns zero places
+        lambda *_args, **_kwargs: _FakePlacesClient({}),  # every query returns zero places
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -780,7 +780,7 @@ async def test_run_census_saturates_region_with_many_unrelated_uniques_but_no_pl
         ]
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient(by_query),
+        lambda *_args, **_kwargs: _FakePlacesClient(by_query),
     )
 
     async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
@@ -857,7 +857,7 @@ async def test_run_census_respects_campaign_cell_ceiling(db, auth, monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -891,7 +891,7 @@ async def test_run_census_persists_funnel_and_saturation_snapshots(db, auth, mon
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({"rehab Minsk": [place]}),
+        lambda *_args, **_kwargs: _FakePlacesClient({"rehab Minsk": [place]}),
     )
     _stub_classification(monkeypatch)
 
@@ -969,16 +969,18 @@ async def test_create_run_queues_and_list_get_places_scoped_to_org(db, auth, mon
     )
     await db.commit()
 
-    all_places = await maps_census_service.list_places(db, auth, detail.id)
+    all_places = (await maps_census_service.list_places(db, auth, detail.id)).items
     assert len(all_places) == 2
 
-    relevant_only = await maps_census_service.list_places(db, auth, detail.id, relevant_only=True)
+    relevant_only = (
+        await maps_census_service.list_places(db, auth, detail.id, relevant_only=True)
+    ).items
     assert len(relevant_only) == 1
     assert relevant_only[0].google_place_id == "p1"
 
-    with_website = await maps_census_service.list_places(
-        db, auth, detail.id, with_website_only=True
-    )
+    with_website = (
+        await maps_census_service.list_places(db, auth, detail.id, with_website_only=True)
+    ).items
     assert len(with_website) == 1
     assert with_website[0].google_place_id == "p1"
 
@@ -1063,7 +1065,7 @@ async def test_run_census_persists_photo_reference(db, auth, monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient(by_query),
+        lambda *_args, **_kwargs: _FakePlacesClient(by_query),
     )
 
     async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):
@@ -2638,7 +2640,7 @@ async def test_run_census_resume_runs_post_discovery_when_keep_drop_pending(
     _stub_classification(monkeypatch)
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
     keep_drop_calls: list[str] = []
     _stub_post_discoveryStages(monkeypatch, keep_drop_calls)
@@ -2676,7 +2678,7 @@ async def test_run_census_contains_unexpected_cell_error(db, auth, monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({"rehab Minsk": [place]}),
+        lambda *_args, **_kwargs: _FakePlacesClient({"rehab Minsk": [place]}),
     )
     _stub_classification(monkeypatch)
 

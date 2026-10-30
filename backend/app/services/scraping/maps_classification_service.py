@@ -28,7 +28,10 @@ from app.services.scraping.maps_eligibility import (
     derive_legacy_verification_verdict,
     normalize_lifecycle_eligibility_consistency,
 )
-from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmentPipelineState
+from app.services.scraping.maps_enrichment_processing_state import (
+    PRE_CLASSIFICATION_PIPELINE_STATES,
+    MapsEnrichmentPipelineState,
+)
 from app.services.scraping.maps_enrichment_progress import persist_enrichment_progress
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
 from app.services.scraping.maps_enrichment_selection import is_detail_enrichment_candidate
@@ -47,6 +50,8 @@ from app.services.scraping.maps_sonar_classify import (
     apply_sonar_bucket_lifecycle,
     fetch_sonar_classify_one,
     needs_sonar_classification,
+    resolve_sonar_ownership_status,
+    verify_and_prune_unverified_evidence,
 )
 from app.services.scraping.maps_sonar_fallback import SonarBudget, SonarFallbackStats
 from app.services.scraping.maps_structured_classification import (
@@ -95,6 +100,54 @@ async def _persist_crawl_skip_domain(session_factory, *, run_id: str, domain: st
         await session.commit()
 
 
+# Fields _apply_structured_fields writes, with the "not actually resolved"
+# sentinel value(s) for each — used by
+# _apply_structured_fields_filling_unresolved_only below to decide whether a
+# field already had a real, confirmed value before a later classification
+# pass (e.g. the Sonar fallback) ran.
+_STRUCTURED_FIELD_UNRESOLVED_SENTINELS: dict[str, frozenset] = {
+    "facility_type": frozenset({None, "", "unknown"}),
+    "ownership_status": frozenset({None, "", "ownership_unknown"}),
+    "operator_type": frozenset({None, "", "unknown"}),
+    "organization_scope": frozenset({None, "", "unknown"}),
+    "care_setting": frozenset({None, "", "unknown"}),
+    "addiction_focus_confirmed": frozenset({None}),
+    "medical_detox": frozenset({None}),
+    "residential_accommodation": frozenset({None}),
+    "inpatient_treatment": frozenset({None}),
+}
+
+
+def _apply_structured_fields_filling_unresolved_only(place: Any, result: Any) -> None:
+    """Applies a classification result (``_apply_structured_fields``) but
+    only ever lets it FILL a field that was genuinely unresolved on
+    ``place`` beforehand — never lets it downgrade/overwrite a field this
+    place already had a real, confirmed value for.
+
+    Root cause this closes: broadening ``needs_sonar_classification`` to
+    also fire whenever inpatient_treatment/residential_accommodation are
+    unresolved means the Sonar fallback can now run even when
+    facility_type/ownership/addiction_focus were ALREADY confidently
+    resolved by the primary structured-classification pass — and the
+    Sonar result's own view of those same fields (it is a lower-context,
+    different research pass, not guaranteed to re-confirm everything the
+    first pass already established) would otherwise silently clobber
+    already-correct, already-evidenced data back to unresolved. This is
+    the generic "preserve completed AI results" guarantee applied to a
+    second classification pass, not just to skipping re-running one.
+    """
+    from app.services.scraping.maps_place_enrichment_service import _apply_structured_fields
+
+    prior_values = {
+        field: getattr(place, field, None) for field in _STRUCTURED_FIELD_UNRESOLVED_SENTINELS
+    }
+    _apply_structured_fields(place, result)
+    for field, sentinels in _STRUCTURED_FIELD_UNRESOLVED_SENTINELS.items():
+        prior_value = prior_values[field]
+        if prior_value not in sentinels:
+            setattr(place, field, prior_value)
+
+
 def build_classification_query(run_id: str):
     return (
         select(MapsPlace)
@@ -131,21 +184,7 @@ def build_classification_query(run_id: str):
             or_(
                 MapsPlace.enrichment_pipeline_state.is_(None),
                 MapsPlace.enrichment_pipeline_state.in_(
-                    [
-                        MapsEnrichmentPipelineState.PREFILTER_PENDING.value,
-                        MapsEnrichmentPipelineState.PREFILTER_COMPLETED.value,
-                        MapsEnrichmentPipelineState.WEBSITE_RESOLUTION_PENDING.value,
-                        MapsEnrichmentPipelineState.WEBSITE_RESOLVED.value,
-                        MapsEnrichmentPipelineState.WEBSITE_NOT_FOUND.value,
-                        MapsEnrichmentPipelineState.CRAWL_PENDING.value,
-                        MapsEnrichmentPipelineState.CRAWL_COMPLETED.value,
-                        MapsEnrichmentPipelineState.CRAWL_FAILED.value,
-                        MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_PENDING.value,
-                        MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_FAILED.value,
-                        # Retryable classification failures must re-enter the
-                        # same claim path without a destructive Recover.
-                        MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value,
-                    ]
+                    tuple(PRE_CLASSIFICATION_PIPELINE_STATES)
                 ),
             ),
         )
@@ -295,9 +334,19 @@ class MapsClassificationService:
             attempts_exhausted = (place.enrichment_attempts or 0) >= max_attempts
             if attempts_exhausted:
                 # Requirement: every relevant place must end in a valid bucket —
-                # never loop forever on a place that keeps erroring.
-                place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
-                place.client_eligibility = MapsClientEligibility.REVIEW.value
+                # never loop forever on a place that keeps erroring. A kept
+                # place keeps the gate's eligibility: an error is missing
+                # evidence, never a disqualification.
+                place.client_eligibility = (
+                    compute_client_eligibility(place)
+                    if place.keep_drop_decision == KEEP
+                    else MapsClientEligibility.REVIEW.value
+                )
+                place.lifecycle_status = (
+                    MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
+                    if place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+                    else MapsLifecycleStatus.NEEDS_REVIEW.value
+                )
                 place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
                 place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                 place.enrichment_completed_at = datetime.now(UTC)
@@ -581,8 +630,45 @@ class MapsClassificationService:
                     place = await session.get(MapsPlace, place_id)
                     if place is None:
                         return 0
-                    _apply_structured_fields(place, sonar_result)
-                    apply_sonar_bucket_lifecycle(place, classified.classification_bucket)
+                    # Never trust a Sonar citation blindly: fetch each cited
+                    # source_url through the existing bounded crawler and
+                    # drop any evidence entry that doesn't actually,
+                    # reachably confirm it's about THIS facility before any
+                    # of it can confirm inpatient_treatment/
+                    # residential_accommodation/medical_detox.
+                    sonar_result = await verify_and_prune_unverified_evidence(
+                        session, place=place, result=sonar_result
+                    )
+                    # Only after citation verification has dropped any
+                    # unverifiable "ownership_status" evidence — upgrades
+                    # the conservative bucket-derived default to
+                    # CONFIRMED_NON_GOVERNMENT/CONFIRMED_GOVERNMENT, but
+                    # only when what survived is a real, non-hedged,
+                    # place-specific ownership fact (see
+                    # resolve_sonar_ownership_status's own docstring).
+                    sonar_result = resolve_sonar_ownership_status(place, sonar_result)
+                    # Same "never downgrade an already-confirmed result"
+                    # guarantee, now for lifecycle/eligibility: an already-
+                    # ELIGIBLE place reached that state because the primary
+                    # structured-classification pass already confirmed every
+                    # requirement. Sonar's own bucket is a coarser, lower-
+                    # context verdict — it must never reset a confirmed
+                    # ELIGIBLE place back to REVIEW just because it only
+                    # ran to resolve a secondary field (e.g. inpatient_
+                    # treatment) that was never actually in doubt for the
+                    # eligibility decision itself.
+                    was_already_eligible = (
+                        place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+                    )
+                    _apply_structured_fields_filling_unresolved_only(place, sonar_result)
+                    if not was_already_eligible:
+                        apply_sonar_bucket_lifecycle(place, classified.classification_bucket)
+                    elif place.keep_drop_decision == KEEP:
+                        # A kept place is eligible by default; re-check it so
+                        # hard negative evidence Sonar just verified (closed,
+                        # government, outpatient-only) can still exclude it.
+                        place.client_eligibility = compute_client_eligibility(place)
+                        place.lifecycle_status = _derive_lifecycle_status(place)
                     place.enrichment_extraction_source = "sonar_classification"
                     place.is_relevant = derive_is_relevant(place.lifecycle_status)
                     place.verification_verdict = derive_legacy_verification_verdict(
@@ -629,8 +715,14 @@ class MapsClassificationService:
                     # valid bucket, never loop forever on a place that keeps
                     # failing classification. A provider failure must never
                     # silently become "excluded" — park it as needs_review.
-                    place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
-                    place.client_eligibility = MapsClientEligibility.REVIEW.value
+                    # A kept place stays eligible: a provider failure is
+                    # missing evidence, which never demotes the strict gate.
+                    if place.keep_drop_decision == KEEP:
+                        place.client_eligibility = compute_client_eligibility(place)
+                        place.lifecycle_status = _derive_lifecycle_status(place)
+                    else:
+                        place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+                        place.client_eligibility = MapsClientEligibility.REVIEW.value
                     place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
                     place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                     place.enrichment_completed_at = datetime.now(UTC)

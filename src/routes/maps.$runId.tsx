@@ -21,6 +21,7 @@ import { AppShell } from "@/components/AppShell";
 import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { CountryOutline } from "@/components/maps/CountryOutline";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
+import { MapsAdminRecoveryCard } from "@/components/maps/admin/MapsAdminRecoveryCard";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatCost } from "@/lib/cost";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
@@ -109,7 +110,6 @@ function MapsRunDetailPage() {
   const [phase2Places, setPhase2Places] = useState<MapsPlaceItem[]>([]);
   const [phase2Meta, setPhase2Meta] = useState<MapsPaginatedMeta>(EMPTY_META);
   const [phase2Offset, setPhase2Offset] = useState(0);
-  const [phase2Triggered, setPhase2Triggered] = useState(false);
   const [removingPlaceId, setRemovingPlaceId] = useState<string | null>(null);
   const [exportingPhase, setExportingPhase] = useState<"phase1" | "phase2" | null>(null);
   const [editingPlaceId, setEditingPlaceId] = useState<string | null>(null);
@@ -144,7 +144,6 @@ function MapsRunDetailPage() {
         setPhase1Meta(phase1Resp.meta);
         setPhase2Places(phase2Resp.items);
         setPhase2Meta(phase2Resp.meta);
-        if (phase2Resp.meta.total > 0) setPhase2Triggered(true);
         setError(null);
 
         // Fetch live stats if run is active (for real-time stat tile updates)
@@ -363,6 +362,8 @@ function MapsRunDetailPage() {
               />
             </div>
 
+            <MapsAdminRecoveryCard runId={runId} />
+
             <Tabs
               value={activeTab}
               onValueChange={(value) => setActiveTab(value as "phase1" | "phase2")}
@@ -420,19 +421,41 @@ function MapsRunDetailPage() {
               </TabsContent>
 
               <TabsContent value="phase2" className="mt-4">
-                {!phase2Triggered && phase2Meta.total === 0 ? (
+                {run.phase2_status === "pending" ? (
                   <DreamPanel className="p-6 text-sm text-muted-foreground">
                     Phase 2 hasn't run yet. It starts automatically once Phase 1 discovery
                     completes — eligible facilities will appear here after the strict
                     eligibility gate runs.
                   </DreamPanel>
+                ) : run.phase2_status === "failed" ? (
+                  <DreamPanel className="p-6 text-sm text-rose-600">
+                    Phase 2 failed to complete. Check the run's error details, then retry from
+                    the admin dashboard.
+                  </DreamPanel>
+                ) : run.phase2_status === "stalled" ? (
+                  <DreamPanel className="p-6 text-sm text-amber-600">
+                    Phase 2 hasn't reported progress in a while and may be stuck. It could still
+                    be processing a slow batch — check back shortly, or ask an admin to verify
+                    the worker before retrying.
+                  </DreamPanel>
+                ) : run.phase2_status === "awaiting_enrichment" ? (
+                  <DreamPanel className="p-6 text-sm text-amber-600">
+                    The eligibility gate kept candidates for this country, but they haven't been
+                    enriched yet — click "Enrich with AI" above to classify them. This is not
+                    the same as zero eligible facilities; nothing has been evaluated yet.
+                  </DreamPanel>
+                ) : run.phase2_status === "completed" && phase2Meta.total === 0 ? (
+                  <DreamPanel className="p-6 text-sm text-muted-foreground">
+                    Phase 2 completed — no facilities passed the eligibility gate for this
+                    country.
+                  </DreamPanel>
                 ) : (
                   <>
                     <FacilitiesExportTable
                       rows={phase2Rows}
-                      isRunning={ACTIVE_STATUSES.has(run.status)}
+                      isRunning={run.phase2_status === "running"}
                       emptyMessage={
-                        ACTIVE_STATUSES.has(run.status)
+                        run.phase2_status === "running"
                           ? "Running the eligibility gate — this can take a few minutes."
                           : "No facilities passed the eligibility gate for this country."
                       }

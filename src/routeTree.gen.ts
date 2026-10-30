@@ -36,6 +36,7 @@ import { Route as SharedTokenRouteImport } from './routes/shared.$token'
 import { Route as ScrapingNewRouteImport } from './routes/scraping.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
 import { Route as MapsNewRouteImport } from './routes/maps.new'
+import { Route as MapsGosomRouteImport } from './routes/maps.gosom'
 import { Route as MapsRunIdRouteImport } from './routes/maps.$runId'
 import { Route as LibraryItemIdRouteImport } from './routes/library.$itemId'
 import { Route as LessonsIdRouteImport } from './routes/lessons.$id'
@@ -195,6 +196,11 @@ const ProjectsIdRoute = ProjectsIdRouteImport.update({
 const MapsNewRoute = MapsNewRouteImport.update({
   id: '/new',
   path: '/new',
+  getParentRoute: () => MapsRouteRoute,
+} as any)
+const MapsGosomRoute = MapsGosomRouteImport.update({
+  id: '/gosom',
+  path: '/gosom',
   getParentRoute: () => MapsRouteRoute,
 } as any)
 const MapsRunIdRoute = MapsRunIdRouteImport.update({
@@ -361,6 +367,7 @@ export interface FileRoutesByFullPath {
   '/lessons/$id': typeof LessonsIdRoute
   '/library/$itemId': typeof LibraryItemIdRoute
   '/maps/$runId': typeof MapsRunIdRoute
+  '/maps/gosom': typeof MapsGosomRoute
   '/maps/new': typeof MapsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/scraping/new': typeof ScrapingNewRoute
@@ -408,6 +415,7 @@ export interface FileRoutesByTo {
   '/lessons/$id': typeof LessonsIdRoute
   '/library/$itemId': typeof LibraryItemIdRoute
   '/maps/$runId': typeof MapsRunIdRoute
+  '/maps/gosom': typeof MapsGosomRoute
   '/maps/new': typeof MapsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/scraping/new': typeof ScrapingNewRoute
@@ -462,6 +470,7 @@ export interface FileRoutesById {
   '/lessons/$id': typeof LessonsIdRoute
   '/library/$itemId': typeof LibraryItemIdRoute
   '/maps/$runId': typeof MapsRunIdRoute
+  '/maps/gosom': typeof MapsGosomRoute
   '/maps/new': typeof MapsNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/scraping/new': typeof ScrapingNewRoute
@@ -518,6 +527,7 @@ export interface FileRouteTypes {
     | '/lessons/$id'
     | '/library/$itemId'
     | '/maps/$runId'
+    | '/maps/gosom'
     | '/maps/new'
     | '/projects/$id'
     | '/scraping/new'
@@ -565,6 +575,7 @@ export interface FileRouteTypes {
     | '/lessons/$id'
     | '/library/$itemId'
     | '/maps/$runId'
+    | '/maps/gosom'
     | '/maps/new'
     | '/projects/$id'
     | '/scraping/new'
@@ -618,6 +629,7 @@ export interface FileRouteTypes {
     | '/lessons/$id'
     | '/library/$itemId'
     | '/maps/$runId'
+    | '/maps/gosom'
     | '/maps/new'
     | '/projects/$id'
     | '/scraping/new'
@@ -850,6 +862,13 @@ declare module '@tanstack/react-router' {
       path: '/new'
       fullPath: '/maps/new'
       preLoaderRoute: typeof MapsNewRouteImport
+      parentRoute: typeof MapsRouteRoute
+    }
+    '/maps/gosom': {
+      id: '/maps/gosom'
+      path: '/gosom'
+      fullPath: '/maps/gosom'
+      preLoaderRoute: typeof MapsGosomRouteImport
       parentRoute: typeof MapsRouteRoute
     }
     '/maps/$runId': {
@@ -1120,12 +1139,14 @@ const LibraryRouteRouteWithChildren = LibraryRouteRoute._addFileChildren(
 
 interface MapsRouteRouteChildren {
   MapsRunIdRoute: typeof MapsRunIdRoute
+  MapsGosomRoute: typeof MapsGosomRoute
   MapsNewRoute: typeof MapsNewRoute
   MapsIndexRoute: typeof MapsIndexRoute
 }
 
 const MapsRouteRouteChildren: MapsRouteRouteChildren = {
   MapsRunIdRoute: MapsRunIdRoute,
+  MapsGosomRoute: MapsGosomRoute,
   MapsNewRoute: MapsNewRoute,
   MapsIndexRoute: MapsIndexRoute,
 }

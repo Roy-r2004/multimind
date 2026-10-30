@@ -72,6 +72,15 @@ services:
 
       GOOGLE_PLACES_ENABLED: ${GOOGLE_PLACES_ENABLED:-true}
       GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      # Default discovery source for runs that don't choose one; each run
+      # can pick google_places or gosom (the self-hosted scraper below).
+      MAPS_DISCOVERY_PROVIDER: ${MAPS_DISCOVERY_PROVIDER:-google_places}
+      GOSOM_BASE_URL: ${GOSOM_BASE_URL:-http://gosom:8080}
+      GOSOM_TIMEOUT_SECONDS: ${GOSOM_TIMEOUT_SECONDS:-60}
+      GOSOM_POLL_INTERVAL_SECONDS: ${GOSOM_POLL_INTERVAL_SECONDS:-5}
+      GOSOM_JOB_MAX_TIME_SECONDS: ${GOSOM_JOB_MAX_TIME_SECONDS:-480}
+      GOSOM_DEPTH: ${GOSOM_DEPTH:-0}
+      GOSOM_LANGUAGE: ${GOSOM_LANGUAGE:-en}
       MAPS_CENSUS_ADMIN_UI_ENABLED: ${MAPS_CENSUS_ADMIN_UI_ENABLED:-true}
       MAPS_CENSUS_EXTERNAL_DISCOVERY_ENABLED: ${MAPS_CENSUS_EXTERNAL_DISCOVERY_ENABLED:-false}
       MAPS_CENSUS_WEBSITE_CRAWL_ENABLED: ${MAPS_CENSUS_WEBSITE_CRAWL_ENABLED:-true}
@@ -138,6 +147,15 @@ services:
 
       GOOGLE_PLACES_ENABLED: ${GOOGLE_PLACES_ENABLED:-true}
       GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      # Default discovery source for runs that don't choose one; each run
+      # can pick google_places or gosom (the self-hosted scraper below).
+      MAPS_DISCOVERY_PROVIDER: ${MAPS_DISCOVERY_PROVIDER:-google_places}
+      GOSOM_BASE_URL: ${GOSOM_BASE_URL:-http://gosom:8080}
+      GOSOM_TIMEOUT_SECONDS: ${GOSOM_TIMEOUT_SECONDS:-60}
+      GOSOM_POLL_INTERVAL_SECONDS: ${GOSOM_POLL_INTERVAL_SECONDS:-5}
+      GOSOM_JOB_MAX_TIME_SECONDS: ${GOSOM_JOB_MAX_TIME_SECONDS:-480}
+      GOSOM_DEPTH: ${GOSOM_DEPTH:-0}
+      GOSOM_LANGUAGE: ${GOSOM_LANGUAGE:-en}
       MAPS_CENSUS_EXTERNAL_DISCOVERY_ENABLED: ${MAPS_CENSUS_EXTERNAL_DISCOVERY_ENABLED:-false}
       MAPS_CENSUS_WEBSITE_CRAWL_ENABLED: ${MAPS_CENSUS_WEBSITE_CRAWL_ENABLED:-true}
       MAPS_CENSUS_WEBSITE_SEARCH_ENABLED: ${MAPS_CENSUS_WEBSITE_SEARCH_ENABLED:-true}
@@ -276,8 +294,26 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # Self-hosted Google Maps scraper for Maps census runs that choose the
+  # gosom source. Reachable only on this Compose network.
+  gosom:
+    image: gosom/google-maps-scraper:v1.18.1
+    command: ["-web", "-addr", ":8080", "-data-folder", "/gmapsdata", "-c", "1"]
+    environment:
+      PLAYWRIGHT_BROWSERS_PATH: /opt/browsers
+    volumes:
+      - gosom_data:/gmapsdata
+      - gosom_playwright_cache:/opt
+    mem_limit: 2g
+    cpus: 2
+    expose:
+      - "8080"
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   whisper_models:
   chat_attachments:
   library_files:
+  gosom_data:
+  gosom_playwright_cache:

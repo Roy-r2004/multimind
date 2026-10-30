@@ -692,6 +692,8 @@ class MapsCensusRunCreate(BaseModel):
     country_code: str
     state_code: str | None = None
     state_name: str | None = None
+    # google_places | gosom. Omitted -> the MAPS_DISCOVERY_PROVIDER setting.
+    discovery_provider: str | None = None
 
 
 class MapsCensusRunSummary(BaseModel):
@@ -700,6 +702,7 @@ class MapsCensusRunSummary(BaseModel):
     country_name: str
     state_code: str | None = None
     state_name: str | None = None
+    discovery_provider: str
     status: str
     error_message: str | None = None
     cells_total: int
@@ -711,8 +714,23 @@ class MapsCensusRunSummary(BaseModel):
     # The single authoritative "accepted rehab center" count — same
     # predicate as the Phase 2 Eligible tab's accepted_only filter and the
     # Excel export (client_eligibility == eligible, keep_drop_decision in
-    # {keep, review}, phone present). Computed live, never cached/stale.
+    # {keep, review}). Phone/website are optional and never gate this.
+    # Computed live, never cached/stale.
     accepted_facilities_count: int = 0
+    # Reliable, persisted-state-derived Phase 2 execution status: pending /
+    # running / awaiting_enrichment / stalled / completed / failed. Zero
+    # accepted_facilities_count with phase2_status=="completed" means
+    # Phase 2 genuinely ran and found nothing — distinct from
+    # phase2_status=="pending" (never ran at all) and from
+    # phase2_status=="awaiting_enrichment" (keep/drop kept candidates, but
+    # they have not been enriched/classified yet — e.g. because auto
+    # enrichment is disabled and nobody has triggered it manually — so
+    # "no eligible facilities" would be a false reading of this state).
+    # "stalled" means the keep/drop pass is still marked running but its
+    # heartbeat has gone cold, or enrichment's own watchdog gave up on a
+    # stuck pass — evidence, not proof, of a crashed worker; it is never
+    # auto-promoted to "failed" from a heartbeat check alone.
+    phase2_status: str = "pending"
     enrichment_refresh_completed_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -732,7 +750,13 @@ class MapsCensusRunSummary(BaseModel):
 
 
 class MapsCensusRunDetail(MapsCensusRunSummary):
-    pass
+    # Mutually-exclusive Phase 2 counts (eligible/rejected/unresolved/
+    # classification_pending/classification_failed) — see
+    # maps_census_service.compute_phase2_breakdown for the exact predicate
+    # of each bucket. Only on the detail response (not the list summary):
+    # it costs 5 extra counts per run and is only useful once a user has
+    # opened a specific run.
+    phase2_breakdown: dict[str, int] | None = None
 
 
 class MapsRunLiveStats(BaseModel):
@@ -824,6 +848,7 @@ class MapsPlaceItem(BaseModel):
     addiction_focus_confirmed: bool | None = None
     medical_detox: bool | None = None
     residential_accommodation: bool | None = None
+    inpatient_treatment: bool | None = None
     classification_confidence: float | None = None
     classification_evidence: dict[str, Any] | None = None
     discovery_sources: list[str] = Field(default_factory=list)

@@ -92,6 +92,8 @@ def test_normalize_missing_fields_and_no_invented_photo():
     assert place.place_types == ["Rehabilitation center"]
     assert place.photo_reference is None
 
+    assert place.operating_status is None
+
     empty = normalize_gosom_row({"title": "Nameless id only", "place_id": ""})
     assert empty is None
     blank_coords = normalize_gosom_row(
@@ -160,6 +162,38 @@ def _install_http(monkeypatch, calls: list, script: list) -> None:
         return _FakeClient(calls, script)
 
     monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+
+def test_permanently_closed_status_marks_place_closed():
+    closed = normalize_gosom_row(
+        {"title": "Old Rehab", "cid": "7", "status": "Permanently closed"}
+    )
+    open_now = normalize_gosom_row(
+        {"title": "Open Rehab", "cid": "8", "status": "Open ⋅ Closes 5 PM"}
+    )
+    temporarily = normalize_gosom_row(
+        {"title": "Paused Rehab", "cid": "9", "status": "Temporarily closed"}
+    )
+    assert closed is not None and closed.operating_status == "closed"
+    assert open_now is not None and open_now.operating_status is None
+    assert temporarily is not None and temporarily.operating_status is None
+
+
+def test_categories_list_extends_primary_category_without_duplicates():
+    place = normalize_gosom_row(
+        {
+            "title": "Multi Category Rehab",
+            "cid": "10",
+            "category": "Rehabilitation center",
+            "categories": "Rehabilitation center, Addiction treatment center, Medical clinic",
+        }
+    )
+    assert place is not None
+    assert place.place_types == [
+        "Rehabilitation center",
+        "Addiction treatment center",
+        "Medical clinic",
+    ]
 
 
 @pytest.mark.asyncio
@@ -403,6 +437,95 @@ async def test_gosom_unconfigured():
     client._base_url = ""
     with pytest.raises(PlacesConfigurationError):
         await client.search_text_paginated(query="rehab", region_code="FR")
+
+
+@pytest.mark.asyncio
+async def test_abandoned_job_is_never_reused_by_name(monkeypatch):
+    """Root-cause regression: gosom's own dispatcher can leave a job's
+    Status stuck at "working" forever even after its scrapemate run
+    genuinely finished (confirmed in production logs for job
+    a0c1d7f4-1550-46d2-8ce7-c09fc8167567, Belarus run
+    5acff6f7-21f8-4427-88a1-38d0a394ce83: "scrapemate exited" with a place
+    found, but no terminal job status ever followed — matches
+    github.com/gosom/google-maps-scraper#328). _find_reusable_job's
+    reuse-by-name logic must never resurrect that exact job for a retry —
+    polling it again just repeats the same 480s timeout forever instead of
+    making a fresh attempt."""
+    _enable_gosom(monkeypatch)
+    client = GosomPlacesClient()
+    client._abandoned_job_ids.add("job-zombie")
+
+    calls: list = []
+    script = [
+        _Response(200, [{"ID": "job-zombie", "Name": "mm-zombie", "Status": "working"}]),
+    ]
+    _install_http(monkeypatch, calls, script)
+
+    reused = await client._find_reusable_job("mm-zombie")
+    assert reused is None
+
+
+@pytest.mark.asyncio
+async def test_retry_after_timeout_creates_a_fresh_job_not_the_zombie(monkeypatch):
+    """End-to-end version of the same regression: a cell retried with the
+    identical query (same deterministic job name) after its first job
+    timed out must create a brand-new gosom job rather than reattaching to
+    the just-abandoned one, even though gosom's own job list still lists
+    the zombie under the same name with a non-terminal status."""
+    from app.services.scraping.maps_gosom_client import _stable_job_name
+
+    _enable_gosom(monkeypatch)
+    client = GosomPlacesClient()
+    name = _stable_job_name(query="rehab Minsk", region_code="BY", depth=3)
+
+    calls: list = []
+    script = [
+        _Response(200, []),  # no reusable job yet
+        _Response(201, {"ID": "job-zombie"}),
+        _Response(200, {"Status": "working"}),  # never reaches a terminal status
+        _Response(200, None),  # DELETE on timeout
+    ]
+    _install_http(monkeypatch, calls, script)
+    times = iter([0.0, 10_000.0])
+
+    class _Loop:
+        def time(self):
+            return next(times)
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_gosom_client.asyncio.get_running_loop", lambda: _Loop()
+    )
+    monkeypatch.setattr("app.services.scraping.maps_gosom_client.asyncio.sleep", _async_noop)
+    from app.services.scraping.maps_places_client import PlacesTimeoutError
+
+    with pytest.raises(PlacesTimeoutError):
+        await client.search_text_paginated(query="rehab Minsk", region_code="BY")
+    assert client._abandoned_job_ids == {"job-zombie"}
+
+    # Restore the real clock for the retry call below — it must complete
+    # normally, not hit the same (exhausted) fake deadline iterator.
+    monkeypatch.undo()
+    _enable_gosom(monkeypatch)
+    monkeypatch.setattr("app.services.scraping.maps_gosom_client.asyncio.sleep", _async_noop)
+
+    # Retry with the identical query: gosom's job list still shows the
+    # zombie (its dispatcher never actually marked it terminal), but it
+    # must be skipped in favor of creating a fresh job.
+    calls_retry: list = []
+    script_retry = [
+        _Response(200, [{"ID": "job-zombie", "Name": name, "Status": "working"}]),
+        _Response(201, {"ID": "job-fresh"}),
+        _Response(200, {"Status": "ok", "ID": "job-fresh"}),
+        _StreamResponse(200, "title,place_id\nFresh,ChIJfresh0001\n"),
+        _Response(200, None),  # DELETE on success
+    ]
+    _install_http(monkeypatch, calls_retry, script_retry)
+
+    outcome = await client.search_text_paginated(query="rehab Minsk", region_code="BY")
+    assert outcome.places[0].google_place_id == "ChIJfresh0001"
+    posts = [call for call in calls_retry if call[0] == "POST"]
+    assert len(posts) == 1
+    assert posts[0][2]["name"] == name
 
 
 async def _async_noop(*_args, **_kwargs):

@@ -5,9 +5,38 @@ Return strict JSON matching the schema. Do not invent values without a supportin
 Rules:
 - Return null or "unknown" when evidence is missing.
 - Do not infer private ownership merely because a facility is not obviously public.
-- Do not classify a general psychiatric clinic as addiction treatment without direct evidence.
+- Do not classify a general psychiatric clinic as addiction treatment without direct evidence —
+  but if there IS direct evidence of its own actual addiction-treatment program, confirm it even
+  when addiction is a secondary program rather than the facility's main specialty. Merely
+  mentioning addiction, offering referrals elsewhere, or treating unrelated psychiatric/mental-
+  health conditions is NOT direct evidence. Missing evidence means "unknown", not "contradicted" —
+  an absence of evidence is not evidence of absence.
+- `inpatient_treatment` / `residential_accommodation`: ANY clear, credible evidence that patients
+  are admitted and cared for ON-SITE — confirmed inpatient treatment, confirmed residential
+  rehabilitation, or 24-hour/live-in care — independently satisfies this; they are the same
+  requirement, not three separate ones. Do not require a further explicit "overnight stay"
+  statement once inpatient, residential, or 24-hour care is already confirmed. Only set `false`
+  for clear evidence of an explicitly outpatient, day-treatment, or partial-hospitalization (PHP)
+  program — the opposite of inpatient/residential. Use `null`, never a guess, when genuinely
+  unclear.
+- BRANCH vs. ORGANIZATION: if this facility is one location of a multi-location chain/network,
+  `inpatient_treatment` and `residential_accommodation` must come from evidence about THIS
+  SPECIFIC address/location, never from evidence naming a DIFFERENT branch or describing the
+  organization's services as a whole. "The organization runs residential units in [another
+  city]" does not confirm residential care HERE — use `null`, and set `organization_scope` to
+  `network` rather than `facility` when your evidence is org-wide. Ownership/operator_type are
+  legitimately organization-wide facts (the same legal owner covers every branch) and may be
+  confirmed from organization-level evidence.
+- `facility_type`, `operator_type`, `ownership_status`, and `organization_scope` must be the
+  EXACT snake_case codes the schema defines (e.g. `private_company`, `confirmed_non_government`,
+  `residential_addiction_rehab`, `network`) — never a descriptive English phrase such as
+  "Private company" or "Addiction treatment facility" in place of the code. If evidence clearly
+  supports a conclusion but none of the defined codes fits precisely, use that field's own
+  `unknown` value rather than inventing or paraphrasing a new one.
 - Keep evidence quotes concise.
-- Every asserted decision-critical field must have a matching quote and source URL.
+- Every asserted decision-critical field must have a matching quote; a source URL is required
+  when the evidence comes from a crawled page, but evidence drawn directly from the facility
+  metadata above (name, category, address) needs no URL — it is not a crawled source.
 - One facility per request.
 
 Facility metadata (JSON):
@@ -19,11 +48,19 @@ Official website crawl excerpts:
 {% endif %}
 
 Return JSON with these fields:
-- facility_type
-- operator_type
-- ownership_status
-- organization_scope
-- addiction_treatment_mission (boolean or null)
+- facility_type: EXACTLY one of residential_addiction_rehab, inpatient_detox_center,
+  outpatient_addiction_center, psychiatric_clinic_with_addiction_program,
+  therapeutic_community, cessation_service, harm_reduction_only, individual_addictologist,
+  therapist_or_counselor, recovery_community_center, general_mental_health_clinic, unrelated,
+  unknown.
+- operator_type: EXACTLY one of private_company, nonprofit, association, faith_based_org,
+  public_hospital, government_agency, hospital_system, university, individual_practice,
+  unknown.
+- ownership_status: EXACTLY one of confirmed_non_government, probable_non_government,
+  confirmed_government, ownership_unknown.
+- organization_scope: EXACTLY one of facility, program, network, individual_practice, unknown.
+- addiction_treatment_mission (boolean or null) — genuine addiction treatment provided, not
+  whether it is the facility's primary or only specialty; see rules above
 - care_setting (array of strings or empty)
 - outpatient_treatment (boolean or null)
 - inpatient_treatment (boolean or null)

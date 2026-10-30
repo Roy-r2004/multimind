@@ -187,12 +187,12 @@ def test_sotkankoti_supported_housing_without_formal_program_excluded():
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
-# --- Genuine NGO rehab without a website but with a phone — still
-# eligible once all other conditions are verified (website is optional). ---
+# --- Genuine NGO rehab without a website but with a phone — eligible, but
+# not delivered: the client export needs a phone and a website. ---
 
 
 @pytest.mark.asyncio
-async def test_ngo_rehab_without_website_still_eligible_in_export(db, auth):
+async def test_ngo_rehab_without_website_is_not_exported(db, auth):
     run = await _create_run(db, auth)
     place = MapsPlace(
         run_id=run.id,
@@ -214,7 +214,7 @@ async def test_ngo_rehab_without_website_still_eligible_in_export(db, auth):
     content, _ = await maps_export_service.build_workbook(db, auth, run.id)
     workbook = load_workbook(BytesIO(content))
     names = [row[0].value for row in workbook[ELIGIBLE_CENTERS_SHEET].iter_rows(min_row=2) if row[0].value]
-    assert "Genuine NGO Rehab" in names
+    assert "Genuine NGO Rehab" not in names
 
 
 # --- Unknown residential status — review, not automatic acceptance. ---
@@ -303,6 +303,7 @@ async def test_dashboard_count_matches_export_row_count(db, auth):
         lifecycle_status="confirmed_eligible",
         keep_drop_decision="keep",
         international_phone_number="+358 40 111 1111",
+        raw_website="https://rehab.example.fi",
     )
     review_only = MapsPlace(
         run_id=run.id,
@@ -350,6 +351,7 @@ async def test_review_candidate_later_confirmed_eligible_still_exports(db, auth)
         lifecycle_status="confirmed_eligible",
         keep_drop_decision="review",
         international_phone_number="+358 40 333 3333",
+        raw_website="https://rehab.example.fi",
     )
     db.add(place)
     await db.commit()

@@ -39,7 +39,7 @@ x-census-env: &census-env
   MAPS_CENSUS_COVERAGE_MODE: full
   MAPS_GOSOM_FULL_MAX_CELLS: "1500"
   MAPS_CENSUS_CAMPAIGN_TIMEOUT_SECONDS: "86400"
-  MAPS_CENSUS_AUTO_ENRICHMENT_ENABLED: "false"
+  MAPS_CENSUS_AUTO_ENRICHMENT_ENABLED: "true"
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   OPENROUTER_SITE_URL: http://127.0.0.1:3180
   OPENROUTER_APP_NAME: MultiAI
@@ -104,6 +104,11 @@ services:
     environment:
       <<: *census-env
       PORT: "8000"
+      # Gates the gosom-supervisor control endpoints (maps.py) — only the
+      # api service needs it; scraping-worker never serves that HTTP
+      # surface. Left out of x-census-env deliberately so it isn't also
+      # injected into scraping-worker.
+      MAPS_GOSOM_SUPERVISOR_TOKEN: ${MAPS_GOSOM_SUPERVISOR_TOKEN}
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,6 +148,93 @@ services:
       retries: 3
       start_period: 90s
 
+  # Speaks the real Docker Engine API, gated to the CONTAINERS+POST
+  # resource family (needed for GET /containers/json and POST
+  # .../restart) — never exec, build, images, volumes, networks, secrets,
+  # or swarm. That family still technically covers stop/kill/start/pause/
+  # create too (docker-socket-proxy has no finer-grained toggle than
+  # "resource family + verb"), which is broader than this feature needs —
+  # gosom-docker-gateway below is the actual enforcement point for that;
+  # see its nginx.conf. Reachable ONLY from gosom-docker-gateway: both are
+  # on the isolated gosom-supervisor-internal network, not the default
+  # network api/scraping-worker/web/gosom/postgres/redis use, so no other
+  # service in this stack — compromised or not — has any route to it at
+  # all. Not published to the host either way.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: "1"
+      POST: "1"
+      # Everything else stays at this image's default of disabled: no
+      # EXEC, IMAGES, BUILD, VOLUMES, NETWORKS, SECRETS, SWARM, SERVICES,
+      # TASKS, NODES, CONFIGS, AUTH, DISTRIBUTION, COMMIT, PLUGINS.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - gosom-supervisor-internal
+    restart: unless-stopped
+
+  # Allowlist gateway: the only thing network-reachable by (and reaching)
+  # docker-socket-proxy. Forwards exactly GET /containers/json and POST
+  # /containers/{id}/restart; rejects every other path/method outright —
+  # see docker/gosom-docker-gateway/nginx.conf for the enforcement and why
+  # docker-socket-proxy's own env-var toggles can't express "restart only."
+  gosom-docker-gateway:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./docker/gosom-docker-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - gosom-supervisor-internal
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+    restart: unless-stopped
+
+  # Long-lived container (restart: always) that replaces the Windows-only
+  # gosom_supervisor.ps1 + Scheduled Task. Needs no host cron, no manual
+  # command, and nobody watching it — it polls MultiMind's own
+  # /internal/gosom-supervisor/status on its own schedule and restarts
+  # gosom through gosom-docker-gateway when (and only when) the server
+  # confirms a freeze. See backend/scripts/gosom_supervisor.py.
+  gosom-supervisor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "-m", "scripts.gosom_supervisor"]
+    environment:
+      MAPS_GOSOM_SUPERVISOR_TOKEN: ${MAPS_GOSOM_SUPERVISOR_TOKEN}
+      GOSOM_SUPERVISOR_API_BASE_URL: http://api:8000
+      GOSOM_SUPERVISOR_DOCKER_PROXY_URL: http://gosom-docker-gateway:8080
+      # Disambiguates "the gosom container" from any other Compose
+      # project's own "gosom" service on the same host — docker-socket-proxy
+      # sees the whole host's Docker daemon, not just this project. Matches
+      # this file's own `name:` (top of file) exactly.
+      GOSOM_SUPERVISOR_COMPOSE_PROJECT_LABEL: com.docker.compose.project=multimind-gosom-census
+      # The only container name gosom-docker-gateway will ever restart —
+      # must match its nginx.conf literal match exactly. Not resolved at
+      # runtime from the Docker API; both sides are pinned to this fixed,
+      # deterministic Compose name (see nginx.conf's comment).
+      GOSOM_SUPERVISOR_CONTAINER_NAME: multimind-gosom-census-gosom-1
+      GOSOM_SUPERVISOR_GOSOM_HEALTH_URL: http://gosom:8080/api/v1/jobs
+      GOSOM_SUPERVISOR_POLL_INTERVAL_SECONDS: "60"
+    # Overrides the backend image's inherited HEALTHCHECK (it curls
+    # /api/v1/health on port 8000 — this container runs the supervisor
+    # script, not the API, so nothing ever listens on that port and Docker
+    # would otherwise report it "unhealthy" forever despite working fine;
+    # confirmed live — the supervisor's own logs show it successfully
+    # polling /internal/gosom-supervisor/status every cycle regardless).
+    healthcheck:
+      disable: true
+    networks:
+      - default
+      - gosom-supervisor-internal
+    depends_on:
+      api:
+        condition: service_healthy
+      gosom-docker-gateway:
+        condition: service_started
+    restart: always
+
   web:
     build:
       context: .
@@ -161,3 +253,18 @@ volumes:
   postgres_data:
   gosom_data:
   gosom_playwright_cache:
+
+networks:
+  # Deliberately no explicit `default:` entry here — declaring one
+  # (even as `{}`) changes the default network's config hash, which made
+  # Compose recreate every container on it (postgres/redis/gosom/api/
+  # scraping-worker/web), not just the two new services being added,
+  # the one time this was tried. Leaving it implicit (Compose's own
+  # default) is what keeps `up -d <service>` scoped to just that service.
+  #
+  # internal: true means Docker gives this network no route to the
+  # outside world either, on top of the service-level isolation above —
+  # only gosom-supervisor, gosom-docker-gateway, and docker-socket-proxy
+  # are ever attached to it.
+  gosom-supervisor-internal:
+    internal: true

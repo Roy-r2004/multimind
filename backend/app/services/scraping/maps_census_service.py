@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
@@ -38,6 +38,7 @@ from app.db.models import (
     MapsCensusStatus,
     MapsClientEligibility,
     MapsContactStatus,
+    MapsCountryProfileStatus,
     MapsLifecycleStatus,
     MapsPlace,
     MapsPlaceEnrichmentStatus,
@@ -97,10 +98,18 @@ from app.services.scraping.maps_circuit_breaker import (
     LLMCallBudget,
 )
 from app.services.scraping.maps_country_profile_service import maps_country_profile_service
-from app.services.scraping.maps_eligibility import derive_is_relevant, derive_legacy_verification_verdict
+from app.services.scraping.maps_eligibility import (
+    compute_client_eligibility,
+    derive_is_relevant,
+    derive_legacy_verification_verdict,
+)
+from app.services.scraping.maps_enrichment_progress import (
+    ENRICHMENT_STATUS_STALE_FAILED,
+    enrichment_status_from_run,
+)
 from app.services.scraping.maps_external_discovery import maps_external_discovery_coordinator
 from app.services.scraping import maps_geo_boundaries, maps_geo_planner_service
-from app.services.scraping.maps_geo_regions import resolve_geo_anchor_detailed
+from app.services.scraping.maps_geo_regions import resolve_geo_anchor, resolve_geo_anchor_detailed
 from app.services.scraping.maps_observability import (
     log_budget_exceeded,
     log_cell_processing,
@@ -115,10 +124,13 @@ from app.services.scraping.maps_grid_planner import (
     MapsGridPlanningError,
     maps_grid_planner,
 )
+from app.services.scraping import gosom_health_monitor
 from app.services.scraping.maps_places_client import (
+    DISCOVERY_PROVIDERS,
     PlacesProviderError,
     PlacesTimeoutError,
     create_places_client,
+    resolve_discovery_provider,
 )
 from app.services.scraping.maps_quota_tracker import (
     MapsQuotaTracker,
@@ -278,9 +290,13 @@ class MapsCensusService:
         country_code: str,
         state_code: str | None = None,
         state_name: str | None = None,
+        discovery_provider: str | None = None,
     ) -> MapsCensusRunDetail:
         settings = get_settings()
-        if settings.maps_discovery_provider == "gosom":
+        provider = (discovery_provider or "").strip().lower() or settings.maps_discovery_provider
+        if provider not in DISCOVERY_PROVIDERS:
+            raise ValidationError("discovery_provider must be 'google_places' or 'gosom'.")
+        if provider == "gosom":
             if not (settings.gosom_base_url or "").strip():
                 raise ValidationError("Gosom Maps census is not configured (GOSOM_BASE_URL).")
         elif not settings.google_places_enabled:
@@ -295,6 +311,7 @@ class MapsCensusService:
             country_name=country.name,
             state_code=clean_state_code,
             state_name=clean_state_name,
+            discovery_provider=provider,
             status=MapsCensusStatus.QUEUED,
         )
         db.add(run)
@@ -348,6 +365,7 @@ class MapsCensusService:
         # than one query per run (N+1) — same authoritative predicate the
         # Phase 2 tab and Excel export use.
         counts_by_run: dict[str, int] = {}
+        awaiting_enrichment_by_run: dict[str, int] = {}
         if rows:
             run_ids = [run.id for run in rows]
             count_rows = await db.execute(
@@ -356,8 +374,32 @@ class MapsCensusService:
                 .group_by(MapsPlace.run_id)
             )
             counts_by_run = {run_id: int(count) for run_id, count in count_rows.all()}
+            # Same N+1-avoidance pattern for _phase2_status's
+            # "awaiting_enrichment" check — one grouped query for every run
+            # rather than count_keeps_awaiting_enrichment called once per row.
+            awaiting_rows = await db.execute(
+                select(MapsPlace.run_id, func.count())
+                .where(
+                    MapsPlace.run_id.in_(run_ids),
+                    MapsPlace.keep_drop_decision.in_(["keep", "review"]),
+                    MapsPlace.enrichment_status.in_(
+                        [
+                            MapsPlaceEnrichmentStatus.PENDING.value,
+                            MapsPlaceEnrichmentStatus.RUNNING.value,
+                        ]
+                    ),
+                )
+                .group_by(MapsPlace.run_id)
+            )
+            awaiting_enrichment_by_run = {
+                run_id: int(count) for run_id, count in awaiting_rows.all()
+            }
         return [
-            _run_summary(run, accepted_facilities_count=counts_by_run.get(run.id, 0))
+            _run_summary(
+                run,
+                accepted_facilities_count=counts_by_run.get(run.id, 0),
+                keeps_awaiting_enrichment=awaiting_enrichment_by_run.get(run.id, 0),
+            )
             for run in rows
         ]
 
@@ -375,8 +417,16 @@ class MapsCensusService:
             )
             or 0
         )
-        summary = _run_summary(run, accepted_facilities_count=accepted_count)
-        return MapsCensusRunDetail(**summary.model_dump())
+        from app.services.scraping.maps_keep_drop_service import count_keeps_awaiting_enrichment
+
+        keeps_awaiting_enrichment = await count_keeps_awaiting_enrichment(db, run_id=run_id)
+        summary = _run_summary(
+            run,
+            accepted_facilities_count=accepted_count,
+            keeps_awaiting_enrichment=keeps_awaiting_enrichment,
+        )
+        breakdown = await compute_phase2_breakdown(db, run_id=run_id)
+        return MapsCensusRunDetail(**summary.model_dump(), phase2_breakdown=breakdown)
 
     async def get_run_live_stats(
         self, db: AsyncSession, auth: AuthContext, run_id: str
@@ -904,6 +954,10 @@ class MapsCensusService:
         """
         session_factory = self._session_factory(db)
         settings = get_settings()
+        async with session_factory() as provider_db:
+            discovery_provider = resolve_discovery_provider(
+                await provider_db.get(MapsCensusRun, run_id)
+            )
 
         # === PHASE 0: Initialize safety guards ===
         # Circuit breaker: prevent cascading failures from external APIs
@@ -919,7 +973,7 @@ class MapsCensusService:
             openrouter_breaker = CircuitBreaker("openrouter", breaker_config)
             google_breaker = CircuitBreaker("google_places", breaker_config)
             sonar_breaker = CircuitBreaker("sonar", breaker_config)
-            if settings.maps_discovery_provider == "gosom":
+            if discovery_provider == "gosom":
                 gosom_breaker = CircuitBreaker(
                     "gosom",
                     CircuitBreakerConfig(
@@ -1044,15 +1098,31 @@ class MapsCensusService:
             state_code = run.state_code
             state_name = run.state_name
             resume_existing = existing_cells > 0
+            existing_country_profile_status = run.country_profile_status
 
-        try:
-            await maps_country_profile_service.build_profile_for_run(db, run_id=run_id)
-        except Exception:  # noqa: BLE001
-            # Profiling is a best-effort enrichment stage — a bug here must never
-            # take down the whole census. build_profile_for_run already records
-            # its own failures on the run; this is just a last-resort guard.
-            logger.warning(
-                "maps_census_country_profile_stage_failed run_id=%s", run_id, exc_info=True
+        # A watchdog-triggered resume (e.g. after Gosom wedges and the stale-
+        # heartbeat recovery relaunches this exact job) must never repeat an
+        # already-successful paid AI call. Without this guard, every
+        # recovery cycle re-ran build_profile_for_run (a real sonar-pro
+        # country-profile call) from scratch, even though the profile from
+        # the run's first attempt was still perfectly valid — confirmed via
+        # worker logs showing maps_country_profile.j2 re-rendered on a
+        # watchdog resume of run 0afe4ca7-2dd3-47aa-a2cd-566e6b19b208.
+        if existing_country_profile_status != MapsCountryProfileStatus.COMPLETED.value:
+            try:
+                await maps_country_profile_service.build_profile_for_run(db, run_id=run_id)
+            except Exception:  # noqa: BLE001
+                # Profiling is a best-effort enrichment stage — a bug here must
+                # never take down the whole census. build_profile_for_run
+                # already records its own failures on the run; this is just
+                # a last-resort guard.
+                logger.warning(
+                    "maps_census_country_profile_stage_failed run_id=%s", run_id, exc_info=True
+                )
+        else:
+            logger.info(
+                "maps_census_country_profile_already_completed run_id=%s — skipping repeat profile call",
+                run_id,
             )
 
         async with session_factory() as profile_db:
@@ -1173,7 +1243,7 @@ class MapsCensusService:
             settings.maps_census_max_cells_per_campaign or settings.maps_census_max_cells_per_run
         )
         gosom_full_coverage = (
-            settings.maps_discovery_provider == "gosom"
+            discovery_provider == "gosom"
             and settings.maps_census_coverage_mode == "full"
         )
         # 1500 is a ceiling. A lower campaign setting still wins, so a 50-cell
@@ -1327,10 +1397,10 @@ class MapsCensusService:
                 session_factory, run_id=run_id, by=len(cell_ids)
             )
 
-        client = create_places_client()
+        client = create_places_client(discovery_provider)
         summary = {"cells": campaign_cells_used, "places_found": 0, "cell_failures": 0}
         if not client.is_configured():
-            if settings.maps_discovery_provider == "gosom":
+            if discovery_provider == "gosom":
                 config_error = "Gosom scraper is not configured (GOSOM_BASE_URL)."
             else:
                 config_error = "Google Places API key is not configured."
@@ -1372,9 +1442,48 @@ class MapsCensusService:
                 seen_query_texts=seen_query_texts,
                 execution_token=execution_token,
                 gosom_breaker=gosom_breaker,
+                discovery_provider=discovery_provider,
                 geo_polygon_record=geo_polygon_record,
             )
             campaign_cells_used = campaign_budget["used"]
+
+            # _execute_cells returning is not the same as it having made
+            # progress: its own per-cell loop breaks immediately (without
+            # claiming/attempting anything) when the Gosom breaker is OPEN
+            # and not yet due for a recovery probe, or when the run was
+            # cancelled/paused mid-iteration. Checking only
+            # campaign_cells_used / expanding_names below would miss all
+            # three cases and keep calling the paid gpt-4.1 grid planner
+            # (maps_grid_planner.plan) every loop iteration to manufacture
+            # more PENDING cells that can never be executed — cells_total
+            # climbing while cells_completed stays frozen, with no
+            # resulting work and no spending control. Stop expanding the
+            # instant further execution isn't possible, before incurring
+            # the cost of another planning call or another pending-cell
+            # wave; the existing non_terminal_cells check further below
+            # already keeps a run in this state from being marked
+            # COMPLETED, and the watchdog cron (recover_maps_census_runs)
+            # is the existing, already-bounded (10-minute cadence) path
+            # back to a fresh attempt once conditions allow — never a
+            # tight loop within this call.
+            if gosom_breaker is not None and gosom_breaker.state == CircuitState.OPEN:
+                if not gosom_breaker._should_attempt_recovery():
+                    logger.error(
+                        "maps_census_campaign_stopped_gosom_breaker_open run_id=%s "
+                        "failures=%s recovery_in_seconds=%s — stopping geography "
+                        "expansion and paid planning calls until Gosom recovers",
+                        run_id,
+                        gosom_breaker.metrics.failures,
+                        gosom_breaker._seconds_until_recovery(),
+                    )
+                    stopped_reason = "gosom_breaker_open"
+                    break
+            if await is_run_cancelled(session_factory, run_id=run_id):
+                stopped_reason = "cancelled"
+                break
+            if await is_campaign_paused(session_factory, run_id=run_id):
+                stopped_reason = "paused"
+                break
 
             # === PHASE 0: Check campaign timeout ===
             if settings.maps_census_campaign_timeout_seconds:
@@ -1557,6 +1666,25 @@ class MapsCensusService:
             state_name=state_name,
         )
         summary.update({f"keep_drop_{key}": value for key, value in keep_drop_summary.items()})
+
+        # Mandatory eligibility-evidence classification — ownership,
+        # organization scope, facility type, residential accommodation,
+        # addiction focus — runs automatically here for every KEEP and
+        # REVIEW candidate, completely independent of the optional "Enrich
+        # with AI" trigger / MAPS_CENSUS_AUTO_ENRICHMENT_ENABLED. This is
+        # the evidence compute_client_eligibility() needs to ever promote a
+        # candidate past REVIEW to ELIGIBLE; a user must never have to
+        # click a separate, optional button for an eligible facility to
+        # appear. (Previously this only ran as part of the same gated
+        # cascade as optional contact/detail enrichment — see
+        # _keep_drop_gate_passed's fix for the root cause.)
+        await self._run_mandatory_eligibility_classification(
+            session_factory,
+            run_id=run_id,
+            country_code=country_code,
+            country_name=country_name,
+            tracker=tracker,
+        )
 
         await self._validate_websites(session_factory, run_id=run_id, tracker=tracker)
 
@@ -1902,6 +2030,7 @@ class MapsCensusService:
         execution_token: str | None = None,
         gosom_breaker: CircuitBreaker | None = None,
         geo_polygon_record: Any = None,
+        discovery_provider: str | None = None,
     ) -> None:
         """Run a paginated Places search for each queued cell, classify newly
         discovered places immediately (so saturation reflects real
@@ -1967,6 +2096,25 @@ class MapsCensusService:
                 # health probe (the breaker itself flips to HALF_OPEN on
                 # the next call) rather than resuming full-speed submission
                 # before we know the dispatcher is actually back.
+
+            if (
+                discovery_provider or settings.maps_discovery_provider
+            ) == "gosom" and await gosom_health_monitor.is_restart_in_progress(
+                session_factory
+            ):
+                # The host-side supervisor has flagged (and is about to, or
+                # is currently, executing) a `docker ... restart gosom` —
+                # persisted outside this process's in-memory breaker, so it
+                # is seen even on a fresh run_census() invocation. Pause new
+                # submissions the same way an OPEN breaker does: the cell
+                # stays PENDING, unclaimed, for a later invocation once
+                # /restart/complete clears the flag.
+                logger.warning(
+                    "maps_census_gosom_restart_in_progress run_id=%s — pausing new "
+                    "Gosom submissions until the supervisor reports completion",
+                    run_id,
+                )
+                break
 
             async with session_factory() as heartbeat_db:
                 run = await heartbeat_db.get(MapsCensusRun, run_id)
@@ -2107,8 +2255,24 @@ class MapsCensusService:
             except CircuitBreakerOpenError:
                 # Defense in depth: the pre-loop check above should already
                 # have stopped us before reaching here, but if the breaker
-                # opened mid-iteration, defer rather than fail this cell —
-                # it stays PENDING, unclaimed.
+                # opened mid-iteration, defer rather than fail this cell.
+                # This cell was already claimed (claim_cell_by_id, above) —
+                # release it back to PENDING/unclaimed explicitly, the same
+                # claimed_by=None primitive recover_stale_running_cells uses,
+                # so it is immediately claimable again once the campaign
+                # resumes rather than sitting IN_PROGRESS indefinitely (no
+                # heartbeat will ever refresh it, since nothing is actually
+                # running it, so recover_stale_running_cells would eventually
+                # catch it too — doing it here is immediate and avoids
+                # relying on that watchdog path for a case we can resolve
+                # directly). No backoff/attempt penalty: the breaker, not
+                # this cell, is what decided not to try.
+                async with session_factory() as release_db:
+                    cell = await release_db.get(MapsCensusCell, cell_id)
+                    if cell is not None and cell.status == MapsCensusCellStatus.IN_PROGRESS:
+                        cell.status = MapsCensusCellStatus.PENDING
+                        cell.claimed_by = None
+                    await release_db.commit()
                 logger.warning(
                     "maps_census_gosom_breaker_open_mid_iteration run_id=%s cell_id=%s",
                     run_id,
@@ -2161,6 +2325,12 @@ class MapsCensusService:
                     - first_attempted_at.replace(tzinfo=None)
                 ).total_seconds()
                 is_timeout = isinstance(exc, PlacesTimeoutError)
+                if is_timeout and gosom_breaker is not None:
+                    # Persisted counter, independent of the in-memory
+                    # breaker, so a timeout streak is still visible to the
+                    # supervisor's /status endpoint across a watchdog
+                    # relaunch (which creates a brand-new CircuitBreaker).
+                    await gosom_health_monitor.record_job_timeout(session_factory)
                 configured_max_attempts = (
                     max_cell_timeout_attempts if is_timeout else max_cell_attempts
                 )
@@ -2198,6 +2368,8 @@ class MapsCensusService:
                 continue
 
             tracker.add_places_request(pages=max(1, outcome.pages_fetched))
+            if gosom_breaker is not None:
+                await gosom_health_monitor.record_job_success(session_factory)
 
             try:
                 async with session_factory() as write_db:
@@ -2226,9 +2398,11 @@ class MapsCensusService:
                                 geo_polygon_record,
                                 latitude=result.latitude,
                                 longitude=result.longitude,
+                                country_code=country_code,
                             ),
                             international_phone_number=result.international_phone_number,
                             raw_website=result.website,
+                            operating_status=getattr(result, "operating_status", None),
                             discovered_via_query=query_text,
                             photo_reference=result.photo_reference,
                             discovery_sources=(
@@ -2778,6 +2952,98 @@ class MapsCensusService:
             )
             for item in payloads
         ]
+
+    async def _run_mandatory_eligibility_classification(
+        self,
+        session_factory,
+        *,
+        run_id: str,
+        country_code: str,
+        country_name: str,
+        tracker: MapsQuotaTracker,
+    ) -> dict[str, Any]:
+        """Automatic, mandatory eligibility-evidence classification for every
+        KEEP and REVIEW candidate — never gated by the optional "Enrich with
+        AI" trigger. Writes its own ``eligibility_status`` key in
+        processing_state (separate from ``enrichment_status``, which
+        describes the independent, optional contact/detail enrichment
+        stage) so _phase2_status() can report a genuinely authoritative
+        "running"/"completed"/"failed" signal for mandatory verification
+        alone, never conflated with whether optional enrichment has run.
+
+        Resumable/idempotent via the existing claim-based
+        build_classification_query (keep_drop_decision in {KEEP, REVIEW} or
+        already ELIGIBLE, enrichment_status == PENDING): a second call for
+        the same run_id (retry, concurrent job, or a later manual "Enrich
+        with AI" click that still calls classify_run internally) finds zero
+        remaining candidates and is a safe, free no-op — never re-judges an
+        already-classified place or makes a duplicate paid call for it.
+        """
+        from app.services.scraping.maps_classification_service import maps_classification_service
+        from app.services.scraping.maps_enrichment_cascade_service import (
+            maps_enrichment_cascade_service,
+        )
+        from app.services.scraping.maps_enrichment_progress import persist_enrichment_progress
+        from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
+        from app.services.scraping.maps_sonar_fallback import SonarBudget, SonarFallbackStats
+
+        settings = get_settings()
+
+        # Finalize confident non-candidates (public/individual/unrelated/
+        # etc.) first — same pre-filter the optional cascade uses, now also
+        # correctly leaving KEEP and REVIEW candidates untouched for the
+        # classification pass below (see _keep_drop_gate_passed).
+        await maps_enrichment_cascade_service._finalize_cheap_skips(
+            session_factory, run_id=run_id
+        )
+
+        async with session_factory() as relevant_db:
+            relevant_total = int(
+                await relevant_db.scalar(
+                    select(func.count())
+                    .select_from(MapsPlace)
+                    .where(MapsPlace.run_id == run_id, MapsPlace.is_relevant.is_(True))
+                )
+                or 0
+            )
+
+        async def _set_eligibility_status(status: str, **extra: Any) -> None:
+            await persist_enrichment_progress(
+                session_factory,
+                run_id=run_id,
+                phase="eligibility_classification",
+                extra={"eligibility_status": status, **extra},
+            )
+
+        await _set_eligibility_status("running")
+        try:
+            result = await maps_classification_service.classify_run(
+                session_factory,
+                run_id=run_id,
+                country_code=country_code,
+                country_name=country_name,
+                tracker=tracker,
+                sonar_budget=SonarBudget(
+                    enabled=settings.maps_sonar_fallback_enabled,
+                    max_percent=settings.maps_sonar_fallback_max_percent,
+                    max_per_campaign=settings.maps_sonar_fallback_max_per_campaign,
+                    selected_candidates=relevant_total,
+                ),
+                sonar_stats=SonarFallbackStats(),
+                parse_stats=EnrichmentParseStats(),
+            )
+        except Exception as exc:  # noqa: BLE001 — never let this abort run_census
+            logger.exception(
+                "maps_census_eligibility_classification_failed run_id=%s error=%s", run_id, exc
+            )
+            await _set_eligibility_status("failed", eligibility_error=str(exc)[:500])
+            return {"classified": 0, "error": str(exc)}
+
+        await _set_eligibility_status(
+            "paused" if result.get("paused") else "completed",
+            eligibility_classified_count=result.get("classified", 0),
+        )
+        return result
 
     async def _validate_websites(
         self, session_factory, *, run_id: str, tracker: MapsQuotaTracker | None = None
@@ -3407,18 +3673,45 @@ class MapsCensusService:
 
 
 def _geo_boundary_match(
-    geo_polygon_record: Any, *, latitude: float | None, longitude: float | None
+    geo_polygon_record: Any,
+    *,
+    latitude: float | None,
+    longitude: float | None,
+    country_code: str | None = None,
 ) -> str | None:
     """Geographic result validation (Task 6): coordinate-based targeting
     is a discovery strategy, not proof of membership. Returns which of the
-    four honest outcomes applies — never silently treats "no coordinates"
+    six honest outcomes applies — never silently treats "no coordinates"
     or "no polygon to check against" as if the place were confirmed inside
-    the region.
+    the region, and never labels a coarse bounding-box check as if it were
+    a precise verified polygon.
+
+    When no dataset-backed polygon is cached locally (``geo_polygon_record``
+    is None), falls back to the coarse country-level bounding box in
+    ``maps_geo_regions`` — e.g. Finland, see 0afe4ca7-2dd3-47aa-a2cd-
+    566e6b19b208, where a Pompano Beach, FL result was never caught because
+    "no_polygon_available" was treated as neutral, not "outside". This
+    returns its own distinct ``*_bbox_fallback`` outcomes rather than
+    reusing "inside_polygon"/"outside_polygon" — a plain rectangle is not
+    a precise national border (it can't resolve a facility genuinely near
+    a coastline or land border the box happens to cut through), so the
+    audit trail must say which check actually ran. ``country_code`` not in
+    the static table (or no coordinates) keeps the pre-existing
+    "no_polygon_available" outcome — never silently treated as "inside".
     """
     if latitude is None or longitude is None:
         return "no_coordinates"
     if geo_polygon_record is None:
-        return "no_polygon_available"
+        fallback_box = resolve_geo_anchor(
+            country_code=country_code, state_code=None, state_name=None
+        )
+        if fallback_box is None:
+            return "no_polygon_available"
+        inside = (
+            fallback_box["south"] <= latitude <= fallback_box["north"]
+            and fallback_box["west"] <= longitude <= fallback_box["east"]
+        )
+        return "inside_bbox_fallback" if inside else "outside_bbox_fallback"
     try:
         inside = maps_geo_boundaries.contains_point(
             geo_polygon_record, lat=latitude, lon=longitude
@@ -3426,6 +3719,93 @@ def _geo_boundary_match(
     except Exception:  # noqa: BLE001
         return "no_polygon_available"
     return "inside_polygon" if inside else "outside_polygon"
+
+
+async def recompute_geo_boundary_for_run(
+    session_factory, *, run_id: str, apply: bool = False
+) -> dict[str, Any]:
+    """Re-evaluate every already-discovered place's geo_boundary_match from
+    its stored latitude/longitude — using whatever boundary data (cached
+    polygon, or the static bounding-box fallback) is available *now*,
+    without rerunning Gosom/Phase 1 or touching discovery/keep-drop state.
+
+    Works for any run (not just Finland): it looks up the boundary purely
+    from the run's own country_code/state_code/state_name, exactly like
+    the discovery-time check does, so a country added to maps_geo_regions
+    later benefits here too without any run-specific code.
+
+    Only changes a place's ``geo_boundary_match`` and, when that flips to
+    "outside_polygon" or "outside_bbox_fallback" and the place was
+    previously ELIGIBLE, its ``client_eligibility`` (downgraded to REVIEW
+    via compute_client_eligibility — never silently dropped from the
+    census, never a hard exclusion on a plain bounding box). A manual
+    admin exclusion (``manually_excluded_at``) is never touched
+    (compute_client_eligibility already refuses to override it). Dry-run
+    by default (``apply=False``): reports exactly what would change
+    without writing anything.
+    """
+    async with session_factory() as db:
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None:
+            return {"error": "run_not_found"}
+
+        geo_polygon_record = None
+        try:
+            geo_polygon_record = maps_geo_boundaries.resolve_region_boundary(
+                country_code=run.country_code,
+                state_code=run.state_code,
+                state_name=run.state_name,
+            )
+        except Exception:  # noqa: BLE001
+            geo_polygon_record = None
+
+        places = (
+            await db.execute(
+                select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.latitude.is_not(None),
+                    MapsPlace.longitude.is_not(None),
+                )
+            )
+        ).scalars().all()
+
+        changed = 0
+        newly_outside = 0
+        downgraded_eligibility = 0
+        for place in places:
+            new_match = _geo_boundary_match(
+                geo_polygon_record,
+                latitude=place.latitude,
+                longitude=place.longitude,
+                country_code=run.country_code,
+            )
+            if new_match == place.geo_boundary_match:
+                continue
+            changed += 1
+            if new_match in {"outside_polygon", "outside_bbox_fallback"}:
+                newly_outside += 1
+            if apply:
+                place.geo_boundary_match = new_match
+                if (
+                    new_match in {"outside_polygon", "outside_bbox_fallback"}
+                    and place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+                ):
+                    place.client_eligibility = compute_client_eligibility(place)
+                    if place.client_eligibility != MapsClientEligibility.ELIGIBLE.value:
+                        downgraded_eligibility += 1
+
+        if apply:
+            await db.commit()
+
+        return {
+            "run_id": run_id,
+            "places_checked": len(places),
+            "geo_boundary_match_changed": changed,
+            "newly_outside_polygon": newly_outside,
+            "eligibility_downgraded": downgraded_eligibility,
+            "applied": apply,
+            "polygon_available": geo_polygon_record is not None,
+        }
 
 
 def _cap_to_budget(
@@ -3641,19 +4021,115 @@ def has_contact_channel(place: MapsPlace | Any) -> bool:
 
 def _accepted_facility_filter():
     """The single authoritative "accepted rehab center" predicate — must
-    mirror maps_export_service.py's _is_eligible_center /
-    _has_required_contact_info exactly: client_eligibility == eligible,
-    keep_drop_decision in {keep, review}, phone present (website
-    optional). Shared by list_places' accepted_only filter and the
-    accepted-facility counts surfaced on run summaries, so the banner
-    count, the Phase 2 tab, and the Excel export can never disagree.
+    mirror maps_export_service.py's _is_eligible_center exactly:
+    client_eligibility == eligible, keep_drop_decision in {keep, review},
+    and both a phone number and a website, as the Google Places export
+    required. Shared by list_places' accepted_only filter and the
+    accepted-facility counts surfaced on run summaries, so the banner count,
+    the Phase 2 tab, and the Excel export can never disagree.
     """
     return and_(
         MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
         MapsPlace.keep_drop_decision.in_(["keep", "review"]),
-        MapsPlace.international_phone_number.is_not(None),
-        func.trim(MapsPlace.international_phone_number) != "",
+        func.trim(func.coalesce(MapsPlace.international_phone_number, "")) != "",
+        or_(
+            func.trim(func.coalesce(MapsPlace.official_website, "")) != "",
+            func.trim(func.coalesce(MapsPlace.raw_website, "")) != "",
+        ),
     )
+
+
+async def compute_phase2_breakdown(db: AsyncSession, *, run_id: str) -> dict[str, int]:
+    """Meaningful, mutually-exclusive Phase 2 counts for the UI — never just
+    "eligible or not": a KEEP/REVIEW candidate the keep/drop gate routed to
+    Phase 2 lands in exactly one of these buckets, so they always sum to the
+    total candidate count. Mirrors _accepted_facility_filter's predicate for
+    "eligible" so this can never disagree with the banner count or the
+    Excel export.
+
+    - eligible: the accepted set (_accepted_facility_filter).
+    - missing_contact: ELIGIBLE but without a phone or a website, so not
+      delivered.
+    - rejected: classification genuinely ran and excluded the candidate
+      (client_eligibility == EXCLUDED) — a real negative verification, not
+      a technical failure.
+    - unresolved: client_eligibility == REVIEW — evidence insufficient or
+      genuinely ambiguous, not a rejection.
+    - classification_pending: still waiting for the mandatory classification
+      pass to reach it (same pre-classification states build_classification_
+      query claims from — see PRE_CLASSIFICATION_PIPELINE_STATES).
+    - classification_failed: a retryable technical failure is currently
+      recorded against the place (CLASSIFICATION_FAILED_RETRYABLE) — distinct
+      from "unresolved", which is a completed-but-ambiguous verification.
+    """
+    from app.services.scraping.maps_enrichment_processing_state import (
+        PRE_CLASSIFICATION_PIPELINE_STATES,
+        MapsEnrichmentPipelineState,
+    )
+    from app.services.scraping.maps_keep_drop_service import KEEP, REVIEW
+
+    candidate_filter = or_(
+        MapsPlace.keep_drop_decision == KEEP,
+        MapsPlace.keep_drop_decision == REVIEW,
+        MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
+    )
+
+    async def _count(*extra):
+        return int(
+            await db.scalar(
+                select(func.count())
+                .select_from(MapsPlace)
+                .where(MapsPlace.run_id == run_id, MapsPlace.is_relevant.is_(True), candidate_filter, *extra)
+            )
+            or 0
+        )
+
+    # Precedence (checked in this order) keeps the five buckets mutually
+    # exclusive. Critically, "pending" is decided from enrichment_pipeline_
+    # state, not client_eligibility: apply_keep_drop stamps every fresh
+    # KEEP/REVIEW candidate's client_eligibility as REVIEW *before*
+    # classification ever runs (see maps_keep_drop_service.py), so a place
+    # that simply hasn't been classified yet would otherwise be
+    # misclassified as "unresolved" — "unresolved" must mean classification
+    # ran and genuinely could not resolve it, not "not classified yet".
+    pending_states = PRE_CLASSIFICATION_PIPELINE_STATES - {
+        MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
+    }
+    is_failed = (
+        MapsPlace.enrichment_pipeline_state
+        == MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value
+    )
+    is_pending = or_(
+        MapsPlace.enrichment_pipeline_state.is_(None),
+        MapsPlace.enrichment_pipeline_state.in_(tuple(pending_states)),
+    )
+    is_classified = and_(not_(is_failed), not_(is_pending))
+
+    classification_failed = await _count(is_failed)
+    classification_pending = await _count(not_(is_failed), is_pending)
+    eligible = await _count(is_classified, _accepted_facility_filter())
+    missing_contact = await _count(
+        is_classified,
+        MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
+        not_(_accepted_facility_filter()),
+    )
+    rejected = await _count(
+        is_classified, MapsPlace.client_eligibility == MapsClientEligibility.EXCLUDED.value
+    )
+    unresolved = await _count(
+        is_classified,
+        MapsPlace.client_eligibility.notin_(
+            [MapsClientEligibility.ELIGIBLE.value, MapsClientEligibility.EXCLUDED.value]
+        ),
+    )
+    return {
+        "eligible": eligible,
+        "missing_contact": missing_contact,
+        "rejected": rejected,
+        "unresolved": unresolved,
+        "classification_pending": classification_pending,
+        "classification_failed": classification_failed,
+    }
 
 
 def _export_location(place: MapsPlace, *, country_name: str) -> str:
@@ -3761,16 +4237,109 @@ def _cell_item(cell: MapsCensusCell) -> MapsCensusCellItem:
     )
 
 
+def _keep_drop_heartbeat_is_stale(state: dict) -> bool:
+    """True only when a keep_drop_heartbeat_at IS present and is older than
+    maps_keep_drop_stale_minutes. A historical run with no heartbeat key at
+    all (recorded before this field existed) is never treated as stale —
+    there is no persisted evidence either way, so "running" (the prior,
+    unconditional behavior) is preserved rather than guessing.
+    """
+    raw = state.get("keep_drop_heartbeat_at")
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        heartbeat = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if heartbeat.tzinfo is None:
+        heartbeat = heartbeat.replace(tzinfo=UTC)
+    cutoff_minutes = max(1, get_settings().maps_keep_drop_stale_minutes)
+    return heartbeat < datetime.now(UTC) - timedelta(minutes=cutoff_minutes)
+
+
+def _phase2_status(run: MapsCensusRun, *, keeps_awaiting_enrichment: int = 0) -> str:
+    """Reliable, persisted-state-derived Phase 2 (mandatory eligibility
+    verification) execution status — "pending" / "running" / "stalled" /
+    "completed" / "failed" — never inferred from the accepted-facility
+    count alone, and never from whether the separate, OPTIONAL "Enrich with
+    AI" detail enrichment has run. Zero accepted facilities after a
+    genuinely completed eligibility pass is a legitimate outcome, not the
+    same thing as "Phase 2 never ran"; the frontend distinguishes those two
+    using this field together with accepted_facilities_count.
+
+    Authoritative signal: ``processing_state["eligibility_status"]``, set by
+    run_census's automatic, unconditional call to mandatory eligibility
+    classification (see MapsCensusService._run_mandatory_eligibility_
+    classification) right after keep/drop — this never depends on the
+    optional enrichment trigger. "paused" (classification hit its per-run
+    call budget) is reported as "stalled": real work remains and it needs
+    an operator/retry, same as a crashed pass.
+
+    Runs created before this field existed have no ``eligibility_status``
+    key at all — for those, and only those, this falls back to the prior
+    heuristic (keep_drop_status + the optional enrichment's own status +
+    keeps_awaiting_enrichment) so a historical run's displayed status does
+    not regress. A new run always gets eligibility_status set, so this
+    fallback path is dead for anything processed after this fix.
+
+    "stalled" also covers keep_drop_status still "running" with a heartbeat
+    that has gone cold (see _keep_drop_heartbeat_is_stale) — evidence of a
+    crashed or stuck pass, not proof of one, reported distinctly rather
+    than as "failed": this function never writes run state, so opening the
+    UI can never itself flip a run to failed or stalled.
+    """
+    run_status = run.status.value if hasattr(run.status, "value") else str(run.status)
+    if run_status == MapsCensusStatus.FAILED.value:
+        return "failed"
+    state = run.processing_state or {}
+    keep_drop_status = state.get("keep_drop_status")
+    if keep_drop_status == "running":
+        return "stalled" if _keep_drop_heartbeat_is_stale(state) else "running"
+
+    eligibility_status = state.get("eligibility_status")
+    if eligibility_status is not None:
+        if eligibility_status == "running":
+            return "running"
+        if eligibility_status in {"failed", "paused"}:
+            return "stalled"
+        if eligibility_status == "completed":
+            return "completed"
+        return "pending"
+
+    # --- Historical-run fallback only (no eligibility_status key) ---
+    enrichment = enrichment_status_from_run(run)
+    if enrichment in {"running", "paused"}:
+        return "running"
+    if enrichment == ENRICHMENT_STATUS_STALE_FAILED:
+        return "stalled"
+    if keep_drop_status == "completed":
+        if enrichment == "completed":
+            return "completed"
+        if keeps_awaiting_enrichment > 0:
+            return "awaiting_enrichment"
+        # Keep/drop finished and nothing is queued for enrichment (e.g.
+        # every candidate was dropped) — still a completed Phase 2 pass.
+        return "completed"
+    if enrichment == "completed":
+        return "completed"
+    return "pending"
+
+
 def _run_summary(
-    run: MapsCensusRun, *, accepted_facilities_count: int = 0
+    run: MapsCensusRun,
+    *,
+    accepted_facilities_count: int = 0,
+    keeps_awaiting_enrichment: int = 0,
 ) -> MapsCensusRunSummary:
     return MapsCensusRunSummary(
         id=run.id,
         accepted_facilities_count=accepted_facilities_count,
+        phase2_status=_phase2_status(run, keeps_awaiting_enrichment=keeps_awaiting_enrichment),
         country_code=run.country_code,
         country_name=run.country_name,
         state_code=run.state_code,
         state_name=run.state_name,
+        discovery_provider=resolve_discovery_provider(run),
         status=run.status.value if hasattr(run.status, "value") else str(run.status),
         error_message=run.error_message,
         cells_total=run.cells_total,
@@ -3823,6 +4392,7 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         addiction_focus_confirmed=place.addiction_focus_confirmed,
         medical_detox=place.medical_detox,
         residential_accommodation=place.residential_accommodation,
+        inpatient_treatment=place.inpatient_treatment,
         classification_confidence=(
             float(place.classification_confidence) if place.classification_confidence is not None else None
         ),
@@ -4378,6 +4948,7 @@ async def recover_maps_census_runs(ctx: dict) -> None:
         count_places_by_enrichment_status,
         parse_enrichment_heartbeat,
         persist_enrichment_progress,
+        release_batch_lock,
         try_acquire_batch_lock,
     )
 
@@ -4460,6 +5031,82 @@ async def recover_maps_census_runs(ctx: dict) -> None:
                 continue
             stale_discovery_ids.append(run.id)
 
+        # Bounded auto-resume: a run that keeps coming back here (Gosom
+        # still unavailable every cycle) must eventually surface as FAILED
+        # with a clear reason rather than relaunch forever every ~10
+        # minutes. Mirrors the enrichment watchdog's own
+        # MAX_ENRICHMENT_AUTO_RESUMES pattern. An atomic lock (reusing the
+        # same primitive enrichment resume uses) also prevents two
+        # back-to-back watchdog ticks from both deciding to relaunch the
+        # same run before its heartbeat has had a chance to refresh.
+        # A host-side supervisor restart in progress explains the stale
+        # heartbeat on its own — the run isn't stuck, Gosom is mid-restart.
+        # Skip the auto-resume penalty entirely for this tick rather than
+        # spending one of the bounded attempts on something the supervisor
+        # is already handling; the run is simply left for the next tick,
+        # by which point /restart/complete should have cleared the flag.
+        supervisor_restart_in_progress = await gosom_health_monitor.is_restart_in_progress(
+            AsyncSessionLocal
+        )
+        # Relaunching while the persisted timeout streak is still inside the
+        # breaker's own cooldown window would just hammer a Gosom instance
+        # already confirmed (by this very streak) to need time to recover —
+        # see is_within_breaker_cooldown's docstring for the confirmed
+        # production case this closes. Computed once per tick, same as
+        # supervisor_restart_in_progress above.
+        within_breaker_cooldown = await gosom_health_monitor.is_within_breaker_cooldown(
+            AsyncSessionLocal, settings
+        )
+        resumable_discovery_ids: list[str] = []
+        for run_id in stale_discovery_ids:
+            if supervisor_restart_in_progress:
+                logger.info(
+                    "maps_census_skip_stale_recover_supervisor_restart run_id=%s",
+                    run_id,
+                )
+                continue
+            run = await db.get(MapsCensusRun, run_id)
+            if run is None:
+                continue
+            state = dict(run.processing_state or {})
+            auto_resumes = int(state.get("discovery_auto_resume_count") or 0)
+            max_auto_resumes = max(1, settings.maps_census_discovery_max_auto_resumes)
+            # Exhaustion is checked BEFORE the cooldown skip below: if the
+            # bounded budget is already spent, waiting out the breaker's
+            # cooldown first would only delay reaching this same FAILED
+            # outcome — there is no further attempt left to protect by
+            # waiting, so fail fast and surface it to the operator now.
+            if auto_resumes >= max_auto_resumes:
+                logger.error(
+                    "maps_census_discovery_auto_resume_exhausted run_id=%s "
+                    "auto_resumes=%s max=%s — marking FAILED instead of retrying again",
+                    run_id,
+                    auto_resumes,
+                    max_auto_resumes,
+                )
+                run.status = MapsCensusStatus.FAILED
+                run.error_message = (
+                    f"Discovery could not make progress after {auto_resumes} automatic "
+                    "recovery attempts — the Gosom provider appears to be persistently "
+                    "unavailable or stuck. Completed cells and discovered places are "
+                    "preserved; an operator should verify Gosom, then resume this run "
+                    "explicitly."
+                )
+                run.completed_at = datetime.now(UTC)
+                await db.commit()
+                continue
+            if within_breaker_cooldown:
+                logger.info(
+                    "maps_census_skip_stale_recover_breaker_cooldown run_id=%s",
+                    run_id,
+                )
+                continue
+            state["discovery_auto_resume_count"] = auto_resumes + 1
+            run.processing_state = state
+            await db.commit()
+            resumable_discovery_ids.append(run_id)
+        stale_discovery_ids = resumable_discovery_ids
+
         # Broader than "enrichment_refresh_attempts > 0": small-batch enrichment
         # only increments that counter on full completion, so a campaign that
         # has run several batches but never finished must still be caught here.
@@ -4524,6 +5171,17 @@ async def recover_maps_census_runs(ctx: dict) -> None:
         )
         if not acquired:
             continue
+        # Release immediately: this acquire is only a one-shot dedupe gate
+        # against another watchdog tick deciding to resume the same run at
+        # the same instant. The dispatched job now acquires this SAME lock
+        # itself for the duration of its own tick (see
+        # maps_enrichment_cascade_service.run_one_small_batch) — holding it
+        # here across the enqueue would make that acquire fail every time
+        # (a different batch_id already holds it) and strand the run until
+        # this lock's TTL expires, since _enqueue_job's "inline" dispatch
+        # schedules the job as a separate asyncio task rather than running
+        # it synchronously before this function continues.
+        await release_batch_lock(AsyncSessionLocal, run_id=run_id, batch_id=lock_batch_id)
         logger.warning(
             "maps_census_auto_resuming_stale_enrichment",
             extra={"run_id": run_id, "pending": pending, "auto_resumes": auto_resumes},

@@ -86,7 +86,12 @@ async def test_create_maps_census_run_rejects_invalid_country(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/v1/maps/runs", json={"country_code": "ZZ"})
-    assert response.status_code == 422
+    # An unknown country code is a business-rule rejection (resolve_country
+    # raises ValidationError), not a request-schema violation — the app's
+    # global AppError handler (main.py) maps VALIDATION_ERROR to 400
+    # consistently across the whole API, not just here. 422 is reserved
+    # for FastAPI/Pydantic request-schema validation, which this isn't.
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -132,6 +137,7 @@ async def test_list_maps_census_places_filters(db: AsyncSession, auth: AuthConte
             raw_name="Relevant Clinic",
             canonical_name="Relevant Clinic",
             is_relevant=True,
+            formatted_address="12 Relevant St, Minsk",
             official_website="https://relevant.example/",
             lifecycle_status="confirmed_eligible",
             client_eligibility="eligible",
@@ -197,8 +203,8 @@ async def test_list_maps_census_places_filters(db: AsyncSession, auth: AuthConte
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         all_response = await client.get(f"/api/v1/maps/runs/{run.id}/places")
-        assert len(all_response.json()) == 3
-        places_by_id = {place["google_place_id"]: place for place in all_response.json()}
+        assert len(all_response.json()["items"]) == 3
+        places_by_id = {place["google_place_id"]: place for place in all_response.json()["items"]}
 
         eligible = places_by_id["p1"]
         assert eligible["lifecycle_status"] == "confirmed_eligible"
@@ -235,36 +241,36 @@ async def test_list_maps_census_places_filters(db: AsyncSession, auth: AuthConte
         relevant_response = await client.get(
             f"/api/v1/maps/runs/{run.id}/places", params={"relevant_only": True}
         )
-        places = relevant_response.json()
+        places = relevant_response.json()["items"]
         assert len(places) == 2
         assert {place["google_place_id"] for place in places} == {"p1", "p2"}
 
         website_response = await client.get(
             f"/api/v1/maps/runs/{run.id}/places", params={"with_website_only": True}
         )
-        assert [place["google_place_id"] for place in website_response.json()] == ["p1"]
+        assert [place["google_place_id"] for place in website_response.json()["items"]] == ["p1"]
 
         eligible_response = await client.get(
             f"/api/v1/maps/runs/{run.id}/places", params={"client_eligibility": "eligible"}
         )
-        assert [place["google_place_id"] for place in eligible_response.json()] == ["p1"]
+        assert [place["google_place_id"] for place in eligible_response.json()["items"]] == ["p1"]
 
         lifecycle_response = await client.get(
             f"/api/v1/maps/runs/{run.id}/places", params={"lifecycle_status": "needs_review"}
         )
-        assert [place["google_place_id"] for place in lifecycle_response.json()] == ["p2"]
+        assert [place["google_place_id"] for place in lifecycle_response.json()["items"]] == ["p2"]
 
         combined_response = await client.get(
             f"/api/v1/maps/runs/{run.id}/places",
             params={"client_eligibility": "review", "lifecycle_status": "needs_review"},
         )
-        assert [place["google_place_id"] for place in combined_response.json()] == ["p2"]
+        assert [place["google_place_id"] for place in combined_response.json()["items"]] == ["p2"]
 
         empty_response = await client.get(
             f"/api/v1/maps/runs/{run.id}/places",
             params={"client_eligibility": "eligible", "lifecycle_status": "needs_review"},
         )
-        assert empty_response.json() == []
+        assert empty_response.json()["items"] == []
 
 
 @pytest.mark.asyncio
@@ -328,7 +334,9 @@ async def test_refresh_websites_requires_completed_run(db: AsyncSession, auth: A
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(f"/api/v1/maps/runs/{run.id}/refresh-websites")
-    assert response.status_code == 422
+    # Business-rule rejection (ValidationError: run not completed), not a
+    # request-schema violation — see the 400-vs-422 note above.
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -636,7 +644,10 @@ async def test_export_maps_census_run_xlsx(db: AsyncSession, auth: AuthContext):
     assert response.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    assert 'filename="dz-maps-census-export.xlsx"' in response.headers["content-disposition"]
+    # build_workbook names the file by scope ("eligible-centers" for the
+    # default scope=phase2, "phase1-results" for scope=phase1) — more
+    # informative than the old generic "-export.xlsx" name.
+    assert 'filename="dz-maps-census-eligible-centers.xlsx"' in response.headers["content-disposition"]
     assert response.content[:2] == b"PK"  # xlsx is a zip container
 
 
@@ -658,4 +669,6 @@ async def test_export_maps_census_run_csv_rejects_invalid_tier(db: AsyncSession,
         response = await client.get(
             f"/api/v1/maps/runs/{run.id}/export.csv", params={"tier": "maybe"}
         )
-    assert response.status_code == 422
+    # Business-rule rejection (ValidationError: unknown tier), not a
+    # request-schema violation — see the 400-vs-422 note above.
+    assert response.status_code == 400

@@ -207,9 +207,24 @@ async def test_unknown_candidate_becomes_needs_review_without_demotion(db, auth,
 
 
 @pytest.mark.asyncio
-async def test_association_with_public_funding_stays_non_government_and_saves_evidence(
+async def test_association_with_public_funding_and_confirmed_inpatient_reaches_eligible(
     db, auth, monkeypatch
 ):
+    """Proves two independent things that must both hold:
+    1. Public funding does not imply government ownership — a confirmed
+       non-government association stays non-government regardless of who
+       pays for it.
+    2. The outpatient-category-with-confirmed-inpatient mixed-setting
+       override reaches ELIGIBLE through the real enrichment pipeline
+       (_apply_structured_fields -> compute_client_eligibility), not just
+       in a unit test of the eligibility function alone.
+
+    The original fixture used facility_type=outpatient_addiction_center
+    with residential_accommodation=False and no inpatient evidence at
+    all — under the current mandatory residential/inpatient requirement
+    that is genuinely outpatient-only and must be EXCLUDED, not ELIGIBLE.
+    That was an outdated test expectation, not a case this fixture was
+    ever trying to make about funding."""
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
@@ -238,12 +253,24 @@ async def test_association_with_public_funding_stays_non_government_and_saves_ev
                     operator_type=MapsOperatorType.ASSOCIATION.value,
                     ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
                     funding_type="public",
+                    # Generally categorized as an outpatient center (a broad,
+                    # incomplete Google-Maps-derived label), but this facility
+                    # ALSO runs a confirmed inpatient program alongside its
+                    # outpatient services — the mixed-setting override (see
+                    # compute_client_eligibility) means the specific,
+                    # confirmed inpatient_treatment signal takes precedence
+                    # over the general outpatient category, reaching ELIGIBLE
+                    # without requiring the word "residential". This also
+                    # exercises that override through the real enrichment
+                    # pipeline, not just a unit test of the eligibility
+                    # function in isolation.
                     facility_type=MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
-                    care_setting="outpatient",
+                    care_setting="mixed",
+                    inpatient_treatment=True,
                     organization_scope=MapsOrganizationScope.FACILITY.value,
                     addiction_focus_confirmed=True,
                     medical_detox=False,
-                    residential_accommodation=False,
+                    residential_accommodation=None,
                     classification_evidence={
                         "operator_type": {
                             "value": MapsOperatorType.ASSOCIATION.value,
@@ -262,7 +289,11 @@ async def test_association_with_public_funding_stays_non_government_and_saves_ev
                         "facility_type": {
                             "value": MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
                             "confidence": 0.88,
-                            "evidence_quote": "Centre ambulatoire de prise en charge des addictions.",
+                            "evidence_quote": (
+                                "Centre ambulatoire de prise en charge des addictions, "
+                                "disposant egalement d'une unite d'hospitalisation "
+                                "complete pour le sevrage residentiel."
+                            ),
                             "source_url": "https://example.org/programs",
                             "source_type": "official_site",
                         },
@@ -271,6 +302,16 @@ async def test_association_with_public_funding_stays_non_government_and_saves_ev
                             "confidence": 0.86,
                             "evidence_quote": "Structure de soin autonome.",
                             "source_url": "https://example.org/about",
+                            "source_type": "official_site",
+                        },
+                        "inpatient_treatment": {
+                            "value": True,
+                            "confidence": 0.9,
+                            "evidence_quote": (
+                                "L'association dispose d'une unite d'hospitalisation "
+                                "complete sur site pour le sevrage residentiel."
+                            ),
+                            "source_url": "https://example.org/programs",
                             "source_type": "official_site",
                         },
                         "funding_type": {
@@ -300,6 +341,8 @@ async def test_association_with_public_funding_stays_non_government_and_saves_ev
     assert place.ownership_status == MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value
     assert place.operator_type == MapsOperatorType.ASSOCIATION.value
     assert place.funding_type == "public"
+    assert place.inpatient_treatment is True
+    assert place.facility_type == MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value
     assert place.verification_verdict == "confirmed"
     assert place.addictions_treated == ["Alcohol"]
     assert place.classification_evidence["ownership_status"]["source_url"] == "https://example.org/about"

@@ -39,6 +39,17 @@ from app.services.scraping.maps_eligibility import (
     derive_is_relevant,
     derive_legacy_verification_verdict,
 )
+from app.services.scraping.maps_evidence_normalization import (
+    OPERATOR_TYPE_SYNONYMS,
+    ORGANIZATION_SCOPE_SYNONYMS,
+    OWNERSHIP_STATUS_SYNONYMS,
+    contains_hedge_language,
+    is_likely_branch_specific_evidence,
+    normalize_choice_with_synonyms,
+    normalize_facility_type_with_keywords,
+    normalize_organization_scope_with_synonyms,
+    normalize_ownership_or_operator_with_synonyms,
+)
 from app.services.scraping.maps_manual_overrides import set_unless_overridden
 from app.services.scraping.maps_pydantic_utils import TruncatingModel
 from app.services.scraping.maps_enrichment_response_parser import EnrichmentParseStats
@@ -148,6 +159,7 @@ class MapsPlaceEnrichmentResult(TruncatingModel):
     addiction_focus_confirmed: bool | None = None
     medical_detox: bool | None = None
     residential_accommodation: bool | None = None
+    inpatient_treatment: bool | None = None
     operating_status: str = Field(default="", max_length=32)
     classification_evidence: dict[str, ClassificationEvidenceField] = Field(
         default_factory=dict,
@@ -660,32 +672,117 @@ def _non_empty_list(value: list[str] | None) -> bool:
 
 
 def _enforce_field_evidence(result: MapsPlaceEnrichmentResult) -> None:
-    """Phase 3: drop structured values that lack supporting field evidence."""
+    """Phase 3: drop structured values that lack supporting field evidence.
+
+    These four fields are the mandatory-eligibility classification fields
+    (facility_type, ownership_status, operator_type, organization_scope),
+    not optional contact/detail enrichment facts. Legitimate evidence for
+    them routinely comes straight from the Google Maps listing itself
+    (name, place_types, formatted address) rather than a crawled website —
+    many facilities have no website at all, or a crawl was never attempted.
+    There is no URL to cite for Maps-metadata-grounded evidence, so
+    requiring ``source_url`` here (in addition to ``evidence_quote``)
+    silently wiped a correct, non-hallucinated classification back to
+    unknown/empty for most facilities without a crawled site — the direct
+    cause of 19 "classification_completed" places in the Finland run
+    0afe4ca7-2dd3-47aa-a2cd-566e6b19b208 keeping facility_type populated for
+    only 1 of them despite ownership_status surviving for 15. A non-empty
+    quote is still required — that is what actually guards against the
+    model inventing a fact with nothing behind it (see ecc0fa8, "Require
+    verified evidence to keep a facility in the census"); the URL was never
+    the anti-hallucination guard, just an accidental extra requirement.
+    """
     for field_name, unknown_values in EVIDENCE_REQUIRED_WHEN_SET.items():
         raw_value = getattr(result, field_name, "")
         normalized = (raw_value or "").strip().casefold() if isinstance(raw_value, str) else raw_value
         if not normalized or normalized in unknown_values:
             continue
         evidence = result.classification_evidence.get(field_name)
-        if evidence is None:
+        if evidence is None or not evidence.evidence_quote.strip():
             setattr(result, field_name, "")
-            continue
-        if not evidence.evidence_quote.strip() or not evidence.source_url.strip():
-            setattr(result, field_name, "")
+
+
+def _normalize_branch_scoped_boolean(
+    place: MapsPlace,
+    *,
+    value: bool | None,
+    evidence: ClassificationEvidenceField | None,
+) -> bool | None:
+    """Guard for residential_accommodation/inpatient_treatment: a ``True``
+    is only trustworthy as a confirmation for THIS specific place, never
+    for its parent organization as a whole, and never when the evidence
+    quote itself hedges the claim (see module docstring on
+    maps_evidence_normalization and the Finland A-klinikka branch cases).
+    A ``False`` or ``None`` value is returned unchanged — this only ever
+    downgrades an unsupported ``True`` to unresolved, never invents a
+    negative."""
+    if value is not True:
+        return value
+    quote = evidence.evidence_quote if evidence is not None else ""
+    source_url = evidence.source_url if evidence is not None else ""
+    if contains_hedge_language(quote):
+        return None
+    if not is_likely_branch_specific_evidence(place, quote=quote, source_url=source_url):
+        return None
+    return True
 
 
 def _apply_structured_fields(place: MapsPlace, result: MapsPlaceEnrichmentResult) -> None:
-    place.operator_type = _normalize_choice(result.operator_type, OPERATOR_TYPE_VALUES)
-    place.ownership_status = _normalize_choice(result.ownership_status, OWNERSHIP_STATUS_VALUES)
+    evidence = result.classification_evidence
+    operator_type_evidence = evidence.get("operator_type")
+    ownership_status_evidence = evidence.get("ownership_status")
+
+    place.operator_type = _normalize_choice(
+        result.operator_type, OPERATOR_TYPE_VALUES
+    ) or normalize_ownership_or_operator_with_synonyms(
+        result.operator_type,
+        OPERATOR_TYPE_VALUES,
+        OPERATOR_TYPE_SYNONYMS,
+        quote=operator_type_evidence.evidence_quote if operator_type_evidence else "",
+    )
+    place.ownership_status = _normalize_choice(
+        result.ownership_status, OWNERSHIP_STATUS_VALUES
+    ) or normalize_ownership_or_operator_with_synonyms(
+        result.ownership_status,
+        OWNERSHIP_STATUS_VALUES,
+        OWNERSHIP_STATUS_SYNONYMS,
+        quote=ownership_status_evidence.evidence_quote if ownership_status_evidence else "",
+    )
     place.funding_type = _normalize_choice(result.funding_type, FUNDING_TYPE_VALUES)
-    place.facility_type = _normalize_choice(result.facility_type, FACILITY_TYPE_VALUES)
+    facility_type_evidence = evidence.get("facility_type")
+    place.facility_type = _normalize_choice(
+        result.facility_type, FACILITY_TYPE_VALUES
+    ) or normalize_facility_type_with_keywords(
+        result.facility_type,
+        FACILITY_TYPE_VALUES,
+        place=place,
+        quote=facility_type_evidence.evidence_quote if facility_type_evidence else "",
+        source_url=facility_type_evidence.source_url if facility_type_evidence else "",
+    )
     place.care_setting = _normalize_choice(result.care_setting, CARE_SETTING_VALUES)
+    organization_scope_evidence = evidence.get("organization_scope")
     place.organization_scope = _normalize_choice(
         result.organization_scope, ORGANIZATION_SCOPE_VALUES
+    ) or normalize_organization_scope_with_synonyms(
+        result.organization_scope,
+        ORGANIZATION_SCOPE_VALUES,
+        ORGANIZATION_SCOPE_SYNONYMS,
+        place=place,
+        quote=organization_scope_evidence.evidence_quote if organization_scope_evidence else "",
+        source_url=organization_scope_evidence.source_url if organization_scope_evidence else "",
     )
     place.addiction_focus_confirmed = result.addiction_focus_confirmed
     place.medical_detox = result.medical_detox
-    place.residential_accommodation = result.residential_accommodation
+    place.residential_accommodation = _normalize_branch_scoped_boolean(
+        place,
+        value=result.residential_accommodation,
+        evidence=evidence.get("residential_accommodation"),
+    )
+    place.inpatient_treatment = _normalize_branch_scoped_boolean(
+        place,
+        value=result.inpatient_treatment,
+        evidence=evidence.get("inpatient_treatment"),
+    )
     place.operating_status = _normalize_choice(result.operating_status, OPERATING_STATUS_VALUES)
     place.classification_evidence = _dump_classification_evidence(result.classification_evidence)
     place.classification_confidence = result.classification_confidence

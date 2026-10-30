@@ -1,0 +1,22 @@
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+    # Local-only, isolated dev DB: SCRAM auth over the host<->Docker Desktop
+    # VM forwarded port fails in this sandboxed environment (same proxy
+    # path implicated in the earlier build failures) even with correct
+    # credentials (verified: psql from inside the container works fine
+    # with the same user/password). `trust` avoids that broken negotiation
+    # for this throwaway local volume only. A separate, freshly-named
+    # volume is used here so the original postgres_data volume this
+    # project already created is left untouched rather than wiped.
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - postgres_data_local_trust:/var/lib/postgresql/data
+  redis:
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data_local_trust:
