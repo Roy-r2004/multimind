@@ -24,6 +24,24 @@ export type MapsCensusRunSummary = {
    * predicate as the Phase 2 Eligible tab (acceptedOnly filter) and the
    * Excel export. */
   accepted_facilities_count: number;
+  /** Reliable, persisted-state-derived Phase 2 execution status — never
+   * inferred from accepted_facilities_count alone (zero accepted after a
+   * genuinely completed pass is distinct from Phase 2 never having run).
+   * "awaiting_enrichment" means keep/drop kept candidates that have not
+   * been enriched/classified yet (commonly because auto enrichment is
+   * disabled) — a zero accepted count here is NOT "no eligible facilities
+   * found", it is "not evaluated yet". "stalled" means the keep/drop pass
+   * is still marked running but its heartbeat has gone cold, or
+   * enrichment's own watchdog gave up on a stuck pass — evidence, not
+   * proof, of a crashed worker; treat it as "possibly stuck", not as a
+   * confirmed failure. */
+  phase2_status:
+    | "pending"
+    | "running"
+    | "awaiting_enrichment"
+    | "stalled"
+    | "completed"
+    | "failed";
   enrichment_refresh_completed_at: string | null;
   started_at: string | null;
   completed_at: string | null;

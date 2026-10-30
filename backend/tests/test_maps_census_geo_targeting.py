@@ -729,6 +729,64 @@ async def test_geo_boundary_match_is_no_polygon_available_without_cache(db, auth
     assert row.geo_boundary_match == "no_polygon_available"
 
 
+@pytest.mark.asyncio
+async def test_geo_boundary_match_catches_out_of_country_result_via_static_bbox_fallback(
+    db, auth, monkeypatch
+):
+    """Regression for the Finland run 0afe4ca7-2dd3-47aa-a2cd-566e6b19b208:
+    with no cached dataset boundary for Finland, a Pompano Beach, FL result
+    must no longer silently pass as "no_polygon_available" — the static
+    country-level bounding-box fallback catches it as outside Finland,
+    while a result genuinely inside Finland still passes."""
+    run = MapsCensusRun(
+        organization_id=auth.org_id,
+        created_by=auth.user.id,
+        country_code="FI",
+        country_name="Finland",
+        status=MapsCensusStatus.QUEUED,
+    )
+    db.add(run)
+    await db.flush()
+    await db.commit()
+
+    seed = [MapsGridCell(region_name="Finland", city_name="Helsinki", query_text="addiction treatment Helsinki")]
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.maps_grid_planner", _FakeGridPlanner(seed)
+    )
+    places = {
+        "addiction treatment Helsinki": [
+            PlaceResult(
+                google_place_id="helsinki-1",
+                raw_name="Helsinki Rehab",
+                formatted_address=None,
+                latitude=60.17,
+                longitude=24.94,
+            ),
+            PlaceResult(
+                google_place_id="pompano-1",
+                raw_name="Pompano Beach Rehab (wrong country)",
+                formatted_address=None,
+                latitude=26.2379,
+                longitude=-80.1248,
+            ),
+        ]
+    }
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.create_places_client",
+        lambda: _FakePlacesClient(places),
+    )
+
+    summary = await maps_census_service.run_census(db, run_id=run.id)
+    assert summary.get("error") is None
+
+    rows = (
+        await db.execute(select(MapsPlace).where(MapsPlace.run_id == run.id))
+    ).scalars().all()
+    by_id = {row.google_place_id: row for row in rows}
+    assert by_id["helsinki-1"].geo_boundary_match == "inside_bbox_fallback"
+    assert by_id["pompano-1"].geo_boundary_match == "outside_bbox_fallback"
+
+
 # --- Country-only (ADM0) and non-US-state (Canada/Quebec) dataset-backed
 # resolution, proving coverage isn't just US states. ---
 

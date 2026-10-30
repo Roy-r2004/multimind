@@ -319,3 +319,98 @@ async def test_watchdog_recovers_a_genuinely_crashed_run(db, auth, monkeypatch):
     await asyncio.gather(*captured_tasks)
 
     assert spawned == [run.id]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_bounds_auto_resume_and_marks_failed_when_exhausted(db, auth, monkeypatch):
+    """Regression for the Gosom-permanently-unavailable incident (run
+    0afe4ca7-2dd3-47aa-a2cd-566e6b19b208): a discovery campaign whose
+    heartbeat keeps going stale (Gosom's breaker reopens every cycle) must
+    not be relaunched forever. Once discovery_auto_resume_count reaches the
+    configured cap, the watchdog must mark the run FAILED with a clear
+    reason instead of spawning yet another run_maps_census_job."""
+    monkeypatch.setattr(get_settings(), "maps_census_discovery_max_auto_resumes", 2)
+
+    run = await _create_running_run(db, auth, heartbeat_age=timedelta(minutes=20))
+    run.processing_state = {"discovery_auto_resume_count": 2}
+    stuck_cell = MapsCensusCell(
+        run_id=run.id,
+        region_name="Finland",
+        city_name="Helsinki",
+        query_text="rehab Helsinki",
+        status=MapsCensusCellStatus.PENDING,
+    )
+    db.add(stuck_cell)
+    await db.commit()
+
+    session_factory = _session_factory_for(db)
+    monkeypatch.setattr("app.db.session.AsyncSessionLocal", session_factory)
+
+    spawned: list[str] = []
+
+    async def fake_run_maps_census_job(ctx, run_id):
+        spawned.append(run_id)
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.run_maps_census_job",
+        fake_run_maps_census_job,
+    )
+
+    await recover_maps_census_runs({})
+
+    assert spawned == []  # never relaunched again — cap already reached
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.FAILED
+    assert run.error_message
+    assert "recovery" in run.error_message.lower()
+    # Completed work (the cell rows, places, region/geo-planning data) is
+    # never touched by this — only the run's own status/error_message.
+    cells = (
+        await db.execute(select(MapsCensusCell).where(MapsCensusCell.run_id == run.id))
+    ).scalars().all()
+    assert len(cells) == 1
+    assert cells[0].status == MapsCensusCellStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_watchdog_relaunches_within_the_auto_resume_budget(db, auth, monkeypatch):
+    """The flip side of the cap test: a run still within budget must still
+    be relaunched normally, with its resume count incremented by exactly
+    one — bounded recovery must not become permanently cautious either."""
+    monkeypatch.setattr(get_settings(), "maps_census_discovery_max_auto_resumes", 5)
+
+    run = await _create_running_run(db, auth, heartbeat_age=timedelta(minutes=20))
+    run.processing_state = {"discovery_auto_resume_count": 1}
+    stuck_cell = MapsCensusCell(
+        run_id=run.id,
+        region_name="Finland",
+        city_name="Helsinki",
+        query_text="rehab Helsinki",
+        status=MapsCensusCellStatus.PENDING,
+    )
+    db.add(stuck_cell)
+    await db.commit()
+
+    session_factory = _session_factory_for(db)
+    monkeypatch.setattr("app.db.session.AsyncSessionLocal", session_factory)
+
+    spawned: list[str] = []
+
+    async def fake_run_maps_census_job(ctx, run_id):
+        spawned.append(run_id)
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_census_service.run_maps_census_job",
+        fake_run_maps_census_job,
+    )
+    captured_tasks = _tracking_create_task(monkeypatch, marker="fake_run_maps_census_job")
+
+    await recover_maps_census_runs({})
+    import asyncio
+
+    await asyncio.gather(*captured_tasks)
+
+    assert spawned == [run.id]
+    await db.refresh(run)
+    assert run.status == MapsCensusStatus.RUNNING
+    assert (run.processing_state or {}).get("discovery_auto_resume_count") == 2

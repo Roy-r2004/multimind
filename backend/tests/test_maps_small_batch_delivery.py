@@ -372,3 +372,199 @@ async def test_campaign_reaches_terminal_state_when_no_pending_work(db, auth):
 
     await db.refresh(run)
     assert run.processing_state.get("enrichment_status") == ENRICHMENT_STATUS_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_run_one_small_batch_skips_when_lock_already_held(db, auth):
+    """Reproduces the Belarus run 5acff6f7 root cause: a second trigger for
+    a run already being processed (a manual retry click, the auto-enrich
+    kicked off right after keep/drop, or the watchdog) must not start a
+    concurrent batch tick. Previously `run_one_small_batch` acquired no
+    lock at all -- only the watchdog ever called `try_acquire_batch_lock` --
+    so two independently-triggered ticks ran fully concurrently, each
+    reading a stale `sonar_classify_budget.calls_used` snapshot and
+    spending its own allowance on top of it."""
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    place = _pending_place(run.id, "p1")
+    db.add(place)
+    await db.commit()
+
+    factory = async_sessionmaker(bind=db.bind, expire_on_commit=False)
+    held = await try_acquire_batch_lock(
+        factory, run_id=run.id, batch_id="already-running", ttl_seconds=600
+    )
+    assert held is True
+
+    outcome = await maps_enrichment_cascade_service.run_one_small_batch(
+        db, run_id=run.id, batch_id="second-trigger"
+    )
+
+    assert outcome == {"has_more": False, "phase": "lock_busy", "skipped_due_to_lock": True}
+
+    # The skipped tick must not have touched the place at all.
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
+
+
+@pytest.mark.asyncio
+async def test_run_one_small_batch_releases_lock_so_next_tick_can_acquire_it(db, auth, monkeypatch):
+    """The lock must not be held past the end of a single tick -- the
+    legitimate self-re-enqueue chain generates a brand-new random batch_id
+    for every tick (see run_maps_enrichment_batch_job), so the lock has to
+    be released at the end of each tick for the *next* legitimate tick to
+    be able to acquire it at all."""
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    place = _pending_place(run.id, "p1")
+    db.add(place)
+    await db.commit()
+
+    async def fake_classify_place(self, session_factory, *, place_id, **kwargs):
+        async with session_factory() as session:
+            place = await session.get(MapsPlace, place_id)
+            place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+            place.client_eligibility = MapsClientEligibility.REVIEW.value
+            place.enrichment_pipeline_state = MapsEnrichmentPipelineState.DETAIL_NOT_REQUIRED.value
+            place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+            await session.commit()
+        return 1
+
+    monkeypatch.setattr(MapsClassificationService, "_classify_place", fake_classify_place)
+
+    outcome = await maps_enrichment_cascade_service.run_one_small_batch(
+        db, run_id=run.id, batch_id="tick-1"
+    )
+    assert outcome.get("phase") != "lock_busy"
+
+    await db.refresh(run)
+    assert not run.processing_state.get("active_batch_lock")
+
+    # A later trigger with a fresh batch_id must be able to acquire the lock
+    # now that the tick which held it has finished and released it.
+    factory = async_sessionmaker(bind=db.bind, expire_on_commit=False)
+    reacquired = await try_acquire_batch_lock(
+        factory, run_id=run.id, batch_id="tick-2", ttl_seconds=600
+    )
+    assert reacquired is True
+
+
+@pytest.mark.asyncio
+async def test_watchdog_release_before_dispatch_lets_job_acquire_lock(db, auth):
+    """Reproduces the exact sequence recover_maps_census_runs now performs:
+    acquire the lock as a one-shot dedupe gate, release it immediately, then
+    dispatch the job. Before this fix, the watchdog held its lock across
+    the dispatch, so the dispatched job's own (new) acquire -- added by the
+    run_one_small_batch fix -- would always fail with a *different*
+    batch_id and the run would be stuck returning lock_busy until the
+    lock's 10-minute TTL expired."""
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    place = _pending_place(run.id, "p1")
+    db.add(place)
+    await db.commit()
+
+    factory = async_sessionmaker(bind=db.bind, expire_on_commit=False)
+    watchdog_batch_id = "watchdog:abc123"
+    assert await try_acquire_batch_lock(
+        factory, run_id=run.id, batch_id=watchdog_batch_id, ttl_seconds=600
+    )
+    await release_batch_lock(factory, run_id=run.id, batch_id=watchdog_batch_id)
+
+    outcome = await maps_enrichment_cascade_service.run_one_small_batch(
+        db, run_id=run.id, batch_id="job-tick-1"
+    )
+    assert outcome.get("phase") != "lock_busy"
+
+
+@pytest.mark.asyncio
+async def test_lock_busy_does_not_finalize_run_with_pending_work(db, auth):
+    """A skipped (lock_busy) tick must never be mistaken for drained work --
+    reconcile_run_if_drained has its own active_batch_lock/pending-work
+    safety gates, but this locks in that a lock_busy skip leaves the run's
+    pending work and status completely untouched so the in-flight holder's
+    own self-enqueue (or, failing that, the watchdog) is free to finish it."""
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    place = _pending_place(run.id, "p1")
+    db.add(place)
+    await db.commit()
+
+    factory = async_sessionmaker(bind=db.bind, expire_on_commit=False)
+    held = await try_acquire_batch_lock(
+        factory, run_id=run.id, batch_id="still-running", ttl_seconds=600
+    )
+    assert held is True
+
+    outcome = await maps_enrichment_cascade_service.run_one_small_batch(
+        db, run_id=run.id, batch_id="second-trigger"
+    )
+    assert outcome == {"has_more": False, "phase": "lock_busy", "skipped_due_to_lock": True}
+
+    from app.services.scraping.maps_run_finalization import reconcile_run_finalization
+
+    await db.refresh(run)
+    reconciled = await reconcile_run_finalization(db, run_id=run.id)
+    assert reconciled["reconciled"] is False
+    assert "active_batch_lock" in reconciled["blockers"]
+    assert "enrichment_places_active" in reconciled["blockers"]
+
+    await db.refresh(place)
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
+
+
+@pytest.mark.asyncio
+async def test_sonar_classify_stats_accumulate_across_batches(db, auth, monkeypatch):
+    """The other half of the same Belarus discrepancy: `sonar_classify_stats`
+    was overwritten with only the latest tick's own local counters instead
+    of accumulating onto the run-wide total, so the persisted stats showed
+    all zeros even though the persisted `sonar_classify_budget.calls_used`
+    had reached the cap. Seed a prior tick's cumulative stats directly on
+    the run, then run one real tick and confirm the new tick's own count is
+    added on top rather than replacing them."""
+    run = _run(auth)
+    run.processing_state = {
+        "sonar_classify_stats": {
+            "sonar_calls": 5,
+            "sonar_parse_failures": 0,
+            "sonar_repair_attempts": 0,
+            "sonar_repair_successes": 0,
+            "sonar_final_failures": 0,
+            "sonar_input_tokens": 0,
+            "sonar_output_tokens": 0,
+            "sonar_actual_cost": 0.0,
+            "budget_exhausted": False,
+        },
+    }
+    db.add(run)
+    await db.flush()
+    place = _pending_place(run.id, "p1")
+    db.add(place)
+    await db.commit()
+
+    async def fake_classify_place(
+        self, session_factory, *, place_id, sonar_stats=None, **kwargs
+    ):
+        if sonar_stats is not None:
+            sonar_stats.sonar_calls += 1
+        async with session_factory() as session:
+            place = await session.get(MapsPlace, place_id)
+            place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+            place.client_eligibility = MapsClientEligibility.REVIEW.value
+            place.enrichment_pipeline_state = MapsEnrichmentPipelineState.DETAIL_NOT_REQUIRED.value
+            place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
+            await session.commit()
+        return 1
+
+    monkeypatch.setattr(MapsClassificationService, "_classify_place", fake_classify_place)
+
+    await maps_enrichment_cascade_service.run_one_small_batch(db, run_id=run.id, batch_id="tick-2")
+
+    await db.refresh(run)
+    stats_after = run.processing_state["sonar_classify_stats"]
+    # Must be 5 (seeded prior total) + 1 (this tick) = 6, not reset to 1.
+    assert stats_after["sonar_calls"] == 6

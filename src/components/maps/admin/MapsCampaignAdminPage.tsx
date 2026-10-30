@@ -23,6 +23,7 @@ import {
   StatCard,
 } from "@/components/admin/AdminUi";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
+import { MapsAdminRecoveryCard } from "@/components/maps/admin/MapsAdminRecoveryCard";
 import { GlassCard } from "@/components/cinematic/PageChrome";
 import {
   AlertDialog,
@@ -515,6 +516,8 @@ export function MapsCampaignAdminPage({ runId }: { runId: string }) {
             </pre>
           </GlassCard>
         )}
+
+        <MapsAdminRecoveryCard runId={runId} />
 
         <Collapsible open={profileOpen} onOpenChange={setProfileOpen} className="mt-6">
           <GlassCard className="overflow-hidden p-0">

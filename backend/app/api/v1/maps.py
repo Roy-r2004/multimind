@@ -1,11 +1,13 @@
 """Standalone Google Places Maps census endpoints."""
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext, get_auth_context, require_org_admin
-from app.db.session import get_db
+from app.db.session import AsyncSessionLocal, get_db
 from app.schemas.api import (
     MapsCampaignActionResponse,
     MapsCensusCellItem,
@@ -23,11 +25,87 @@ from app.schemas.api import (
     MapsRegionListResponse,
     MapsRunLiveStats,
 )
+from app.services.scraping import gosom_health_monitor
 from app.services.scraping.maps_admin_service import maps_admin_service
 from app.services.scraping.maps_census_service import maps_census_service
 from app.services.scraping.maps_export_service import MIME_XLSX, maps_export_service
 
 router = APIRouter()
+
+
+def _require_supervisor_token(x_supervisor_token: str | None = Header(default=None)) -> None:
+    """Gates the gosom-supervisor control endpoints with a shared secret
+    instead of the usual org JWT auth: the caller is a host-side script,
+    not a logged-in user. 404s (not 401/403) while the token is unset, so
+    the feature is invisible by default rather than advertising a disabled
+    control surface.
+    """
+    settings = get_settings()
+    expected = settings.maps_gosom_supervisor_token
+    if not expected:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not x_supervisor_token or x_supervisor_token != expected:
+        raise HTTPException(status_code=403, detail="Invalid supervisor token")
+
+
+class GosomRestartBeginRequest(BaseModel):
+    reason: str
+
+
+class GosomRestartCompleteRequest(BaseModel):
+    # Means only "Gosom's HTTP API answered again after the restart" — see
+    # gosom_health_monitor.complete_restart for why this is deliberately
+    # never treated as proof that scraping itself resumed.
+    http_responsive: bool
+
+
+@router.get("/internal/gosom-supervisor/status", dependencies=[Depends(_require_supervisor_token)])
+async def get_gosom_supervisor_status():
+    """Everything the host-side PowerShell supervisor needs to decide
+    whether to restart the Gosom container, and the shared rate-limit
+    config so it has one source of truth instead of a duplicated constant.
+    """
+    settings = get_settings()
+    decision = await gosom_health_monitor.evaluate_freeze(AsyncSessionLocal, settings)
+    return {
+        "frozen": decision.frozen,
+        "reason": decision.reason,
+        "state": decision.snapshot,
+        "restarts_in_last_hour": gosom_health_monitor.restarts_in_last_hour(decision.snapshot),
+        "max_restarts_per_hour": settings.maps_gosom_supervisor_max_restarts_per_hour,
+        "consecutive_timeout_threshold": settings.maps_gosom_freeze_consecutive_timeouts,
+        "detection_window_seconds": settings.maps_gosom_freeze_detection_window_seconds,
+    }
+
+
+@router.post(
+    "/internal/gosom-supervisor/restart/begin", dependencies=[Depends(_require_supervisor_token)]
+)
+async def begin_gosom_supervisor_restart(payload: GosomRestartBeginRequest):
+    """Called by the supervisor right before it runs `docker ... restart
+    gosom`. Pauses new Gosom job submissions census-wide until /complete.
+    """
+    started = await gosom_health_monitor.begin_restart(AsyncSessionLocal, reason=payload.reason)
+    if not started:
+        raise HTTPException(status_code=409, detail="A restart is already in progress")
+    return {"started": True}
+
+
+@router.post(
+    "/internal/gosom-supervisor/restart/complete", dependencies=[Depends(_require_supervisor_token)]
+)
+async def complete_gosom_supervisor_restart(payload: GosomRestartCompleteRequest):
+    """Called by the supervisor after the restart attempt, responsive or
+    not. See ``gosom_health_monitor.complete_restart`` for the full
+    semantics — in short: ``http_responsive=True`` resets the discovery
+    watchdog's auto-resume budget but NOT the scraping-progress counters
+    (only a real completed job does that); repeated non-responsive restarts
+    eventually mark the state ``restart_exhausted`` instead of looping.
+    """
+    snapshot = await gosom_health_monitor.complete_restart(
+        AsyncSessionLocal, http_responsive=payload.http_responsive
+    )
+    return {"state": snapshot}
 
 
 @router.post("/runs", response_model=MapsCensusRunDetail, status_code=status.HTTP_201_CREATED)
@@ -422,10 +500,30 @@ async def revalidate_maps_census_keeps(
     return await maps_admin_service.revalidate_keeps(db, auth, run_id)
 
 
+@router.get("/runs/{run_id}/keep-drop-retry-projection")
+async def get_maps_keep_drop_retry_projection(
+    run_id: str,
+    # Deliberately NOT require_org_admin: recovering a stalled scraping run
+    # from a technical (not classification) failure is a normal-user action,
+    # available to any OWNER/ADMIN/MEMBER of the run's own organization —
+    # get_auth_context already enforces authentication + org membership;
+    # _get_run_for_org (inside the service call below) still enforces that
+    # this user's org actually owns run_id, exactly as for every other org-
+    # scoped endpoint. See maps_admin_service.keep_drop_retry_projection.
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dry-run preview: how many places would be re-queued by
+    retry-failed-keep-drop, and the upper-bound AI call estimate — no
+    mutation, no AI calls."""
+    return await maps_admin_service.keep_drop_retry_projection(db, auth, run_id)
+
+
 @router.post("/runs/{run_id}/retry-failed-keep-drop", response_model=MapsCampaignActionResponse)
 async def retry_maps_census_failed_keep_drop(
     run_id: str,
-    auth: AuthContext = Depends(require_org_admin),
+    # Deliberately NOT require_org_admin — see get_maps_keep_drop_retry_projection.
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Re-judge places auto-dropped by classifier failures (classifier_unavailable / keep_drop_error)."""
@@ -460,6 +558,36 @@ async def get_maps_enrichment_projection(
     db: AsyncSession = Depends(get_db),
 ):
     return await maps_admin_service.enrichment_cost_projection(db, auth, run_id)
+
+
+@router.get("/runs/{run_id}/eligibility-retry-projection")
+async def get_maps_eligibility_retry_projection(
+    run_id: str,
+    # Deliberately NOT require_org_admin — see get_maps_keep_drop_retry_projection.
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dry-run preview: how many places have unresolved inpatient_treatment
+    AND residential_accommodation evidence, and the upper-bound AI call
+    estimate for retrying them — no mutation, no AI calls."""
+    return await maps_admin_service.eligibility_retry_projection(db, auth, run_id)
+
+
+@router.post(
+    "/runs/{run_id}/retry-unresolved-eligibility-evidence",
+    response_model=MapsCampaignActionResponse,
+)
+async def retry_maps_census_unresolved_eligibility_evidence(
+    run_id: str,
+    # Deliberately NOT require_org_admin — see get_maps_keep_drop_retry_projection.
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-run mandatory eligibility classification (Phase 2) only for
+    places whose inpatient_treatment/residential_accommodation evidence is
+    still unresolved — never rediscovers, never resets keep/drop, never
+    touches an already-eligible decision."""
+    return await maps_admin_service.retry_unresolved_eligibility_evidence(db, auth, run_id)
 
 
 @router.post("/runs/{run_id}/places/{place_id}/review", response_model=MapsPlaceDetail)

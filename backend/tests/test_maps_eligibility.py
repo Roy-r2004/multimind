@@ -34,11 +34,15 @@ def make_place(**overrides):
 
 
 def test_association_with_public_funding_can_still_be_eligible():
+    """Public FUNDING (how the facility is paid for) is not the same thing
+    as public/government OWNERSHIP — a confirmed non-government nonprofit/
+    association running a confirmed residential/inpatient program must not
+    be disqualified merely because some of its funding is public."""
     place = make_place(
         ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
         operator_type=MapsOperatorType.ASSOCIATION.value,
         funding_type=MapsFundingType.PUBLIC.value,
-        facility_type=MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
+        facility_type=MapsFacilityType.RESIDENTIAL_ADDICTION_REHAB.value,
         organization_scope=MapsOrganizationScope.FACILITY.value,
         addiction_focus_confirmed=True,
     )
@@ -58,7 +62,9 @@ def test_public_hospital_is_excluded():
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
-def test_outpatient_addiction_center_can_be_eligible():
+def test_outpatient_addiction_center_without_confirmed_inpatient_is_excluded():
+    """Outpatient-only remains hard-excluded — it never satisfies the
+    mandatory residential/inpatient-treatment requirement on its own."""
     place = make_place(
         ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
         facility_type=MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
@@ -66,7 +72,59 @@ def test_outpatient_addiction_center_can_be_eligible():
         addiction_focus_confirmed=True,
     )
 
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
+def test_outpatient_category_with_confirmed_inpatient_treatment_is_eligible():
+    """Mixed-setting regression: a facility generally categorized as
+    outpatient (e.g. a broad or stale Google Maps label) that ALSO has
+    explicit, clear evidence of its own confirmed inpatient addiction-
+    treatment program must be ELIGIBLE — the specific confirmed-inpatient
+    signal overrides the general/incomplete category label, not the other
+    way round."""
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        facility_type=MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+        inpatient_treatment=True,
+    )
+
     assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_outpatient_category_with_unconfirmed_inpatient_stays_excluded():
+    """Merely offering SOME outpatient services alongside an unconfirmed/
+    unknown inpatient program is not enough — inpatient_treatment must be
+    explicitly True, not just absent evidence, to override the category."""
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        facility_type=MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+        inpatient_treatment=None,
+    )
+
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
+def test_outpatient_category_with_contradictory_inpatient_evidence_stays_review():
+    """Contradictory evidence (one field confirms inpatient, another field
+    from the SAME classification call explicitly says no overnight stay
+    and an outpatient care setting) must never be automatically accepted —
+    it is a genuine internal contradiction for a human to resolve, not
+    proof of eligibility."""
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        facility_type=MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+        inpatient_treatment=True,
+        residential_accommodation=False,
+        care_setting="outpatient",
+    )
+
+    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
 
 
 def test_individual_practitioner_is_excluded_as_center():
@@ -99,24 +157,46 @@ def test_cessation_or_laser_style_services_are_excluded(facility_type: str):
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
-@pytest.mark.parametrize(
-    ("facility_type", "addiction_focus_confirmed"),
-    [
-        (MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value, True),
-        (MapsFacilityType.PSYCHIATRIC_CLINIC_WITH_ADDICTION_PROGRAM.value, False),
-    ],
-)
-def test_psychiatric_without_addiction_is_excluded(
-    facility_type: str, addiction_focus_confirmed: bool
-):
+def test_psychiatric_without_addiction_focus_is_excluded():
     place = make_place(
         ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
-        facility_type=facility_type,
+        facility_type=MapsFacilityType.PSYCHIATRIC_CLINIC_WITH_ADDICTION_PROGRAM.value,
         organization_scope=MapsOrganizationScope.FACILITY.value,
-        addiction_focus_confirmed=addiction_focus_confirmed,
+        addiction_focus_confirmed=False,
     )
 
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
+# --- Addiction treatment no longer has to be a facility's PRIMARY program
+# (removed requirement): a general psychiatric/multidisciplinary facility
+# is no longer hard-excluded purely for that label. ---
+
+
+def test_psychiatric_with_addiction_focus_but_unconfirmed_residential_goes_to_review():
+    """Genuine addiction-focus signal but no yet-confirmed inpatient/
+    residential evidence is uncertain (review), never hard-excluded and
+    never invented as eligible."""
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        facility_type=MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+    )
+    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+
+
+def test_psychiatric_hospital_with_confirmed_residential_addiction_program_is_eligible():
+    """A psychiatric hospital providing an actual inpatient/residential
+    addiction program as a SECONDARY (not primary) program must qualify."""
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        facility_type=MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+        residential_accommodation=True,
+    )
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
 def test_residential_ngo_is_eligible():
@@ -316,3 +396,23 @@ def test_derive_legacy_verification_verdict_maps_lifecycle_status(
     lifecycle_status: str, expected: str
 ):
     assert derive_legacy_verification_verdict(lifecycle_status) == expected
+
+
+def test_unresolved_facility_type_stays_review_even_with_confirmed_ownership():
+    """Regression: confirming ownership (a positive fact) must never, by
+    itself, make an unrelated and still-genuinely-unresolved fact
+    (facility_type) look like a disqualification. A place with
+    facility_type unknown/unresolved must stay REVIEW regardless of how
+    confirmed ownership_status is — previously this fell through to
+    EXCLUDED once ownership became confirmed_non_government, purely
+    because the review catch-all only listed ownership_unknown/probable_
+    non_government, not confirmed_non_government (government ownership
+    is already hard-excluded earlier, so confirmed_non_government is the
+    only other value reachable here)."""
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        facility_type=MapsFacilityType.UNKNOWN.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+    )
+    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value

@@ -4,18 +4,25 @@ KEEP only when the evidence clearly supports ALL of:
 {% if state_name %}
 - It is physically located in {{ state_name }}, {{ country_name }}.
 {% endif %}
-- It is an addiction-treatment facility offering inpatient / residential care (rehab, detox, therapeutic community, addiction ward run as a residential treatment center) — not an outpatient-only service.
+- It offers an actual inpatient / residential treatment program where patients stay overnight
+  (rehab, detox, therapeutic community, a psychiatric/multidisciplinary hospital's own residential
+  addiction ward, etc.) — not an outpatient-only service.
 - It is private, nonprofit, or NGO-operated — not government-run and not government-funded.
-- Addiction treatment is a primary, formal program of the facility — not a side offering of a general clinic.
+- It provides genuine treatment for alcohol, drug, and/or eligible behavioral addictions as part of
+  that inpatient/residential program. Addiction treatment does NOT have to be the facility's
+  primary or only program — a general psychiatric hospital or multidisciplinary treatment center
+  can KEEP if it runs an actual inpatient/residential addiction program alongside other services.
 
 DROP when it is any of:
 {% if state_name %}
 - Located outside {{ state_name }} or in a different state/country.
 {% endif %}
 - Any government / public funding or operation (public hospital, CHU, EPSP, state or municipal facility).
-- Outpatient-only, telehealth-only / virtual-only, or referral-only (refers patients elsewhere rather than treating them on-site).
+- Outpatient-only, telehealth-only / virtual-only, or referral-only (refers patients elsewhere rather than treating them on-site, with no inpatient/residential program of its own).
 - A solo doctor, individual practitioner, or private cabinet (psychiatrist/psychologist/addictologue working alone).
-- A general psychiatric or mental health clinic where addiction treatment is not the primary, formal program.
+- A general psychiatric, mental health, or multidisciplinary facility with NO evidence of its own
+  actual inpatient/residential addiction treatment program (do not drop it merely because addiction
+  is a secondary program — only drop it when there is no genuine addiction program at all).
 - A general clinic, polyclinic, or medical center without clear addiction-treatment services.
 - Sober living, wellness retreats, or coaching centers without a formal, evidence-based addiction treatment program.
 - A smoking-cessation / laser / anti-tobacco service.

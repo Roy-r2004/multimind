@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -15,11 +16,13 @@ from app.db.models import (
     MapsPlaceEnrichmentStatus,
     MapsCensusRun,
     MapsCensusStatus,
+    MapsWebsiteCrawlCache,
 )
 from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmentPipelineState
 from app.services.scraping.maps_export_service import _is_eligible_center
 from app.services.scraping.maps_keep_drop_service import (
     KeepDropDecision,
+    _crawl_excerpt_for_place,
     apply_keep_drop,
     build_keep_drop_query,
     classify_place_keep_drop,
@@ -146,6 +149,49 @@ LOW_CONF_KEEP_JSON = json.dumps(
 )
 
 
+@pytest.mark.asyncio
+async def test_crawl_excerpt_prefers_own_branch_path_over_sibling(db, auth):
+    """Regression: the crawl cache now holds one row per (domain,
+    seed_path) — a branch must get ITS OWN crawled content back, not
+    whatever happened to be cached first for a sibling branch on the same
+    domain."""
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    place = _place(
+        run.id,
+        "g-hospital",
+        "A-klinikkasäätiön Päihdesairaala",
+        official_website="https://www.a-klinikka.fi/toimipisteet/paihdesairaala/",
+    )
+    db.add(place)
+    now = datetime.now(UTC)
+    db.add(
+        MapsWebsiteCrawlCache(
+            normalized_domain="www.a-klinikka.fi",
+            seed_path="/toimipisteet/a-klinikkakoti-hameenlinna",
+            pages=[{"url": "sibling", "excerpt": "Sibling branch content"}],
+            fetched_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+    )
+    db.add(
+        MapsWebsiteCrawlCache(
+            normalized_domain="www.a-klinikka.fi",
+            seed_path="/toimipisteet/paihdesairaala",
+            pages=[{"url": "own", "excerpt": "Paihdesairaala inpatient detox and rehab"}],
+            fetched_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+    )
+    await db.commit()
+
+    excerpt = await _crawl_excerpt_for_place(db, place, max_chars=1000)
+    assert excerpt is not None
+    assert "Paihdesairaala inpatient detox and rehab" in excerpt
+    assert "Sibling branch content" not in excerpt
+
+
 def test_keep_drop_model_resolves_to_claude_haiku_via_openrouter():
     """Model selection/provider routing for the primary Keep/Drop call —
     no mocking, exercises the real catalog + settings default."""
@@ -171,8 +217,20 @@ def test_apply_keep_drop_keep_routes_to_phase2_without_granting_final_eligibilit
     assert place.client_eligibility == MapsClientEligibility.REVIEW.value
     assert place.lifecycle_status == MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
     assert place.is_relevant is True
+    # PREFILTER_PENDING, not CLASSIFICATION_COMPLETED: a bare keep/drop
+    # verdict must route INTO mandatory eligibility classification
+    # (ownership/facility-type/residential extraction), not skip past it —
+    # CLASSIFICATION_COMPLETED is _classify_place's own exit marker for a
+    # place that has actually been through that extraction (see
+    # build_classification_query, which deliberately excludes
+    # CLASSIFICATION_COMPLETED from its candidate pool). Stamping it here
+    # previously made every freshly-decided KEEP/REVIEW place skip
+    # straight to optional detail enrichment with ownership_status/
+    # facility_type/residential_accommodation never extracted — the root
+    # cause of "55 relevant, 0 eligible" in the Finland run
+    # ad4f7947-ffae-4e22-acbd-45c74c037cfd.
     assert place.enrichment_pipeline_state == (
-        MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
+        MapsEnrichmentPipelineState.PREFILTER_PENDING.value
     )
     assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
     # Not yet exportable — Phase 2 classification hasn't run.
@@ -270,7 +328,13 @@ async def test_uncertain_sonar_keep_defaults_to_review(db, auth, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_classifier_failure_defaults_to_drop(db, auth, monkeypatch):
+async def test_classifier_failure_never_defaults_to_drop(db, auth, monkeypatch):
+    """Root-cause regression: Belarus run 5acff6f7-21f8-4427-88a1-38d0a394ce83
+    lost 130/1106 discovered places to a single ~60s DNS blip because a
+    total classifier failure used to fall back to a confident DROP —
+    silently and permanently excluding places that were never actually
+    judged at all. It must now become a technical-failure REVIEW instead,
+    findable by its distinct reason/source."""
     run = _run(auth)
     db.add(run)
     await db.flush()
@@ -282,11 +346,114 @@ async def test_classifier_failure_defaults_to_drop(db, auth, monkeypatch):
     sonar = _FakeProvider(RuntimeError("boom"))
     _patch_models(monkeypatch, nano, sonar)
 
-    decision, _source = await classify_place_keep_drop(
+    decision, source = await classify_place_keep_drop(
         db, place, country_code="DZ", country_name="Algeria"
     )
-    assert decision.decision == "drop"
+    assert decision.decision == "review"
     assert decision.confidence == 0.0
+    assert decision.reason == "classifier_unavailable"
+    assert source == "technical_failure"
+    # A non-retryable error (not a connection/timeout/DNS failure) must not
+    # be retried — nothing about trying again would fix a plain exception.
+    assert nano.calls == 1
+    assert sonar.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_connection_error_recovers_on_retry(db, auth, monkeypatch):
+    """A DNS/connection blip (the exact failure mode observed in production)
+    must be retried, bounded, with backoff — and a genuine verdict reached
+    once the provider recovers must be used, not discarded."""
+    import httpx
+
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    place = _place(run.id, "g1", "Recovers After Retry Clinic")
+    db.add(place)
+    await db.commit()
+
+    class _FlakyThenOkProvider:
+        def __init__(self, text: str, *, fail_times: int) -> None:
+            self._text = text
+            self._fail_times = fail_times
+            self.calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            if self.calls <= self._fail_times:
+                raise httpx.ConnectError("[Errno -2] Name or service not known")
+            return SimpleNamespace(text=self._text)
+
+    nano = _FlakyThenOkProvider(KEEP_JSON, fail_times=1)
+    sonar = _FakeProvider(DROP_JSON)
+    _patch_models(monkeypatch, nano, sonar)
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.get_settings",
+        lambda: SimpleNamespace(
+            maps_keep_drop_retry_max_attempts=2,
+            maps_keep_drop_retry_backoff_seconds=0.0,
+            maps_keep_drop_confidence_threshold=0.85,
+            maps_keep_drop_max_crawl_excerpt_chars=4000,
+            maps_keep_drop_sonar_fallback_enabled=True,
+            maps_keep_drop_model="claude-haiku",
+        ),
+    )
+
+    decision, source = await classify_place_keep_drop(
+        db, place, country_code="DZ", country_name="Algeria"
+    )
+    assert decision.decision == "keep"
+    assert source == "nano"
+    assert nano.calls == 2  # one failure, one successful retry
+    assert sonar.calls == 0  # never needed — nano recovered and was confident
+
+
+@pytest.mark.asyncio
+async def test_retries_are_bounded_not_unlimited(db, auth, monkeypatch):
+    """A persistently unreachable provider must still give up after the
+    configured number of attempts — never retry forever — and the result
+    must be the safe technical-failure REVIEW, not a drop."""
+    import httpx
+
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    place = _place(run.id, "g1", "Persistently Unreachable Clinic")
+    db.add(place)
+    await db.commit()
+
+    class _AlwaysFailsProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            raise httpx.ConnectError("[Errno -2] Name or service not known")
+
+    nano = _AlwaysFailsProvider()
+    sonar = _AlwaysFailsProvider()
+    _patch_models(monkeypatch, nano, sonar)
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.get_settings",
+        lambda: SimpleNamespace(
+            maps_keep_drop_retry_max_attempts=3,
+            maps_keep_drop_retry_backoff_seconds=0.0,
+            maps_keep_drop_confidence_threshold=0.85,
+            maps_keep_drop_max_crawl_excerpt_chars=4000,
+            maps_keep_drop_sonar_fallback_enabled=True,
+            maps_keep_drop_model="claude-haiku",
+        ),
+    )
+
+    decision, source = await classify_place_keep_drop(
+        db, place, country_code="DZ", country_name="Algeria"
+    )
+    assert decision.decision == "review"
+    assert decision.reason == "classifier_unavailable"
+    assert source == "technical_failure"
+    assert nano.calls == 3  # exactly the configured bound, not unlimited
+    assert sonar.calls == 3
 
 
 @pytest.mark.asyncio
@@ -434,6 +601,14 @@ async def test_retry_failed_keep_drop_clears_only_failure_decisions(db, auth, mo
         KeepDropDecision(decision="drop", reason="keep_drop_error: RuntimeError: boom", confidence=0.0, evidence=[]),
         source="nano",
     )
+    # The CURRENT (post-fix) shape of a technical failure: review, not drop —
+    # must also be found and re-queued by this same endpoint.
+    technical_failure = _place(run.id, "g5", "Dom Nadiya")
+    apply_keep_drop(
+        technical_failure,
+        KeepDropDecision(decision="review", reason="classifier_unavailable", confidence=0.0, evidence=[]),
+        source="technical_failure",
+    )
     genuine_drop = _place(run.id, "g3", "CHU Public Hospital")
     apply_keep_drop(
         genuine_drop,
@@ -446,7 +621,7 @@ async def test_retry_failed_keep_drop_clears_only_failure_decisions(db, auth, mo
         KeepDropDecision(decision="keep", reason="Private NGO addiction treatment center", confidence=0.95, evidence=[]),
         source="nano",
     )
-    db.add_all([unavailable, errored, genuine_drop, kept])
+    db.add_all([unavailable, errored, technical_failure, genuine_drop, kept])
     await db.commit()
 
     enqueued: list[str] = []
@@ -457,10 +632,10 @@ async def test_retry_failed_keep_drop_clears_only_failure_decisions(db, auth, mo
     monkeypatch.setattr(maps_census_service, "_enqueue_job", fake_enqueue)
 
     result = await maps_admin_service.retry_failed_keep_drop(db, auth, run.id)
-    assert "2 places" in result.message
+    assert "3 places" in result.message
     assert enqueued == ["run_maps_keep_drop_job"]
 
-    for place in (unavailable, errored, genuine_drop, kept):
+    for place in (unavailable, errored, technical_failure, genuine_drop, kept):
         await db.refresh(place)
 
     # The failure-decisions are cleared AND restored to the candidate state
@@ -469,7 +644,7 @@ async def test_retry_failed_keep_drop_clears_only_failure_decisions(db, auth, mo
     # is_relevant=False / lifecycle_status=unrelated, so the next pass
     # bulk-stamped them right back to drop via stamp_non_candidate_drops
     # without ever calling the classifier).
-    for place in (unavailable, errored):
+    for place in (unavailable, errored, technical_failure):
         assert place.keep_drop_decision is None
         assert place.keep_drop_reason is None
         assert place.is_relevant is True
@@ -493,3 +668,145 @@ async def test_retry_failed_keep_drop_clears_only_failure_decisions(db, auth, mo
     again = await maps_admin_service.retry_failed_keep_drop(db, auth, run.id)
     assert "No failure-dropped places" in again.message
     assert enqueued == []
+
+
+# --- C-2 correction: a keep/drop pass already "running" for a run_id must
+# make a second concurrent pass (whether started inline by run_census or by
+# an admin retry/revalidate action) a true no-op — no batch fetch, no paid
+# classifier call — and the admin actions that reset decisions before
+# enqueuing a new pass must refuse outright with a clear error rather than
+# silently racing. ---
+
+
+@pytest.mark.asyncio
+async def test_concurrent_keep_drop_pass_is_skipped_not_double_billed(db, auth, monkeypatch):
+    """A second run_keep_drop_pass call while one is already "running" for
+    the same run_id must never fetch a batch or call the classifier."""
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    db.add(_place(run.id, "g1", "Centre Rehab Prive"))
+    await db.commit()
+
+    calls: list[str] = []
+
+    async def fake_classify(_session, place, *, country_code, country_name):
+        calls.append(place.id)
+        return KeepDropDecision.model_validate(json.loads(KEEP_JSON)), "nano"
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.classify_place_keep_drop",
+        fake_classify,
+    )
+
+    from app.services.scraping.maps_census_service import maps_census_service
+
+    session_factory = maps_census_service._session_factory(db)
+
+    # Simulate "a pass is already running" the same way run_keep_drop_pass
+    # itself would have left it mid-sweep.
+    run.processing_state = {"keep_drop_status": "running", "keep_drop_heartbeat_at": "2099-01-01T00:00:00+00:00"}
+    await db.commit()
+
+    summary = await run_keep_drop_pass(
+        session_factory, run_id=run.id, country_code="DZ", country_name="Algeria"
+    )
+    assert summary == {"skipped_busy": 1}
+    assert calls == []  # never called the paid classifier
+
+
+@pytest.mark.asyncio
+async def test_try_start_keep_drop_pass_claims_once(db, auth):
+    from app.services.scraping.maps_census_service import maps_census_service
+    from app.services.scraping.maps_keep_drop_service import try_start_keep_drop_pass
+
+    run = _run(auth)
+    db.add(run)
+    await db.commit()
+
+    session_factory = maps_census_service._session_factory(db)
+    first = await try_start_keep_drop_pass(session_factory, run_id=run.id)
+    assert first is not None
+
+    second = await try_start_keep_drop_pass(session_factory, run_id=run.id)
+    assert second is None  # already claimed as "running"
+
+
+@pytest.mark.asyncio
+async def test_revalidate_keeps_rejects_when_pass_already_running(db, auth):
+    from app.core.exceptions import ConflictError
+    from app.services.scraping.maps_admin_service import maps_admin_service
+
+    run = _run(auth, processing_state={"keep_drop_status": "running"})
+    db.add(run)
+    await db.flush()
+    kept = _place(run.id, "g1", "Centre Rehab Prive", keep_drop_decision="keep")
+    db.add(kept)
+    await db.commit()
+
+    with pytest.raises(ConflictError):
+        await maps_admin_service.revalidate_keeps(db, auth, run.id)
+
+    # The blocked action must not have touched the place's decision.
+    await db.refresh(kept)
+    assert kept.keep_drop_decision == "keep"
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_keep_drop_rejects_when_pass_already_running(db, auth):
+    from app.core.exceptions import ConflictError
+    from app.services.scraping.maps_admin_service import maps_admin_service
+    from app.services.scraping.maps_keep_drop_service import KeepDropDecision, apply_keep_drop
+
+    run = _run(auth, processing_state={"keep_drop_status": "running"})
+    db.add(run)
+    await db.flush()
+    unavailable = _place(run.id, "g1", "Comunita Il Cenacolo")
+    apply_keep_drop(
+        unavailable,
+        KeepDropDecision(decision="drop", reason="classifier_unavailable", confidence=0.0, evidence=[]),
+        source="nano",
+    )
+    db.add(unavailable)
+    await db.commit()
+
+    with pytest.raises(ConflictError):
+        await maps_admin_service.retry_failed_keep_drop(db, auth, run.id)
+
+    await db.refresh(unavailable)
+    assert unavailable.keep_drop_decision == "drop"
+
+
+@pytest.mark.asyncio
+async def test_keep_drop_retry_projection_counts_without_mutating(db, auth):
+    from app.services.scraping.maps_admin_service import maps_admin_service
+    from app.services.scraping.maps_keep_drop_service import KeepDropDecision, apply_keep_drop
+
+    run = _run(auth)
+    db.add(run)
+    await db.flush()
+    unavailable = _place(run.id, "g1", "Comunita Il Cenacolo")
+    apply_keep_drop(
+        unavailable,
+        KeepDropDecision(decision="drop", reason="classifier_unavailable", confidence=0.0, evidence=[]),
+        source="nano",
+    )
+    genuine_drop = _place(run.id, "g2", "CHU Public Hospital")
+    apply_keep_drop(
+        genuine_drop,
+        KeepDropDecision(decision="drop", reason="Public hospital", confidence=0.97, evidence=[]),
+        source="nano",
+    )
+    db.add_all([unavailable, genuine_drop])
+    await db.commit()
+
+    projection = await maps_admin_service.keep_drop_retry_projection(db, auth, run.id)
+
+    assert projection["candidate_count"] == 1
+    assert projection["max_total_calls_upper_bound"] == 2  # nano + sonar fallback, per candidate
+    assert projection["keep_drop_already_running"] is False
+
+    await db.refresh(unavailable)
+    await db.refresh(genuine_drop)
+    assert unavailable.keep_drop_decision == "drop"  # untouched by the dry run
+    assert genuine_drop.keep_drop_decision == "drop"

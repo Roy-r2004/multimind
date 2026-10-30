@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext
-from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.db.models import (
     MapsCensusCell,
     MapsCensusCellStatus,
@@ -78,6 +78,7 @@ _OVERRIDABLE_FIELDS = frozenset(
         "addiction_focus_confirmed",
         "medical_detox",
         "residential_accommodation",
+        "inpatient_treatment",
         "operating_status",
         "official_website",
         "relevance_reason",
@@ -101,6 +102,17 @@ def _campaign_paused(run: MapsCensusRun) -> bool:
     return bool((run.processing_state or {}).get("campaign_paused"))
 
 
+def _keep_drop_already_running(run: MapsCensusRun) -> bool:
+    """Best-effort, non-atomic early check so a blocked retry/revalidate
+    action gets an immediate, clear error instead of a silent no-op minutes
+    later. This is a UX convenience only — the actual correctness guard
+    against two concurrent passes is try_start_keep_drop_pass's atomic
+    SELECT ... FOR UPDATE claim inside run_keep_drop_pass itself, which
+    still applies even if two requests both pass this check at once.
+    """
+    return (run.processing_state or {}).get("keep_drop_status") == "running"
+
+
 def _derive_current_stage(
     run: MapsCensusRun, stages: dict[str, str] | None = None
 ) -> str:
@@ -118,16 +130,23 @@ def _derive_current_stage(
         return "queued"
     if status == MapsCensusStatus.CANCELLED.value:
         return "cancelled"
-    # Prefer reconciled stage overall over a stale run.status=failed left by a
-    # watchdog after enrichment already finished.
-    if overall in {"completed", "completed_with_warnings"} or status in {
-        MapsCensusStatus.COMPLETED.value,
-        MapsCensusStatus.COMPLETED_WITH_WARNINGS.value,
-    }:
+    # Prefer a reconciled stage overall over a stale run.status=failed left
+    # by a watchdog after enrichment already finished — this is a
+    # DB-reconciled signal, so it always wins outright, including over the
+    # status==COMPLETED checks below.
+    if overall in {"completed", "completed_with_warnings"}:
         return "completed"
     if status == MapsCensusStatus.FAILED.value:
         return "failed"
-    # Discovery may be completed while enrichment is still running/failed.
+    # Discovery may be completed (run.status already flipped to COMPLETED)
+    # while the run's OWN enrichment-retry loop is still active — these
+    # checks must run BEFORE the blanket "status in {COMPLETED, ...}"
+    # shortcut below, or a still-retrying/still-paused enrichment loop on a
+    # formally "completed" run is misreported as fully done (the detailed
+    # COMPLETED-specific checks further below exist for exactly this; they
+    # were previously unreachable dead code because this blanket shortcut
+    # used to also fire unconditionally on status in
+    # {COMPLETED, COMPLETED_WITH_WARNINGS}).
     if enrichment_status in {"running", "failed_retryable", "stale_failed", "paused"}:
         return "enrichment"
     if stages.get("classification_status") == "running" or stages.get(
@@ -140,6 +159,8 @@ def _derive_current_stage(
         return "website_refresh"
     if stages.get("discovery_status") == "running":
         return "discovery"
+    if status == MapsCensusStatus.COMPLETED_WITH_WARNINGS.value:
+        return "completed"
     if status == MapsCensusStatus.COMPLETED.value:
         if state.get("enrichment_paused"):
             return "enrichment"
@@ -763,15 +784,30 @@ class MapsAdminService:
 
         Pure recompute over fields already stored on each place (facility_type,
         ownership_status, operator_type, organization_scope,
-        addiction_focus_confirmed) — no LLM calls, no rediscovery. Use this
-        after an eligibility rule change (e.g. a newly excluded facility_type)
-        to apply the new rule to an already-completed campaign instead of
-        rerunning discovery/classification from scratch.
+        addiction_focus_confirmed, residential_accommodation,
+        inpatient_treatment, care_setting) — no LLM calls, no rediscovery,
+        and it never invents a value for a field that was never confirmed:
+        compute_client_eligibility only ever treats inpatient_treatment as
+        satisfying the mandatory residential/inpatient requirement when it
+        is stored as exactly ``True``; ``None``/unset stays unresolved
+        (REVIEW), never promoted to ELIGIBLE. Use this after an eligibility
+        rule change (e.g. the inpatient/residential override, or a newly
+        excluded facility_type) to apply the new rule to an already-
+        completed campaign instead of rerunning discovery/classification
+        from scratch.
 
-        Places already gated by the strict keep/drop pass
-        (``keep_drop_decision`` set) are left untouched — that verdict is a
-        deliberate per-place AI judgment, not something this bulk pass should
-        overwrite.
+        ``keep_drop_decision == "drop"`` places are excluded — that is a
+        deliberate, confident AI rejection this bulk pass must never
+        reopen. ``keep``/``review``/unset places ARE included: their
+        keep_drop_decision itself is never touched here (only the derived
+        lifecycle_status/client_eligibility/is_relevant/verification_
+        verdict fields are recomputed), so including them is not
+        "overwriting" that verdict — this previously excluded virtually
+        every real-world Maps census place (every KEEP/REVIEW candidate
+        routes through keep/drop and therefore always has a non-null
+        keep_drop_decision — see apply_keep_drop), making this endpoint a
+        no-op for exactly the cases an eligibility rule change like the
+        inpatient override needs it for.
         """
         _require_admin_enabled()
         run = await _get_run_for_org(db, auth, run_id)
@@ -784,7 +820,13 @@ class MapsAdminService:
                 await db.execute(
                     select(MapsPlace).where(
                         MapsPlace.run_id == run_id,
-                        MapsPlace.keep_drop_decision.is_(None),
+                        # NOT `.isnot("drop")` — PostgreSQL's `IS NOT` only
+                        # accepts NULL or a boolean literal, never an
+                        # arbitrary string; asyncpg rejects it as a syntax
+                        # error. `IS DISTINCT FROM` is the correct NULL-
+                        # safe operator (a NULL keep_drop_decision is
+                        # still correctly treated as distinct from "drop").
+                        MapsPlace.keep_drop_decision.is_distinct_from("drop"),
                         MapsPlace.facility_type.isnot(None),
                     )
                 )
@@ -839,6 +881,11 @@ class MapsAdminService:
         """
         _require_admin_enabled()
         run = await _get_run_for_org(db, auth, run_id)
+        if _keep_drop_already_running(run):
+            raise ConflictError(
+                "A keep/drop pass is already running for this run — wait for it to "
+                "finish before revalidating keeps."
+            )
         from app.services.scraping.maps_keep_drop_service import (
             KEEP,
             run_maps_keep_drop_job,
@@ -885,6 +932,65 @@ class MapsAdminService:
             message=f"Revalidating {reset_count} previously-kept places against the current prompt",
         )
 
+    def _keep_drop_retry_candidates_query(self, run_id: str):
+        """Places auto-dropped (or stuck review, post-fix) purely because
+        every classifier attempt errored — never a genuine model verdict.
+        Shared by retry_failed_keep_drop and its read-only projection so
+        the two can never drift apart.
+        """
+        from app.services.scraping.maps_keep_drop_service import (
+            DROP,
+            REVIEW,
+            TECHNICAL_FAILURE_REASON,
+        )
+
+        return select(MapsPlace).where(
+            MapsPlace.run_id == run_id,
+            # DROP: legacy rows from before the fix below existed (every
+            # total-failure verdict used to be stamped DROP). REVIEW: the
+            # current, correct failure state — same technical-failure
+            # marker, never a confident verdict either way, so both are
+            # safe to re-judge.
+            MapsPlace.keep_drop_decision.in_([DROP, REVIEW]),
+            or_(
+                MapsPlace.keep_drop_reason == TECHNICAL_FAILURE_REASON,
+                MapsPlace.keep_drop_reason.like("keep_drop_error%"),
+            ),
+        )
+
+    async def keep_drop_retry_projection(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> dict[str, object]:
+        """Dry-run preview for retry_failed_keep_drop: how many places
+        would be re-queued, and the resulting upper-bound AI call estimate
+        — no mutation, no AI calls. Each candidate costs at most one nano
+        call plus one Sonar fallback call (maps_keep_drop_sonar_fallback_enabled;
+        not percentage-capped the way the classification-tier Sonar is).
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        settings = get_settings()
+
+        candidate_count = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(self._keep_drop_retry_candidates_query(run_id).subquery())
+                )
+            ).scalar_one()
+            or 0
+        )
+        sonar_enabled = settings.maps_keep_drop_sonar_fallback_enabled
+        max_calls_per_candidate = 2 if sonar_enabled else 1
+        return {
+            "run_id": run_id,
+            "candidate_count": candidate_count,
+            "keep_drop_sonar_fallback_enabled": sonar_enabled,
+            "max_total_calls_upper_bound": candidate_count * max_calls_per_candidate,
+            "campaign_paused": _campaign_paused(run),
+            "keep_drop_already_running": _keep_drop_already_running(run),
+        }
+
     async def retry_failed_keep_drop(
         self, db: AsyncSession, auth: AuthContext, run_id: str
     ) -> MapsCampaignActionResponse:
@@ -907,24 +1013,15 @@ class MapsAdminService:
         """
         _require_admin_enabled()
         run = await _get_run_for_org(db, auth, run_id)
-        from app.services.scraping.maps_keep_drop_service import (
-            DROP,
-            run_maps_keep_drop_job,
-        )
+        if _keep_drop_already_running(run):
+            raise ConflictError(
+                "A keep/drop pass is already running for this run — wait for it to "
+                "finish before retrying failed keep/drop judgments."
+            )
+        from app.services.scraping.maps_keep_drop_service import run_maps_keep_drop_job
 
         rows = (
-            (
-                await db.execute(
-                    select(MapsPlace).where(
-                        MapsPlace.run_id == run_id,
-                        MapsPlace.keep_drop_decision == DROP,
-                        or_(
-                            MapsPlace.keep_drop_reason == "classifier_unavailable",
-                            MapsPlace.keep_drop_reason.like("keep_drop_error%"),
-                        ),
-                    )
-                )
-            )
+            (await db.execute(self._keep_drop_retry_candidates_query(run_id)))
             .scalars()
             .all()
         )
@@ -958,6 +1055,153 @@ class MapsAdminService:
             status=run.status.value if hasattr(run.status, "value") else str(run.status),
             campaign_paused=_campaign_paused(run),
             message=f"Re-judging {reset_count} places whose keep/drop classification previously failed",
+        )
+
+    def _eligibility_retry_candidates_query(self, run_id: str):
+        """Places whose inpatient_treatment AND residential_accommodation —
+        the two fields that actually decide eligibility — are BOTH still
+        unresolved. Deliberately narrower than build_classification_query:
+        - client_eligibility != ELIGIBLE: an already-confirmed eligible
+          decision is never reopened, by construction, not merely by the
+          downstream merge-protection in _apply_structured_fields_filling_
+          unresolved_only — the safest guarantee is never selecting it at
+          all.
+        - manually_excluded_at IS NULL: a human audit decision is never
+          touched by anything automatic (see compute_client_eligibility's
+          own guard).
+        - enrichment_status != RUNNING: never interrupt a place another
+          process is actively working right now.
+        This intentionally does NOT require enrichment_status ==
+        COMPLETED — it also catches a place that was reset for some other
+        reason and is sitting PENDING/FAILED with the same two fields still
+        unresolved, without excluding it just because it isn't COMPLETED.
+        """
+        return select(MapsPlace).where(
+            MapsPlace.run_id == run_id,
+            MapsPlace.is_relevant.is_(True),
+            MapsPlace.manually_excluded_at.is_(None),
+            MapsPlace.client_eligibility != MapsClientEligibility.ELIGIBLE.value,
+            MapsPlace.enrichment_status != MapsPlaceEnrichmentStatus.RUNNING.value,
+            MapsPlace.inpatient_treatment.is_(None),
+            MapsPlace.residential_accommodation.is_(None),
+        )
+
+    async def eligibility_retry_projection(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> dict[str, object]:
+        """Dry-run preview for retry_unresolved_eligibility_evidence: how
+        many places would be reset, and the resulting upper-bound AI call
+        estimate — no mutation, no AI calls, no enqueue.
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        settings = get_settings()
+
+        candidate_count = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(self._eligibility_retry_candidates_query(run_id).subquery())
+                )
+            ).scalar_one()
+            or 0
+        )
+        relevant_total = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(MapsPlace)
+                    .where(MapsPlace.run_id == run_id, MapsPlace.is_relevant.is_(True))
+                )
+            ).scalar_one()
+            or 0
+        )
+        # The Sonar cap is computed against the WHOLE run's relevant_total
+        # (maps_census_service._run_mandatory_eligibility_classification /
+        # the enrichment cascade both build SonarBudget this same way) — it
+        # is shared with every other classification call in this run, not
+        # scoped to just these candidates, so it is reported separately
+        # rather than implying these candidates get their own private cap.
+        sonar_cap_for_run = min(
+            settings.maps_sonar_fallback_max_per_campaign,
+            int(relevant_total * settings.maps_sonar_fallback_max_percent / 100.0),
+        )
+        return {
+            "run_id": run_id,
+            "candidate_count": candidate_count,
+            "relevant_total_in_run": relevant_total,
+            "max_structured_classification_calls": candidate_count,
+            "sonar_fallback_enabled": settings.maps_sonar_fallback_enabled,
+            "max_sonar_fallback_calls_for_whole_run": sonar_cap_for_run,
+            "max_total_calls_upper_bound": candidate_count + min(candidate_count, sonar_cap_for_run),
+            "campaign_paused": _campaign_paused(run),
+        }
+
+    async def retry_unresolved_eligibility_evidence(
+        self, db: AsyncSession, auth: AuthContext, run_id: str
+    ) -> MapsCampaignActionResponse:
+        """Reset ONLY places with unresolved inpatient_treatment AND
+        residential_accommodation evidence back into mandatory eligibility
+        classification (Phase 2) — the fields the Sonar research extension
+        exists to resolve. Never touches Phase 1 discovery/cells, never
+        resets keep_drop_decision/website evidence/already-confirmed
+        structured fields, and never selects an already-ELIGIBLE place (see
+        _eligibility_retry_candidates_query).
+
+        Idempotent and safe against duplicate execution: re-running this
+        simply re-selects whatever is STILL unresolved (already-fixed
+        places stop matching on their own), and the actual per-place work
+        is claimed row-by-row by the same production batch engine every
+        other enrichment trigger in this codebase already uses (see
+        maps_census_service.request_enrichment /
+        maps_batch_claim.py's SELECT ... FOR UPDATE SKIP LOCKED) — so even
+        a second concurrent call can, at worst, enqueue one redundant empty
+        batch, never double-process the same place or double-spend on it.
+        """
+        _require_admin_enabled()
+        run = await _get_run_for_org(db, auth, run_id)
+        from app.services.scraping.maps_enrichment_processing_state import (
+            MapsEnrichmentPipelineState,
+        )
+        from app.services.scraping.maps_enrichment_progress import batch_lock_is_active
+
+        if batch_lock_is_active(run):
+            raise ConflictError(
+                "An enrichment batch is already actively running for this run — wait for it "
+                "to finish before retrying unresolved eligibility evidence."
+            )
+
+        rows = (
+            (await db.execute(self._eligibility_retry_candidates_query(run_id)))
+            .scalars()
+            .all()
+        )
+        reset_count = len(rows)
+        if reset_count == 0:
+            return MapsCampaignActionResponse(
+                run_id=run.id,
+                status=run.status.value if hasattr(run.status, "value") else str(run.status),
+                campaign_paused=_campaign_paused(run),
+                message="No places with unresolved inpatient/residential evidence to retry",
+            )
+
+        for place in rows:
+            place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
+            place.enrichment_pipeline_state = MapsEnrichmentPipelineState.PREFILTER_PENDING.value
+            place.enrichment_error_message = None
+            place.enrichment_completed_at = None
+            place.enrichment_attempts = 0
+        await db.commit()
+
+        await maps_census_service.request_enrichment(db, auth, run_id)
+
+        return MapsCampaignActionResponse(
+            run_id=run.id,
+            status=run.status.value if hasattr(run.status, "value") else str(run.status),
+            campaign_paused=_campaign_paused(run),
+            message=(
+                f"Reprocessing {reset_count} places with unresolved inpatient/residential evidence"
+            ),
         )
 
     async def re_enrich_keeps(
@@ -1155,12 +1399,27 @@ class MapsAdminService:
             if field_name not in _OVERRIDABLE_FIELDS:
                 raise ValidationError(f"Field '{field_name}' cannot be overridden")
             previous_value = str(getattr(place, field_name, None))
-            if field_name in {"addiction_focus_confirmed", "medical_detox", "residential_accommodation"}:
+            if field_name in {
+                "addiction_focus_confirmed",
+                "medical_detox",
+                "residential_accommodation",
+                "inpatient_treatment",
+            }:
                 normalized = str(new_value).strip().lower()
                 setattr(place, field_name, normalized in {"true", "1", "yes"})
             else:
                 setattr(place, field_name, new_value)
-            if field_name in {"lifecycle_status", "ownership_status", "facility_type", "organization_scope", "operator_type", "operating_status", "addiction_focus_confirmed"}:
+            if field_name in {
+                "lifecycle_status",
+                "ownership_status",
+                "facility_type",
+                "organization_scope",
+                "operator_type",
+                "operating_status",
+                "addiction_focus_confirmed",
+                "residential_accommodation",
+                "inpatient_treatment",
+            }:
                 place.client_eligibility = compute_client_eligibility(place)
                 _sync_place_legacy_fields(place)
             stored_new_value = str(getattr(place, field_name, None))

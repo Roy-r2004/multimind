@@ -19,6 +19,14 @@ verified evidence, so the authoritative ``compute_client_eligibility`` result
 not guessed here. Drop rows become ``unrelated`` + ``excluded`` and are never
 enriched further. Nothing is deleted; the decision payload is persisted on the
 place for audit.
+
+A fourth, bounded-retry-then-``review`` outcome covers technical failure:
+if BOTH the primary classifier and the Sonar fallback fail outright (after
+``maps_keep_drop_retry_max_attempts`` attempts each, for transient
+connection/timeout errors only), the place is never dropped — it is marked
+``review`` with reason ``classifier_unavailable`` so it still reaches Phase 2
+and remains findable for an explicit re-judgment via
+``maps_admin_service.retry_failed_keep_drop`` once the provider recovers.
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +65,24 @@ REVIEW = "review"
 
 _NANO_SOURCE = "nano"
 _SONAR_SOURCE = "sonar"
+# Distinct from both of the above: the pass never actually judged this place
+# at all — every attempt (including retries) hit a transient provider/network
+# failure. Lets retry_failed_keep_drop (and anything else) tell "technical
+# failure, re-triable" apart from a genuine, evidence-based AI verdict.
+_TECHNICAL_FAILURE_SOURCE = "technical_failure"
+TECHNICAL_FAILURE_REASON = "classifier_unavailable"
+
+# Connection-level/transient errors worth a bounded retry — never a parsed-
+# but-invalid model response (ValidationError/json errors), where retrying
+# just burns budget without fixing anything.
+_RETRYABLE_ERRORS = (
+    httpx.ConnectError,
+    httpx.TimeoutException,
+    httpx.ReadError,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+    OSError,
+)
 
 
 class KeepDropEvidence(BaseModel):
@@ -80,6 +107,11 @@ def _domain_of(url: str | None) -> str | None:
     return host.lower() if host else None
 
 
+def _seed_path_of(url: str | None) -> str | None:
+    path = urlsplit((url or "").strip()).path or "/"
+    return path.rstrip("/") or "/"
+
+
 def build_keep_drop_payload(place: MapsPlace) -> dict[str, Any]:
     """Existing Google Maps fields + prior classification context (no new fetches)."""
     return {
@@ -100,16 +132,32 @@ async def _crawl_excerpt_for_place(
     session: AsyncSession, place: MapsPlace, *, max_chars: int
 ) -> str | None:
     """Reuse already-crawled website content — never fetch the web here."""
-    domain = _domain_of(place.official_website or place.raw_website)
+    website = place.official_website or place.raw_website
+    domain = _domain_of(website)
     if not domain:
         return None
+    # A multi-branch domain can hold one crawl-cache row per seed path (see
+    # maps_website_crawl_service). Prefer the row that was actually seeded
+    # from THIS place's own official_website path; only fall back to any
+    # row for the domain (older cache rows, or this place's path never
+    # having been crawled yet) rather than returning nothing.
+    seed_path = _seed_path_of(website)
     cached = (
         await session.execute(
             select(MapsWebsiteCrawlCache).where(
-                MapsWebsiteCrawlCache.normalized_domain == domain
+                MapsWebsiteCrawlCache.normalized_domain == domain,
+                MapsWebsiteCrawlCache.seed_path == seed_path,
             )
         )
     ).scalars().first()
+    if cached is None:
+        cached = (
+            await session.execute(
+                select(MapsWebsiteCrawlCache).where(
+                    MapsWebsiteCrawlCache.normalized_domain == domain
+                )
+            )
+        ).scalars().first()
     if cached is None:
         return None
     parts: list[str] = []
@@ -147,6 +195,31 @@ async def _call_model(
     return _parse_decision(response.text or "")
 
 
+async def _call_model_with_retry(**kwargs: Any) -> KeepDropDecision:
+    """Bounded retry, with backoff, for TRANSIENT provider/network failures
+    only (``_RETRYABLE_ERRORS``) — a parsed-but-invalid model response
+    (ValidationError, JSON errors) is never retried, since trying again
+    can't fix a malformed output and would just spend budget for nothing.
+
+    Root cause this closes: Belarus run 5acff6f7-21f8-4427-88a1-38d0a394ce83
+    lost 130/1106 discovered places to a single ~60-second DNS blip — every
+    in-flight keep/drop call failed once, with no retry at all, and (see
+    ``classify_place_keep_drop``) a total failure used to fall back to a
+    confident DROP.
+    """
+    settings = get_settings()
+    max_attempts = max(1, int(settings.maps_keep_drop_retry_max_attempts))
+    backoff = max(0.0, float(settings.maps_keep_drop_retry_backoff_seconds))
+    for attempt in range(max_attempts):
+        try:
+            return await _call_model(**kwargs)
+        except _RETRYABLE_ERRORS:
+            if attempt + 1 >= max_attempts:
+                raise
+            await asyncio.sleep(backoff * (2**attempt))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 async def classify_place_keep_drop(
     session: AsyncSession,
     place: MapsPlace,
@@ -156,7 +229,8 @@ async def classify_place_keep_drop(
     state_code: str | None = None,
     state_name: str | None = None,
 ) -> tuple[KeepDropDecision, str]:
-    """Return (decision, source). Uncertain or failed judgments become drop."""
+    """Return (decision, source). Uncertain judgments become review; so does
+    a technical failure (both classifiers unreachable) — never drop."""
     settings = get_settings()
     threshold = float(settings.maps_keep_drop_confidence_threshold)
     payload = build_keep_drop_payload(place)
@@ -169,7 +243,7 @@ async def classify_place_keep_drop(
 
     decision: KeepDropDecision | None = None
     try:
-        decision = await _call_model(
+        decision = await _call_model_with_retry(
             prompt_name="scraping/maps_keep_drop.j2",
             system=(
                 "You return strict JSON keep/drop/review decisions for addiction-treatment "
@@ -199,7 +273,7 @@ async def classify_place_keep_drop(
         sonar_model = get_model("sonar")
         sonar_provider = get_provider_registry().get_provider(sonar_model.provider)
         try:
-            sonar_decision = await _call_model(
+            sonar_decision = await _call_model_with_retry(
                 prompt_name="scraping/maps_keep_drop_sonar.j2",
                 system=(
                     "You have live web search. Return a strict JSON keep/drop/review verdict "
@@ -243,9 +317,19 @@ async def classify_place_keep_drop(
             ),
             _SONAR_SOURCE,
         )
+    # Both the primary classifier and the Sonar fallback failed outright —
+    # this place was never actually judged by anything, so it must never
+    # become a confident DROP (that would silently and permanently exclude
+    # a potentially eligible facility over a transient provider/network
+    # failure — confirmed root cause of 130/1106 places lost in Belarus run
+    # 5acff6f7-21f8-4427-88a1-38d0a394ce83 to a single ~60s DNS blip).
+    # REVIEW keeps it flowing into Phase 2 exactly like a genuine
+    # "uncertain" verdict, and the distinct reason/source make it findable
+    # for an explicit retry (maps_admin_service.retry_failed_keep_drop) once
+    # the provider is healthy again — never silently lost.
     return (
-        KeepDropDecision(decision=DROP, reason="classifier_unavailable", confidence=0.0),
-        _NANO_SOURCE,
+        KeepDropDecision(decision=REVIEW, reason=TECHNICAL_FAILURE_REASON, confidence=0.0),
+        _TECHNICAL_FAILURE_SOURCE,
     )
 
 
@@ -276,10 +360,23 @@ def apply_keep_drop(place: MapsPlace, decision: KeepDropDecision, *, source: str
         place.verification_verdict = "unknown"
         place.addiction_focus_confirmed = True
         if place.enrichment_status != MapsPlaceEnrichmentStatus.COMPLETED.value:
-            # Route straight to Phase 2 detail enrichment (Phase 1 skips this state).
+            # Route into mandatory eligibility classification (ownership,
+            # facility type, organization scope, residential accommodation)
+            # — PREFILTER_PENDING, not CLASSIFICATION_COMPLETED. The latter
+            # is _classify_place's own exit marker for places that have
+            # already been through real structured classification; stamping
+            # it here (as this previously did) made build_classification_query
+            # skip every freshly-decided KEEP place, so it went straight to
+            # the optional detail-enrichment stage with ownership/facility-
+            # type/residential_accommodation never extracted — the direct
+            # cause of "55 relevant, 0 eligible" in the Finland run
+            # ad4f7947-ffae-4e22-acbd-45c74c037cfd. A keep/drop verdict is
+            # Phase 1 metadata, not verified classification evidence (see
+            # module docstring); it must route to Phase 2 classification,
+            # not skip past it.
             place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
             place.enrichment_pipeline_state = (
-                MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
+                MapsEnrichmentPipelineState.PREFILTER_PENDING.value
             )
     elif decision.decision == REVIEW:
         # Genuine addiction-treatment signal but not yet confirmed — unlike a
@@ -293,9 +390,12 @@ def apply_keep_drop(place: MapsPlace, decision: KeepDropDecision, *, source: str
         place.is_relevant = True
         place.verification_verdict = "unknown"
         if place.enrichment_status != MapsPlaceEnrichmentStatus.COMPLETED.value:
+            # Same fix as the KEEP branch above: route to Phase 2
+            # classification (PREFILTER_PENDING), never skip straight past
+            # it as CLASSIFICATION_COMPLETED.
             place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
             place.enrichment_pipeline_state = (
-                MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value
+                MapsEnrichmentPipelineState.PREFILTER_PENDING.value
             )
     else:
         place.lifecycle_status = MapsLifecycleStatus.UNRELATED.value
@@ -395,6 +495,43 @@ async def stamp_non_candidate_drops(session_factory, *, run_id: str) -> int:
     return stamped
 
 
+async def try_start_keep_drop_pass(session_factory, *, run_id: str) -> MapsCensusRun | None:
+    """Atomically claim the right to run a keep/drop pass for this run.
+
+    Returns the claimed run on success, or ``None`` if a pass is already
+    "running" for this run_id (or the run does not exist) — in which case
+    the caller must not fetch or judge any places. This is the real
+    correctness guard against two concurrent starts (the inline pass
+    launched by run_census racing an admin-triggered
+    revalidate-keeps/retry-failed-keep-drop, or two admin retries fired
+    back to back): on Postgres, ``SELECT ... FOR UPDATE`` serializes the
+    read-check-write against any other transaction doing the same for the
+    same row, so only one caller can ever observe "not running" and flip it
+    to "running" — a plain read-then-write (two separate statements with no
+    row lock) would leave a window where both callers pass the check before
+    either writes, which is exactly the race a non-atomic status check
+    cannot close. SQLite (unit tests) has no row-level locking, but tests
+    only ever use a single connection, so a plain claim is safe there — the
+    same convention already used by claim_batch_place_ids/claim_cell_by_id.
+    """
+    async with session_factory() as session:
+        dialect_name = session.bind.dialect.name if session.bind is not None else ""
+        stmt = select(MapsCensusRun).where(MapsCensusRun.id == run_id)
+        if dialect_name == "postgresql":
+            stmt = stmt.with_for_update()
+        run = (await session.execute(stmt)).scalar_one_or_none()
+        if run is None:
+            return None
+        state = dict(run.processing_state or {})
+        if state.get("keep_drop_status") == "running":
+            return None
+        state["keep_drop_status"] = "running"
+        state["keep_drop_heartbeat_at"] = datetime.now(UTC).isoformat()
+        run.processing_state = state
+        await session.commit()
+        return run
+
+
 async def run_keep_drop_pass(
     session_factory,
     *,
@@ -410,25 +547,30 @@ async def run_keep_drop_pass(
     By default only judges relevant / review / eligible candidates. Already
     excluded noise is stamped drop without an API call. Never rediscovers,
     never deletes rows, never re-judges a place that already has a decision.
+
+    Claims the run's keep_drop_status atomically before doing anything else
+    (see try_start_keep_drop_pass) — a second concurrent call for the same
+    run_id (e.g. an admin retry racing the inline pass run_census already
+    started) returns immediately with skipped_busy=1 and never fetches a
+    batch or calls the paid classifier.
     """
     settings = get_settings()
     batch_size = max(1, int(settings.maps_keep_drop_batch_size))
     concurrency = max(1, int(settings.maps_keep_drop_concurrency))
     place_timeout = max(10.0, float(settings.maps_keep_drop_place_timeout_seconds))
 
-    async with session_factory() as session:
-        run = await session.get(MapsCensusRun, run_id)
-        if run is None:
+    run = await try_start_keep_drop_pass(session_factory, run_id=run_id)
+    if run is None:
+        async with session_factory() as session:
+            exists = await session.get(MapsCensusRun, run_id)
+        if exists is None:
             return {"error": 1}
-        country_code = country_code or run.country_code
-        country_name = country_name or run.country_name
-        state_code = state_code or run.state_code
-        state_name = state_name or run.state_name
-        state = dict(run.processing_state or {})
-        state["keep_drop_status"] = "running"
-        state["keep_drop_heartbeat_at"] = datetime.now(UTC).isoformat()
-        run.processing_state = state
-        await session.commit()
+        logger.warning("maps_keep_drop_skipped_already_running run_id=%s", run_id)
+        return {"skipped_busy": 1}
+    country_code = country_code or run.country_code
+    country_name = country_name or run.country_name
+    state_code = state_code or run.state_code
+    state_name = state_name or run.state_name
 
     prefiltered = 0
     if candidates_only:
@@ -641,6 +783,13 @@ async def run_maps_keep_drop_job(ctx: dict, run_id: str) -> None:
     await merge_quota_metrics(AsyncSessionLocal, run_id=run_id, tracker=tracker)
     if summary.get("error"):
         return
+    if summary.get("skipped_busy"):
+        # A pass was already running for this run_id (the inline run_census
+        # continuation, or another admin retry) — it owns completion
+        # handling (enqueueing enrichment / reconciling a drained run) once
+        # it actually finishes. Enqueuing enrichment here too would race it.
+        logger.info("maps_keep_drop_job_skipped_busy run_id=%s", run_id)
+        return
     # Gate on every keep still awaiting enrichment, not just this pass's count:
     # a keep decided by an earlier pass that crashed would otherwise never be
     # enriched, leaving the run stuck at running forever (Bosnia).
@@ -679,4 +828,5 @@ __all__ = [
     "run_keep_drop_pass",
     "run_maps_keep_drop_job",
     "stamp_non_candidate_drops",
+    "try_start_keep_drop_pass",
 ]

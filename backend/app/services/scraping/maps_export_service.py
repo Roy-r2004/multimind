@@ -4,10 +4,11 @@ Client-facing export is a single sheet: ``Eligible Centers`` — only facilities
 that passed the strict keep/drop gate AND were computed ``client_eligibility
 == "eligible"`` by ``compute_client_eligibility`` (the same rule engine the
 admin review UI's mark_eligible/mark_review/mark_excluded actions operate
-on) AND have a phone number. No review / excluded / audit sheets are
-produced for the client workbook. The run's dashboard summary
-(``get_export_summary``) counts by the identical ``client_eligibility``
-rule, so the two are always consistent with each other.
+on). Phone, website, email, languages, treatment price, and bed count are
+all optional and never independently exclude an otherwise-eligible facility.
+No review / excluded / audit sheets are produced for the client workbook.
+The run's dashboard summary (``get_export_summary``) counts by the identical
+``client_eligibility`` rule, so the two are always consistent with each other.
 """
 
 from __future__ import annotations
@@ -115,17 +116,16 @@ class MapsExportService:
             # otherwise not eligible must never appear here just because it
             # passed that earlier gate — and a "review" candidate that
             # Phase 2 later verified as genuinely eligible must not be
-            # excluded just for having started out uncertain). A missing
-            # website never excludes an otherwise-eligible facility; a
-            # missing phone does, per our acceptance criteria.
+            # excluded just for having started out uncertain). Neither a
+            # missing website nor a missing phone number excludes an
+            # otherwise-eligible facility — both are optional contact
+            # fields, never mandatory acceptance criteria.
             sheet_name = ELIGIBLE_CENTERS_SHEET
             table_name = "EligibleCenters"
             scoped_places = [
                 place
                 for place in places
-                if place.keep_drop_decision in {"keep", "review"}
-                and _is_eligible_center(place)
-                and _has_required_contact_info(place)
+                if place.keep_drop_decision in {"keep", "review"} and _is_eligible_center(place)
             ]
 
         self._write_sheet(
@@ -397,14 +397,6 @@ def _ui_price(value: Any) -> str:
 
 def _is_eligible_center(place: MapsPlace) -> bool:
     return place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
-
-
-def _has_required_contact_info(place: MapsPlace) -> bool:
-    """Phone is the one mandatory contact field for the accepted-facilities
-    export (per our acceptance criteria); website is informative but
-    optional and must never independently exclude an otherwise-eligible
-    facility."""
-    return bool((place.international_phone_number or "").strip())
 
 
 maps_export_service = MapsExportService()

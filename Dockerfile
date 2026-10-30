@@ -21,8 +21,6 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN apk add --no-cache curl
-
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 
@@ -33,7 +31,9 @@ RUN chmod +x ./scripts/start-web.sh && sed -i 's/\r$//' ./scripts/start-web.sh
 
 EXPOSE 3000
 
+# node:22-alpine already ships BusyBox wget — avoids a build-time
+# `apk add curl` network fetch (Alpine CDN) purely for a healthcheck.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${PORT:-3000}/" > /dev/null || exit 1
+  CMD wget -q --spider "http://127.0.0.1:${PORT:-3000}/" || exit 1
 
 CMD ["./scripts/start-web.sh"]

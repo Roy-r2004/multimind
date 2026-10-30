@@ -22,10 +22,14 @@ Keyed by country first (``_STATE_BOUNDING_BOXES_BY_COUNTRY["US"]["AL"]``,
 not a single flat US-only table) so adding a country's own
 administrative-division boundaries later — a different country has a
 different structure (provinces, Länder, prefectures, ...) — is a sibling
-top-level entry, not a redesign. Only "US" has real data today; this module
-makes no claim about any other country. Adding one more state/region is a
-one-line, reviewable addition of its standard bounding box — no code
-changes, no new dependency, no network call. Adding a *new country* needs
+top-level entry, not a redesign. Only "US" has state/province-level data
+today; this module makes no claim about any other country's subdivisions.
+``_COUNTRY_BOUNDING_BOXES`` is the separate, whole-country-level table
+(e.g. Finland) used only when a run has no state/province selected and no
+dataset-backed boundary is cached locally — see resolve_geo_anchor_detailed.
+Adding one more state/region or country is a one-line, reviewable addition
+of its standard bounding box — no code changes, no new dependency, no
+network call. A country needing real sub-national boundaries still needs
 its own reviewed table the same way the US one was built — see the session
 report that introduced this comment for the recommended path to that
 (an authoritative, licensed boundary dataset, not ad hoc recall).
@@ -55,6 +59,23 @@ _STATE_BOUNDING_BOXES_BY_COUNTRY: dict[str, dict[str, dict[str, float]]] = {
     },
 }
 
+# Standard land-area bounding boxes (degrees) for whole countries, the same
+# kind of publicly-published atlas extent as the state table above, padded
+# by ~0.1 degrees. Used only as a last-resort fallback by
+# resolve_geo_anchor_detailed when no dataset-backed ADM0 boundary is cached
+# locally (see maps_geo_boundaries.load_cached_boundary) — without this, a
+# country with no cached boundary file gets geo_boundary_match="no_
+# polygon_available" for every result, so even a result hundreds of miles
+# outside the country (e.g. a Pompano Beach, FL facility surfacing in a
+# Finland run: 0afe4ca7-2dd3-47aa-a2cd-566e6b19b208) is never caught by
+# compute_client_eligibility's "outside_polygon" downgrade. A plain bounding
+# box cannot replace a real polygon (coastlines, exclaves, etc.), so it is
+# still deliberately coarse — it only ever catches gross false positives
+# like a different continent, never fine border disputes.
+_COUNTRY_BOUNDING_BOXES: dict[str, dict[str, float]] = {
+    "FI": {"north": 70.2, "south": 59.3, "east": 31.7, "west": 20.3},
+}
+
 _STATE_NAME_TO_CODE_BY_COUNTRY: dict[str, dict[str, str]] = {
     "US": {
         "alabama": "AL",
@@ -79,15 +100,21 @@ def resolve_geo_anchor(
     or fall back to a broader scope than the one requested.
     """
     country_key = (country_code or "").strip().upper()
+    code = (state_code or "").strip().upper()
+    name = (state_name or "").strip()
+
+    if not code and not name:
+        country_box = _COUNTRY_BOUNDING_BOXES.get(country_key)
+        return dict(country_box) if country_box is not None else None
+
     country_boxes = _STATE_BOUNDING_BOXES_BY_COUNTRY.get(country_key)
     if not country_boxes:
         return None
 
-    code = (state_code or "").strip().upper()
     if code in country_boxes:
         return dict(country_boxes[code])
 
-    name_key = (state_name or "").strip().casefold()
+    name_key = name.casefold()
     name_to_code = _STATE_NAME_TO_CODE_BY_COUNTRY.get(country_key, {})
     mapped_code = name_to_code.get(name_key)
     if mapped_code is not None and mapped_code in country_boxes:

@@ -46,6 +46,29 @@ RETRYABLE_PIPELINE_STATES = frozenset(
     }
 )
 
+# Pipeline states a place can sit in before mandatory classification has
+# produced a result for it — the single source of truth for
+# build_classification_query's WHERE clause (maps_classification_service.py)
+# and for the "classification_pending" bucket in the Phase 2 breakdown
+# (maps_census_service._phase2_breakdown). Keeping one definition means the
+# query that actually claims/processes places and the count shown to the
+# user can never silently drift apart.
+PRE_CLASSIFICATION_PIPELINE_STATES = frozenset(
+    {
+        MapsEnrichmentPipelineState.PREFILTER_PENDING.value,
+        MapsEnrichmentPipelineState.PREFILTER_COMPLETED.value,
+        MapsEnrichmentPipelineState.WEBSITE_RESOLUTION_PENDING.value,
+        MapsEnrichmentPipelineState.WEBSITE_RESOLVED.value,
+        MapsEnrichmentPipelineState.WEBSITE_NOT_FOUND.value,
+        MapsEnrichmentPipelineState.CRAWL_PENDING.value,
+        MapsEnrichmentPipelineState.CRAWL_COMPLETED.value,
+        MapsEnrichmentPipelineState.CRAWL_FAILED.value,
+        MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_PENDING.value,
+        MapsEnrichmentPipelineState.PRIMARY_EXTRACTION_FAILED.value,
+        MapsEnrichmentPipelineState.CLASSIFICATION_FAILED_RETRYABLE.value,
+    }
+)
+
 
 def default_pipeline_state() -> str:
     return MapsEnrichmentPipelineState.PREFILTER_PENDING.value

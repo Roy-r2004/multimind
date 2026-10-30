@@ -84,3 +84,65 @@ def test_migration_033_adds_website_crawl_cache_table():
 
         run_with_ops(module, conn, "downgrade")
         assert "maps_website_crawl_cache" not in set(inspect(conn).get_table_names())
+
+
+def test_migration_gosom065_keys_cache_by_domain_and_seed_path():
+    module = load_migration("gosom065")
+    assert module.revision == "gosom065_crawl_cache_seed_path"
+    assert module.down_revision == "gosom064_inpatient_treatment"
+
+    engine = _build_engine_through_032()
+    with engine.begin() as conn:
+        run_with_ops(load_migration("033"), conn, "upgrade")
+        conn.exec_driver_sql(
+            "INSERT INTO maps_website_crawl_cache "
+            "(id, normalized_domain, pages, fetched_at, expires_at, created_at, updated_at) "
+            "VALUES ('row-1', 'example.test', '[]', '2026-01-01', '2026-01-02', '2026-01-01', '2026-01-01')"
+        )
+
+        run_with_ops(module, conn, "upgrade")
+        inspector = inspect(conn)
+        columns = {c["name"] for c in inspector.get_columns("maps_website_crawl_cache")}
+        assert "seed_path" in columns
+
+        # Pre-existing rows are backfilled with a safe default rather than
+        # left NULL or dropped.
+        seed_path = conn.exec_driver_sql(
+            "SELECT seed_path FROM maps_website_crawl_cache WHERE id = 'row-1'"
+        ).scalar_one()
+        assert seed_path == "/"
+
+        unique_constraints = {
+            constraint["name"]: set(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints("maps_website_crawl_cache")
+        }
+        assert unique_constraints.get("uq_maps_website_crawl_cache_domain_path") == {
+            "normalized_domain",
+            "seed_path",
+        }
+        assert "uq_maps_website_crawl_cache_domain" not in unique_constraints
+
+        # Two branches on the same domain, different seed paths, no longer collide.
+        conn.exec_driver_sql(
+            "INSERT INTO maps_website_crawl_cache "
+            "(id, normalized_domain, seed_path, pages, fetched_at, expires_at, created_at, updated_at) "
+            "VALUES ('row-2', 'example.test', '/branch-a', '[]', '2026-01-01', '2026-01-02', '2026-01-01', '2026-01-01')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO maps_website_crawl_cache "
+            "(id, normalized_domain, seed_path, pages, fetched_at, expires_at, created_at, updated_at) "
+            "VALUES ('row-3', 'example.test', '/branch-b', '[]', '2026-01-01', '2026-01-02', '2026-01-01', '2026-01-01')"
+        )
+        count = conn.exec_driver_sql(
+            "SELECT count(*) FROM maps_website_crawl_cache WHERE normalized_domain = 'example.test'"
+        ).scalar_one()
+        assert count == 3
+
+        # Downgrade recreates a single-domain unique constraint, so drop the
+        # now-ambiguous extra branch rows first — this test only needs to
+        # prove the column itself is removed on downgrade.
+        conn.exec_driver_sql("DELETE FROM maps_website_crawl_cache WHERE id IN ('row-2', 'row-3')")
+        run_with_ops(module, conn, "downgrade")
+        inspector = inspect(conn)
+        columns = {c["name"] for c in inspector.get_columns("maps_website_crawl_cache")}
+        assert "seed_path" not in columns

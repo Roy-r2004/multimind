@@ -4,7 +4,9 @@ import {
   mapsAdminCancelPath,
   mapsAdminCellsPath,
   mapsAdminDashboardPath,
+  mapsAdminEligibilityRetryProjectionPath,
   mapsAdminExportSummaryPath,
+  mapsAdminKeepDropRetryProjectionPath,
   mapsAdminPausePath,
   mapsAdminPlaceDetailPath,
   mapsAdminPlaceReviewPath,
@@ -13,6 +15,8 @@ import {
   mapsAdminReconcileFinalizationPath,
   mapsAdminRetryEnrichmentPath,
   mapsAdminRetryFailedCellsPath,
+  mapsAdminRetryFailedKeepDropPath,
+  mapsAdminRetryUnresolvedEligibilityEvidencePath,
   mapsAdminRetryWebsitesPath,
   mapsAdminResumePath,
 } from "./adminPaths.ts";
@@ -86,4 +90,26 @@ test("campaign control paths target pause/resume/cancel/retry endpoints", () => 
 
 test("mapsAdminExportSummaryPath targets export summary endpoint", () => {
   assert.equal(mapsAdminExportSummaryPath(RUN_ID), `/maps/runs/${RUN_ID}/export-summary`);
+});
+
+test("keep/drop recovery paths target the projection and retry endpoints", () => {
+  assert.equal(
+    mapsAdminKeepDropRetryProjectionPath(RUN_ID),
+    `/maps/runs/${RUN_ID}/keep-drop-retry-projection`,
+  );
+  assert.equal(
+    mapsAdminRetryFailedKeepDropPath(RUN_ID),
+    `/maps/runs/${RUN_ID}/retry-failed-keep-drop`,
+  );
+});
+
+test("Phase 2 eligibility recovery paths target the projection and retry endpoints", () => {
+  assert.equal(
+    mapsAdminEligibilityRetryProjectionPath(RUN_ID),
+    `/maps/runs/${RUN_ID}/eligibility-retry-projection`,
+  );
+  assert.equal(
+    mapsAdminRetryUnresolvedEligibilityEvidencePath(RUN_ID),
+    `/maps/runs/${RUN_ID}/retry-unresolved-eligibility-evidence`,
+  );
 });

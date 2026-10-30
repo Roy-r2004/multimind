@@ -22,12 +22,15 @@ import asyncio
 import csv
 import hashlib
 import io
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 from app.services.scraping.maps_places_client import (
     PlaceResult,
     PlacesConfigurationError,
@@ -50,6 +53,20 @@ class GosomPlacesClient:
         settings = get_settings()
         self._base_url = (settings.gosom_base_url or "").rstrip("/")
         self._timeout = settings.gosom_timeout_seconds
+        # Jobs this client has already given up on (timed out and deleted).
+        # Confirmed in production (Belarus run 5acff6f7-21f8-4427-88a1-38d0a394ce83,
+        # job a0c1d7f4-1550-46d2-8ce7-c09fc8167567): gosom's scrapemate run can
+        # legitimately finish — "scrapemate exited", results found — while
+        # gosom's own dispatcher never flips the job's Status out of
+        # "working" (github.com/gosom/google-maps-scraper#328). _resolve_job
+        # reuses jobs by a deterministic name so the retry for the same cell
+        # query would otherwise call _find_reusable_job and find THIS EXACT
+        # zombie job still sitting there with status "working" — polling it
+        # again just repeats the same 480s timeout forever instead of making
+        # a fresh attempt. Remembered for the lifetime of this client
+        # instance (one campaign execution), which is all a single retry
+        # loop needs.
+        self._abandoned_job_ids: set[str] = set()
 
     def is_configured(self) -> bool:
         return bool(self._base_url)
@@ -106,6 +123,7 @@ class GosomPlacesClient:
             resume_page_token=resume_page_token,
             geo=geo,
         )
+        logger.info("maps_gosom_job_submitted job_id=%s query=%s depth=%s", job_id, text, depth)
         status = await self._poll_until_terminal(
             job_id,
             max_time_seconds=max(int(settings.gosom_job_max_time_seconds), _MIN_MAX_TIME_SECONDS),
@@ -113,6 +131,7 @@ class GosomPlacesClient:
             cancel_check=cancel_check,
             heartbeat_cb=heartbeat_cb,
         )
+        logger.info("maps_gosom_job_polled job_id=%s outcome=%s", job_id, status)
         if status == "cancelled":
             raise PlacesProviderError("gosom job cancelled")
         if status != "ok":
@@ -195,6 +214,11 @@ class GosomPlacesClient:
                 continue
             if str(job.get("Name") or job.get("name") or "") != name:
                 continue
+            job_id = _job_id(job)
+            if job_id is not None and job_id in self._abandoned_job_ids:
+                # Never resurrect a job we already timed out and gave up on
+                # — its dispatcher slot may be the exact thing that is wedged.
+                continue
             status = str(job.get("Status") or job.get("status") or "").lower()
             if status in {"pending", "working", "ok"}:
                 reusable.append(job)
@@ -232,6 +256,14 @@ class GosomPlacesClient:
             if status not in {"pending", "working", ""}:
                 return status or "unknown"
             if asyncio.get_running_loop().time() >= deadline:
+                logger.warning(
+                    "maps_gosom_job_timeout job_id=%s last_status=%s max_time_seconds=%s — "
+                    "no terminal status reached; deleting and treating as a provider failure",
+                    job_id,
+                    status or "unknown",
+                    max_time_seconds,
+                )
+                self._abandoned_job_ids.add(job_id)
                 await self._delete_job(job_id)
                 raise PlacesTimeoutError(
                     f"gosom job {job_id} exceeded {max_time_seconds}s"

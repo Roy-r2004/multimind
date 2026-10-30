@@ -186,9 +186,10 @@ class MapsWebsiteCrawlService:
         domain = validated.host
         if not domain:
             raise MapsWebsiteCrawlError("website URL has no host")
+        seed_path = validated.path
 
         if not force_refresh:
-            cached = await self._load_valid_cache(db, domain)
+            cached = await self._load_valid_cache(db, domain, seed_path)
             if cached is not None:
                 pages = [_page_from_cache(item) for item in cached.pages]
                 return WebsiteCrawlOutcome(
@@ -200,7 +201,7 @@ class MapsWebsiteCrawlService:
 
         keywords = _normalize_keywords(path_keywords)
         pages = await self._fetch_domain_pages(validated.url, domain=domain, path_keywords=keywords)
-        await self._store_cache(db, domain=domain, pages=pages)
+        await self._store_cache(db, domain=domain, seed_path=seed_path, pages=pages)
         return WebsiteCrawlOutcome(
             normalized_domain=domain,
             pages=pages,
@@ -209,13 +210,24 @@ class MapsWebsiteCrawlService:
         )
 
     async def _load_valid_cache(
-        self, db: AsyncSession, domain: str
+        self, db: AsyncSession, domain: str, seed_path: str
     ) -> MapsWebsiteCrawlCache | None:
+        # Keyed on (domain, seed_path) — not domain alone. A multi-branch
+        # domain (one crawl cache row per domain used to be shared across
+        # every branch official_website resolved to that same host) was
+        # silently serving one branch's crawled pages to every OTHER branch
+        # on the same domain, discarding each branch's own specific page.
+        # See the A-klinikkasäätiön Päihdesairaala case: its official_website
+        # correctly resolved to its own /toimipisteet/paihdesairaala/ page,
+        # but a prior crawl of a sibling branch on www.a-klinikka.fi had
+        # already populated the domain-wide cache row, so this branch's own
+        # page content never reached the AI.
         now = datetime.now(UTC)
         row = (
             await db.execute(
                 select(MapsWebsiteCrawlCache).where(
                     MapsWebsiteCrawlCache.normalized_domain == domain,
+                    MapsWebsiteCrawlCache.seed_path == seed_path,
                     MapsWebsiteCrawlCache.expires_at > now,
                 )
             )
@@ -227,6 +239,7 @@ class MapsWebsiteCrawlService:
         db: AsyncSession,
         *,
         domain: str,
+        seed_path: str,
         pages: list[CrawledPage],
     ) -> None:
         settings = get_settings()
@@ -244,7 +257,8 @@ class MapsWebsiteCrawlService:
         existing = (
             await db.execute(
                 select(MapsWebsiteCrawlCache).where(
-                    MapsWebsiteCrawlCache.normalized_domain == domain
+                    MapsWebsiteCrawlCache.normalized_domain == domain,
+                    MapsWebsiteCrawlCache.seed_path == seed_path,
                 )
             )
         ).scalar_one_or_none()
@@ -252,6 +266,7 @@ class MapsWebsiteCrawlService:
             db.add(
                 MapsWebsiteCrawlCache(
                     normalized_domain=domain,
+                    seed_path=seed_path,
                     pages=payload,
                     fetched_at=now,
                     expires_at=expires_at,
@@ -419,8 +434,13 @@ class MapsWebsiteCrawlService:
         for address in await self._resolve_host(host):
             if _is_blocked_ip(address):
                 raise MapsWebsiteCrawlError("blocked address")
-        normalized = urlunsplit((parts.scheme, parts.netloc, parts.path or "/", parts.query, ""))
-        return _ValidatedUrl(url=normalized, host=host)
+        path = parts.path or "/"
+        normalized = urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+        # Trailing-slash and empty-path variants of the same page must share
+        # one cache entry, or the same seed URL fetched with/without a
+        # trailing slash would churn the cache every time.
+        seed_path = path.rstrip("/") or "/"
+        return _ValidatedUrl(url=normalized, host=host, path=seed_path)
 
     async def _resolve_host(self, host: str) -> list[str]:
         if self._resolver is not None:
@@ -442,6 +462,7 @@ class MapsWebsiteCrawlService:
 class _ValidatedUrl:
     url: str
     host: str
+    path: str = "/"
 
 
 @dataclass(frozen=True)

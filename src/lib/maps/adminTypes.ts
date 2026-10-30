@@ -220,6 +220,26 @@ export type MapsCampaignActionResponse = {
   message: string | null;
 };
 
+export type MapsKeepDropRetryProjection = {
+  run_id: string;
+  candidate_count: number;
+  keep_drop_sonar_fallback_enabled: boolean;
+  max_total_calls_upper_bound: number;
+  campaign_paused: boolean;
+  keep_drop_already_running: boolean;
+};
+
+export type MapsEligibilityRetryProjection = {
+  run_id: string;
+  candidate_count: number;
+  relevant_total_in_run: number;
+  max_structured_classification_calls: number;
+  sonar_fallback_enabled: boolean;
+  max_sonar_fallback_calls_for_whole_run: number;
+  max_total_calls_upper_bound: number;
+  campaign_paused: boolean;
+};
+
 export type MapsExportSummaryResponse = {
   run_id: string;
   sheets: Record<string, number>;

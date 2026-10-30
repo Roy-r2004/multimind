@@ -969,16 +969,18 @@ async def test_create_run_queues_and_list_get_places_scoped_to_org(db, auth, mon
     )
     await db.commit()
 
-    all_places = await maps_census_service.list_places(db, auth, detail.id)
+    all_places = (await maps_census_service.list_places(db, auth, detail.id)).items
     assert len(all_places) == 2
 
-    relevant_only = await maps_census_service.list_places(db, auth, detail.id, relevant_only=True)
+    relevant_only = (
+        await maps_census_service.list_places(db, auth, detail.id, relevant_only=True)
+    ).items
     assert len(relevant_only) == 1
     assert relevant_only[0].google_place_id == "p1"
 
-    with_website = await maps_census_service.list_places(
-        db, auth, detail.id, with_website_only=True
-    )
+    with_website = (
+        await maps_census_service.list_places(db, auth, detail.id, with_website_only=True)
+    ).items
     assert len(with_website) == 1
     assert with_website[0].google_place_id == "p1"
 

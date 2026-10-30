@@ -59,9 +59,9 @@ export function listMapsCensusPlaces(
     keepDropDecision?: "keep" | "drop" | "review";
     /** The single authoritative "accepted rehab center" filter — same
      * predicate as the Excel export (client_eligibility == eligible,
-     * keep_drop_decision in {keep, review}, phone present). Use this for
-     * any "final accepted facilities" count or list; it supersedes
-     * keepDropDecision for that purpose. */
+     * keep_drop_decision in {keep, review}). Phone/website are optional
+     * and never gate this. Use this for any "final accepted facilities"
+     * count or list; it supersedes keepDropDecision for that purpose. */
     acceptedOnly?: boolean;
     includeRemoved?: boolean;
     limit?: number;

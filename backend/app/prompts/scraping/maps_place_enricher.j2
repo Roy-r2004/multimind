@@ -47,9 +47,23 @@ Return these exact fields for every facility:
   `residential`, `inpatient`, `outpatient`, `community`, `virtual`, `mixed`, `unknown`
 - `organization_scope`: one of
   `facility`, `program`, `network`, `individual_practice`, `unknown`
-- `addiction_focus_confirmed`: `true`, `false`, or `null`
+- `addiction_focus_confirmed`: `true`, `false`, or `null`. This means the facility genuinely
+  provides treatment for alcohol, drug, and/or behavioral addictions — NOT that addiction is its
+  primary, main, or only specialty. A general psychiatric hospital, multidisciplinary clinic, or
+  hospital system can still be `true` if it runs its own actual addiction-treatment program
+  alongside other services. Merely mentioning addiction, offering referrals elsewhere, or treating
+  unrelated psychiatric/mental-health conditions is NOT sufficient for `true`. If evidence is
+  insufficient to tell either way, use `null` — an absence of evidence is not evidence of absence;
+  do not set `false` just because you found nothing.
 - `medical_detox`: `true`, `false`, or `null`
 - `residential_accommodation`: `true`, `false`, or `null`
+- `inpatient_treatment`: `true`, `false`, or `null`. This and `residential_accommodation` are the
+  SAME requirement, not two separate ones: ANY clear, credible evidence of confirmed inpatient
+  addiction treatment, confirmed residential rehabilitation, or 24-hour/live-in addiction care
+  satisfies both — do not require a further explicit "patients stay overnight" statement once one
+  of those is already confirmed. Only set `false` for clear evidence of an explicitly outpatient,
+  day-treatment, or partial-hospitalization (PHP) program. Use `null`, never a guess, when
+  genuinely unclear.
 - `operating_status`: `open`, `closed`, or `unknown`
 - `classification_evidence`: JSON object mapping field name to evidence
 - `confidence`: overall confidence from `0.0` to `1.0`
@@ -122,6 +136,7 @@ Return strict JSON only with this shape:
       "addiction_focus_confirmed": true,
       "medical_detox": false,
       "residential_accommodation": false,
+      "inpatient_treatment": false,
       "operating_status": "open",
       "classification_evidence": {
         "ownership_status": {

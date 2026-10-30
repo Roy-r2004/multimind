@@ -259,7 +259,23 @@ async def test_recovery_finalizes_stuck_running_place(db, auth):
         enrichment_pipeline_state=MapsEnrichmentPipelineState.CRAWL_PENDING.value,
         official_website="http://example.com",
     )
+    # A second relevant place, NOT stuck running — exercises the two-phase
+    # reset path (_reset_two_phase_places) distinctly from the stuck-place
+    # finalization path.
+    other_place = MapsPlace(
+        run_id=run.id,
+        google_place_id="completed1",
+        raw_name="Already Classified",
+        canonical_name="Already Classified",
+        place_types=["health"],
+        is_relevant=True,
+        lifecycle_status=MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value,
+        client_eligibility=MapsClientEligibility.ELIGIBLE.value,
+        enrichment_status=MapsPlaceEnrichmentStatus.COMPLETED.value,
+        enrichment_pipeline_state=MapsEnrichmentPipelineState.DETAIL_ENRICHMENT_COMPLETED.value,
+    )
     db.add(place)
+    db.add(other_place)
     await db.commit()
 
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -270,11 +286,20 @@ async def test_recovery_finalizes_stuck_running_place(db, auth):
     )
     reset = await maps_enrichment_cascade_service.reset_for_recovery(factory, run_id=run.id)
     assert reset["reset_stuck_running"] == 1
+    # The place just finalized as stuck-running must NOT also be re-queued
+    # by the two-phase reset in the same pass — re-selecting a place that
+    # was just finalized as stuck is exactly what re-froze the worker on a
+    # bad domain before (see _reset_two_phase_places' exclude_ids). Only the
+    # OTHER, non-stuck relevant place gets reset here.
     assert reset["reset_two_phase"] == 1
 
     await db.refresh(place)
-    assert place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
-    assert place.enrichment_pipeline_state == default_pipeline_state()
+    assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
+    assert place.enrichment_pipeline_state == MapsEnrichmentPipelineState.NEEDS_REVIEW.value
+
+    await db.refresh(other_place)
+    assert other_place.enrichment_status == MapsPlaceEnrichmentStatus.PENDING.value
+    assert other_place.enrichment_pipeline_state == default_pipeline_state()
 
 
 @pytest.mark.asyncio

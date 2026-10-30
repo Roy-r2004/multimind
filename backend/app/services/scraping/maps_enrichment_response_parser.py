@@ -163,6 +163,7 @@ Return a JSON object with this shape only:
       "addiction_focus_confirmed": true,
       "medical_detox": false,
       "residential_accommodation": true,
+      "inpatient_treatment": true,
       "operating_status": "open",
       "classification_evidence": {},
       "classification_confidence": 0.0,

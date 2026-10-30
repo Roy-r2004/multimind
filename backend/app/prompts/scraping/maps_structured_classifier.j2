@@ -5,6 +5,21 @@ Do NOT research addictions or languages — classification fields only.
 Return strict JSON matching the schema. Prefer null/unknown over guessing.
 A suggestive name alone is NOT evidence. When evidence is weak, keep fields unknown.
 
+Evidence quotes do not need a crawled website — a fact stated directly in
+the Google Maps metadata above (the facility's own category/type, name
+suffix indicating a legal form, or formatted address) is a legitimate,
+citable source on its own, and ``source_url`` may be left empty when the
+evidence is the Maps metadata itself rather than a crawled page.
+However, the facility's NAME or its Google Maps category/type ALONE is
+never sufficient evidence for ownership (nonprofit/NGO/private vs.
+government) or for overnight residential/inpatient accommodation — a name
+like "Rehab Center" or a category like "health" states nothing about who
+owns it or whether people stay overnight. A quote that only restates the
+name or category, with no further supporting detail (a legal-form suffix,
+an address identifying a known public hospital, explicit wording about
+"residential"/"inpatient"/"overnight" programs, etc.), must not be used as
+the evidence for that field — leave the field unknown instead.
+
 Facility metadata (JSON):
 {{ facility_json }}
 
@@ -14,16 +29,65 @@ Official website crawl excerpts:
 {% endif %}
 
 Return JSON with:
-- facility_type
-- operator_type
-- ownership_status
-- organization_scope
+- facility_type: EXACTLY one of residential_addiction_rehab, inpatient_detox_center,
+  outpatient_addiction_center, psychiatric_clinic_with_addiction_program,
+  therapeutic_community, cessation_service, harm_reduction_only, individual_addictologist,
+  therapist_or_counselor, recovery_community_center, general_mental_health_clinic, unrelated,
+  unknown. "Addiction treatment facility/center" by itself is NOT one of these — it does not
+  say residential vs. outpatient vs. general; if the evidence does not clearly indicate which
+  SPECIFIC one of these applies, return `unknown`, never a vaguer paraphrase.
+- operator_type: EXACTLY one of private_company, nonprofit, association, faith_based_org,
+  public_hospital, government_agency, hospital_system, university, individual_practice,
+  unknown.
+- ownership_status: EXACTLY one of confirmed_non_government, probable_non_government,
+  confirmed_government, ownership_unknown.
+- organization_scope: EXACTLY one of facility, program, network, individual_practice,
+  unknown. Use `network` (not `facility`) when the organization operates multiple
+  locations and your evidence is about the organization as a whole rather than this one
+  specific address — see the branch-vs-organization rule below.
 - addiction_treatment_mission (boolean or null)
 - care_setting (array of strings or empty)
 - outpatient_treatment, inpatient_treatment, residential_accommodation (boolean or null)
 - medical_detox, therapeutic_community, psychiatric_addiction_program (boolean or null)
 - operating_status (open, closed, unknown)
 - evidence (array of objects: field, value, quote, source_url, page_title, confidence)
+
+Return the EXACT snake_case codes above for facility_type/operator_type/ownership_status/
+organization_scope — never a descriptive English phrase like "Private company", "Private",
+or "Addiction treatment facility" in place of the code. If evidence clearly supports a
+conclusion but none of the listed codes fits precisely, use that field's `unknown` value
+rather than inventing or paraphrasing a new one.
+
+BRANCH vs. ORGANIZATION: when a facility is one location of a multi-location chain/network
+(e.g. a national foundation with many local offices), `inpatient_treatment` and
+`residential_accommodation` must be confirmed from evidence about THIS SPECIFIC address/
+location, never from evidence about a DIFFERENT named branch or the organization's services
+in general. "Organization X operates residential units in [other city/branch]" does NOT
+confirm residential care at THIS location — set `null` (not `true`) and use `organization_
+scope: network` instead of `facility` when your evidence is org-wide rather than this
+location's own. Ownership/operator_type ARE legitimately organization-wide facts (the same
+legal owner applies to every branch) and may be confirmed from organization-level evidence.
+
+`addiction_treatment_mission` means the facility genuinely provides treatment for alcohol, drug,
+and/or behavioral addictions — NOT that addiction is its primary, main, or only specialty. A
+general psychiatric or multidisciplinary facility can still be `true` if it runs its own actual
+addiction-treatment program alongside other services. Merely mentioning addiction, offering
+referrals elsewhere, or treating unrelated psychiatric/mental-health conditions is NOT sufficient
+for `true`. Use `null` when evidence is insufficient either way — do not set `false` just because
+you found nothing.
+
+`inpatient_treatment` / `residential_accommodation`: set `true` for ANY clear, credible evidence
+that patients are ADMITTED and cared for ON-SITE under the facility's own addiction-treatment
+program — confirmed inpatient addiction treatment, confirmed residential addiction rehabilitation,
+or 24-hour/live-in addiction care all independently satisfy this; they are the SAME requirement,
+not three separate, stricter ones. Do NOT require a separate, explicit statement that "patients
+stay overnight" once the facility is confirmed inpatient, residential, or 24-hour — that is already
+what those words mean. Only set `false` when there is clear, credible evidence the facility is
+explicitly OUTPATIENT-only, a day-treatment program, or a partial-hospitalization (PHP) program —
+these are the opposite of inpatient/residential, not an unconfirmed middle ground. Use `null` when
+you genuinely cannot tell either way; never guess `true` from the name/category alone (see the
+evidence rule above), and never guess `false` just because the word "residential" specifically
+does not appear if "inpatient" or "24-hour" does.
 
 Do NOT return addictions, languages, address, phone, or email.
 Return JSON only. No markdown fences.

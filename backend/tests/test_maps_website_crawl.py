@@ -204,6 +204,69 @@ def test_path_keywords_from_country_profile_merges_explicit_and_provider_terms()
 
 
 @pytest.mark.asyncio
+async def test_crawl_cache_does_not_leak_across_branches_on_same_domain(db, monkeypatch):
+    """Root-cause regression: a multi-location chain's domain must not let
+    one branch's crawled pages silently satisfy another branch's cache
+    lookup just because they share a hostname. Each branch's
+    official_website path gets its own cache row, keyed on (domain,
+    seed_path) — not domain alone (see A-klinikkasäätiön Päihdesairaala,
+    run 0afe4ca7-2dd3-47aa-a2cd-566e6b19b208, whose own
+    /toimipisteet/paihdesairaala/ page was never fetched because a sibling
+    branch's crawl of the same domain had already populated a
+    domain-wide-only cache row)."""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "maps_census_website_crawl_max_pages_per_domain", 1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text=_html(request.url.path, f"Body for {request.url.path}"),
+        )
+
+    transport = httpx.MockTransport(handler)
+    service = MapsWebsiteCrawlService(
+        client_factory=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs),
+        resolver=lambda _host: _async_resolve(["93.184.216.34"]),
+    )
+
+    branch_a = await service.crawl_website(
+        db, website_url="https://chain.test/locations/branch-a/"
+    )
+    branch_b = await service.crawl_website(
+        db, website_url="https://chain.test/locations/branch-b/"
+    )
+
+    assert branch_a.cache_hit is False
+    assert branch_b.cache_hit is False
+    assert any("/locations/branch-a/" in page.url for page in branch_a.pages)
+    assert any("/locations/branch-b/" in page.url for page in branch_b.pages)
+    assert not any("/locations/branch-b/" in page.url for page in branch_a.pages)
+    assert not any("/locations/branch-a/" in page.url for page in branch_b.pages)
+
+    rows = (
+        await db.execute(
+            select(MapsWebsiteCrawlCache).where(
+                MapsWebsiteCrawlCache.normalized_domain == "chain.test"
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 2
+    assert {row.seed_path for row in rows} == {"/locations/branch-a", "/locations/branch-b"}
+
+    # Re-crawling branch-a now hits ITS OWN cache row, not branch-b's.
+    branch_a_again = await service.crawl_website(
+        db, website_url="https://chain.test/locations/branch-a/"
+    )
+    assert branch_a_again.cache_hit is True
+    assert any("/locations/branch-a/" in page.url for page in branch_a_again.pages)
+    assert not any("/locations/branch-b/" in page.url for page in branch_a_again.pages)
+
+
+@pytest.mark.asyncio
 async def test_expired_cache_is_refreshed(db, monkeypatch):
     from app.core.config import get_settings
 

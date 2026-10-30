@@ -167,6 +167,22 @@ class Settings(BaseSettings):
     maps_keep_drop_batch_size: int = 25
     maps_keep_drop_max_crawl_excerpt_chars: int = 4000
     maps_keep_drop_place_timeout_seconds: float = 60.0
+    # Bounded retry for TRANSIENT provider/network failures only (connection
+    # errors, timeouts, DNS) — never for a parsed-but-invalid model response,
+    # where retrying burns budget without fixing anything. Confirmed need:
+    # Belarus run 5acff6f7-21f8-4427-88a1-38d0a394ce83 lost 130/1106 places
+    # to a single ~60s DNS blip with zero retry at all.
+    maps_keep_drop_retry_max_attempts: int = 2
+    maps_keep_drop_retry_backoff_seconds: float = 1.0
+    # Heartbeat is written once per batch iteration, before a batch of
+    # maps_keep_drop_batch_size places is judged at maps_keep_drop_concurrency
+    # concurrency with up to maps_keep_drop_place_timeout_seconds per place —
+    # worst case (every place in a batch times out) is
+    # ceil(25/5) * 60s = 300s = 5 minutes between heartbeat writes with the
+    # defaults above. 10 minutes gives a 2x safety margin over that worst
+    # case before a still-"running" pass is reported as stalled, so a merely
+    # slow (not dead) batch is never misreported.
+    maps_keep_drop_stale_minutes: int = 10
     maps_census_max_cells_per_run: int = 1500
     maps_census_max_cells_per_campaign: int = 1500
     maps_census_saturation_window: int = 10
@@ -235,6 +251,50 @@ class Settings(BaseSettings):
     # slow to trip and too quick to re-probe for this failure mode.
     maps_gosom_circuit_breaker_failure_threshold: int = 3
     maps_gosom_circuit_breaker_recovery_timeout_seconds: int = 900
+    # Bounded cap on recover_maps_census_runs() auto-relaunching a
+    # discovery campaign stuck behind a stale heartbeat (e.g. a Gosom
+    # breaker that keeps reopening every cycle) — without this, a
+    # permanently unavailable Gosom caused an unbounded relaunch loop
+    # every ~10 minutes forever, with the UI stuck at RUNNING. Once
+    # exceeded, the run is marked FAILED with a clear reason instead of
+    # being retried again.
+    maps_census_discovery_max_auto_resumes: int = 5
+
+    # Gosom self-healing supervisor (see gosom_health_monitor.py): persisted
+    # (DB-backed, survives process restarts/watchdog relaunches, unlike the
+    # in-memory CircuitBreaker which is re-created fresh each run_census()
+    # call) detection of "container Up, dispatcher wedged" — the failure
+    # mode no in-memory breaker state can see across relaunches. The actual
+    # `docker restart gosom` action is deliberately kept out-of-process (a
+    # host-side PowerShell supervisor), so this only configures detection
+    # thresholds and the shared-secret token gating the control endpoints
+    # that tell the app "a restart is about to happen" / "it happened".
+    maps_gosom_freeze_consecutive_timeouts: int = 3
+    maps_gosom_freeze_detection_window_seconds: int = 600
+    # Shared secret the host-side supervisor presents (X-Supervisor-Token)
+    # to call the gosom-supervisor control endpoints. Left blank by default
+    # so the endpoints 404 (disabled) until an operator explicitly sets one
+    # — never accept an unauthenticated request to flag/clear a Gosom
+    # restart.
+    maps_gosom_supervisor_token: str = ""
+    # Reported in the /status response so the host-side script has a single
+    # source of truth for its own rate limit, rather than hardcoding it in
+    # two places.
+    maps_gosom_supervisor_max_restarts_per_hour: int = 3
+    # If the supervisor crashes between /restart/begin and /restart/complete,
+    # restart_in_progress would otherwise stay stuck true forever, blocking
+    # every future restart. A restart genuinely taking longer than this is
+    # itself a sign something is wrong, so begin_restart's own guarded UPDATE
+    # treats a restart_in_progress flag older than this as abandoned and
+    # reclaimable, atomically, without ever allowing two restarts to run
+    # concurrently.
+    maps_gosom_supervisor_max_restart_duration_seconds: int = 300
+    # Consecutive restart attempts where Gosom never became HTTP-responsive
+    # again (not "scraping resumed" — see record_job_success for that axis).
+    # Once reached, further restarts are refused and the state is marked
+    # restart_exhausted so the failure surfaces as an explicit, actionable
+    # condition instead of the supervisor quietly retrying forever.
+    maps_gosom_supervisor_max_consecutive_restart_failures: int = 3
 
     # LLM call budget per cell (prevent cost spiral)
     maps_cell_llm_budget_max_calls: int = 10
@@ -366,9 +426,18 @@ class Settings(BaseSettings):
     maps_primary_extraction_max_calls_per_run: int = 5000
     maps_primary_extraction_confidence_threshold: float = 0.55
 
-    # Sonar classification budget (Phase 1 Layer 4) — separate from detail enrichment
+    # Sonar classification budget (Phase 1 Layer 4) — separate from detail enrichment.
+    # max_percent raised from 20.0: needs_sonar_classification now also fires
+    # whenever inpatient_treatment/residential_accommodation are unresolved
+    # (the fields that actually decide eligibility), which qualifies far more
+    # candidates than the original facility_type/ownership/confidence checks
+    # alone — confirmed against the Belarus run that prompted this: 20% of 34
+    # relevant candidates allows only ~6 calls, when essentially all 34 had
+    # these two fields unresolved. 50% still leaves a real cap (not "every
+    # candidate automatically"), and max_per_campaign remains the hard
+    # absolute ceiling regardless of campaign size.
     maps_sonar_fallback_enabled: bool = True
-    maps_sonar_fallback_max_percent: float = 20.0
+    maps_sonar_fallback_max_percent: float = 50.0
     maps_sonar_fallback_max_per_campaign: int = 200
     maps_sonar_fallback_concurrency: int = 5
     # Detail enrichment (Phase 2) uses maps_census_enrichment_* call budget independently.

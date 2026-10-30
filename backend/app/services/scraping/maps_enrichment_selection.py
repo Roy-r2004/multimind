@@ -13,7 +13,7 @@ from app.db.models import (
     MapsPlace,
     MapsPlaceEnrichmentStatus,
 )
-from app.services.scraping.maps_keep_drop_service import KEEP
+from app.services.scraping.maps_keep_drop_service import KEEP, REVIEW
 
 CONFIDENT_SKIP_LIFECYCLE = frozenset(
     {
@@ -47,16 +47,32 @@ class EnrichmentSelectionReport:
 
 
 def _keep_drop_gate_passed(place: Any) -> bool:
-    """True once the place is safe for Phase 2: either the strict keep/drop
-    gate confirmed it (keep_drop_decision == KEEP), or an admin manually
+    """True once the place is safe for Phase 2: the strict keep/drop gate
+    confirmed it (keep_drop_decision == KEEP or REVIEW — both route to Phase
+    2's real evidence-gathering, see apply_keep_drop and
+    build_classification_query; only DROP stops here), or an admin manually
     marked it eligible (client_eligibility == ELIGIBLE, which never happens
     as a default for an undecided place — see compute_client_eligibility).
+
+    REVIEW must be included here: it means "genuine addiction-treatment
+    signal, ownership/residential not yet confirmed" — exactly the case
+    mandatory eligibility classification exists to resolve. Excluding it
+    (as this function previously did) meant every REVIEW candidate was
+    permanently finalized as "skipped" by _finalize_cheap_skips before
+    classify_run ever got a chance to extract the ownership/facility-type/
+    residential evidence compute_client_eligibility needs — silently
+    capping 100% of REVIEW candidates at REVIEW forever, regardless of how
+    good a candidate they actually were (the Finland run
+    ad4f7947-ffae-4e22-acbd-45c74c037cfd: 33 of 55 relevant candidates).
+
     Never let the expensive cascade touch a place still sitting in
-    needs_review/plausible limbo — a premature cascade run can silently
-    corrupt lifecycle_status/is_relevant before run_keep_drop_pass ever sees
-    the place, and it gets swept into stamp_non_candidate_drops's
-    bulk-exclude as if it had never been a candidate at all."""
-    if getattr(place, "keep_drop_decision", None) == KEEP:
+    needs_review/plausible limbo *before keep/drop itself has judged it* —
+    a premature cascade run can silently corrupt lifecycle_status/is_relevant
+    before run_keep_drop_pass ever sees the place, and it gets swept into
+    stamp_non_candidate_drops's bulk-exclude as if it had never been a
+    candidate at all. That is a different concern from this gate (which
+    only runs after keep_drop_decision is already set to KEEP or REVIEW)."""
+    if getattr(place, "keep_drop_decision", None) in (KEEP, REVIEW):
         return True
     return getattr(place, "client_eligibility", None) == MapsClientEligibility.ELIGIBLE.value
 
