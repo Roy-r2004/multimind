@@ -352,19 +352,36 @@ def normalize_gosom_row(row: dict[str, str | None]) -> PlaceResult | None:
     title = (row.get("title") or "").strip()
     if not identifier or not title:
         return None
-    category = (row.get("category") or "").strip()
     return PlaceResult(
         google_place_id=identifier[:255],
         raw_name=title[:512],
         formatted_address=_bounded_optional(row.get("address"), 512),
-        place_types=[category][:20] if category else [],
+        place_types=_gosom_categories(row)[:20],
         latitude=_float_or_none(row.get("latitude")),
         longitude=_float_or_none(row.get("longitude")),
         international_phone_number=_bounded_optional(row.get("phone"), 64),
         website=_bounded_optional(row.get("website"), 512),
         photo_reference=None,
         maps_url=_bounded_optional(row.get("link"), 512),
+        operating_status=(
+            "closed" if "permanently closed" in (row.get("status") or "").lower() else None
+        ),
     )
+
+
+def _gosom_categories(row: dict[str, str | None]) -> list[str]:
+    """Primary category first, then the rest of gosom's category list —
+    the closest equivalent of the Places API's multi-valued ``types``."""
+    labels = [(row.get("category") or "").strip()]
+    labels.extend(part.strip() for part in (row.get("categories") or "").split(","))
+    seen: set[str] = set()
+    categories: list[str] = []
+    for label in labels:
+        key = label.casefold()
+        if label and key not in seen:
+            seen.add(key)
+            categories.append(label)
+    return categories
 
 
 def discovery_identifier(row: dict[str, str | None]) -> str | None:

@@ -85,6 +85,8 @@ class PlaceResult:
     website: str | None = None
     photo_reference: str | None = None
     maps_url: str | None = None
+    # "closed" when the provider reports the place permanently closed.
+    operating_status: str | None = None
 
 
 @dataclass

@@ -92,6 +92,8 @@ def test_normalize_missing_fields_and_no_invented_photo():
     assert place.place_types == ["Rehabilitation center"]
     assert place.photo_reference is None
 
+    assert place.operating_status is None
+
     empty = normalize_gosom_row({"title": "Nameless id only", "place_id": ""})
     assert empty is None
     blank_coords = normalize_gosom_row(
@@ -160,6 +162,38 @@ def _install_http(monkeypatch, calls: list, script: list) -> None:
         return _FakeClient(calls, script)
 
     monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+
+def test_permanently_closed_status_marks_place_closed():
+    closed = normalize_gosom_row(
+        {"title": "Old Rehab", "cid": "7", "status": "Permanently closed"}
+    )
+    open_now = normalize_gosom_row(
+        {"title": "Open Rehab", "cid": "8", "status": "Open ⋅ Closes 5 PM"}
+    )
+    temporarily = normalize_gosom_row(
+        {"title": "Paused Rehab", "cid": "9", "status": "Temporarily closed"}
+    )
+    assert closed is not None and closed.operating_status == "closed"
+    assert open_now is not None and open_now.operating_status is None
+    assert temporarily is not None and temporarily.operating_status is None
+
+
+def test_categories_list_extends_primary_category_without_duplicates():
+    place = normalize_gosom_row(
+        {
+            "title": "Multi Category Rehab",
+            "cid": "10",
+            "category": "Rehabilitation center",
+            "categories": "Rehabilitation center, Addiction treatment center, Medical clinic",
+        }
+    )
+    assert place is not None
+    assert place.place_types == [
+        "Rehabilitation center",
+        "Addiction treatment center",
+        "Medical clinic",
+    ]
 
 
 @pytest.mark.asyncio
