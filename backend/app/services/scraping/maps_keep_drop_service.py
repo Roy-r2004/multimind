@@ -55,6 +55,10 @@ from app.db.models import (
 from app.llm.catalog import get_model
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import LLMProvider, get_provider_registry
+from app.services.scraping.maps_eligibility import (
+    compute_client_eligibility,
+    derive_legacy_verification_verdict,
+)
 from app.services.scraping.maps_enrichment_processing_state import MapsEnrichmentPipelineState
 
 logger = logging.getLogger(__name__)
@@ -229,8 +233,9 @@ async def classify_place_keep_drop(
     state_code: str | None = None,
     state_name: str | None = None,
 ) -> tuple[KeepDropDecision, str]:
-    """Return (decision, source). Uncertain judgments become review; so does
-    a technical failure (both classifiers unreachable) — never drop."""
+    """Return (decision, source). Uncertain judgments become drop, as with the
+    original Google Places gate; only a technical failure (both classifiers
+    unreachable) becomes review, because nothing actually judged the place."""
     settings = get_settings()
     threshold = float(settings.maps_keep_drop_confidence_threshold)
     payload = build_keep_drop_payload(place)
@@ -246,8 +251,8 @@ async def classify_place_keep_drop(
         decision = await _call_model_with_retry(
             prompt_name="scraping/maps_keep_drop.j2",
             system=(
-                "You return strict JSON keep/drop/review decisions for addiction-treatment "
-                "facility candidates. Genuinely uncertain means review, not drop."
+                "You return strict JSON keep/drop decisions for addiction-treatment "
+                "facility candidates. Uncertain means drop."
             ),
             model_slug=nano_model.provider_model,
             provider=nano_provider,
@@ -276,9 +281,8 @@ async def classify_place_keep_drop(
             sonar_decision = await _call_model_with_retry(
                 prompt_name="scraping/maps_keep_drop_sonar.j2",
                 system=(
-                    "You have live web search. Return a strict JSON keep/drop/review verdict "
-                    "for one addiction-treatment facility candidate. Genuinely uncertain means "
-                    "review, not drop."
+                    "You have live web search. Return a strict JSON keep/drop verdict "
+                    "for one addiction-treatment facility candidate. Uncertain means drop."
                 ),
                 model_slug=sonar_model.provider_model,
                 provider=sonar_provider,
@@ -301,16 +305,12 @@ async def classify_place_keep_drop(
     if decision is not None and decision.decision == DROP:
         return decision, _SONAR_SOURCE
     if decision is not None:
-        # Below-threshold confidence on a keep/review verdict: genuine
-        # ambiguity, not a confident match to any DROP condition — preserve
-        # it for Phase 2's real evidence-gathering (review) instead of
-        # guessing it away. A false drop here costs a genuine rehab its
-        # only chance to be verified; review costs nothing but one Phase 2
-        # classification pass, already bounded by the same batch/call
-        # budgets as every other kept candidate.
+        # Below-threshold confidence on a keep/review verdict: force drop and
+        # keep the model's reasoning for audit. A false keep is worse than a
+        # false drop — this is the strictness the Google Places runs had.
         return (
             KeepDropDecision(
-                decision=REVIEW,
+                decision=DROP,
                 reason=f"uncertain: {decision.reason}"[:400],
                 confidence=decision.confidence,
                 evidence=decision.evidence,
@@ -345,35 +345,24 @@ def apply_keep_drop(place: MapsPlace, decision: KeepDropDecision, *, source: str
     place.classification_confidence = decision.confidence
 
     if decision.decision == KEEP:
-        # A confident keep/drop verdict is Phase 1 metadata, not verified
-        # classification evidence — it must NEVER independently establish
-        # final client_eligibility (that would let a facility reach the
-        # accepted export if Phase 2 classification is slow, fails, is
-        # skipped, or simply hasn't run yet). Only compute_client_eligibility,
-        # called once real classification evidence exists, is allowed to
-        # set ELIGIBLE. PROBABLE_ELIGIBLE (not NEEDS_REVIEW) keeps a
-        # confident keep visibly distinct from a genuinely uncertain
-        # review while still being a pending, non-final state.
-        place.lifecycle_status = MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
-        place.client_eligibility = MapsClientEligibility.REVIEW.value
-        place.is_relevant = True
-        place.verification_verdict = "unknown"
+        # The strict gate is the eligibility decision, as it was for Google
+        # Places runs. compute_client_eligibility returns ELIGIBLE for a kept
+        # place unless Phase 2 later finds hard negative evidence (closed,
+        # government, outpatient-only, solo practitioner, unrelated) or it
+        # sits outside the run's geography.
         place.addiction_focus_confirmed = True
+        place.client_eligibility = compute_client_eligibility(place)
+        place.lifecycle_status = (
+            MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
+            if place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+            else MapsLifecycleStatus.NEEDS_REVIEW.value
+        )
+        place.is_relevant = True
+        place.verification_verdict = derive_legacy_verification_verdict(place.lifecycle_status)
         if place.enrichment_status != MapsPlaceEnrichmentStatus.COMPLETED.value:
-            # Route into mandatory eligibility classification (ownership,
-            # facility type, organization scope, residential accommodation)
-            # — PREFILTER_PENDING, not CLASSIFICATION_COMPLETED. The latter
-            # is _classify_place's own exit marker for places that have
-            # already been through real structured classification; stamping
-            # it here (as this previously did) made build_classification_query
-            # skip every freshly-decided KEEP place, so it went straight to
-            # the optional detail-enrichment stage with ownership/facility-
-            # type/residential_accommodation never extracted — the direct
-            # cause of "55 relevant, 0 eligible" in the Finland run
-            # ad4f7947-ffae-4e22-acbd-45c74c037cfd. A keep/drop verdict is
-            # Phase 1 metadata, not verified classification evidence (see
-            # module docstring); it must route to Phase 2 classification,
-            # not skip past it.
+            # Still route into Phase 2 classification (PREFILTER_PENDING, not
+            # CLASSIFICATION_COMPLETED, which made build_classification_query
+            # skip every kept place) so hard negative evidence can veto it.
             place.enrichment_status = MapsPlaceEnrichmentStatus.PENDING.value
             place.enrichment_pipeline_state = (
                 MapsEnrichmentPipelineState.PREFILTER_PENDING.value

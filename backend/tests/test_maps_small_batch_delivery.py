@@ -199,9 +199,10 @@ async def test_repeated_attempts_exhaustion_finalizes_needs_review_not_excluded(
     # enrichment_attempts was already 1 (>= default max of 2 after this attempt
     # increments implicitly via the claim/finalize path) -> finalized terminal.
     assert place.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
-    assert place.lifecycle_status == MapsLifecycleStatus.NEEDS_REVIEW.value
-    assert place.client_eligibility == MapsClientEligibility.REVIEW.value
-    assert place.client_eligibility != MapsClientEligibility.EXCLUDED.value
+    # A kept place keeps the strict gate's eligibility: a provider failure is
+    # missing evidence, never a disqualification.
+    assert place.lifecycle_status == MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
+    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
 
 
 @pytest.mark.asyncio

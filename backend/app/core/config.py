@@ -160,7 +160,8 @@ class Settings(BaseSettings):
     maps_census_model: str = "gpt-4.1"
     # Strict keep/drop gate: one low-cost call per facility, Sonar fallback only
     # when evidence is insufficient or confidence is below the threshold.
-    maps_keep_drop_model: str = "claude-haiku"
+    # gpt-5-nano is the model the Google Places baseline was validated with.
+    maps_keep_drop_model: str = "gpt-5-nano"
     maps_keep_drop_confidence_threshold: float = 0.85
     maps_keep_drop_sonar_fallback_enabled: bool = True
     maps_keep_drop_concurrency: int = 5

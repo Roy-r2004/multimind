@@ -221,6 +221,21 @@ async def test_france_census_run_produces_full_funnel_report(db, auth, monkeypat
         ),
     )
 
+    # Never call the real keep/drop model from a test (it would bill the
+    # configured OpenRouter key and depend on a live model's judgment).
+    async def fake_classify_keep_drop(_session, place, **_kwargs):
+        from app.services.scraping.maps_keep_drop_service import KeepDropDecision
+
+        return (
+            KeepDropDecision(decision="keep", reason="test keep", confidence=0.95),
+            "nano",
+        )
+
+    monkeypatch.setattr(
+        "app.services.scraping.maps_keep_drop_service.classify_place_keep_drop",
+        fake_classify_keep_drop,
+    )
+
     census_summary = await maps_census_service.run_census(db, run_id=run.id)
     assert census_summary.get("error") is None
 

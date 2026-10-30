@@ -188,9 +188,11 @@ async def test_phoneless_facility_consistent_across_count_list_and_export(db, au
         if row[0].value
     }
 
-    assert detail.accepted_facilities_count == 1
-    assert listed.meta.total == 1
-    assert exported_names == {"Quiet Residential Center"}
+    # Eligible, but without a phone or website it is not delivered — and the
+    # count, the list and the export all agree on that.
+    assert detail.accepted_facilities_count == 0
+    assert listed.meta.total == 0
+    assert exported_names == set()
 
 
 # --- Task 8.10: Phase 2 empty-state must reflect actual persisted

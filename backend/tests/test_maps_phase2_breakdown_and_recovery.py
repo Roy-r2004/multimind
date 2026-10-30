@@ -76,6 +76,14 @@ async def test_phase2_breakdown_buckets_are_mutually_exclusive_and_sum_to_total(
             "eligible-1",
             client_eligibility=MapsClientEligibility.ELIGIBLE.value,
             enrichment_pipeline_state=MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value,
+            international_phone_number="+213 21 00 00 00",
+            raw_website="https://rehab.example.dz",
+        ),
+        _place(
+            run.id,
+            "missing-contact-1",
+            client_eligibility=MapsClientEligibility.ELIGIBLE.value,
+            enrichment_pipeline_state=MapsEnrichmentPipelineState.CLASSIFICATION_COMPLETED.value,
         ),
         _place(
             run.id,
@@ -113,6 +121,7 @@ async def test_phase2_breakdown_buckets_are_mutually_exclusive_and_sum_to_total(
     breakdown = await compute_phase2_breakdown(db, run_id=run.id)
     assert breakdown == {
         "eligible": 1,
+        "missing_contact": 1,
         "rejected": 1,
         "unresolved": 1,
         "classification_pending": 1,

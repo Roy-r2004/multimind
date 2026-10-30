@@ -269,9 +269,11 @@ async def test_eligible_facility_with_no_phone_or_website_appears_without_enrich
     assert place.official_website is None
     assert place.bed_count is None
 
-    assert detail.accepted_facilities_count == 1
-    assert listed.meta.total == 1
-    assert exported_names == {keep_name}
+    # Eligible without the optional enrichment, but not delivered: the client
+    # needs a phone and a website, as in the Google Places export.
+    assert detail.accepted_facilities_count == 0
+    assert listed.meta.total == 0
+    assert exported_names == set()
     assert detail.phase2_status == "completed"
 
 

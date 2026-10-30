@@ -46,6 +46,7 @@ def _accepted_place(run_id: str, google_place_id: str, name: str, **overrides) -
         "client_eligibility": MapsClientEligibility.ELIGIBLE.value,
         "keep_drop_decision": "keep",
         "international_phone_number": "+358 40 000 0000",
+        "raw_website": "https://rehab.example.fi",
     }
     payload.update(overrides)
     return MapsPlace(**payload)
@@ -60,8 +61,11 @@ async def test_banner_count_matches_phase2_list_total(db, auth):
         [
             _accepted_place(run.id, "g1", "Eligible One"),
             _accepted_place(run.id, "g2", "Eligible Two", keep_drop_decision="review"),
-            # Accepted: phone is optional, never gates acceptance.
-            _accepted_place(run.id, "g3", "No Phone", international_phone_number=None),
+            _accepted_place(run.id, "g3", "Eligible Three"),
+            # Not accepted: no phone, so the client cannot contact it.
+            _accepted_place(run.id, "g5", "No Phone", international_phone_number=None),
+            # Not accepted: no website.
+            _accepted_place(run.id, "g6", "No Website", raw_website=None),
             # Not accepted: still under review.
             _accepted_place(
                 run.id,

@@ -49,28 +49,6 @@ def _assert_clarified(rendered: str, template_name: str) -> None:
     "template_name,context",
     [
         (
-            "scraping/maps_keep_drop.j2",
-            dict(
-                country_code="FI",
-                country_name="Finland",
-                state_code="",
-                state_name="",
-                facility_json=json.dumps({"name": "Example Clinic"}),
-                crawl_excerpt="",
-            ),
-        ),
-        (
-            "scraping/maps_keep_drop_sonar.j2",
-            dict(
-                country_code="FI",
-                country_name="Finland",
-                state_code="",
-                state_name="",
-                facility_json=json.dumps({"name": "Example Clinic"}),
-                crawl_excerpt="",
-            ),
-        ),
-        (
             "scraping/maps_place_enricher.j2",
             dict(
                 country_code="FI",
@@ -115,9 +93,9 @@ def test_addiction_focus_prompt_renders_and_states_not_required_to_be_primary(
     _assert_clarified(rendered, template_name)
 
 
-def test_keep_drop_and_classification_prompts_agree_on_the_rule() -> None:
-    """All six prompts must phrase the rule consistently enough that a human
-    auditor (or the model) cannot read one prompt as contradicting another."""
+def test_keep_drop_gate_is_strict_and_enricher_is_clarified() -> None:
+    """The strict gate requires addiction as a primary program; the
+    enrichment prompt keeps its clarified wording."""
     engine = get_prompt_engine()
     rendered_keep_drop = engine.render(
         "scraping/maps_keep_drop.j2",
@@ -135,6 +113,11 @@ def test_keep_drop_and_classification_prompts_agree_on_the_rule() -> None:
         addiction_taxonomy_json=json.dumps(["Alcohol"]),
         facilities_json=json.dumps([{"place_id": "p1"}]),
     )
-    assert "does not have to be" in rendered_keep_drop.lower()
+    # The keep/drop gate is deliberately stricter than Phase 2 enrichment: it
+    # decides eligibility (as in the Google Places runs), so it keeps the
+    # original "addiction is a primary, formal program" rule. Phase 2 only
+    # vetoes on hard negative evidence, so its looser wording cannot add a
+    # place the gate dropped.
+    assert "primary, formal program" in rendered_keep_drop.lower()
     enricher_lower = " ".join(rendered_enricher.lower().split())
     assert "not that addiction is its primary" in enricher_lower

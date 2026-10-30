@@ -334,9 +334,19 @@ class MapsClassificationService:
             attempts_exhausted = (place.enrichment_attempts or 0) >= max_attempts
             if attempts_exhausted:
                 # Requirement: every relevant place must end in a valid bucket —
-                # never loop forever on a place that keeps erroring.
-                place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
-                place.client_eligibility = MapsClientEligibility.REVIEW.value
+                # never loop forever on a place that keeps erroring. A kept
+                # place keeps the gate's eligibility: an error is missing
+                # evidence, never a disqualification.
+                place.client_eligibility = (
+                    compute_client_eligibility(place)
+                    if place.keep_drop_decision == KEEP
+                    else MapsClientEligibility.REVIEW.value
+                )
+                place.lifecycle_status = (
+                    MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
+                    if place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+                    else MapsLifecycleStatus.NEEDS_REVIEW.value
+                )
                 place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
                 place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                 place.enrichment_completed_at = datetime.now(UTC)
@@ -653,6 +663,12 @@ class MapsClassificationService:
                     _apply_structured_fields_filling_unresolved_only(place, sonar_result)
                     if not was_already_eligible:
                         apply_sonar_bucket_lifecycle(place, classified.classification_bucket)
+                    elif place.keep_drop_decision == KEEP:
+                        # A kept place is eligible by default; re-check it so
+                        # hard negative evidence Sonar just verified (closed,
+                        # government, outpatient-only) can still exclude it.
+                        place.client_eligibility = compute_client_eligibility(place)
+                        place.lifecycle_status = _derive_lifecycle_status(place)
                     place.enrichment_extraction_source = "sonar_classification"
                     place.is_relevant = derive_is_relevant(place.lifecycle_status)
                     place.verification_verdict = derive_legacy_verification_verdict(
@@ -699,8 +715,14 @@ class MapsClassificationService:
                     # valid bucket, never loop forever on a place that keeps
                     # failing classification. A provider failure must never
                     # silently become "excluded" — park it as needs_review.
-                    place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
-                    place.client_eligibility = MapsClientEligibility.REVIEW.value
+                    # A kept place stays eligible: a provider failure is
+                    # missing evidence, which never demotes the strict gate.
+                    if place.keep_drop_decision == KEEP:
+                        place.client_eligibility = compute_client_eligibility(place)
+                        place.lifecycle_status = _derive_lifecycle_status(place)
+                    else:
+                        place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
+                        place.client_eligibility = MapsClientEligibility.REVIEW.value
                     place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
                     place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                     place.enrichment_completed_at = datetime.now(UTC)

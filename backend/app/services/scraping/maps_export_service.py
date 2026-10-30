@@ -125,7 +125,7 @@ class MapsExportService:
             scoped_places = [
                 place
                 for place in places
-                if place.keep_drop_decision in {"keep", "review"} and _is_eligible_center(place)
+                if _is_eligible_center(place)
             ]
 
         self._write_sheet(
@@ -396,7 +396,17 @@ def _ui_price(value: Any) -> str:
 
 
 def _is_eligible_center(place: MapsPlace) -> bool:
-    return place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+    """Mirror of maps_census_service._accepted_facility_filter. A delivered
+    center needs a phone and a website, as the Google Places export did: the
+    client has no way to contact a facility without them."""
+    has_phone = bool((place.international_phone_number or "").strip())
+    has_website = bool((place.official_website or place.raw_website or "").strip())
+    return (
+        place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+        and place.keep_drop_decision in {"keep", "review"}
+        and has_phone
+        and has_website
+    )
 
 
 maps_export_service = MapsExportService()

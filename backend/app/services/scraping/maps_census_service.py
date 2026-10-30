@@ -2387,6 +2387,7 @@ class MapsCensusService:
                             ),
                             international_phone_number=result.international_phone_number,
                             raw_website=result.website,
+                            operating_status=getattr(result, "operating_status", None),
                             discovered_via_query=query_text,
                             photo_reference=result.photo_reference,
                             discovery_sources=(
@@ -4006,16 +4007,20 @@ def has_contact_channel(place: MapsPlace | Any) -> bool:
 def _accepted_facility_filter():
     """The single authoritative "accepted rehab center" predicate — must
     mirror maps_export_service.py's _is_eligible_center exactly:
-    client_eligibility == eligible, keep_drop_decision in {keep, review}.
-    A phone number (like a website) is informative but optional and must
-    never independently exclude an otherwise-eligible facility. Shared by
-    list_places' accepted_only filter and the accepted-facility counts
-    surfaced on run summaries, so the banner count, the Phase 2 tab, and
-    the Excel export can never disagree.
+    client_eligibility == eligible, keep_drop_decision in {keep, review},
+    and both a phone number and a website, as the Google Places export
+    required. Shared by list_places' accepted_only filter and the
+    accepted-facility counts surfaced on run summaries, so the banner count,
+    the Phase 2 tab, and the Excel export can never disagree.
     """
     return and_(
         MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
         MapsPlace.keep_drop_decision.in_(["keep", "review"]),
+        func.trim(func.coalesce(MapsPlace.international_phone_number, "")) != "",
+        or_(
+            func.trim(func.coalesce(MapsPlace.official_website, "")) != "",
+            func.trim(func.coalesce(MapsPlace.raw_website, "")) != "",
+        ),
     )
 
 
@@ -4027,7 +4032,9 @@ async def compute_phase2_breakdown(db: AsyncSession, *, run_id: str) -> dict[str
     "eligible" so this can never disagree with the banner count or the
     Excel export.
 
-    - eligible: client_eligibility == ELIGIBLE (the accepted set).
+    - eligible: the accepted set (_accepted_facility_filter).
+    - missing_contact: ELIGIBLE but without a phone or a website, so not
+      delivered.
     - rejected: classification genuinely ran and excluded the candidate
       (client_eligibility == EXCLUDED) — a real negative verification, not
       a technical failure.
@@ -4085,8 +4092,11 @@ async def compute_phase2_breakdown(db: AsyncSession, *, run_id: str) -> dict[str
 
     classification_failed = await _count(is_failed)
     classification_pending = await _count(not_(is_failed), is_pending)
-    eligible = await _count(
-        is_classified, MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+    eligible = await _count(is_classified, _accepted_facility_filter())
+    missing_contact = await _count(
+        is_classified,
+        MapsPlace.client_eligibility == MapsClientEligibility.ELIGIBLE.value,
+        not_(_accepted_facility_filter()),
     )
     rejected = await _count(
         is_classified, MapsPlace.client_eligibility == MapsClientEligibility.EXCLUDED.value
@@ -4099,6 +4109,7 @@ async def compute_phase2_breakdown(db: AsyncSession, *, run_id: str) -> dict[str
     )
     return {
         "eligible": eligible,
+        "missing_contact": missing_contact,
         "rejected": rejected,
         "unresolved": unresolved,
         "classification_pending": classification_pending,

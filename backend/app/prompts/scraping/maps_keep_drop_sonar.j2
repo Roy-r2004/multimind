@@ -3,19 +3,15 @@ You have live web search (low context). Verify ONE facility candidate in {% if s
 Facility (JSON):
 {{ facility_json }}
 
-KEEP only if web evidence clearly confirms a private, nonprofit, or NGO facility offering an actual
-inpatient / residential treatment program (rehab / detox / therapeutic community, or a psychiatric/
-multidisciplinary hospital's own residential addiction ward) that genuinely treats alcohol, drug,
-and/or eligible behavioral addictions{% if state_name %}, located in {{ state_name }}{% endif %}.
-Addiction treatment does NOT need to be the facility's primary or only program.
+KEEP only if web evidence clearly confirms a private, nonprofit, or NGO addiction-TREATMENT facility offering inpatient / residential care (rehab / detox / therapeutic community) where addiction treatment is a primary, formal program{% if state_name %}, located in {{ state_name }}{% endif %}.
 
-DROP if web evidence clearly shows it is {% if state_name %}located outside {{ state_name }}, {% endif %}a public/government hospital or publicly funded, outpatient-only, telehealth/virtual-only, referral-only, a solo practitioner or cabinet, a general psychiatric/mental health/multidisciplinary facility with NO evidence of its own actual inpatient/residential addiction program, a general clinic without clear addiction treatment, sober living / wellness / coaching without a formal treatment program, a smoking-cessation/laser service, an awareness- or prevention-only association, or an unrelated business.
+DROP if it is {% if state_name %}located outside {{ state_name }}, {% endif %}a public/government hospital or publicly funded, outpatient-only, telehealth/virtual-only, referral-only, a solo practitioner or cabinet, a general psychiatric/mental health clinic without addiction as the primary program, a general clinic without clear addiction treatment, sober living / wellness / coaching without a formal treatment program, a smoking-cessation/laser service, an awareness- or prevention-only association, an unrelated business — or if you cannot confirm inpatient treatment with confidence.
 
-REVIEW if web search finds genuine addiction-treatment signal but cannot confirm residential/inpatient care or ownership with confidence, and none of the DROP conditions above clearly apply. Prefer REVIEW over guessing KEEP or DROP when genuinely unsure.
+When in doubt, DROP.
 
 Return a single JSON object with exactly these fields:
 {
-  "decision": "keep | drop | review",
+  "decision": "keep | drop",
   "reason": "short explanation",
   "confidence": 0.0,
   "evidence": [

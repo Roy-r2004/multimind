@@ -167,6 +167,24 @@ def compute_client_eligibility(place: Any) -> str:
     }:
         return MapsClientEligibility.EXCLUDED.value
 
+    # The strict keep/drop gate decides eligibility, as it did for Google
+    # Places runs. Every hard negative above (closed, government, public
+    # operator, unrelated/cessation/harm-reduction, outpatient-only, solo
+    # practitioner) still excludes a kept place; Phase 2 contradictions and
+    # out-of-area coordinates send it to a human instead. Missing Phase 2
+    # evidence never demotes a kept place.
+    if _field(place, "keep_drop_decision") == "keep":
+        if geo_boundary_match in {"outside_polygon", "outside_bbox_fallback"}:
+            return MapsClientEligibility.REVIEW.value
+        if residential_accommodation is False and care_setting in {"outpatient", "virtual"}:
+            return MapsClientEligibility.REVIEW.value
+        if (
+            facility_type == MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value
+            and addiction_focus_confirmed is False
+        ):
+            return MapsClientEligibility.REVIEW.value
+        return MapsClientEligibility.ELIGIBLE.value
+
     if (
         ownership_status == MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value
         and organization_scope == MapsOrganizationScope.FACILITY.value
