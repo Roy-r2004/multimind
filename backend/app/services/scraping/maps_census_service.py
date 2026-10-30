@@ -1442,6 +1442,7 @@ class MapsCensusService:
                 seen_query_texts=seen_query_texts,
                 execution_token=execution_token,
                 gosom_breaker=gosom_breaker,
+                discovery_provider=discovery_provider,
                 geo_polygon_record=geo_polygon_record,
             )
             campaign_cells_used = campaign_budget["used"]
@@ -2029,6 +2030,7 @@ class MapsCensusService:
         execution_token: str | None = None,
         gosom_breaker: CircuitBreaker | None = None,
         geo_polygon_record: Any = None,
+        discovery_provider: str | None = None,
     ) -> None:
         """Run a paginated Places search for each queued cell, classify newly
         discovered places immediately (so saturation reflects real
@@ -2095,7 +2097,9 @@ class MapsCensusService:
                 # the next call) rather than resuming full-speed submission
                 # before we know the dispatcher is actually back.
 
-            if getattr(client, "name", None) == "gosom" and await gosom_health_monitor.is_restart_in_progress(
+            if (
+                discovery_provider or settings.maps_discovery_provider
+            ) == "gosom" and await gosom_health_monitor.is_restart_in_progress(
                 session_factory
             ):
                 # The host-side supervisor has flagged (and is about to, or
