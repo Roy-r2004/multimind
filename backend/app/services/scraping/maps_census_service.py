@@ -126,9 +126,11 @@ from app.services.scraping.maps_grid_planner import (
 )
 from app.services.scraping import gosom_health_monitor
 from app.services.scraping.maps_places_client import (
+    DISCOVERY_PROVIDERS,
     PlacesProviderError,
     PlacesTimeoutError,
     create_places_client,
+    resolve_discovery_provider,
 )
 from app.services.scraping.maps_quota_tracker import (
     MapsQuotaTracker,
@@ -288,9 +290,13 @@ class MapsCensusService:
         country_code: str,
         state_code: str | None = None,
         state_name: str | None = None,
+        discovery_provider: str | None = None,
     ) -> MapsCensusRunDetail:
         settings = get_settings()
-        if settings.maps_discovery_provider == "gosom":
+        provider = (discovery_provider or "").strip().lower() or settings.maps_discovery_provider
+        if provider not in DISCOVERY_PROVIDERS:
+            raise ValidationError("discovery_provider must be 'google_places' or 'gosom'.")
+        if provider == "gosom":
             if not (settings.gosom_base_url or "").strip():
                 raise ValidationError("Gosom Maps census is not configured (GOSOM_BASE_URL).")
         elif not settings.google_places_enabled:
@@ -305,6 +311,7 @@ class MapsCensusService:
             country_name=country.name,
             state_code=clean_state_code,
             state_name=clean_state_name,
+            discovery_provider=provider,
             status=MapsCensusStatus.QUEUED,
         )
         db.add(run)
@@ -947,6 +954,10 @@ class MapsCensusService:
         """
         session_factory = self._session_factory(db)
         settings = get_settings()
+        async with session_factory() as provider_db:
+            discovery_provider = resolve_discovery_provider(
+                await provider_db.get(MapsCensusRun, run_id)
+            )
 
         # === PHASE 0: Initialize safety guards ===
         # Circuit breaker: prevent cascading failures from external APIs
@@ -962,7 +973,7 @@ class MapsCensusService:
             openrouter_breaker = CircuitBreaker("openrouter", breaker_config)
             google_breaker = CircuitBreaker("google_places", breaker_config)
             sonar_breaker = CircuitBreaker("sonar", breaker_config)
-            if settings.maps_discovery_provider == "gosom":
+            if discovery_provider == "gosom":
                 gosom_breaker = CircuitBreaker(
                     "gosom",
                     CircuitBreakerConfig(
@@ -1232,7 +1243,7 @@ class MapsCensusService:
             settings.maps_census_max_cells_per_campaign or settings.maps_census_max_cells_per_run
         )
         gosom_full_coverage = (
-            settings.maps_discovery_provider == "gosom"
+            discovery_provider == "gosom"
             and settings.maps_census_coverage_mode == "full"
         )
         # 1500 is a ceiling. A lower campaign setting still wins, so a 50-cell
@@ -1386,10 +1397,10 @@ class MapsCensusService:
                 session_factory, run_id=run_id, by=len(cell_ids)
             )
 
-        client = create_places_client()
+        client = create_places_client(discovery_provider)
         summary = {"cells": campaign_cells_used, "places_found": 0, "cell_failures": 0}
         if not client.is_configured():
-            if settings.maps_discovery_provider == "gosom":
+            if discovery_provider == "gosom":
                 config_error = "Gosom scraper is not configured (GOSOM_BASE_URL)."
             else:
                 config_error = "Google Places API key is not configured."
@@ -2084,7 +2095,7 @@ class MapsCensusService:
                 # the next call) rather than resuming full-speed submission
                 # before we know the dispatcher is actually back.
 
-            if settings.maps_discovery_provider == "gosom" and await gosom_health_monitor.is_restart_in_progress(
+            if getattr(client, "name", None) == "gosom" and await gosom_health_monitor.is_restart_in_progress(
                 session_factory
             ):
                 # The host-side supervisor has flagged (and is about to, or
@@ -4324,6 +4335,7 @@ def _run_summary(
         country_name=run.country_name,
         state_code=run.state_code,
         state_name=run.state_name,
+        discovery_provider=resolve_discovery_provider(run),
         status=run.status.value if hasattr(run.status, "value") else str(run.status),
         error_message=run.error_message,
         cells_total=run.cells_total,

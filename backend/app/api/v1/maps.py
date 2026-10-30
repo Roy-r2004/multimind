@@ -120,6 +120,7 @@ async def create_maps_census_run(
         country_code=data.country_code,
         state_code=data.state_code,
         state_name=data.state_name,
+        discovery_provider=data.discovery_provider,
     )
 
 

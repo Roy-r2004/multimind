@@ -175,7 +175,7 @@ async def test_france_census_run_produces_full_funnel_report(db, auth, monkeypat
     # not in ``outcomes``.
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FrancePlacesClient(outcomes),
+        lambda *_args, **_kwargs: _FrancePlacesClient(outcomes),
     )
 
     async def fake_classify_batch(self, *, provider, model_slug, country_code, country_name, payloads):

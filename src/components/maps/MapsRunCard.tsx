@@ -83,6 +83,11 @@ export function MapsRunCard({
                     {run.state_code}
                   </span>
                 )}
+                {run.discovery_provider && (
+                  <span className="rounded-md border border-white/20 bg-white/10 px-2 py-0.5 text-xs font-semibold text-white/90 backdrop-blur-sm">
+                    {run.discovery_provider === "gosom" ? "Gosom" : "Google Places"}
+                  </span>
+                )}
                 <MapsRunStatusBadge status={run.status} />
               </div>
               <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.2em] text-white/60">

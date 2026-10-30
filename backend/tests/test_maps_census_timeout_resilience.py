@@ -77,7 +77,7 @@ async def test_country_profile_is_not_rebuilt_on_watchdog_resume(db, auth, monke
         by_query={"rehab Helsinki": [PlaceResult(google_place_id="g1", raw_name="Facility", formatted_address="x")]}
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -126,7 +126,7 @@ async def test_timeout_terminates_after_configured_attempts_without_blocking_oth
         errors_by_query={"addiction treatment Decatur": PlacesTimeoutError("gosom job exceeded 900s")},
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -187,7 +187,7 @@ async def test_responsive_but_non_dispatching_gosom_stops_feeding_new_work(db, a
         },
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -251,7 +251,7 @@ async def test_absolute_deadline_fires_independently_of_gosom_and_heartbeat(db, 
 
     client = _WedgedClient({})
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -324,7 +324,7 @@ async def test_breaker_open_stops_expansion_planning_not_just_cell_execution(db,
         },
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -393,7 +393,7 @@ async def test_cancellation_stops_expansion_planning_not_just_cell_execution(db,
 
     client = _CancellingClient({"rehab Turku 1": [place]})
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -429,7 +429,7 @@ async def test_circuit_breaker_open_mid_iteration_releases_the_claimed_cell(db, 
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     async def _raise_open(self, fn):
@@ -478,7 +478,7 @@ async def test_timeout_retry_is_not_attempted_before_its_backoff_is_due(db, auth
         errors_by_query={"addiction treatment Decatur": PlacesTimeoutError("gosom job exceeded 900s")},
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)

@@ -87,7 +87,7 @@ async def test_cells_total_matches_actual_rows_across_multiple_adaptive_waves(
     by_query = {q: [_place(q)] for q in all_queries}  # every cell finds exactly 1 new place
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient(by_query),
+        lambda *_args, **_kwargs: _FakePlacesClient(by_query),
     )
 
     run = await _create_run(db, auth)
@@ -142,7 +142,7 @@ async def test_reconciles_the_exact_reported_impossible_state_on_resume(db, auth
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -175,7 +175,7 @@ async def test_phase_2_still_never_starts_while_cells_are_pending(db, auth, monk
         {}, errors_by_query={"rehab Mobile": PlacesTimeoutError("gosom job exceeded 480s")}
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     enqueue_calls: list[str] = []

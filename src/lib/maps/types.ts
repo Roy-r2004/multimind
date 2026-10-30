@@ -6,12 +6,15 @@ export type MapsCensusRunStatus =
   | "failed"
   | "cancelled";
 
+export type MapsDiscoveryProvider = "google_places" | "gosom";
+
 export type MapsCensusRunSummary = {
   id: string;
   country_code: string;
   country_name: string;
   state_code?: string | null;
   state_name?: string | null;
+  discovery_provider?: MapsDiscoveryProvider;
   status: MapsCensusRunStatus;
   error_message: string | null;
   cells_total: number;
@@ -85,6 +88,7 @@ export type MapsCensusRunCreateInput = {
   country_code: string;
   state_code?: string | null;
   state_name?: string | null;
+  discovery_provider?: MapsDiscoveryProvider;
 };
 
 export type MapsPlaceItem = {

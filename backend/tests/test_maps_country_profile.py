@@ -294,7 +294,7 @@ async def test_run_census_builds_country_profile_before_planning_grid(db, auth, 
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _NoOpPlacesClient(),
+        lambda *_args, **_kwargs: _NoOpPlacesClient(),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -333,7 +333,7 @@ async def test_run_census_continues_when_profile_stage_raises_unexpectedly(db, a
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _NoOpPlacesClient(),
+        lambda *_args, **_kwargs: _NoOpPlacesClient(),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)

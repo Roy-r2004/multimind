@@ -38,7 +38,7 @@ function NewMapsCensusPage() {
         </div>
 
         <div className="dream-rise dream-rise-delay-2 rounded-[1.75rem] border border-border/90 bg-card/95 p-6 shadow-[0_12px_40px_oklch(0.45_0.04_240/0.1)] sm:p-8">
-          <MapsCensusComposer />
+          <MapsCensusComposer discoveryProvider="google_places" />
         </div>
       </DreamPageShell>
     </AppShell>

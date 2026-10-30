@@ -120,7 +120,7 @@ async def test_city_named_cells_never_receive_the_statewide_box(db, auth, monkey
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -146,7 +146,7 @@ async def test_region_wide_cell_with_no_city_still_gets_trusted_box(db, auth, mo
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -172,7 +172,7 @@ async def test_run_with_unknown_anchor_falls_back_to_text_only_search(db, auth, 
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -225,7 +225,7 @@ async def test_capped_region_wide_cell_subdivides_into_distinct_smaller_boxes_en
 
     client = _CappedOnFirstQuery({})
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -308,7 +308,7 @@ async def test_non_alabama_state_city_named_cells_never_get_the_statewide_box(
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -334,7 +334,7 @@ async def test_country_only_us_search_with_no_state_selected_stays_text_only(db,
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -370,7 +370,7 @@ async def test_non_us_country_with_state_selected_stays_text_only(db, auth, monk
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -397,7 +397,7 @@ async def test_run_surfaces_geo_anchor_resolution_in_processing_state(db, auth, 
         )
         monkeypatch.setattr(
             "app.services.scraping.maps_census_service.create_places_client",
-            lambda: _FakePlacesClient({}),
+            lambda *_args, **_kwargs: _FakePlacesClient({}),
         )
         summary = await maps_census_service.run_census(db, run_id=run.id)
         assert summary.get("error") is None
@@ -490,7 +490,7 @@ async def test_region_wide_cells_use_real_polygon_sub_boxes_when_cached(
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -527,7 +527,7 @@ async def test_region_wide_cells_fall_back_to_static_box_without_cache(db, auth,
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -553,7 +553,7 @@ async def test_run_surfaces_geo_ai_plan_diagnostics_when_disabled(db, auth, monk
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -603,7 +603,7 @@ async def test_ai_planner_additional_search_terms_actually_create_cells(db, auth
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -678,7 +678,7 @@ async def test_geo_boundary_match_distinguishes_all_four_outcomes_end_to_end(
     }
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient(places),
+        lambda *_args, **_kwargs: _FakePlacesClient(places),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -717,7 +717,7 @@ async def test_geo_boundary_match_is_no_polygon_available_without_cache(db, auth
     }
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient(places),
+        lambda *_args, **_kwargs: _FakePlacesClient(places),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -773,7 +773,7 @@ async def test_geo_boundary_match_catches_out_of_country_result_via_static_bbox_
     }
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient(places),
+        lambda *_args, **_kwargs: _FakePlacesClient(places),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -811,7 +811,7 @@ async def test_country_only_resolution_uses_cached_adm0_polygon(db, auth, monkey
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)
@@ -858,7 +858,7 @@ async def test_canada_quebec_resolves_via_dataset_not_just_us_states(db, auth, m
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     summary = await maps_census_service.run_census(db, run_id=run.id)

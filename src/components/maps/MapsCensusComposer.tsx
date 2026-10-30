@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { dreamGhostClass } from "@/components/scraping/DreamPageShell";
 import { useAuth } from "@/lib/auth";
 import { createMapsCensusRun } from "@/lib/maps/api";
+import type { MapsDiscoveryProvider } from "@/lib/maps/types";
 import { SCRAPING_COUNTRIES } from "@/lib/scraping/countries";
 import { getSubdivisionsForCountry } from "@/lib/scraping/subdivisions";
 
@@ -17,7 +18,12 @@ function resolveCountry(codeOrName: string) {
   return match ?? null;
 }
 
-export function MapsCensusComposer() {
+export function MapsCensusComposer({
+  discoveryProvider,
+}: {
+  // Omitted: the server's default source (MAPS_DISCOVERY_PROVIDER).
+  discoveryProvider?: MapsDiscoveryProvider;
+} = {}) {
   const navigate = useNavigate();
   const { authHeaders } = useAuth();
   const datalistId = useId();
@@ -65,6 +71,7 @@ export function MapsCensusComposer() {
         country_code: countryCode,
         state_code: resolvedState?.code ?? undefined,
         state_name: resolvedState?.name ?? undefined,
+        discovery_provider: discoveryProvider,
       });
       await navigate({ to: "/maps/$runId", params: { runId: run.id } });
     } catch (err) {

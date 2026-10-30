@@ -59,7 +59,7 @@ async def test_superseded_execution_never_completes_or_enqueues_phase2(db, auth,
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     enqueue_calls: list[str] = []
@@ -118,7 +118,7 @@ async def test_paused_campaign_with_pending_cells_is_not_marked_completed(db, au
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _FakePlacesClient({}),
+        lambda *_args, **_kwargs: _FakePlacesClient({}),
     )
 
     enqueue_calls: list[str] = []

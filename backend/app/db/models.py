@@ -2853,6 +2853,9 @@ class MapsCensusRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     country_name: Mapped[str] = mapped_column(String(120), nullable=False)
     state_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
     state_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # google_places | gosom, chosen per run. NULL (runs created before this
+    # column) falls back to the MAPS_DISCOVERY_PROVIDER setting.
+    discovery_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[MapsCensusStatus] = mapped_column(
         Enum(
             MapsCensusStatus,

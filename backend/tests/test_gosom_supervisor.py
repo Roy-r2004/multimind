@@ -359,7 +359,7 @@ async def test_run_census_pauses_new_submissions_while_restart_in_progress(db, a
 
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.create_places_client",
-        lambda: _TrackingPlacesClient({}),
+        lambda *_args, **_kwargs: _TrackingPlacesClient({}),
     )
     monkeypatch.setattr(
         "app.services.scraping.maps_census_service.maps_grid_planner",
@@ -583,7 +583,7 @@ async def test_full_recovery_sequence_freeze_timeout_cooldown_resume_completes_c
         {}, errors_by_query={cell.query_text: timeout_error for cell in cells}
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: frozen_client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: frozen_client
     )
 
     # --- Round 1: Gosom is frozen. ---
@@ -635,7 +635,7 @@ async def test_full_recovery_sequence_freeze_timeout_cooldown_resume_completes_c
 
     healthy_client = _FakePlacesClient({})  # every query now succeeds (0 new places)
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: healthy_client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: healthy_client
     )
 
     spawned: list[str] = []

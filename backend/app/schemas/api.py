@@ -692,6 +692,8 @@ class MapsCensusRunCreate(BaseModel):
     country_code: str
     state_code: str | None = None
     state_name: str | None = None
+    # google_places | gosom. Omitted -> the MAPS_DISCOVERY_PROVIDER setting.
+    discovery_provider: str | None = None
 
 
 class MapsCensusRunSummary(BaseModel):
@@ -700,6 +702,7 @@ class MapsCensusRunSummary(BaseModel):
     country_name: str
     state_code: str | None = None
     state_name: str | None = None
+    discovery_provider: str
     status: str
     error_message: str | None = None
     cells_total: int

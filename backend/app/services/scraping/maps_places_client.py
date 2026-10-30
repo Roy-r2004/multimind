@@ -388,15 +388,25 @@ def _first_photo_reference(photos: Any) -> str | None:
     return _bounded_optional(first.get("name"), 300)
 
 
-def create_places_client():
-    """Return the Maps Census discovery client selected by settings.
+DISCOVERY_PROVIDERS = ("google_places", "gosom")
+
+
+def resolve_discovery_provider(run: Any | None) -> str:
+    """The run's own discovery provider, or the MAPS_DISCOVERY_PROVIDER
+    setting for runs created before providers were chosen per run."""
+    chosen = (getattr(run, "discovery_provider", None) or "").strip()
+    return chosen or get_settings().maps_discovery_provider
+
+
+def create_places_client(provider: str | None = None):
+    """Return the Maps Census discovery client for ``provider`` (default: the
+    MAPS_DISCOVERY_PROVIDER setting).
 
     ``google_places`` keeps the official Places Text Search client.
     ``gosom`` returns the self-hosted scraper adapter, which speaks the same
     ``search_text_paginated`` contract.
     """
-    settings = get_settings()
-    provider = settings.maps_discovery_provider
+    provider = provider or get_settings().maps_discovery_provider
     if provider == "google_places":
         return GooglePlacesClient()
     if provider == "gosom":

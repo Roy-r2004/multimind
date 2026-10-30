@@ -191,7 +191,7 @@ async def _run_with_keep_review(
         }
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     async def fake_classify_keep_drop(_session, place, *, country_code, country_name):
@@ -534,7 +534,7 @@ async def test_manual_exclusion_preserved_through_automatic_classification(db, a
         }
     )
     monkeypatch.setattr(
-        "app.services.scraping.maps_census_service.create_places_client", lambda: client
+        "app.services.scraping.maps_census_service.create_places_client", lambda *_args, **_kwargs: client
     )
 
     async def fake_classify_keep_drop(_session, place, *, country_code, country_name):
