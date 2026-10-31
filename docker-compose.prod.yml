@@ -311,35 +311,23 @@ services:
       - "8080"
     restart: unless-stopped
 
-  # --- Automatic recovery when gosom's dispatcher freezes (gosom issue #328).
-  # Same design as docker-compose.gosom-census.yml: the supervisor polls the
-  # API's /internal/gosom-supervisor/status and restarts gosom only when the
-  # server confirms a freeze, through a gateway that allows nothing but
-  # listing containers and restarting this deployment's gosom. Coolify renames
-  # containers on every deploy, so the allowlist is a name prefix that embeds
-  # this deployment's Coolify resource id.
-  docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
-    environment:
-      CONTAINERS: "1"
-      POST: "1"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - gosom-supervisor-internal
-    restart: unless-stopped
-
+  # --- Automatic recovery when gosom's dispatcher freezes (gosom #328).
+  # The supervisor polls the API's /internal/gosom-supervisor/status and
+  # restarts gosom only when the server confirms a freeze. Only the gateway
+  # holds the Docker socket, and it allows nothing but listing containers and
+  # restarting this deployment's gosom (Coolify renames containers on every
+  # deploy, so that is a name prefix embedding the Coolify resource id). See
+  # docker/gosom-docker-gateway/templates/nginx.conf.template.
   gosom-docker-gateway:
     build:
       context: ./docker/gosom-docker-gateway
       dockerfile: Dockerfile
     environment:
       GOSOM_CONTAINER_NAME_PREFIX: ${GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX:-gosom-fqhz20ulcg5huwiewn044kks-}
-    networks:
-      - gosom-supervisor-internal
-    depends_on:
-      docker-socket-proxy:
-        condition: service_started
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "8080"
     restart: unless-stopped
 
   gosom-supervisor:
@@ -358,9 +346,6 @@ services:
     # container never opens.
     healthcheck:
       disable: true
-    networks:
-      - default
-      - gosom-supervisor-internal
     depends_on:
       api:
         condition: service_healthy
@@ -375,7 +360,3 @@ volumes:
   library_files:
   gosom_data:
   gosom_playwright_cache:
-
-networks:
-  gosom-supervisor-internal:
-    internal: true

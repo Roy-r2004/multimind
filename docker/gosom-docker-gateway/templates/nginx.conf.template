@@ -1,0 +1,45 @@
+# Production restart-only gateway: the ONLY thing holding the Docker socket.
+# It forwards exactly two requests to the Docker Engine API and rejects
+# everything else:
+#   GET  /containers/json                             (find the gosom container)
+#   POST /containers/${GOSOM_CONTAINER_NAME_PREFIX}*/restart  (restart it)
+# Coolify renames containers on every deploy (gosom-<resource uuid>-<timestamp>),
+# so the restart allowlist is a name prefix embedding this deployment's id.
+# Unlike docker-compose.gosom-census.yml there is no docker-socket-proxy: on
+# Coolify every service may share a network, so an unrestricted proxy would
+# be reachable by the API; this gateway is safe to reach.
+#
+# Rendered by the official nginx entrypoint (envsubst) into /etc/nginx/nginx.conf.
+# Runs as root because the Docker socket is root:docker.
+user root;
+worker_processes 1;
+pid /tmp/nginx.pid;
+
+events {}
+
+http {
+    access_log /dev/stdout;
+    error_log /dev/stderr warn;
+
+    server {
+        listen 8080;
+
+        location = /containers/json {
+            limit_except GET {
+                deny all;
+            }
+            proxy_pass http://unix:/var/run/docker.sock:;
+        }
+
+        location ~ ^/containers/${GOSOM_CONTAINER_NAME_PREFIX}[A-Za-z0-9_.-]+/restart$ {
+            limit_except POST {
+                deny all;
+            }
+            proxy_pass http://unix:/var/run/docker.sock:;
+        }
+
+        location / {
+            return 403;
+        }
+    }
+}
