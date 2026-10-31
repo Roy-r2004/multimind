@@ -39,6 +39,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 
 import httpx
@@ -74,6 +75,12 @@ class SupervisorConfig:
         # still used, but only as a pre-flight "does this container
         # currently exist, uniquely" health check.
         self.container_name = env.get("GOSOM_SUPERVISOR_CONTAINER_NAME", "")
+        # Alternative to a fixed name, for platforms that rename containers
+        # on every deploy (Coolify: gosom-<resource uuid>-<timestamp>). The
+        # gateway allows only names with this same prefix, and the prefix
+        # embeds the deployment's unique id, so it also disambiguates this
+        # stack's gosom from any other project's on the host.
+        self.container_name_prefix = env.get("GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX", "")
         self.gosom_health_url = env.get(
             "GOSOM_SUPERVISOR_GOSOM_HEALTH_URL", "http://gosom:8080/api/v1/jobs"
         )
@@ -91,6 +98,18 @@ class SupervisorConfig:
             raise RuntimeError("MAPS_GOSOM_SUPERVISOR_TOKEN is required")
         if not self.docker_proxy_url:
             raise RuntimeError("GOSOM_SUPERVISOR_DOCKER_PROXY_URL is required")
+        if self.container_name and self.container_name_prefix:
+            raise RuntimeError(
+                "Set GOSOM_SUPERVISOR_CONTAINER_NAME or GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX, "
+                "not both"
+            )
+        if self.container_name_prefix:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{7,}", self.container_name_prefix):
+                raise RuntimeError(
+                    "GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX must be a specific container-name "
+                    "prefix (at least 8 characters of [a-z0-9_.-])"
+                )
+            return
         if not self.compose_project_label:
             raise RuntimeError(
                 "GOSOM_SUPERVISOR_COMPOSE_PROJECT_LABEL is required — without it, container "
@@ -163,14 +182,7 @@ async def find_gosom_container_id(client: httpx.AsyncClient, config: SupervisorC
     "first match wins" is exactly how this would restart the wrong
     container the one time two hosts/projects briefly collide.
     """
-    filters = json.dumps({"label": [config.compose_service_label, config.compose_project_label]})
-    response = await client.get(
-        f"{config.docker_proxy_url}/containers/json",
-        params={"filters": filters},
-        timeout=config.request_timeout_seconds,
-    )
-    response.raise_for_status()
-    containers = response.json()
+    containers = await _matching_containers(client, config)
     if not isinstance(containers, list) or len(containers) != 1:
         logger.error(
             "gosom_supervisor_container_lookup_ambiguous matches=%s service_label=%s project_label=%s",
@@ -182,15 +194,68 @@ async def find_gosom_container_id(client: httpx.AsyncClient, config: SupervisorC
     return containers[0].get("Id")
 
 
-async def restart_container(client: httpx.AsyncClient, config: SupervisorConfig) -> None:
-    """Always restarts ``config.container_name`` — never a value this
-    process looked up from the Docker API. See ``SupervisorConfig.
-    container_name`` for why: that identity is fixed at deploy time on
-    both this process and the gateway, not trusted from a runtime
-    response.
+def _container_names(container: dict) -> list[str]:
+    return [str(name).lstrip("/") for name in container.get("Names") or []]
+
+
+async def _matching_containers(client: httpx.AsyncClient, config: SupervisorConfig) -> list | object:
+    """Containers with this stack's gosom labels (and, in prefix mode, a
+    name carrying this deployment's prefix)."""
+    labels = [config.compose_service_label]
+    if config.compose_project_label:
+        labels.append(config.compose_project_label)
+    response = await client.get(
+        f"{config.docker_proxy_url}/containers/json",
+        params={"filters": json.dumps({"label": labels})},
+        timeout=config.request_timeout_seconds,
+    )
+    response.raise_for_status()
+    containers = response.json()
+    if config.container_name_prefix and isinstance(containers, list):
+        containers = [
+            container
+            for container in containers
+            if any(name.startswith(config.container_name_prefix) for name in _container_names(container))
+        ]
+    return containers
+
+
+async def find_restart_target(client: httpx.AsyncClient, config: SupervisorConfig) -> str | None:
+    """The container name to restart, or None when it is missing or
+    ambiguous. A fixed name is only ever confirmed, never replaced; in
+    prefix mode the single matching container's own prefixed name is used
+    (the gateway rejects any name without that prefix)."""
+    if config.container_name:
+        if await find_gosom_container_id(client, config) is None:
+            return None
+        return config.container_name
+    containers = await _matching_containers(client, config)
+    if not isinstance(containers, list) or len(containers) != 1:
+        logger.error(
+            "gosom_supervisor_container_lookup_ambiguous matches=%s prefix=%s",
+            len(containers) if isinstance(containers, list) else "invalid_response",
+            config.container_name_prefix,
+        )
+        return None
+    names = [
+        name
+        for name in _container_names(containers[0])
+        if name.startswith(config.container_name_prefix)
+    ]
+    return names[0] if names else None
+
+
+async def restart_container(
+    client: httpx.AsyncClient, config: SupervisorConfig, container_name: str | None = None
+) -> None:
+    """Restarts ``container_name`` (from find_restart_target) or the fixed
+    ``config.container_name``. Either way the gateway independently allows
+    only the configured name or prefix, so a compromised supervisor still
+    cannot restart any other container.
     """
+    target = container_name or config.container_name
     response = await client.post(
-        f"{config.docker_proxy_url}/containers/{config.container_name}/restart",
+        f"{config.docker_proxy_url}/containers/{target}/restart",
         params={"t": "10"},
         timeout=config.request_timeout_seconds,
     )
@@ -262,19 +327,19 @@ async def run_once(client: httpx.AsyncClient, config: SupervisorConfig) -> dict:
         # Pre-flight health check only — exists so "container renamed/
         # missing/ambiguous" is reported distinctly, never to decide WHICH
         # container gets restarted. See restart_container()'s docstring.
-        container_id = await find_gosom_container_id(client, config)
-        if container_id is None:
+        target = await find_restart_target(client, config)
+        if target is None:
             logger.error("gosom_supervisor_container_not_found label=%s", config.compose_service_label)
             await complete_restart(client, config, http_responsive=False)
             return {"action": "restart_attempted", "http_responsive": False, "reason": "container_not_found"}
 
-        await restart_container(client, config)
+        await restart_container(client, config, target)
         responsive = await wait_gosom_http_responsive(client, config)
         result = await complete_restart(client, config, http_responsive=responsive)
         if responsive:
-            logger.warning("gosom_supervisor_restart_responsive container_name=%s", config.container_name)
+            logger.warning("gosom_supervisor_restart_responsive container_name=%s", target)
         else:
-            logger.error("gosom_supervisor_restart_not_responsive container_name=%s", config.container_name)
+            logger.error("gosom_supervisor_restart_not_responsive container_name=%s", target)
         return {
             "action": "restart_attempted",
             "http_responsive": responsive,

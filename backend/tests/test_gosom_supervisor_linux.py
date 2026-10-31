@@ -312,3 +312,81 @@ async def test_restart_container_always_targets_the_configured_fixed_name():
 
 def test_restart_already_in_progress_is_a_distinct_exception_type():
     assert issubclass(RestartAlreadyInProgress, Exception)
+
+
+# --- Prefix mode: platforms (Coolify) that rename containers on every
+# deploy. The prefix embeds the deployment's unique id. ---
+
+PREFIX = "gosom-fqhz20ulcg5huwiewn044kks-"
+
+
+def _prefix_config(**overrides) -> SupervisorConfig:
+    return _config(
+        **{
+            "GOSOM_SUPERVISOR_CONTAINER_NAME": "",
+            "GOSOM_SUPERVISOR_COMPOSE_PROJECT_LABEL": "",
+            "GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX": PREFIX,
+            **overrides,
+        }
+    )
+
+
+def test_prefix_mode_validates_without_fixed_name_or_project_label():
+    _prefix_config().validate()
+
+
+def test_prefix_mode_rejects_a_vague_prefix_and_both_modes_at_once():
+    with pytest.raises(RuntimeError, match="PREFIX"):
+        _prefix_config(GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX="gosom").validate()
+    with pytest.raises(RuntimeError, match="not both"):
+        _config(GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX=PREFIX).validate()
+
+
+@pytest.mark.asyncio
+async def test_prefix_mode_restarts_only_this_deployments_gosom():
+    """Another project's gosom on the same host shares the service label but
+    not the prefix; it must be ignored, and the restart must target this
+    deployment's current (timestamped) container name."""
+    posts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/containers/json":
+            return httpx.Response(
+                200,
+                json=[
+                    {"Id": "ours", "Names": [f"/{PREFIX}20261030T191944"]},
+                    {"Id": "theirs", "Names": ["/multimind-gosom-census-gosom-1"]},
+                ],
+            )
+        posts.append(request.url.path)
+        return httpx.Response(204)
+
+    from scripts.gosom_supervisor import find_restart_target
+
+    config = _prefix_config()
+    async with _client(handler) as client:
+        target = await find_restart_target(client, config)
+        await restart_container(client, config, target)
+
+    assert target == f"{PREFIX}20261030T191944"
+    assert posts == [f"/containers/{PREFIX}20261030T191944/restart"]
+
+
+@pytest.mark.asyncio
+async def test_prefix_mode_refuses_two_of_our_containers():
+    """During a deploy the old and new gosom can briefly coexist; never pick
+    one of them."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"Id": "old", "Names": [f"/{PREFIX}20261030T190927"]},
+                {"Id": "new", "Names": [f"/{PREFIX}20261030T191944"]},
+            ],
+        )
+
+    from scripts.gosom_supervisor import find_restart_target
+
+    async with _client(handler) as client:
+        assert await find_restart_target(client, _prefix_config()) is None
