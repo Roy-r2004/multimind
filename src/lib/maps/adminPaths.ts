@@ -69,6 +69,10 @@ export function mapsAdminResumePath(runId: string): string {
   return `/maps/runs/${runId}/resume`;
 }
 
+export function mapsAdminRecoverPath(runId: string): string {
+  return `/maps/runs/${runId}/recover`;
+}
+
 export function mapsAdminCancelPath(runId: string): string {
   return `/maps/runs/${runId}/cancel`;
 }

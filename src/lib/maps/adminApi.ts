@@ -17,6 +17,7 @@ import {
   mapsAdminRetryFailedKeepDropPath,
   mapsAdminRetryUnresolvedEligibilityEvidencePath,
   mapsAdminRetryWebsitesPath,
+  mapsAdminRecoverPath,
   mapsAdminResumePath,
 } from "@/lib/maps/adminPaths";
 import type {
@@ -52,6 +53,7 @@ export {
   mapsAdminRetryFailedKeepDropPath,
   mapsAdminRetryUnresolvedEligibilityEvidencePath,
   mapsAdminRetryWebsitesPath,
+  mapsAdminRecoverPath,
   mapsAdminResumePath,
 } from "@/lib/maps/adminPaths";
 
@@ -113,6 +115,15 @@ export function pauseMapsCensusRun(auth: Auth, runId: string) {
 
 export function resumeMapsCensusRun(auth: Auth, runId: string) {
   return apiRequest<MapsCampaignActionResponse>(mapsAdminResumePath(runId), {
+    method: "POST",
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
+// Restarts a failed or stalled run from its saved progress.
+export function recoverMapsCensusRun(auth: Auth, runId: string) {
+  return apiRequest<MapsCampaignActionResponse>(mapsAdminRecoverPath(runId), {
     method: "POST",
     token: auth.token,
     orgId: auth.orgId,
