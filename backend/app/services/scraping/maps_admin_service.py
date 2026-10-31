@@ -655,6 +655,10 @@ class MapsAdminService:
         run.heartbeat_at = datetime.now(UTC)
         state = dict(run.processing_state or {})
         state["campaign_paused"] = False
+        # An operator's explicit recover starts a fresh automatic-recovery
+        # budget; otherwise one more provider stall fails the run again at
+        # once (recover_maps_census_runs checks this count before anything).
+        state["discovery_auto_resume_count"] = 0
         run.processing_state = state
         await db.commit()
 

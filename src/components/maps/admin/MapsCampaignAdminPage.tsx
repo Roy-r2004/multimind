@@ -78,6 +78,7 @@ import {
   listMapsCensusAdminPlaces,
   listMapsCensusAdminRegions,
   pauseMapsCensusRun,
+  recoverMapsCensusRun,
   resumeMapsCensusRun,
   retryMapsCensusEnrichment,
   retryMapsCensusFailedCells,
@@ -327,6 +328,7 @@ export function MapsCampaignAdminPage({ runId }: { runId: string }) {
   const paused = dashboard.campaign_paused;
   const canPause = !paused && dashboard.status !== "cancelled" && dashboard.status !== "failed";
   const canResume = paused;
+  const canRecover = dashboard.status === "failed";
   const canCancel = dashboard.status !== "cancelled" && dashboard.status !== "failed";
 
   return (
@@ -412,6 +414,20 @@ export function MapsCampaignAdminPage({ runId }: { runId: string }) {
                 >
                   <Play className="size-4" />
                   Resume
+                </Button>
+              )}
+              {canRecover && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!!actionBusy || !auth}
+                  title="Restart this run from its saved progress"
+                  onClick={() =>
+                    auth && void runAction("recover", () => recoverMapsCensusRun(auth, runId))
+                  }
+                >
+                  <RotateCcw className="size-4" />
+                  Recover
                 </Button>
               )}
               {canCancel && (
