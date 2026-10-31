@@ -1,0 +1,29 @@
+# Production variant of ../nginx.conf for platforms that rename containers on
+# every deploy (Coolify: gosom-<resource uuid>-<timestamp>). The official nginx
+# entrypoint fills in ${GOSOM_CONTAINER_NAME_PREFIX} at start; the prefix embeds
+# the deployment's unique id, so only this stack's gosom container can be
+# restarted. Everything else is rejected, exactly as in ../nginx.conf.
+server {
+    listen 8080;
+    resolver 127.0.0.11 valid=30s;  # Docker's embedded DNS, for the upstream name
+
+    location = /containers/json {
+        limit_except GET {
+            deny all;
+        }
+        set $upstream http://docker-socket-proxy:2375;
+        proxy_pass $upstream$request_uri;
+    }
+
+    location ~ ^/containers/${GOSOM_CONTAINER_NAME_PREFIX}[A-Za-z0-9_.-]+/restart$ {
+        limit_except POST {
+            deny all;
+        }
+        set $upstream http://docker-socket-proxy:2375;
+        proxy_pass $upstream$request_uri;
+    }
+
+    location / {
+        return 403;
+    }
+}

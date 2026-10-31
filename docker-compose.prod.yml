@@ -75,6 +75,7 @@ services:
       # Default discovery source for runs that don't choose one; each run
       # can pick google_places or gosom (the self-hosted scraper below).
       MAPS_DISCOVERY_PROVIDER: ${MAPS_DISCOVERY_PROVIDER:-google_places}
+      MAPS_GOSOM_SUPERVISOR_TOKEN: ${MAPS_GOSOM_SUPERVISOR_TOKEN:-}
       GOSOM_BASE_URL: ${GOSOM_BASE_URL:-http://gosom:8080}
       GOSOM_TIMEOUT_SECONDS: ${GOSOM_TIMEOUT_SECONDS:-60}
       GOSOM_POLL_INTERVAL_SECONDS: ${GOSOM_POLL_INTERVAL_SECONDS:-5}
@@ -310,6 +311,63 @@ services:
       - "8080"
     restart: unless-stopped
 
+  # --- Automatic recovery when gosom's dispatcher freezes (gosom issue #328).
+  # Same design as docker-compose.gosom-census.yml: the supervisor polls the
+  # API's /internal/gosom-supervisor/status and restarts gosom only when the
+  # server confirms a freeze, through a gateway that allows nothing but
+  # listing containers and restarting this deployment's gosom. Coolify renames
+  # containers on every deploy, so the allowlist is a name prefix that embeds
+  # this deployment's Coolify resource id.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: "1"
+      POST: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - gosom-supervisor-internal
+    restart: unless-stopped
+
+  gosom-docker-gateway:
+    build:
+      context: ./docker/gosom-docker-gateway
+      dockerfile: Dockerfile
+    environment:
+      GOSOM_CONTAINER_NAME_PREFIX: ${GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX:-gosom-fqhz20ulcg5huwiewn044kks-}
+    networks:
+      - gosom-supervisor-internal
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+    restart: unless-stopped
+
+  gosom-supervisor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "-m", "scripts.gosom_supervisor"]
+    environment:
+      MAPS_GOSOM_SUPERVISOR_TOKEN: ${MAPS_GOSOM_SUPERVISOR_TOKEN:-}
+      GOSOM_SUPERVISOR_API_BASE_URL: http://api:8000
+      GOSOM_SUPERVISOR_DOCKER_PROXY_URL: http://gosom-docker-gateway:8080
+      GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX: ${GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX:-gosom-fqhz20ulcg5huwiewn044kks-}
+      GOSOM_SUPERVISOR_GOSOM_HEALTH_URL: http://gosom:8080/api/v1/jobs
+      GOSOM_SUPERVISOR_POLL_INTERVAL_SECONDS: "60"
+    # The backend image's healthcheck probes the API port, which this
+    # container never opens.
+    healthcheck:
+      disable: true
+    networks:
+      - default
+      - gosom-supervisor-internal
+    depends_on:
+      api:
+        condition: service_healthy
+      gosom-docker-gateway:
+        condition: service_started
+    restart: always
+
 volumes:
   postgres_data:
   whisper_models:
@@ -317,3 +375,7 @@ volumes:
   library_files:
   gosom_data:
   gosom_playwright_cache:
+
+networks:
+  gosom-supervisor-internal:
+    internal: true
