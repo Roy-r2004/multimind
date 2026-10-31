@@ -28,6 +28,12 @@ http {
             limit_except GET {
                 deny all;
             }
+            # Only listings whose `filters` parameter (the first one, as
+            # Docker reads it) includes the gosom service label. Docker ANDs
+            # label filters, so extra filters can only narrow the result.
+            if ($arg_filters !~ "com\.docker\.compose\.service(=|%3D)gosom(%22|\x22)") {
+                return 403;
+            }
             proxy_pass http://unix:/var/run/docker.sock:;
         }
 

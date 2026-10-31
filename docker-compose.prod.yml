@@ -326,8 +326,10 @@ services:
       GOSOM_CONTAINER_NAME_PREFIX: ${GOSOM_SUPERVISOR_CONTAINER_NAME_PREFIX:-gosom-fqhz20ulcg5huwiewn044kks-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    expose:
-      - "8080"
+    # Reachable only by gosom-supervisor (not by gosom, which browses
+    # untrusted pages, nor by any other service).
+    networks:
+      - gosom-supervisor-internal
     restart: unless-stopped
 
   gosom-supervisor:
@@ -346,6 +348,9 @@ services:
     # container never opens.
     healthcheck:
       disable: true
+    networks:
+      - default
+      - gosom-supervisor-internal
     depends_on:
       api:
         condition: service_healthy
@@ -360,3 +365,9 @@ volumes:
   library_files:
   gosom_data:
   gosom_playwright_cache:
+
+# No explicit `default:` entry: declaring one changes the default network's
+# config hash and makes Compose recreate every container on it.
+networks:
+  gosom-supervisor-internal:
+    internal: true
