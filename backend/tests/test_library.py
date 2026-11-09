@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -337,6 +338,122 @@ async def test_library_search_favorite_and_delete(db: AsyncSession, auth: AuthCo
         assert deleted.status_code == 200
         remaining = await client.get("/api/v1/library/items")
         assert len(remaining.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_library_list_items_sort_allowlist(db: AsyncSession, auth: AuthContext):
+    async with await _client_for(db, auth) as client:
+        banana = await client.post(
+            "/api/v1/library/items/documents",
+            json={"title": "Banana Notes", "content_text": "b"},
+        )
+        apple = await client.post(
+            "/api/v1/library/items/documents",
+            json={"title": "apple notes", "content_text": "a"},
+        )
+        cherry = await client.post(
+            "/api/v1/library/items/documents",
+            json={"title": "Cherry Notes", "content_text": "c"},
+        )
+
+        name_asc = await client.get("/api/v1/library/items", params={"sort": "name_asc"})
+        assert name_asc.status_code == 200
+        assert [item["title"] for item in name_asc.json()] == [
+            "apple notes",
+            "Banana Notes",
+            "Cherry Notes",
+        ]
+
+        name_desc = await client.get("/api/v1/library/items", params={"sort": "name_desc"})
+        assert [item["title"] for item in name_desc.json()] == [
+            "Cherry Notes",
+            "Banana Notes",
+            "apple notes",
+        ]
+
+        # SQLite's CURRENT_TIMESTAMP (the server_default for created_at/updated_at)
+        # only has 1-second resolution, so three rapid inserts can tie. Pin
+        # distinct timestamps directly so recency ordering is deterministic,
+        # independent of wall-clock speed.
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        ids_oldest_to_newest = [banana.json()["id"], apple.json()["id"], cherry.json()["id"]]
+        for offset, item_id in enumerate(ids_oldest_to_newest):
+            await db.execute(
+                update(LibraryItem)
+                .where(LibraryItem.id == item_id)
+                .values(
+                    created_at=base + timedelta(seconds=offset),
+                    updated_at=base + timedelta(seconds=offset),
+                )
+            )
+        await db.commit()
+
+        # created_desc / updated_desc (the default): last created/modified first.
+        created_desc = await client.get(
+            "/api/v1/library/items", params={"sort": "created_desc"}
+        )
+        assert [item["title"] for item in created_desc.json()] == [
+            "Cherry Notes",
+            "apple notes",
+            "Banana Notes",
+        ]
+
+        updated_asc = await client.get("/api/v1/library/items", params={"sort": "updated_asc"})
+        assert [item["title"] for item in updated_asc.json()] == [
+            "Banana Notes",
+            "apple notes",
+            "Cherry Notes",
+        ]
+
+        # No sort param preserves the pre-existing default (recently modified first).
+        default_sort = await client.get("/api/v1/library/items")
+        assert default_sort.json()[0]["title"] == "Cherry Notes"
+
+        rejected = await client.get(
+            "/api/v1/library/items", params={"sort": "not-a-real-sort"}
+        )
+        assert rejected.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_library_sort_is_deterministic_for_ties(db: AsyncSession, auth: AuthContext):
+    """Equal timestamps and case-insensitively identical titles must still sort
+    the same way on every call — never a different, effectively random order."""
+    async with await _client_for(db, auth) as client:
+        first = await client.post(
+            "/api/v1/library/items/documents",
+            json={"title": "Notes", "content_text": "1"},
+        )
+        second = await client.post(
+            "/api/v1/library/items/documents",
+            json={"title": "notes", "content_text": "2"},
+        )
+        third = await client.post(
+            "/api/v1/library/items/documents",
+            json={"title": "NOTES", "content_text": "3"},
+        )
+
+        # Force every row to the exact same timestamp so the primary sort key
+        # ties for all three items on every sort option.
+        same_instant = datetime(2026, 1, 1, tzinfo=UTC)
+        for item_id in (first.json()["id"], second.json()["id"], third.json()["id"]):
+            await db.execute(
+                update(LibraryItem)
+                .where(LibraryItem.id == item_id)
+                .values(created_at=same_instant, updated_at=same_instant)
+            )
+        await db.commit()
+
+        for sort_key in ("updated_desc", "updated_asc", "created_desc", "name_asc", "name_desc"):
+            first_call = await client.get("/api/v1/library/items", params={"sort": sort_key})
+            second_call = await client.get("/api/v1/library/items", params={"sort": sort_key})
+            assert first_call.status_code == 200
+            first_order = [item["id"] for item in first_call.json()]
+            second_order = [item["id"] for item in second_call.json()]
+            assert len(first_order) == 3
+            assert first_order == second_order, (
+                f"sort={sort_key} returned a different order across identical requests"
+            )
 
 
 @pytest.mark.asyncio

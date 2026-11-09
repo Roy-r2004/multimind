@@ -6,7 +6,9 @@ import {
   buildLibraryFolderTree,
   filterFolderTreeByQuery,
   folderIdsToExpandInTree,
+  libraryActiveFilterChips,
   libraryExpandedPathIds,
+  libraryFileTypeFilterLabel,
   libraryTopLevelFolderId,
   libraryViewAfterFolderDelete,
   LIBRARY_FOLDER_NAME_MAX_LENGTH,
@@ -134,4 +136,31 @@ test("validateLibraryFolderName enforces the backend's max length", () => {
     validateLibraryFolderName(overLimit),
     `Folder name must be ${LIBRARY_FOLDER_NAME_MAX_LENGTH} characters or fewer`,
   );
+});
+
+test("libraryFileTypeFilterLabel maps known values and passes through extensions", () => {
+  assert.equal(libraryFileTypeFilterLabel("document"), "MultiMind Document");
+  assert.equal(libraryFileTypeFilterLabel("file"), "Uploaded files");
+  assert.equal(libraryFileTypeFilterLabel(".pdf"), ".PDF");
+  assert.equal(libraryFileTypeFilterLabel(""), "");
+});
+
+test("libraryActiveFilterChips is empty when nothing but the defaults is active", () => {
+  assert.deepEqual(
+    libraryActiveFilterChips({ query: "  ", fileTypeFilter: "", sort: "updated_desc" }),
+    [],
+  );
+});
+
+test("libraryActiveFilterChips describes each active filter independently", () => {
+  const chips = libraryActiveFilterChips({
+    query: "austria",
+    fileTypeFilter: "document",
+    sort: "name_asc",
+  });
+  assert.deepEqual(chips, [
+    { key: "query", label: 'Search: "austria"' },
+    { key: "fileType", label: "Type: MultiMind Document" },
+    { key: "sort", label: "Sort: Name A–Z" },
+  ]);
 });

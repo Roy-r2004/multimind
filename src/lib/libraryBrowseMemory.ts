@@ -1,6 +1,12 @@
 /** Library browsing context that survives opening a document. */
 
-import { LIBRARY_HOME_RECENT_LIMIT, type LibraryViewMode } from "./libraryUi.ts";
+import {
+  LIBRARY_DEFAULT_SORT,
+  LIBRARY_HOME_RECENT_LIMIT,
+  isLibrarySortOption,
+  type LibrarySortOption,
+  type LibraryViewMode,
+} from "./libraryUi.ts";
 
 export const LIBRARY_BROWSE_STORAGE_KEY = "multimind.library.browse";
 
@@ -10,6 +16,7 @@ export type LibraryBrowseState = {
   fileTypeFilter: string;
   folderQuery: string;
   foldersExpanded: boolean;
+  sort: LibrarySortOption;
   scrollY: number;
 };
 
@@ -23,6 +30,7 @@ export type LibraryListQuery = {
   label_id?: string;
   extension?: string;
   homeLimit?: number;
+  sort?: LibrarySortOption;
 };
 
 export const EMPTY_LIBRARY_BROWSE: LibraryBrowseState = {
@@ -31,6 +39,7 @@ export const EMPTY_LIBRARY_BROWSE: LibraryBrowseState = {
   fileTypeFilter: "",
   folderQuery: "",
   foldersExpanded: false,
+  sort: LIBRARY_DEFAULT_SORT,
   scrollY: 0,
 };
 
@@ -44,12 +53,13 @@ export function libraryViewsEqual(a: LibraryViewMode, b: LibraryViewMode): boole
 }
 
 export function libraryBrowseContextKey(
-  state: Pick<LibraryBrowseState, "view" | "query" | "fileTypeFilter">,
+  state: Pick<LibraryBrowseState, "view" | "query" | "fileTypeFilter" | "sort">,
 ): string {
   return JSON.stringify({
     view: state.view,
     query: state.query,
     fileTypeFilter: state.fileTypeFilter,
+    sort: state.sort,
   });
 }
 
@@ -63,7 +73,13 @@ function isLibraryView(value: unknown): value is LibraryViewMode {
   if (kind === "label") {
     return typeof (value as { labelId?: unknown }).labelId === "string";
   }
-  return kind === "home" || kind === "all" || kind === "favorites" || kind === "recent" || kind === "unfiled";
+  return (
+    kind === "home" ||
+    kind === "all" ||
+    kind === "favorites" ||
+    kind === "recent" ||
+    kind === "unfiled"
+  );
 }
 
 function finiteScroll(value: unknown): number {
@@ -82,6 +98,7 @@ export function parseLibraryBrowseState(raw: unknown): LibraryBrowseState {
     fileTypeFilter: typeof record.fileTypeFilter === "string" ? record.fileTypeFilter : "",
     folderQuery: typeof record.folderQuery === "string" ? record.folderQuery : "",
     foldersExpanded: record.foldersExpanded === true,
+    sort: isLibrarySortOption(record.sort) ? record.sort : LIBRARY_DEFAULT_SORT,
     scrollY: finiteScroll(record.scrollY),
   };
 }
@@ -148,9 +165,9 @@ export function libraryScrollToRestore(
 }
 
 export function libraryListQuery(
-  state: Pick<LibraryBrowseState, "view" | "query" | "fileTypeFilter">,
+  state: Pick<LibraryBrowseState, "view" | "query" | "fileTypeFilter" | "sort">,
 ): LibraryListQuery {
-  const { view, query, fileTypeFilter } = state;
+  const { view, query, fileTypeFilter, sort } = state;
   const params: LibraryListQuery = {};
   if (view.kind === "home" || view.kind === "recent") params.recent = true;
   if (view.kind !== "home") {
@@ -161,6 +178,8 @@ export function libraryListQuery(
     if (fileTypeFilter && fileTypeFilter !== "document" && fileTypeFilter !== "file") {
       params.extension = fileTypeFilter.toLowerCase();
     }
+    // Sorting only applies to the explicit browse views; Home/Recent stay recency-first.
+    if (sort && sort !== LIBRARY_DEFAULT_SORT) params.sort = sort;
   }
   if (view.kind === "favorites") params.favorites = true;
   if (view.kind === "folder") params.folder_id = view.folderId;

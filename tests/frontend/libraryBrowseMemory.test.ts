@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyLibraryBrowseChange,
   EMPTY_LIBRARY_BROWSE,
+  libraryBrowseContextKey,
   libraryListQuery,
   libraryScrollToRestore,
   parseLibraryBrowseState,
@@ -43,6 +44,7 @@ const browsing: LibraryBrowseState = {
   fileTypeFilter: ".pdf",
   folderQuery: "alc",
   foldersExpanded: true,
+  sort: "updated_desc",
   scrollY: 640,
 };
 
@@ -129,4 +131,26 @@ test("corrupt library browse storage falls back to the initial view", () => {
   const storage = memoryStorage();
   storage.setItem("multimind.library.browse", "{");
   assert.deepEqual(readLibraryBrowseState(storage), EMPTY_LIBRARY_BROWSE);
+});
+
+test("an unknown stored sort value falls back to the default", () => {
+  const restored = parseLibraryBrowseState({ ...browsing, sort: "bogus" });
+  assert.equal(restored.sort, "updated_desc");
+});
+
+test("a non-default sort is sent to the API and changes the browse context key", () => {
+  const restored = parseLibraryBrowseState(browsing);
+  assert.equal(libraryListQuery(restored).sort, undefined);
+
+  const resorted = applyLibraryBrowseChange(restored, { sort: "name_asc" });
+  assert.equal(resorted.sort, "name_asc");
+  assert.equal(libraryListQuery(resorted).sort, "name_asc");
+  // Changing sort is a context change: it resets scroll, like switching folder or search does.
+  assert.equal(resorted.scrollY, 0);
+  assert.notEqual(libraryBrowseContextKey(restored), libraryBrowseContextKey(resorted));
+
+  // Home always stays recency-first regardless of the stored sort.
+  const home = applyLibraryBrowseChange(resorted, { view: { kind: "home" } });
+  assert.equal(libraryListQuery(home).sort, undefined);
+  assert.equal(libraryListQuery(home).recent, true);
 });

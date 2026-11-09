@@ -45,6 +45,59 @@ export const LIBRARY_SIDEBAR_FOLDER_LIMIT = 7;
 export const LIBRARY_HOME_RECENT_LIMIT = 5;
 export const LIBRARY_FOLDER_NAME_MAX_LENGTH = 255;
 
+/** Mirrors the backend's sort allowlist (library_service.LIBRARY_SORT_OPTIONS). */
+export type LibrarySortOption =
+  | "updated_desc"
+  | "updated_asc"
+  | "created_desc"
+  | "name_asc"
+  | "name_desc";
+
+export const LIBRARY_DEFAULT_SORT: LibrarySortOption = "updated_desc";
+
+export const LIBRARY_SORT_OPTIONS: { value: LibrarySortOption; label: string }[] = [
+  { value: "updated_desc", label: "Recently modified" },
+  { value: "updated_asc", label: "Oldest modified" },
+  { value: "created_desc", label: "Recently created" },
+  { value: "name_asc", label: "Name A–Z" },
+  { value: "name_desc", label: "Name Z–A" },
+];
+
+export function isLibrarySortOption(value: unknown): value is LibrarySortOption {
+  return typeof value === "string" && LIBRARY_SORT_OPTIONS.some((option) => option.value === value);
+}
+
+export function libraryFileTypeFilterLabel(fileTypeFilter: string): string {
+  if (fileTypeFilter === "document") return "MultiMind Document";
+  if (fileTypeFilter === "file") return "Uploaded files";
+  if (!fileTypeFilter) return "";
+  return fileTypeFilter.toUpperCase();
+}
+
+export type LibraryActiveFilterChip = { key: "query" | "fileType" | "sort"; label: string };
+
+/** Summarize the non-default filters/sort as small, individually understandable chips. */
+export function libraryActiveFilterChips(params: {
+  query: string;
+  fileTypeFilter: string;
+  sort: LibrarySortOption;
+}): LibraryActiveFilterChip[] {
+  const chips: LibraryActiveFilterChip[] = [];
+  const trimmedQuery = params.query.trim();
+  if (trimmedQuery) chips.push({ key: "query", label: `Search: "${trimmedQuery}"` });
+  if (params.fileTypeFilter) {
+    chips.push({
+      key: "fileType",
+      label: `Type: ${libraryFileTypeFilterLabel(params.fileTypeFilter)}`,
+    });
+  }
+  if (params.sort !== LIBRARY_DEFAULT_SORT) {
+    const option = LIBRARY_SORT_OPTIONS.find((candidate) => candidate.value === params.sort);
+    chips.push({ key: "sort", label: `Sort: ${option?.label ?? params.sort}` });
+  }
+  return chips;
+}
+
 /** Mirrors the backend's folder-name rules so the dialog can show errors before submitting. */
 export function validateLibraryFolderName(name: string): string | null {
   const trimmed = name.trim();

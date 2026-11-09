@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import type { MouseEvent } from "react";
 import {
   Download,
   File,
@@ -15,6 +16,7 @@ import {
 import type { ApiLibraryItem } from "@/lib/api/types";
 import { formatLibraryBytes, formatLibraryUpdatedAt, libraryItemTypeLabel } from "@/lib/libraryUi";
 import { cn } from "@/lib/utils";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,6 +28,9 @@ import {
 export function LibraryItemRow({
   item,
   attaching,
+  selected,
+  selectDisabled,
+  onToggleSelect,
   onToggleFavorite,
   onRename,
   onMove,
@@ -36,6 +41,10 @@ export function LibraryItemRow({
 }: {
   item: ApiLibraryItem;
   attaching: boolean;
+  selected?: boolean;
+  /** True while a bulk action is in flight — freezes the selection so it can't change mid-operation. */
+  selectDisabled?: boolean;
+  onToggleSelect?: (event: MouseEvent) => void;
   onToggleFavorite: (item: ApiLibraryItem) => void;
   onRename: (item: ApiLibraryItem) => void;
   onMove: (item: ApiLibraryItem) => void;
@@ -54,7 +63,20 @@ export function LibraryItemRow({
     .join(" · ");
 
   return (
-    <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40">
+    <li
+      className={cn(
+        "flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40",
+        selected && "bg-primary/5",
+      )}
+    >
+      {onToggleSelect ? (
+        <Checkbox
+          checked={Boolean(selected)}
+          disabled={selectDisabled}
+          onClick={(event) => onToggleSelect(event)}
+          aria-label={selected ? `Deselect ${item.title}` : `Select ${item.title}`}
+        />
+      ) : null}
       <ItemIcon item={item} />
       <div className="min-w-0 flex-1 overflow-hidden">
         <Link

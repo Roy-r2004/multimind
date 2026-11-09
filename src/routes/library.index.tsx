@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Plus, Search, Upload } from "lucide-react";
+import type { MouseEvent as ReactMouseEvent } from "react";
+import { Loader2, Plus, Search, Tag, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard } from "@/components/cinematic/PageChrome";
@@ -11,6 +12,7 @@ import { LibraryHome } from "@/components/library/LibraryHome";
 import { LibraryItemRow } from "@/components/library/LibraryItemRow";
 import { LibrarySidebar } from "@/components/library/LibrarySidebar";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,6 +30,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
@@ -36,11 +44,26 @@ import { useAuth } from "@/lib/auth";
 import { COMPOSER_FILE_ACCEPT } from "@/lib/composerAttachments";
 import { attachLibraryItemViaApi } from "@/lib/libraryAttach";
 import {
+  addLabelToIds,
+  bulkResultMessage,
+  intersectSelection,
+  LIBRARY_BULK_CONCURRENCY_LIMIT,
+  mapWithConcurrencyLimit,
+  removeLabelFromIds,
+  selectAll,
+  selectRange,
+  summarizeBulkResults,
+  toggleSelection,
+} from "@/lib/libraryBulkActions";
+import {
   buildLibraryFolderTree,
+  libraryActiveFilterChips,
   libraryFolderPath,
   libraryViewAfterFolderDelete,
   libraryViewHeading,
   validateLibraryFolderName,
+  LIBRARY_DEFAULT_SORT,
+  LIBRARY_SORT_OPTIONS,
 } from "@/lib/libraryUi";
 import {
   applyLibraryBrowseChange,
@@ -87,6 +110,19 @@ function LibraryPage() {
   const folderQuery = browse.folderQuery;
   const foldersExpanded = browse.foldersExpanded;
   const fileTypeFilter = browse.fileTypeFilter;
+  const sort = browse.sort;
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const lastSelectedIndexRef = useRef<number | null>(null);
+  // Bumped on every reloadItems() call so a reload that's superseded by a
+  // newer one (e.g. the user switched folders while a bulk action's own
+  // reload was still in flight) can detect it's stale and skip applying.
+  const reloadGenerationRef = useRef(0);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    lastSelectedIndexRef.current = null;
+  }, []);
 
   const updateBrowse = useCallback(
     (
@@ -106,10 +142,14 @@ function LibraryPage() {
         window.requestAnimationFrame(() => {
           ignoreScrollRef.current = false;
         });
+        // Folder/search/filter/sort changes mean the visible rows are about to
+        // change: a stale selection could otherwise end up acting on items the
+        // user never intended once the new list loads.
+        clearSelection();
       }
       setBrowse(next);
     },
-    [],
+    [clearSelection],
   );
 
   const flushLibraryScroll = useCallback(() => {
@@ -162,6 +202,11 @@ function LibraryPage() {
   const [deletingFolder, setDeletingFolder] = useState(false);
   const [deleteFolderError, setDeleteFolderError] = useState<string | null>(null);
 
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
+  const [bulkMoveFolderId, setBulkMoveFolderId] = useState<string | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+
   const folderTree = useMemo(() => buildLibraryFolderTree(folders), [folders]);
 
   function defaultFolderForView(): string | null {
@@ -185,9 +230,10 @@ function LibraryPage() {
       setLoading(false);
       return;
     }
+    const generation = ++reloadGenerationRef.current;
     setLoading(true);
     try {
-      const listQuery = libraryListQuery({ view, query, fileTypeFilter });
+      const listQuery = libraryListQuery({ view, query, fileTypeFilter, sort });
       const params: Parameters<typeof api.library.listItems>[1] = {};
       if (listQuery.recent) params.recent = true;
       if (listQuery.q) params.q = listQuery.q;
@@ -196,6 +242,7 @@ function LibraryPage() {
       if (listQuery.folder_id) params.folder_id = listQuery.folder_id;
       if (listQuery.unfiled) params.unfiled = true;
       if (listQuery.label_id) params.label_id = listQuery.label_id;
+      if (listQuery.sort) params.sort = listQuery.sort;
 
       let list = await api.library.listItems(auth, params);
       if (listQuery.extension) {
@@ -207,13 +254,26 @@ function LibraryPage() {
       if (listQuery.homeLimit) {
         list = list.slice(0, listQuery.homeLimit);
       }
+      // A newer reload (folder/search/filter/sort change, or another bulk
+      // action) started after this one — applying this response now would
+      // overwrite more current data and could resurrect a stale selection.
+      if (reloadGenerationRef.current !== generation) return;
       setItems(list);
+      // Drop any selected id that fell out of view (moved, deleted, filtered out)
+      // instead of letting a bulk action silently act on it later.
+      setSelectedIds((prev) =>
+        intersectSelection(
+          prev,
+          list.map((item) => item.id),
+        ),
+      );
     } catch (error) {
+      if (reloadGenerationRef.current !== generation) return;
       toast.error(error instanceof Error ? error.message : "Failed to load Library");
     } finally {
-      setLoading(false);
+      if (reloadGenerationRef.current === generation) setLoading(false);
     }
-  }, [authHeaders, query, view, fileTypeFilter]);
+  }, [authHeaders, query, view, fileTypeFilter, sort]);
 
   useEffect(() => {
     if (!browseReady) return;
@@ -511,9 +571,122 @@ function LibraryPage() {
     }
   }
 
+  function handleToggleItemSelect(item: ApiLibraryItem, index: number, event: ReactMouseEvent) {
+    if (event.shiftKey && lastSelectedIndexRef.current != null) {
+      setSelectedIds((prev) =>
+        selectRange(
+          prev,
+          items.map((row) => row.id),
+          lastSelectedIndexRef.current ?? index,
+          index,
+        ),
+      );
+    } else {
+      setSelectedIds((prev) => toggleSelection(prev, item.id));
+    }
+    lastSelectedIndexRef.current = index;
+  }
+
+  function selectAllVisible() {
+    setSelectedIds(selectAll(items.map((item) => item.id)));
+  }
+
+  /** Runs `action` over every selected id, tolerating per-item failures, and reports accurate counts. */
+  async function runBulkAction(
+    label: string,
+    ids: string[],
+    action: (id: string) => Promise<unknown>,
+  ): Promise<void> {
+    if (bulkBusy || ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      // Cap concurrent requests instead of firing one per selected item at
+      // once — a large "select all" could otherwise launch hundreds of
+      // simultaneous API calls.
+      const results = await mapWithConcurrencyLimit(ids, LIBRARY_BULK_CONCURRENCY_LIMIT, (id) =>
+        action(id),
+      );
+      const outcome = summarizeBulkResults(
+        ids.map((id, index) => ({ id, ok: results[index]?.status === "fulfilled" })),
+      );
+      const { level, text } = bulkResultMessage(label, outcome);
+      if (level === "success") toast.success(text);
+      else toast.error(text);
+      // Keep only the failures selected so the user can see and retry exactly
+      // what didn't work; successes are done and drop out of the selection.
+      setSelectedIds(new Set(outcome.failedIds));
+      await reloadItems();
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkMove() {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    await runBulkAction("Moved", ids, (id) =>
+      api.library.updateItem(auth, id, {
+        folder_id: bulkMoveFolderId ?? undefined,
+        clear_folder: !bulkMoveFolderId,
+      }),
+    );
+    setBulkMoveOpen(false);
+  }
+
+  async function bulkSetFavorite(value: boolean) {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    await runBulkAction(value ? "Favorited" : "Unfavorited", ids, (id) =>
+      api.library.updateItem(auth, id, { is_favorite: value }),
+    );
+  }
+
+  async function bulkAddLabel(labelId: string) {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    const byId = new Map(items.map((item) => [item.id, item]));
+    await runBulkAction("Labeled", ids, (id) => {
+      const current = byId.get(id)?.labels.map((label) => label.id) ?? [];
+      return api.library.updateItem(auth, id, { label_ids: addLabelToIds(current, labelId) });
+    });
+  }
+
+  async function bulkRemoveLabel(labelId: string) {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    const byId = new Map(items.map((item) => [item.id, item]));
+    await runBulkAction("Updated labels for", ids, (id) => {
+      const current = byId.get(id)?.labels.map((label) => label.id) ?? [];
+      return api.library.updateItem(auth, id, {
+        label_ids: removeLabelFromIds(current, labelId),
+      });
+    });
+  }
+
+  async function bulkDelete() {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    await runBulkAction("Deleted", ids, (id) => api.library.deleteItem(auth, id));
+    setBulkDeleteOpen(false);
+  }
+
   const folderPath = view.kind === "folder" ? libraryFolderPath(folders, view.folderId) : [];
   const heading = libraryViewHeading(view, folders, labels);
   const itemCountLabel = `${items.length} ${items.length === 1 ? "item" : "items"}`;
+  const activeFilterChips = libraryActiveFilterChips({ query, fileTypeFilter, sort });
+  const allVisibleSelected = items.length > 0 && items.every((item) => selectedIds.has(item.id));
+  const someVisibleSelected = selectedIds.size > 0 && !allVisibleSelected;
+
+  function clearActiveFilterChip(key: "query" | "fileType" | "sort") {
+    if (key === "query") updateBrowse({ query: "" });
+    else if (key === "fileType") updateBrowse({ fileTypeFilter: "" });
+    else updateBrowse({ sort: LIBRARY_DEFAULT_SORT });
+  }
 
   const itemRowHandlers = {
     onToggleFavorite: (item: ApiLibraryItem) => void toggleFavorite(item),
@@ -667,7 +840,142 @@ function LibraryPage() {
                     <option value=".xlsx">Excel</option>
                     <option value=".txt">Text</option>
                   </select>
+                  <select
+                    value={sort}
+                    onChange={(e) =>
+                      updateBrowse({ sort: e.target.value as LibraryBrowseState["sort"] })
+                    }
+                    className="rounded-lg border border-border bg-background/70 px-3 py-2 text-sm"
+                    aria-label="Sort Library items"
+                  >
+                    {LIBRARY_SORT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
+
+                {activeFilterChips.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {activeFilterChips.map((chip) => (
+                      <button
+                        key={chip.key}
+                        type="button"
+                        onClick={() => clearActiveFilterChip(chip.key)}
+                        className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted"
+                        title={`Clear: ${chip.label}`}
+                      >
+                        {chip.label}
+                        <X className="size-3" />
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateBrowse({ query: "", fileTypeFilter: "", sort: LIBRARY_DEFAULT_SORT })
+                      }
+                      className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                    >
+                      Clear all filters
+                    </button>
+                  </div>
+                )}
+
+                {selectedIds.size > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+                    <span className="font-medium">{selectedIds.size} selected</span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={clearSelection}
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => {
+                        setBulkMoveFolderId(null);
+                        setBulkMoveOpen(true);
+                      }}
+                    >
+                      Move
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={bulkBusy || labels.length === 0}
+                        >
+                          <Tag className="size-4" />
+                          Add label
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        {labels.map((label) => (
+                          <DropdownMenuItem
+                            key={label.id}
+                            onSelect={() => void bulkAddLabel(label.id)}
+                          >
+                            {label.name}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={bulkBusy || labels.length === 0}
+                        >
+                          <Tag className="size-4" />
+                          Remove label
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        {labels.map((label) => (
+                          <DropdownMenuItem
+                            key={label.id}
+                            onSelect={() => void bulkRemoveLabel(label.id)}
+                          >
+                            {label.name}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => void bulkSetFavorite(true)}
+                    >
+                      Favorite
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => void bulkSetFavorite(false)}
+                    >
+                      Unfavorite
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => setBulkDeleteOpen(true)}
+                      className="text-destructive hover:text-destructive"
+                    >
+                      Delete
+                    </Button>
+                    {bulkBusy && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
+                  </div>
+                )}
 
                 <GlassCard className="overflow-hidden">
                   {loading ? (
@@ -680,17 +988,48 @@ function LibraryPage() {
                       Nothing here yet. Create a document or upload a file.
                     </div>
                   ) : (
-                    <ul className="divide-y divide-border">
-                      {items.map((item) => (
-                        <LibraryItemRow
-                          key={item.id}
-                          item={item}
-                          attaching={attachingId === item.id}
-                          onOpen={rememberBeforeDocument}
-                          {...itemRowHandlers}
+                    <>
+                      <div className="flex items-center gap-3 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+                        <Checkbox
+                          checked={
+                            allVisibleSelected
+                              ? true
+                              : someVisibleSelected
+                                ? "indeterminate"
+                                : false
+                          }
+                          disabled={bulkBusy}
+                          onClick={() => {
+                            if (allVisibleSelected) clearSelection();
+                            else selectAllVisible();
+                          }}
+                          aria-label={
+                            allVisibleSelected
+                              ? "Deselect all visible items"
+                              : "Select all visible items"
+                          }
                         />
-                      ))}
-                    </ul>
+                        <span>
+                          {allVisibleSelected
+                            ? `All ${items.length} selected`
+                            : `Select all ${items.length} visible`}
+                        </span>
+                      </div>
+                      <ul className="divide-y divide-border">
+                        {items.map((item, index) => (
+                          <LibraryItemRow
+                            key={item.id}
+                            item={item}
+                            attaching={attachingId === item.id}
+                            onOpen={rememberBeforeDocument}
+                            selected={selectedIds.has(item.id)}
+                            selectDisabled={bulkBusy}
+                            onToggleSelect={(event) => handleToggleItemSelect(item, index, event)}
+                            {...itemRowHandlers}
+                          />
+                        ))}
+                      </ul>
+                    </>
                   )}
                 </GlassCard>
               </>
@@ -1005,6 +1344,75 @@ function LibraryPage() {
             >
               {deletingFolder ? <Loader2 className="size-4 animate-spin" /> : null}
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog
+        open={bulkMoveOpen}
+        onOpenChange={(open) => {
+          if (!open && !bulkBusy) setBulkMoveOpen(false);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move {selectedIds.size} items to folder</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="library-bulk-move-folder">Folder</Label>
+            <LibraryFolderSelect
+              id="library-bulk-move-folder"
+              folders={folders}
+              value={bulkMoveFolderId}
+              onChange={setBulkMoveFolderId}
+              disabled={bulkBusy}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setBulkMoveOpen(false)}
+              disabled={bulkBusy}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void bulkMove()} disabled={bulkBusy}>
+              {bulkBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+              Move
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={bulkDeleteOpen}
+        onOpenChange={(open) => {
+          if (!open && !bulkBusy) setBulkDeleteOpen(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedIds.size} items?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes {selectedIds.size}{" "}
+              {selectedIds.size === 1 ? "item" : "items"}. Library does not currently support a
+              trash or restore — this action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={bulkBusy}
+              onClick={(event) => {
+                event.preventDefault();
+                void bulkDelete();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {bulkBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+              Delete permanently
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

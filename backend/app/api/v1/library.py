@@ -125,6 +125,7 @@ async def list_items(
     item_type: str | None = Query(default=None),
     favorites: bool = Query(default=False),
     recent: bool = Query(default=False),
+    sort: str | None = Query(default=None),
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -139,6 +140,7 @@ async def list_items(
         favorites=favorites,
         recent=recent,
         include_content=False,
+        sort=sort,
     )
 
 
