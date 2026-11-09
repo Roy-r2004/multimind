@@ -334,18 +334,29 @@ class MapsClassificationService:
             attempts_exhausted = (place.enrichment_attempts or 0) >= max_attempts
             if attempts_exhausted:
                 # Requirement: every relevant place must end in a valid bucket —
-                # never loop forever on a place that keeps erroring. A kept
-                # place keeps the gate's eligibility: an error is missing
-                # evidence, never a disqualification.
-                place.client_eligibility = (
-                    compute_client_eligibility(place)
-                    if place.keep_drop_decision == KEEP
-                    else MapsClientEligibility.REVIEW.value
-                )
+                # never loop forever on a place that keeps erroring. Phase 2 is
+                # strictly KEEP/DROP: a permanent classification error is
+                # missing evidence, never a disqualification, so it must never
+                # produce a third "review" outcome on its own. Always recompute
+                # via compute_client_eligibility (not just when kept) — it
+                # already checks manually_excluded_at and every other
+                # already-stored hard-negative field first, so a prior manual
+                # Reject or reliable disqualifying evidence from an earlier
+                # successful partial classification is never overridden by
+                # this attempt's failure; only genuinely insufficient evidence
+                # falls through to ELIGIBLE.
+                place.client_eligibility = compute_client_eligibility(place)
                 place.lifecycle_status = (
                     MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
                     if place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
-                    else MapsLifecycleStatus.NEEDS_REVIEW.value
+                    # Never NEEDS_REVIEW here: pairing it with an EXCLUDED
+                    # client_eligibility (a genuine manual Reject or
+                    # confirmed disqualification, not staleness) would make
+                    # normalize_lifecycle_eligibility_consistency below treat
+                    # it as the stale (needs_review, excluded) mismatch it
+                    # exists to repair and silently flip it back to REVIEW —
+                    # exactly the automatic third outcome this fix removes.
+                    else MapsLifecycleStatus.CONTRADICTED.value
                 )
                 place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
                 place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
@@ -713,16 +724,20 @@ class MapsClassificationService:
                 if attempts_exhausted:
                     # Delivery requirement: every relevant place must end in a
                     # valid bucket, never loop forever on a place that keeps
-                    # failing classification. A provider failure must never
-                    # silently become "excluded" — park it as needs_review.
-                    # A kept place stays eligible: a provider failure is
-                    # missing evidence, which never demotes the strict gate.
-                    if place.keep_drop_decision == KEEP:
-                        place.client_eligibility = compute_client_eligibility(place)
-                        place.lifecycle_status = _derive_lifecycle_status(place)
-                    else:
-                        place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
-                        place.client_eligibility = MapsClientEligibility.REVIEW.value
+                    # failing classification. Phase 2 is strictly KEEP/DROP: a
+                    # provider failure is missing evidence, never a
+                    # disqualification, so it must never produce a third
+                    # "review" outcome on its own — regardless of keep_drop_
+                    # decision, always recompute the same way a kept place
+                    # does. compute_client_eligibility/_derive_lifecycle_status
+                    # already check manually_excluded_at and every other
+                    # already-stored hard-negative field first, so a prior
+                    # manual Reject or reliable disqualifying evidence from an
+                    # earlier successful partial classification is never
+                    # overridden by this attempt's failure; only genuinely
+                    # insufficient evidence falls through to ELIGIBLE.
+                    place.client_eligibility = compute_client_eligibility(place)
+                    place.lifecycle_status = _derive_lifecycle_status(place)
                     place.enrichment_pipeline_state = MapsEnrichmentPipelineState.NEEDS_REVIEW.value
                     place.enrichment_status = MapsPlaceEnrichmentStatus.COMPLETED.value
                     place.enrichment_completed_at = datetime.now(UTC)

@@ -31,11 +31,19 @@ Official website crawl excerpts:
 Return JSON with:
 - facility_type: EXACTLY one of residential_addiction_rehab, inpatient_detox_center,
   outpatient_addiction_center, psychiatric_clinic_with_addiction_program,
-  therapeutic_community, cessation_service, harm_reduction_only, individual_addictologist,
-  therapist_or_counselor, recovery_community_center, general_mental_health_clinic, unrelated,
-  unknown. "Addiction treatment facility/center" by itself is NOT one of these — it does not
+  therapeutic_community, cessation_service, harm_reduction_only, administrative_office_only,
+  housing_only_no_program, individual_addictologist, therapist_or_counselor,
+  recovery_community_center, general_mental_health_clinic, unrelated, unknown.
+  "Addiction treatment facility/center" by itself is NOT one of these — it does not
   say residential vs. outpatient vs. general; if the evidence does not clearly indicate which
   SPECIFIC one of these applies, return `unknown`, never a vaguer paraphrase.
+  Use `administrative_office_only` for a registered office/headquarters/referral desk that
+  does not itself house or treat patients on-site. Use `housing_only_no_program` for sober
+  living / transitional / supported housing with no structured addiction-treatment program
+  on-site. Like `outpatient_addiction_center`/`cessation_service`/`harm_reduction_only`/
+  `unrelated`, these two codes are only for evidence that RELIABLY CONFIRMS the disqualifying
+  condition — if the evidence is weak, ambiguous, or simply absent, return `unknown` instead of
+  guessing one of these.
 - operator_type: EXACTLY one of private_company, nonprofit, association, faith_based_org,
   public_hospital, government_agency, hospital_system, university, individual_practice,
   unknown.
@@ -88,6 +96,18 @@ these are the opposite of inpatient/residential, not an unconfirmed middle groun
 you genuinely cannot tell either way; never guess `true` from the name/category alone (see the
 evidence rule above), and never guess `false` just because the word "residential" specifically
 does not appear if "inpatient" or "24-hour" does.
+
+A facility that is private/nonprofit/NGO-operated — including a tribally chartered nonprofit —
+counts as non-government ownership exactly like any other nonprofit; tribal chartering is not a
+government-operator signal. An adolescent/youth-focused residential addiction program is still
+`residential_addiction_rehab` or `therapeutic_community`, not disqualified for serving minors.
+A faith-based or religiously-framed residential addiction recovery program is not, on its own,
+evidence of "no structured program" — classify it by what its program actually does
+(residential treatment vs. housing-only), not by its religious framing or non-clinical
+vocabulary. A residential mental-health facility whose own actual program includes a structured
+addiction component stays `general_mental_health_clinic` with `addiction_treatment_mission:
+true` (or the specific addiction facility_type if addiction is in fact primary) — never force it
+to `unknown`/`unrelated` merely because mental health, not addiction, is the primary specialty.
 
 Do NOT return addictions, languages, address, phone, or email.
 Return JSON only. No markdown fences.

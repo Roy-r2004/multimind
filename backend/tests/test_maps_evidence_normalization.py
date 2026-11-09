@@ -312,16 +312,15 @@ def test_belarus_candidate_reaches_eligible_once_facility_type_persists():
         manually_excluded_at=None,
         geo_boundary_match="no_polygon_available",
     )
-    # Before this fix facility_type stayed None and this returned REVIEW.
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    # Before the facility_type fix this stayed None and returned REVIEW;
+    # under the current strictly-binary Phase 2, probable (not confirmed)
+    # ownership is insufficient evidence of disqualification, so this is
+    # ELIGIBLE too.
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
-    # The branch that actually requires CONFIRMED (not probable) ownership
-    # is the unconditional-grant path; probable ownership + a residential-
-    # granting facility_type is the "review" branch below it in
-    # compute_client_eligibility, which is the one this candidate's real
-    # saved data hits. Confirm the unconditional-grant path too, for a
-    # place whose ownership WAS actually confirmed (a different, equally
-    # real Belarus-style outcome):
+    # Confirm the unconditional-grant path too, for a place whose ownership
+    # WAS actually confirmed (a different, equally real Belarus-style
+    # outcome):
     confirmed_place = _belarus_place(
         facility_type=MapsFacilityType.RESIDENTIAL_ADDICTION_REHAB.value,
         ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
@@ -626,8 +625,10 @@ def test_apply_structured_fields_preserves_raw_evidence_for_audit():
 def test_facility_type_never_bypasses_residential_accommodation_guard():
     """The exact real Kotka branch scenario: organization-wide evidence
     that correctly fails to confirm residential_accommodation must also
-    fail to grant facility_type=residential_addiction_rehab — and the
-    place must end up EXCLUDED/REVIEW, never ELIGIBLE, from this evidence
+    fail to grant facility_type=residential_addiction_rehab. Under the
+    current strictly-binary Phase 2, the resulting unresolved facility_type
+    is insufficient evidence of disqualification, not proof of one — this
+    stays eligible rather than being excluded from the rejected evidence
     alone."""
     from app.services.scraping.maps_eligibility import compute_client_eligibility
 
@@ -672,7 +673,7 @@ def test_facility_type_never_bypasses_residential_accommodation_guard():
     # transferable fact) is still allowed to resolve.
     assert place.ownership_status == "confirmed_non_government"
 
-    assert compute_client_eligibility(place) != MapsClientEligibility.ELIGIBLE.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
 # --- Audit finding: ownership/operator recovery must require a genuine

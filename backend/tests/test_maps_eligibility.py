@@ -108,12 +108,12 @@ def test_outpatient_category_with_unconfirmed_inpatient_stays_excluded():
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
-def test_outpatient_category_with_contradictory_inpatient_evidence_stays_review():
+def test_outpatient_category_with_contradictory_inpatient_evidence_is_excluded():
     """Contradictory evidence (one field confirms inpatient, another field
     from the SAME classification call explicitly says no overnight stay
     and an outpatient care setting) must never be automatically accepted —
-    it is a genuine internal contradiction for a human to resolve, not
-    proof of eligibility."""
+    it is reliable evidence of an outpatient-only contradiction, so it is
+    excluded rather than treated as proof of eligibility."""
     place = make_place(
         ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
         facility_type=MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value,
@@ -124,7 +124,7 @@ def test_outpatient_category_with_contradictory_inpatient_evidence_stays_review(
         care_setting="outpatient",
     )
 
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
 def test_individual_practitioner_is_excluded_as_center():
@@ -157,6 +157,64 @@ def test_cessation_or_laser_style_services_are_excluded(facility_type: str):
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
+@pytest.mark.parametrize(
+    "facility_type",
+    [
+        MapsFacilityType.ADMINISTRATIVE_OFFICE_ONLY.value,
+        MapsFacilityType.HOUSING_ONLY_NO_PROGRAM.value,
+    ],
+)
+def test_administrative_office_and_housing_only_are_excluded(facility_type: str):
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        facility_type=facility_type,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+    )
+
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
+def test_mental_health_clinic_confirmed_no_addiction_focus_kept_place_is_excluded():
+    """A kept place with a reliable, confirmed contradiction (the same
+    classification call explicitly found NO addiction component) is a
+    legitimate DROP — "mental-health-only"."""
+    place = make_place(
+        keep_drop_decision="keep",
+        facility_type=MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value,
+        addiction_focus_confirmed=False,
+    )
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
+def test_mental_health_clinic_unresolved_addiction_focus_kept_place_stays_eligible():
+    """Unlike a confirmed `False`, a genuinely unresolved (`None`)
+    addiction-focus signal on a kept place is insufficient evidence of
+    disqualification and must stay eligible."""
+    place = make_place(
+        keep_drop_decision="keep",
+        facility_type=MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value,
+        addiction_focus_confirmed=None,
+    )
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
+def test_ridge_rtc_style_dual_diagnosis_residential_facility_is_eligible():
+    """A residential mental-health facility whose primary specialty is
+    mental health, not addiction, must still qualify once it has a
+    confirmed, genuine structured residential addiction-treatment
+    component (the Ridge-RTC carve-out)."""
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        facility_type=MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+        residential_accommodation=True,
+        care_setting="residential",
+    )
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
 def test_psychiatric_without_addiction_focus_is_excluded():
     place = make_place(
         ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
@@ -173,17 +231,18 @@ def test_psychiatric_without_addiction_focus_is_excluded():
 # is no longer hard-excluded purely for that label. ---
 
 
-def test_psychiatric_with_addiction_focus_but_unconfirmed_residential_goes_to_review():
+def test_psychiatric_with_addiction_focus_but_unconfirmed_residential_stays_eligible():
     """Genuine addiction-focus signal but no yet-confirmed inpatient/
-    residential evidence is uncertain (review), never hard-excluded and
-    never invented as eligible."""
+    residential evidence is insufficient evidence of disqualification, not
+    proof of one — Phase 2 has only two outcomes, so this stays eligible
+    (mirrors the Ridge-RTC-style dual-diagnosis carve-out)."""
     place = make_place(
         ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
         facility_type=MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value,
         organization_scope=MapsOrganizationScope.FACILITY.value,
         addiction_focus_confirmed=True,
     )
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
 def test_psychiatric_hospital_with_confirmed_residential_addiction_program_is_eligible():
@@ -214,10 +273,9 @@ def test_residential_ngo_is_eligible():
 
 # --- Geographic result validation guard: an otherwise-eligible facility
 # whose coordinates are VERIFIED to be outside the run's selected polygon
-# must never reach "eligible" on business classification alone. Business
-# inputs are untouched by this guard — only the final ELIGIBLE outcome is
-# downgraded to REVIEW (never excluded, never applied when coordinates or
-# a polygon are missing). ---
+# is reliable "wrong country/state" evidence, so it is excluded. The coarse
+# bounding-box fallback is NOT reliable evidence and must never exclude a
+# facility, nor missing coordinates/polygon data. ---
 
 
 def _eligible_place(**overrides):
@@ -232,9 +290,17 @@ def _eligible_place(**overrides):
     )
 
 
-def test_outside_polygon_downgrades_eligible_to_review_not_excluded():
+def test_outside_polygon_excludes_an_otherwise_eligible_facility():
     place = _eligible_place(geo_boundary_match="outside_polygon")
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
+def test_outside_bbox_fallback_stays_eligible():
+    """The coarse country-level bounding-box fallback is imprecise near
+    borders — unlike a verified polygon, it is not reliable evidence of
+    anything, so it must never exclude a facility."""
+    place = _eligible_place(geo_boundary_match="outside_bbox_fallback")
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
 def test_inside_polygon_stays_eligible():
@@ -283,14 +349,14 @@ def test_outside_polygon_does_not_change_an_already_excluded_outcome():
 # above, none of which set them). ---
 
 
-def test_contradicting_residential_evidence_downgrades_to_review():
+def test_contradicting_residential_evidence_is_excluded():
     place = _eligible_place(residential_accommodation=False, care_setting="outpatient")
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
-def test_contradicting_residential_evidence_virtual_care_setting_downgrades_to_review():
+def test_contradicting_residential_evidence_virtual_care_setting_is_excluded():
     place = _eligible_place(residential_accommodation=False, care_setting="virtual")
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
 def test_missing_residential_evidence_still_eligible():
@@ -326,7 +392,7 @@ def test_residential_accommodation_false_with_residential_care_setting_stays_eli
     assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
-def test_probable_non_government_with_addiction_focus_goes_to_review_without_scope_or_type_gate():
+def test_probable_non_government_with_addiction_focus_stays_eligible_without_scope_or_type_gate():
     place = make_place(
         ownership_status=MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value,
         facility_type=MapsFacilityType.UNKNOWN.value,
@@ -334,10 +400,10 @@ def test_probable_non_government_with_addiction_focus_goes_to_review_without_sco
         addiction_focus_confirmed=True,
     )
 
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
-def test_ownership_unknown_eligible_facility_goes_to_review():
+def test_ownership_unknown_eligible_facility_stays_eligible():
     place = make_place(
         ownership_status=MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value,
         facility_type=MapsFacilityType.INPATIENT_DETOX_CENTER.value,
@@ -345,10 +411,10 @@ def test_ownership_unknown_eligible_facility_goes_to_review():
         addiction_focus_confirmed=True,
     )
 
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
-def test_ownership_unknown_eligible_facility_goes_to_review_without_scope_gate():
+def test_ownership_unknown_eligible_facility_stays_eligible_without_scope_gate():
     place = make_place(
         ownership_status=MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value,
         facility_type=MapsFacilityType.INPATIENT_DETOX_CENTER.value,
@@ -356,7 +422,7 @@ def test_ownership_unknown_eligible_facility_goes_to_review_without_scope_gate()
         addiction_focus_confirmed=None,
     )
 
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
 @pytest.mark.parametrize(
@@ -398,21 +464,18 @@ def test_derive_legacy_verification_verdict_maps_lifecycle_status(
     assert derive_legacy_verification_verdict(lifecycle_status) == expected
 
 
-def test_unresolved_facility_type_stays_review_even_with_confirmed_ownership():
+def test_unresolved_facility_type_stays_eligible_even_with_confirmed_ownership():
     """Regression: confirming ownership (a positive fact) must never, by
     itself, make an unrelated and still-genuinely-unresolved fact
     (facility_type) look like a disqualification. A place with
-    facility_type unknown/unresolved must stay REVIEW regardless of how
-    confirmed ownership_status is — previously this fell through to
-    EXCLUDED once ownership became confirmed_non_government, purely
-    because the review catch-all only listed ownership_unknown/probable_
-    non_government, not confirmed_non_government (government ownership
-    is already hard-excluded earlier, so confirmed_non_government is the
-    only other value reachable here)."""
+    facility_type unknown/unresolved must stay ELIGIBLE regardless of how
+    confirmed ownership_status is — Phase 2 only has two outcomes, and
+    unresolved classification is insufficient evidence of disqualification,
+    not proof of one."""
     place = make_place(
         ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
         facility_type=MapsFacilityType.UNKNOWN.value,
         organization_scope=MapsOrganizationScope.FACILITY.value,
         addiction_focus_confirmed=True,
     )
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value

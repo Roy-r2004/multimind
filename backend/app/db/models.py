@@ -2810,6 +2810,8 @@ class MapsFacilityType(str, enum.Enum):
     THERAPEUTIC_COMMUNITY = "therapeutic_community"
     CESSATION_SERVICE = "cessation_service"
     HARM_REDUCTION_ONLY = "harm_reduction_only"
+    ADMINISTRATIVE_OFFICE_ONLY = "administrative_office_only"
+    HOUSING_ONLY_NO_PROGRAM = "housing_only_no_program"
     INDIVIDUAL_ADDICTOLOGIST = "individual_addictologist"
     THERAPIST_OR_COUNSELOR = "therapist_or_counselor"
     RECOVERY_COMMUNITY_CENTER = "recovery_community_center"

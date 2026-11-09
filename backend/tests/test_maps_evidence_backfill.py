@@ -136,8 +136,11 @@ async def test_dry_run_reports_exact_changes_without_writing(db, auth):
     assert raahe.classification_evidence.get("_backfill_audit") is None
 
 
-# --- Apply: writes exactly the planned changes, recomputes eligibility,
-# never promotes to ELIGIBLE from unsupported evidence ---
+# --- Apply: writes exactly the planned changes, recomputes eligibility.
+# Phase 2 is strictly KEEP/DROP: unsupported/unresolved evidence (here,
+# facility_type never recovers) resolves to ELIGIBLE, not a third status
+# and not an exclusion — it is insufficient evidence of disqualification,
+# not proof of one. ---
 
 
 @pytest.mark.asyncio
@@ -153,9 +156,11 @@ async def test_apply_writes_exact_changes_and_recomputes_eligibility(db, auth):
     await db.refresh(raahe)
     assert raahe.ownership_status == "confirmed_non_government"
     assert raahe.residential_accommodation is None
-    assert raahe.client_eligibility != MapsClientEligibility.ELIGIBLE.value
+    assert raahe.client_eligibility == MapsClientEligibility.ELIGIBLE.value
     audit = raahe.classification_evidence.get("_backfill_audit")
     assert audit and audit[0]["source"] == BACKFILL_SOURCE_TAG
+    # eligibility_before reflects whatever was already stored (the fixture's
+    # initial review status), not a recomputation.
     assert audit[0]["eligibility_before"] == MapsClientEligibility.REVIEW.value
 
 
@@ -278,10 +283,12 @@ async def test_confident_drop_is_never_touched(db, auth):
 
 
 @pytest.mark.asyncio
-async def test_unrelated_branch_partial_recovery_never_reaches_eligible(db, auth):
+async def test_unrelated_branch_partial_recovery_stays_eligible(db, auth):
     """A-klinikka-style branch: ownership recovers (legitimately org-wide),
-    facility_type/residential never do (org-wide, not branch-specific) —
-    and the place must never become ELIGIBLE from this alone."""
+    facility_type/residential never do (org-wide, not branch-specific).
+    Phase 2 is strictly KEEP/DROP, so this unresolved facility_type is
+    insufficient evidence of disqualification, not proof of one — it
+    stays eligible, exactly as an unclassified place always does."""
     run = await _create_run(db, auth)
     place = _base_place(
         run.id,
@@ -320,7 +327,7 @@ async def test_unrelated_branch_partial_recovery_never_reaches_eligible(db, auth
     assert place.ownership_status == "confirmed_non_government"
     assert place.facility_type is None
     assert place.residential_accommodation is None
-    assert place.client_eligibility != MapsClientEligibility.ELIGIBLE.value
+    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
 
 
 # --- Zero AI calls, enforced not just assumed ---
@@ -406,11 +413,14 @@ async def test_dry_run_eligibility_after_is_never_none_for_a_changed_place(db, a
     plans = await build_backfill_plan(_factory(db), run_id=run.id)
     assert len(plans) == 1
     plan = plans[0]
+    # eligibility_before reflects whatever was already stored (the
+    # fixture's initial review status), not a recomputation.
     assert plan.eligibility_before == MapsClientEligibility.REVIEW.value
     assert plan.eligibility_after is not None
     # Ownership-only recovery, with facility_type/residential still
-    # unresolved, cannot reach ELIGIBLE — it must stay REVIEW, not NULL.
-    assert plan.eligibility_after == MapsClientEligibility.REVIEW.value
+    # unresolved, recomputes to ELIGIBLE (Phase 2 is strictly KEEP/DROP;
+    # unresolved evidence is never proof of disqualification) — not NULL.
+    assert plan.eligibility_after == MapsClientEligibility.ELIGIBLE.value
 
 
 @pytest.mark.asyncio
@@ -443,11 +453,11 @@ async def test_dry_run_eligibility_after_matches_what_apply_actually_persists(db
 
 
 @pytest.mark.asyncio
-async def test_review_to_review_insufficient_evidence_never_becomes_null(db, auth):
+async def test_insufficient_evidence_recomputes_to_eligible_never_null(db, auth):
     """A facility whose only recoverable field is ownership (legitimately
     organization-wide), with facility_type/residential still unresolved,
-    must stay REVIEW after recomputation — never NULL, never silently
-    promoted to ELIGIBLE or EXCLUDED from partial evidence."""
+    recomputes to ELIGIBLE — Phase 2 is strictly KEEP/DROP, so insufficient
+    evidence is never a reason to exclude, and it must never be NULL."""
     run = await _create_run(db, auth)
     place = _raahe_like_place(run.id, "review-to-review-1", city="Raahe")
     db.add(place)
@@ -456,11 +466,13 @@ async def test_review_to_review_insufficient_evidence_never_becomes_null(db, aut
     result = await apply_backfill(_factory(db), run_id=run.id)
     assert result["places_changed"] == 1
     plan = result["plans"][0]
+    # eligibility_before reflects whatever was already stored (the
+    # fixture's initial review status), not a recomputation.
     assert plan.eligibility_before == MapsClientEligibility.REVIEW.value
-    assert plan.eligibility_after == MapsClientEligibility.REVIEW.value
+    assert plan.eligibility_after == MapsClientEligibility.ELIGIBLE.value
 
     await db.refresh(place)
-    assert place.client_eligibility == MapsClientEligibility.REVIEW.value
+    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
     assert place.client_eligibility is not None
 
 
@@ -483,14 +495,14 @@ async def test_idempotent_recomputation_across_all_representative_finland_cases(
     assert first["places_changed"] == len(org_wide_branches)  # self-referential has nothing to change
     for plan in first["plans"]:
         assert plan.eligibility_after is not None
-        assert plan.eligibility_after == MapsClientEligibility.REVIEW.value
+        assert plan.eligibility_after == MapsClientEligibility.ELIGIBLE.value
 
     second = await apply_backfill(_factory(db), run_id=run.id)
     assert second["places_changed"] == 0
 
     for place in org_wide_branches:
         await db.refresh(place)
-        assert place.client_eligibility == MapsClientEligibility.REVIEW.value
+        assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
 
 
 # --- Audit: the 22 ownership recoveries must require real, credible

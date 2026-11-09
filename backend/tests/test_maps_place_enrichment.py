@@ -141,7 +141,11 @@ def _structured_result(place_id: str, **overrides) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_unknown_candidate_becomes_needs_review_without_demotion(db, auth, monkeypatch):
+async def test_unknown_ownership_eligible_facility_type_becomes_confirmed_eligible(db, auth, monkeypatch):
+    """Phase 2 is strictly KEEP/DROP: an eligible facility_type with
+    unresolved ownership is insufficient evidence of disqualification, not
+    proof of one, so it resolves to eligible rather than a third review
+    status."""
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "maps_census_enrichment_enabled", True)
@@ -198,9 +202,9 @@ async def test_unknown_candidate_becomes_needs_review_without_demotion(db, auth,
     await db.refresh(run)
 
     assert place.is_relevant is True
-    assert place.lifecycle_status == MapsLifecycleStatus.NEEDS_REVIEW.value
-    assert place.client_eligibility == MapsClientEligibility.REVIEW.value
-    assert place.verification_verdict == "unknown"
+    assert place.lifecycle_status == MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
+    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
+    assert place.verification_verdict == "confirmed"
     assert place.ownership_status == MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value
     assert place.medical_detox is True
     assert run.places_classified_relevant == 1

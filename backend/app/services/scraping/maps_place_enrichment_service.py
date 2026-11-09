@@ -826,6 +826,12 @@ def _derive_lifecycle_status(place: MapsPlace) -> str:
     if place.facility_type == MapsFacilityType.HARM_REDUCTION_ONLY.value:
         return MapsLifecycleStatus.CONTRADICTED.value
 
+    if place.facility_type == MapsFacilityType.ADMINISTRATIVE_OFFICE_ONLY.value:
+        return MapsLifecycleStatus.CONTRADICTED.value
+
+    if place.facility_type == MapsFacilityType.HOUSING_ONLY_NO_PROGRAM.value:
+        return MapsLifecycleStatus.CONTRADICTED.value
+
     if (
         place.facility_type == MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value
         and place.addiction_focus_confirmed is not True
@@ -836,14 +842,21 @@ def _derive_lifecycle_status(place: MapsPlace) -> str:
     if client_eligibility == MapsClientEligibility.ELIGIBLE.value:
         return MapsLifecycleStatus.CONFIRMED_ELIGIBLE.value
 
+    # compute_client_eligibility is strictly binary (ELIGIBLE/EXCLUDED) —
+    # this REVIEW branch is unreachable today but kept as a defensive
+    # backstop for any future/alternate caller that still produces one.
     if client_eligibility == MapsClientEligibility.REVIEW.value:
         if place.ownership_status == MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value:
             return MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
         return MapsLifecycleStatus.NEEDS_REVIEW.value
 
-    # Preserve uncertain or partially evidenced candidates for manual review unless
-    # the structured fields positively contradicted the facility above.
-    return MapsLifecycleStatus.NEEDS_REVIEW.value
+    # By elimination this is a genuine EXCLUDED result (a manual Reject or
+    # confirmed disqualification not already caught by a more specific
+    # check above) — never label it NEEDS_REVIEW: pairing NEEDS_REVIEW with
+    # EXCLUDED would make normalize_lifecycle_eligibility_consistency treat
+    # it as the stale (needs_review, excluded) mismatch it exists to
+    # repair, silently flipping a genuine exclusion back to REVIEW.
+    return MapsLifecycleStatus.CONTRADICTED.value
 
 
 def _derive_verification_reason(place: MapsPlace) -> str:

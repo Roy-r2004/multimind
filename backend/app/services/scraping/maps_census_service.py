@@ -3736,13 +3736,15 @@ async def recompute_geo_boundary_for_run(
 
     Only changes a place's ``geo_boundary_match`` and, when that flips to
     "outside_polygon" or "outside_bbox_fallback" and the place was
-    previously ELIGIBLE, its ``client_eligibility`` (downgraded to REVIEW
-    via compute_client_eligibility — never silently dropped from the
-    census, never a hard exclusion on a plain bounding box). A manual
-    admin exclusion (``manually_excluded_at``) is never touched
-    (compute_client_eligibility already refuses to override it). Dry-run
-    by default (``apply=False``): reports exactly what would change
-    without writing anything.
+    previously ELIGIBLE, re-derives its ``client_eligibility`` via
+    compute_client_eligibility. Phase 2 is strictly KEEP/DROP: only a
+    verified polygon match ("outside_polygon") is reliable "wrong
+    country/state" evidence and excludes; the coarse bounding-box
+    fallback ("outside_bbox_fallback") is imprecise near borders and never
+    changes eligibility. A manual admin exclusion
+    (``manually_excluded_at``) is never touched (compute_client_eligibility
+    already refuses to override it). Dry-run by default (``apply=False``):
+    reports exactly what would change without writing anything.
     """
     async with session_factory() as db:
         run = await db.get(MapsCensusRun, run_id)
