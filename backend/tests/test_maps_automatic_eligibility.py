@@ -359,9 +359,12 @@ async def test_review_candidate_subsequently_verified_eligible(db, auth, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_candidate_still_lacking_residential_evidence_stays_review(db, auth, monkeypatch):
-    """Unknown/unconfirmed residential evidence must result in REVIEW, never
-    fabricated eligibility or silent exclusion."""
+async def test_candidate_still_lacking_residential_evidence_stays_eligible(db, auth, monkeypatch):
+    """A confirmed addiction-focus signal on a general mental-health clinic
+    with unknown/unconfirmed residential evidence is insufficient evidence
+    of disqualification, not proof of one — Phase 2 is strictly KEEP/DROP,
+    so this stays eligible (the Ridge-RTC-style dual-diagnosis carve-out),
+    never silently excluded."""
     keep_name = "Private Clinic B"
     review_name = "Addiction Support Center"
     run, provider = await _run_with_keep_review(
@@ -400,11 +403,7 @@ async def test_candidate_still_lacking_residential_evidence_stays_review(db, aut
             )
         )
     ).scalar_one()
-    assert place.client_eligibility in {
-        MapsClientEligibility.REVIEW.value,
-        MapsClientEligibility.EXCLUDED.value,
-    }
-    assert place.client_eligibility != MapsClientEligibility.ELIGIBLE.value
+    assert place.client_eligibility == MapsClientEligibility.ELIGIBLE.value
 
 
 @pytest.mark.asyncio

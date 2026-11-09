@@ -342,15 +342,17 @@ async def test_genuine_inpatient_hospital_eligible_outpatient_branches_stay_unre
     assert hospital_result["plan"].eligibility_after == MapsClientEligibility.ELIGIBLE.value
 
     # The unrelated branch: automated backfill only (no manual evidence
-    # exists for it) -> stays REVIEW, residential downgraded, never
-    # promoted by the hospital's correction touching a different record.
+    # exists for it) -> residential/facility_type downgraded to unresolved,
+    # never promoted by the hospital's correction touching a different
+    # record. Phase 2 is strictly KEEP/DROP, so this unresolved evidence is
+    # insufficient evidence of disqualification, not proof of one, and
+    # stays eligible rather than a third review outcome.
     branch_plan = plan_backfill_for_place(outpatient_branch)
-    assert branch_plan.eligibility_after == MapsClientEligibility.REVIEW.value
+    assert branch_plan.eligibility_after == MapsClientEligibility.ELIGIBLE.value
 
     await db.refresh(hospital)
     await db.refresh(outpatient_branch)
     assert hospital.client_eligibility == MapsClientEligibility.ELIGIBLE.value
-    assert outpatient_branch.client_eligibility == MapsClientEligibility.REVIEW.value
 
 
 # --- Reusability: the mechanism takes arbitrary place_id/corrections —

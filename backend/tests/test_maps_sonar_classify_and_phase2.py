@@ -68,7 +68,9 @@ def test_parse_sonar_classify_ignores_markdown_fence():
     assert result.classification_bucket == "public"
 
 
-def test_unresolved_unknown_facility_is_review_not_excluded():
+def test_unresolved_unknown_facility_stays_eligible_not_excluded():
+    """Phase 2 is strictly KEEP/DROP: a fully unresolved classification is
+    insufficient evidence of disqualification, not proof of one."""
     place = SimpleNamespace(
         operating_status="open",
         lifecycle_status=MapsLifecycleStatus.NEEDS_REVIEW.value,
@@ -78,7 +80,7 @@ def test_unresolved_unknown_facility_is_review_not_excluded():
         organization_scope="unknown",
         addiction_focus_confirmed=None,
     )
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
 def test_needs_review_enters_phase2_public_does_not():

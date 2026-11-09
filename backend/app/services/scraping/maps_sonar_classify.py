@@ -365,7 +365,15 @@ def resolve_sonar_ownership_status(place: Any, result: MapsPlaceEnrichmentResult
 
 
 def apply_sonar_bucket_lifecycle(place: Any, bucket: str) -> None:
-    """Apply lifecycle/eligibility from Sonar classification bucket."""
+    """Apply lifecycle/eligibility from Sonar classification bucket.
+
+    Phase 2 is strictly KEEP/DROP: only a bucket that reliably confirms a
+    disqualifying condition (public/government, solo practitioner,
+    unrelated business) excludes. "eligible_candidate" and "needs_review"
+    (or any other/invalid bucket) are insufficient evidence of
+    disqualification, not proof of one, so both resolve to ELIGIBLE —
+    never a third automatic review outcome.
+    """
     if bucket == "public":
         place.lifecycle_status = MapsLifecycleStatus.CONFIRMED_PUBLIC.value
         place.client_eligibility = MapsClientEligibility.EXCLUDED.value
@@ -377,10 +385,10 @@ def apply_sonar_bucket_lifecycle(place: Any, bucket: str) -> None:
         place.client_eligibility = MapsClientEligibility.EXCLUDED.value
     elif bucket == "eligible_candidate":
         place.lifecycle_status = MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
-        place.client_eligibility = MapsClientEligibility.REVIEW.value
+        place.client_eligibility = MapsClientEligibility.ELIGIBLE.value
     else:
-        place.lifecycle_status = MapsLifecycleStatus.NEEDS_REVIEW.value
-        place.client_eligibility = MapsClientEligibility.REVIEW.value
+        place.lifecycle_status = MapsLifecycleStatus.PROBABLE_ELIGIBLE.value
+        place.client_eligibility = MapsClientEligibility.ELIGIBLE.value
 
 
 async def fetch_sonar_classify_one(

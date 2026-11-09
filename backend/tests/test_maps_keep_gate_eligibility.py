@@ -21,7 +21,6 @@ from app.db.models import (
 from app.services.scraping.maps_eligibility import compute_client_eligibility
 
 ELIGIBLE = MapsClientEligibility.ELIGIBLE.value
-REVIEW = MapsClientEligibility.REVIEW.value
 EXCLUDED = MapsClientEligibility.EXCLUDED.value
 
 
@@ -62,7 +61,6 @@ def test_hard_negative_evidence_excludes_a_kept_place(fields):
     "fields",
     [
         {"geo_boundary_match": "outside_polygon"},
-        {"geo_boundary_match": "outside_bbox_fallback"},
         {"residential_accommodation": False, "care_setting": "outpatient"},
         {
             "facility_type": MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value,
@@ -70,9 +68,22 @@ def test_hard_negative_evidence_excludes_a_kept_place(fields):
         },
     ],
 )
-def test_contradiction_or_out_of_area_sends_kept_place_to_review(fields):
-    assert compute_client_eligibility(_kept(**fields)) == REVIEW
+def test_reliable_contradiction_or_confirmed_out_of_area_excludes_a_kept_place(fields):
+    """Phase 2 is strictly KEEP/DROP — a reliable, confirmed disqualifying
+    signal on an otherwise-kept place excludes it outright."""
+    assert compute_client_eligibility(_kept(**fields)) == EXCLUDED
 
 
-def test_place_not_kept_still_needs_positive_phase2_evidence():
-    assert compute_client_eligibility({"keep_drop_decision": "review"}) == REVIEW
+def test_coarse_bbox_fallback_out_of_area_stays_eligible():
+    """The coarse country-level bounding-box fallback is imprecise near
+    borders — unlike a verified polygon, it is not reliable evidence of
+    anything, so a kept place stays eligible."""
+    place = _kept(geo_boundary_match="outside_bbox_fallback")
+    assert compute_client_eligibility(place) == ELIGIBLE
+
+
+def test_place_not_kept_still_eligible_without_positive_phase2_evidence():
+    """Phase 2 has only two outcomes — insufficient/unresolved evidence
+    (here, no classification at all) resolves to eligible, not a third
+    review outcome."""
+    assert compute_client_eligibility({"keep_drop_decision": "review"}) == ELIGIBLE

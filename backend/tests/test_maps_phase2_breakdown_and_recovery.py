@@ -215,12 +215,16 @@ async def test_recompute_geo_boundary_apply_downgrades_out_of_country_result(db,
 
     result = await recompute_geo_boundary_for_run(_factory(), run_id=run.id, apply=True)
     assert result["newly_outside_polygon"] == 1
-    assert result["eligibility_downgraded"] == 1
+    # The coarse country-level bounding-box fallback is imprecise near
+    # borders — not reliable "wrong country" evidence — so Phase 2's
+    # strictly KEEP/DROP eligibility is untouched by it (only a verified
+    # polygon match would downgrade).
+    assert result["eligibility_downgraded"] == 0
 
     await db.refresh(pompano)
     await db.refresh(helsinki)
     assert pompano.geo_boundary_match == "outside_bbox_fallback"
-    assert pompano.client_eligibility == MapsClientEligibility.REVIEW.value  # downgraded, not deleted
+    assert pompano.client_eligibility == MapsClientEligibility.ELIGIBLE.value  # bbox fallback is not reliable evidence
     assert helsinki.geo_boundary_match == "inside_bbox_fallback"
     assert helsinki.client_eligibility == MapsClientEligibility.ELIGIBLE.value  # untouched
 

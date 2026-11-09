@@ -151,8 +151,9 @@ def test_kouvola_detox_only_unit_vs_residential_unit_distinguished():
     )
     # facility_type claims residential, but the SAME call's own more
     # specific fields explicitly contradict it (ambulatory detox, not an
-    # overnight program) — downgraded to review, not auto-accepted.
-    assert compute_client_eligibility(detox_only_outpatient) == MapsClientEligibility.REVIEW.value
+    # overnight program) — reliable evidence of outpatient-only, so it is
+    # excluded rather than auto-accepted.
+    assert compute_client_eligibility(detox_only_outpatient) == MapsClientEligibility.EXCLUDED.value
 
     residential_with_medical_detox = SimpleNamespace(
         **_base_eligible_fields(
@@ -217,16 +218,17 @@ async def test_ngo_rehab_without_website_is_not_exported(db, auth):
     assert "Genuine NGO Rehab" not in names
 
 
-# --- Unknown residential status — review, not automatic acceptance. ---
+# --- Unknown residential status with a reliable contradiction signal —
+# excluded, not automatic acceptance. ---
 
 
-def test_unknown_residential_status_with_contradiction_signal_is_review():
+def test_unknown_residential_status_with_contradiction_signal_is_excluded():
     from types import SimpleNamespace
 
     place = SimpleNamespace(
         **_base_eligible_fields(residential_accommodation=False, care_setting="virtual")
     )
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
 # --- A facility explicitly outside the target country/state — excluded
@@ -234,13 +236,13 @@ def test_unknown_residential_status_with_contradiction_signal_is_review():
 # geo_boundary_match guard), not silently reinterpreted as local. ---
 
 
-def test_facility_outside_target_region_downgraded_not_silently_eligible():
+def test_facility_outside_target_region_excluded_not_silently_eligible():
     from types import SimpleNamespace
 
     place = SimpleNamespace(
         **{**_base_eligible_fields(), "geo_boundary_match": "outside_polygon"}
     )
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
 # --- An AI response with a long unsupported addictions list — unverified

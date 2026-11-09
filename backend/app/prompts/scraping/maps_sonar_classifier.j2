@@ -13,7 +13,7 @@ cite it.
 Return a single JSON object with exactly these fields:
 {
   "classification_bucket": "eligible_candidate | needs_review | public | individual | unrelated",
-  "facility_type": "string or null",
+  "facility_type": "one of residential_addiction_rehab, inpatient_detox_center, outpatient_addiction_center, psychiatric_clinic_with_addiction_program, therapeutic_community, cessation_service, harm_reduction_only, administrative_office_only, housing_only_no_program, individual_addictologist, therapist_or_counselor, recovery_community_center, general_mental_health_clinic, unrelated, unknown",
   "operator_type": "string or null",
   "ownership_status": "confirmed_non_government | probable_non_government | confirmed_government | unknown",
   "addiction_treatment_mission": "confirmed | contradicted | unknown",
@@ -30,6 +30,15 @@ Return a single JSON object with exactly these fields:
 
 Rules:
 - Prefer needs_review over false exclusions when evidence is weak.
+- Use administrative_office_only for a registered office/headquarters/referral desk with no
+  on-site housing or treatment. Use housing_only_no_program for sober living/transitional/
+  supported housing with no structured addiction-treatment program on-site. Only use either
+  code when evidence reliably confirms it — otherwise leave facility_type unknown.
+- A tribally chartered nonprofit is non-government ownership, not a government signal.
+  Adolescent residential programs, faith-based residential recovery programs, and residential
+  mental-health facilities with a genuine structured addiction component are all still
+  eligible_candidate-type facilities — do not classify them as public/unrelated/individual on
+  that basis alone.
 - Use public for government/CHU/public hospital operators.
 - Use individual for solo practitioners / cabinets.
 - Use unrelated for shops, hotels, schools, spas, and non-treatment businesses.

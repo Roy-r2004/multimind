@@ -85,6 +85,16 @@ def test_outpatient_only_clinic_rejected():
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
+def test_administrative_office_only_rejected():
+    place = make_place(**_eligible_fields(facility_type=MapsFacilityType.ADMINISTRATIVE_OFFICE_ONLY.value))
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
+def test_housing_only_without_program_rejected():
+    place = make_place(**_eligible_fields(facility_type=MapsFacilityType.HOUSING_ONLY_NO_PROGRAM.value))
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
+
+
 # --- Task 8.4: government-operated inpatient facility rejected (ownership
 # requirement untouched). ---
 
@@ -95,14 +105,15 @@ def test_government_operated_inpatient_facility_rejected():
 
 
 # --- Task 8.5: facility outside the target geography is never silently
-# accepted (downgraded to review, not a hard exclude — a verified-polygon
-# edge case can still be wrong near a border; a human confirms). ---
+# accepted — a verified polygon confirming the coordinates are outside the
+# run's selected geography is reliable "wrong country/state" evidence, so
+# it is excluded. ---
 
 
 def test_facility_outside_target_geography_not_silently_eligible():
     place = make_place(**_eligible_fields(geo_boundary_match="outside_polygon"))
     assert compute_client_eligibility(place) != MapsClientEligibility.ELIGIBLE.value
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
 # --- Task 8.6: referral-only facility with no own inpatient program is

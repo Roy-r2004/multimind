@@ -103,22 +103,31 @@ def test_inpatient_detox_center_facility_type_eligible_without_inpatient_treatme
     assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
-# --- Must NOT auto-accept without evidence ---
+# --- No inpatient/residential evidence is insufficient evidence of
+# disqualification, not proof of one — Phase 2 is strictly KEEP/DROP, and
+# a confirmed addiction-focus signal on this general mental-health clinic
+# still carries it to eligible (the Ridge-RTC-style dual-diagnosis
+# carve-out). ---
 
 
-def test_no_inpatient_or_residential_evidence_stays_review_not_auto_accepted():
+def test_no_inpatient_or_residential_evidence_stays_eligible():
     place = make_place(inpatient_treatment=None, residential_accommodation=None, care_setting=None)
     result = compute_client_eligibility(place)
-    assert result != MapsClientEligibility.ELIGIBLE.value
-    assert result == MapsClientEligibility.REVIEW.value
+    assert result == MapsClientEligibility.ELIGIBLE.value
 
 
-# --- Outpatient / day treatment / PHP must NOT be confused with inpatient ---
+# --- Outpatient / day treatment / PHP must NOT be confused with inpatient.
+# `inpatient_treatment=False` alone (without the more specific
+# `residential_accommodation` also confirmed False) is not, on its own,
+# the reliable contradiction signal this codebase requires to exclude —
+# consistent with that, and with Phase 2 being strictly KEEP/DROP, a
+# confirmed addiction-focus signal on this general mental-health clinic
+# still keeps it eligible pending stronger evidence either way. ---
 
 
-def test_explicit_outpatient_treatment_not_accepted_via_inpatient_path():
+def test_explicit_outpatient_treatment_without_residential_contradiction_stays_eligible():
     place = make_place(inpatient_treatment=False, care_setting="outpatient")
-    assert compute_client_eligibility(place) != MapsClientEligibility.ELIGIBLE.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
 def test_outpatient_addiction_center_without_confirmed_inpatient_still_excluded():
@@ -144,18 +153,18 @@ def test_unrelated_facility_type_excluded_even_with_confirmed_inpatient():
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
-def test_internal_contradiction_inpatient_but_facility_type_says_outpatient_setting_stays_review():
+def test_internal_contradiction_inpatient_but_facility_type_says_outpatient_setting_is_excluded():
     """facility_type alone implied residential (one of the three inherently
     residential types), but the SAME call's own finer fields explicitly
-    say outpatient/virtual with residential_accommodation False — a real
-    contradiction, not proof of eligibility, even if some other field
-    claims inpatient. Unchanged guard."""
+    say outpatient/virtual with residential_accommodation False — reliable
+    evidence of an outpatient-only contradiction, so it is excluded rather
+    than treated as proof of eligibility."""
     place = make_place(
         facility_type=MapsFacilityType.RESIDENTIAL_ADDICTION_REHAB.value,
         residential_accommodation=False,
         care_setting="outpatient",
     )
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
 # --- Mandatory requirements other than residential/inpatient are untouched ---
@@ -169,9 +178,12 @@ def test_government_operator_still_excluded_despite_confirmed_inpatient():
     assert compute_client_eligibility(place) == MapsClientEligibility.EXCLUDED.value
 
 
-def test_geo_outside_still_downgrades_despite_confirmed_inpatient():
+def test_geo_outside_bbox_fallback_stays_eligible_despite_confirmed_inpatient():
+    """The coarse bounding-box fallback is imprecise near borders — not
+    reliable evidence of anything — so it never excludes an otherwise
+    eligible, confirmed-inpatient facility."""
     place = make_place(inpatient_treatment=True, geo_boundary_match="outside_bbox_fallback")
-    assert compute_client_eligibility(place) == MapsClientEligibility.REVIEW.value
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
 # --- Structured-field mapping: inpatient_treatment must be persisted, not

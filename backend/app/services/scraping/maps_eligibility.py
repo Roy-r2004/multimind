@@ -121,6 +121,8 @@ def compute_client_eligibility(place: Any) -> str:
         MapsFacilityType.UNRELATED.value,
         MapsFacilityType.CESSATION_SERVICE.value,
         MapsFacilityType.HARM_REDUCTION_ONLY.value,
+        MapsFacilityType.ADMINISTRATIVE_OFFICE_ONLY.value,
+        MapsFacilityType.HOUSING_ONLY_NO_PROGRAM.value,
     } or (
         facility_type == MapsFacilityType.OUTPATIENT_ADDICTION_CENTER.value
         and not outpatient_category_with_confirmed_inpatient
@@ -132,7 +134,7 @@ def compute_client_eligibility(place: Any) -> str:
     # is therefore no longer hard-excluded purely on that label. It is only
     # ever treated as an eligible facility type when there is EXPLICIT
     # positive evidence of its own actual residential/inpatient program —
-    # absence of that evidence is uncertainty (review), not proof of a
+    # absence of that evidence is insufficient evidence, not proof of a
     # qualifying program, so it is handled below rather than folded into
     # ELIGIBLE_FACILITY_TYPES (which still grants ELIGIBLE by default to
     # the three "always inherently residential" types).
@@ -146,7 +148,7 @@ def compute_client_eligibility(place: Any) -> str:
     # but discarded before ever reaching this field, and care_setting
     # "inpatient" was not recognized as equivalent to "residential" — both
     # silently forced a facility with clear, credible inpatient-care
-    # evidence into REVIEW/EXCLUDED purely for lacking the word
+    # evidence into EXCLUDED purely for lacking the word
     # "residential" specifically. Outpatient, day-treatment, and partial-
     # hospitalization programs are untouched by this — they are confirmed
     # NOT inpatient/residential by definition, not merely unconfirmed.
@@ -167,22 +169,33 @@ def compute_client_eligibility(place: Any) -> str:
     }:
         return MapsClientEligibility.EXCLUDED.value
 
+    # Phase 2 is strictly binary: KEEP (eligible) or DROP (excluded), never a
+    # third "review" outcome. Insufficient, missing, or merely unresolved
+    # evidence always resolves to ELIGIBLE; EXCLUDED is reserved for cases
+    # where a specific, reliable piece of evidence actively confirms a
+    # disqualifying condition. The only exception is `outside_polygon`
+    # below — a verified polygon confirming the coordinates are outside the
+    # target country/state IS reliable "wrong country" evidence, unlike the
+    # coarse bounding-box fallback.
+    confirmed_outpatient_or_virtual_contradiction = (
+        residential_accommodation is False and care_setting in {"outpatient", "virtual"}
+    )
+
     # The strict keep/drop gate decides eligibility, as it did for Google
     # Places runs. Every hard negative above (closed, government, public
     # operator, unrelated/cessation/harm-reduction, outpatient-only, solo
-    # practitioner) still excludes a kept place; Phase 2 contradictions and
-    # out-of-area coordinates send it to a human instead. Missing Phase 2
-    # evidence never demotes a kept place.
+    # practitioner) still excludes a kept place. Missing Phase 2 evidence
+    # never demotes a kept place to anything but ELIGIBLE.
     if _field(place, "keep_drop_decision") == "keep":
-        if geo_boundary_match in {"outside_polygon", "outside_bbox_fallback"}:
-            return MapsClientEligibility.REVIEW.value
-        if residential_accommodation is False and care_setting in {"outpatient", "virtual"}:
-            return MapsClientEligibility.REVIEW.value
+        if geo_boundary_match == "outside_polygon":
+            return MapsClientEligibility.EXCLUDED.value
+        if confirmed_outpatient_or_virtual_contradiction:
+            return MapsClientEligibility.EXCLUDED.value
         if (
             facility_type == MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value
             and addiction_focus_confirmed is False
         ):
-            return MapsClientEligibility.REVIEW.value
+            return MapsClientEligibility.EXCLUDED.value
         return MapsClientEligibility.ELIGIBLE.value
 
     if (
@@ -191,85 +204,67 @@ def compute_client_eligibility(place: Any) -> str:
         and is_eligible_facility_type
         and addiction_focus_confirmed is True
     ):
-        if residential_accommodation is False and care_setting in {"outpatient", "virtual"}:
+        if confirmed_outpatient_or_virtual_contradiction:
             # facility_type alone said residential/inpatient/therapeutic-
             # community, but the same classification call's own more
             # specific fields explicitly say there's no overnight stay —
-            # a genuine internal contradiction, not just missing data.
+            # a genuine, reliable contradiction, not just missing data.
             # Never silently trust the one broad label over its own more
-            # detailed evidence; a human resolves it. (A facility that
-            # ALSO offers medical detox alongside a real residential
-            # program is untouched by this — nothing here penalizes
-            # medical_detox, only an explicit outpatient/virtual setting.)
-            return MapsClientEligibility.REVIEW.value
-        if geo_boundary_match in {"outside_polygon", "outside_bbox_fallback"}:
-            # Coordinates placing this result outside the run's actual
-            # selected geography — either a verified polygon
-            # ("outside_polygon") or, when no polygon is cached, the
-            # coarse country-level bounding-box fallback
-            # ("outside_bbox_fallback" — see _geo_boundary_match). Both
-            # downgrade to review the same way: business classification
-            # alone must never be enough to call it "eligible" for a
-            # geographically-scoped census, but a plain rectangle is even
-            # less precise than a polygon near a border, so this is never
-            # a hard exclusion for either — a human confirms before it
-            # reaches an eligible/client-facing list. Business-
-            # classification inputs above are completely untouched by
-            # this guard.
-            return MapsClientEligibility.REVIEW.value
+            # detailed evidence. (A facility that ALSO offers medical detox
+            # alongside a real residential program is untouched by this —
+            # nothing here penalizes medical_detox, only an explicit
+            # outpatient/virtual setting.)
+            return MapsClientEligibility.EXCLUDED.value
+        if geo_boundary_match == "outside_polygon":
+            # A verified polygon confirms the coordinates are outside the
+            # run's actual selected geography — reliable "wrong country"
+            # evidence. The coarse country-level bounding-box fallback
+            # ("outside_bbox_fallback") is deliberately NOT treated this
+            # way — it's imprecise near borders, so it's not reliable
+            # evidence of anything and falls through to ELIGIBLE below.
+            return MapsClientEligibility.EXCLUDED.value
         return MapsClientEligibility.ELIGIBLE.value
 
     if (
         ownership_status == MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value
         and addiction_focus_confirmed is True
     ):
-        return MapsClientEligibility.REVIEW.value
+        # Ownership merely "probable", not confirmed government — not
+        # reliable evidence of disqualification.
+        return MapsClientEligibility.ELIGIBLE.value
 
     if (
         ownership_status == MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value
         and is_eligible_facility_type
     ):
-        return MapsClientEligibility.REVIEW.value
+        return MapsClientEligibility.ELIGIBLE.value
 
     # A psychiatric/multidisciplinary facility with a genuine addiction-focus
     # signal but no yet-confirmed residential/inpatient evidence is
-    # uncertain, not disqualified — addiction no longer has to be its
-    # primary program, so the only thing actually missing here is proof of
-    # an overnight program, which a closer (human or later Phase 2) look
-    # can still establish. Never invented as ELIGIBLE without that proof.
+    # insufficient evidence of disqualification, not proof of one — addiction
+    # no longer has to be its primary program, so the only thing actually
+    # missing here is proof of an overnight program. Never excluded without
+    # that proof (mirrors the Ridge-RTC-style dual-diagnosis carve-out).
     if (
         facility_type == MapsFacilityType.GENERAL_MENTAL_HEALTH_CLINIC.value
         and addiction_focus_confirmed is True
         and ownership_status != MapsOwnershipStatus.CONFIRMED_GOVERNMENT.value
     ):
-        return MapsClientEligibility.REVIEW.value
+        if confirmed_outpatient_or_virtual_contradiction:
+            # Explicit, reliable evidence this specific clinic's addiction
+            # component is itself outpatient/virtual-only overrides the
+            # otherwise-eligible dual-diagnosis carve-out above.
+            return MapsClientEligibility.EXCLUDED.value
+        return MapsClientEligibility.ELIGIBLE.value
 
-    # Unresolved classification (facility_type still unknown) stays in
-    # review so Phase 2 detail enrichment/a human can still research it.
-    # Do not treat incomplete evidence as a hard exclusion.
-    #
-    # This is deliberately NOT conditioned on ownership_status at all
-    # (an earlier version only covered ownership in {unknown, probable_
-    # non_government}, excluding confirmed_non_government — government
-    # ownership is already hard-excluded far above, so confirmed_non_
-    # government is the only OTHER value ownership_status can hold here).
-    # That gap meant recovering ownership_status from genuine evidence
-    # (confirming it, not weakening it) could silently flip a place from
-    # REVIEW to EXCLUDED purely because ownership became MORE certain
-    # while facility_type/residential evidence stayed exactly as
-    # unresolved as before — confirming one fact must never make an
-    # unrelated, still-missing fact look like a disqualification. See the
-    # evidence-normalization backfill (maps_evidence_backfill.py): a
-    # place recovering ownership_status=confirmed_non_government from
-    # legitimate organization-wide evidence, with facility_type still
-    # genuinely unresolved, must stay REVIEW, not fall through to
-    # EXCLUDED.
+    # Unresolved classification (facility_type still unknown) is incomplete
+    # evidence, never a hard exclusion.
     if facility_type in {None, "", MapsFacilityType.UNKNOWN.value}:
-        return MapsClientEligibility.REVIEW.value
+        return MapsClientEligibility.ELIGIBLE.value
 
     # Facilities classified as eligible types (residential rehab, inpatient detox,
-    # therapeutic community) but with uncertain ownership get review status.
-    # This increases coverage for official registries like FINESS where ownership
+    # therapeutic community) but with uncertain ownership stay eligible. This
+    # increases coverage for official registries like FINESS where ownership
     # classification may be incomplete or inferred from facility type alone.
     if is_eligible_facility_type and ownership_status in {
         None,
@@ -277,8 +272,11 @@ def compute_client_eligibility(place: Any) -> str:
         MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value,
         MapsOwnershipStatus.PROBABLE_NON_GOVERNMENT.value,
     }:
-        return MapsClientEligibility.REVIEW.value
+        return MapsClientEligibility.ELIGIBLE.value
 
+    # A known, confirmed-non-government facility_type that doesn't match any
+    # eligible shape, with addiction focus never confirmed, is "no qualifying
+    # addiction treatment" — a legitimate, reliable-evidence exclusion.
     return MapsClientEligibility.EXCLUDED.value
 
 

@@ -245,7 +245,12 @@ def test_bbox_fallback_outcome_is_labeled_distinctly_from_a_real_polygon():
     assert outside not in {"outside_polygon", "inside_polygon"}
 
 
-def test_outside_bbox_fallback_downgrades_eligibility_same_as_outside_polygon():
+def test_only_a_verified_polygon_excludes_not_the_coarse_bbox_fallback():
+    """A verified polygon confirming the coordinates are outside the
+    target country/state is reliable "wrong country" evidence and
+    excludes. The coarse bounding-box fallback is imprecise near borders
+    — not reliable evidence of anything — so it stays eligible, same as
+    Phase 2's general insufficient-evidence-stays-eligible rule."""
     from app.services.scraping.maps_eligibility import compute_client_eligibility
 
     from types import SimpleNamespace
@@ -258,8 +263,8 @@ def test_outside_bbox_fallback_downgrades_eligibility_same_as_outside_polygon():
         operating_status="open",
     )
     base.geo_boundary_match = "outside_bbox_fallback"
-    assert compute_client_eligibility(base) == "review"
+    assert compute_client_eligibility(base) == "eligible"
     base.geo_boundary_match = "outside_polygon"
-    assert compute_client_eligibility(base) == "review"
+    assert compute_client_eligibility(base) == "excluded"
     base.geo_boundary_match = "inside_bbox_fallback"
     assert compute_client_eligibility(base) == "eligible"
