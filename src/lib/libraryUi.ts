@@ -43,6 +43,17 @@ export type LibraryViewMode =
 
 export const LIBRARY_SIDEBAR_FOLDER_LIMIT = 7;
 export const LIBRARY_HOME_RECENT_LIMIT = 5;
+export const LIBRARY_FOLDER_NAME_MAX_LENGTH = 255;
+
+/** Mirrors the backend's folder-name rules so the dialog can show errors before submitting. */
+export function validateLibraryFolderName(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return "Folder name is required";
+  if (trimmed.length > LIBRARY_FOLDER_NAME_MAX_LENGTH) {
+    return `Folder name must be ${LIBRARY_FOLDER_NAME_MAX_LENGTH} characters or fewer`;
+  }
+  return null;
+}
 
 /** Preserve an unrelated view, or leave a deleted active folder for its parent/root. */
 export function libraryViewAfterFolderDelete(

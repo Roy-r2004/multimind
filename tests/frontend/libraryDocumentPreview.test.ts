@@ -35,10 +35,7 @@ test("Preview renders live unsaved content, not the last saved snapshot", () => 
   assert.match(editorSrc, /libraryDocumentPreviewContent\(value\)/);
   assert.match(editorSrc, /<MessageContent variant="verdict" showTableCopy=\{false\}>\{previewText\}<\/MessageContent>/);
   assert.match(itemSrc, /value=\{content\}/);
-  assert.match(
-    itemSrc,
-    /onChange=\{\(next\) => \{\s*setContent\(next\);\s*setDirty\(true\);/,
-  );
+  assert.match(itemSrc, /onChange=\{\(next\) => \{\s*setContent\(next\);\s*markDirty\(\);/);
 });
 
 test("Preview uses MessageContent table markup instead of raw pipes", () => {

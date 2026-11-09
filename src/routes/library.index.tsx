@@ -40,6 +40,7 @@ import {
   libraryFolderPath,
   libraryViewAfterFolderDelete,
   libraryViewHeading,
+  validateLibraryFolderName,
 } from "@/lib/libraryUi";
 import {
   applyLibraryBrowseChange,
@@ -88,7 +89,11 @@ function LibraryPage() {
   const fileTypeFilter = browse.fileTypeFilter;
 
   const updateBrowse = useCallback(
-    (patch: Partial<LibraryBrowseState> | ((current: LibraryBrowseState) => Partial<LibraryBrowseState>)) => {
+    (
+      patch:
+        | Partial<LibraryBrowseState>
+        | ((current: LibraryBrowseState) => Partial<LibraryBrowseState>),
+    ) => {
       const current = browseRef.current;
       const resolved = typeof patch === "function" ? patch(current) : patch;
       const next = applyLibraryBrowseChange(current, resolved);
@@ -143,11 +148,19 @@ function LibraryPage() {
   const [moveFolderId, setMoveFolderId] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
 
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [createFolderParentId, setCreateFolderParentId] = useState<string | null>(null);
+  const [createFolderName, setCreateFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [createFolderError, setCreateFolderError] = useState<string | null>(null);
+
   const [renameFolderTarget, setRenameFolderTarget] = useState<ApiLibraryFolder | null>(null);
   const [renameFolderName, setRenameFolderName] = useState("");
   const [renamingFolder, setRenamingFolder] = useState(false);
+  const [renameFolderError, setRenameFolderError] = useState<string | null>(null);
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<ApiLibraryFolder | null>(null);
   const [deletingFolder, setDeletingFolder] = useState(false);
+  const [deleteFolderError, setDeleteFolderError] = useState<string | null>(null);
 
   const folderTree = useMemo(() => buildLibraryFolderTree(folders), [folders]);
 
@@ -233,48 +246,73 @@ function LibraryPage() {
     window.requestAnimationFrame(() => writeLibraryScrollTop(top));
   }, [browseReady, loading, items.length]);
 
-  async function createFolder(parentId: string | null) {
+  function openCreateFolder(parentId: string | null) {
+    setCreateFolderParentId(parentId);
+    setCreateFolderName("");
+    setCreateFolderError(null);
+    setCreateFolderOpen(true);
+  }
+
+  async function submitCreateFolder() {
     const auth = authHeaders();
-    if (!auth) return;
-    const name = window.prompt("Folder name");
-    if (!name?.trim()) return;
+    if (!auth || creatingFolder) return;
+    const validationError = validateLibraryFolderName(createFolderName);
+    if (validationError) {
+      setCreateFolderError(validationError);
+      return;
+    }
+    setCreatingFolder(true);
+    setCreateFolderError(null);
     try {
       await api.library.createFolder(auth, {
-        name: name.trim(),
-        parent_id: parentId,
+        name: createFolderName.trim(),
+        parent_id: createFolderParentId,
       });
       await reloadMeta();
+      setCreateFolderOpen(false);
+      setCreateFolderName("");
       toast.success("Folder created");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create folder");
+      setCreateFolderError(error instanceof Error ? error.message : "Could not create folder");
+    } finally {
+      setCreatingFolder(false);
     }
   }
 
   function openRenameFolder(folder: ApiLibraryFolder) {
     setRenameFolderTarget(folder);
     setRenameFolderName(folder.name);
+    setRenameFolderError(null);
   }
 
   async function submitRenameFolder() {
     const auth = authHeaders();
-    const name = renameFolderName.trim();
     if (!auth || !renameFolderTarget || renamingFolder) return;
-    if (!name) {
-      toast.error("Folder name is required");
+    const validationError = validateLibraryFolderName(renameFolderName);
+    if (validationError) {
+      setRenameFolderError(validationError);
       return;
     }
     setRenamingFolder(true);
+    setRenameFolderError(null);
     try {
-      await api.library.updateFolder(auth, renameFolderTarget.id, { name });
+      await api.library.updateFolder(auth, renameFolderTarget.id, {
+        name: renameFolderName.trim(),
+      });
       await reloadMeta();
       setRenameFolderTarget(null);
       setRenameFolderName("");
       toast.success("Folder renamed");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not rename folder");
+      setRenameFolderError(error instanceof Error ? error.message : "Could not rename folder");
     } finally {
       setRenamingFolder(false);
     }
+  }
+
+  function openDeleteFolder(folder: ApiLibraryFolder) {
+    setDeleteFolderTarget(folder);
+    setDeleteFolderError(null);
   }
 
   async function submitDeleteFolder() {
@@ -282,6 +320,7 @@ function LibraryPage() {
     if (!auth || !deleteFolderTarget || deletingFolder) return;
     const target = deleteFolderTarget;
     setDeletingFolder(true);
+    setDeleteFolderError(null);
     try {
       await api.library.deleteFolder(auth, target.id);
       updateBrowse((current) => ({
@@ -291,8 +330,7 @@ function LibraryPage() {
       setDeleteFolderTarget(null);
       toast.success("Folder deleted");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not delete folder");
-      setDeleteFolderTarget(null);
+      setDeleteFolderError(error instanceof Error ? error.message : "Could not delete folder");
     } finally {
       setDeletingFolder(false);
     }
@@ -542,10 +580,10 @@ function LibraryPage() {
               }
               onView={(next) => updateBrowse({ view: next })}
               onSelectFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
-              onCreateRootFolder={() => void createFolder(null)}
-              onAddChild={(id) => void createFolder(id)}
+              onCreateRootFolder={() => openCreateFolder(null)}
+              onAddChild={(id) => openCreateFolder(id)}
               onRename={openRenameFolder}
-              onDelete={setDeleteFolderTarget}
+              onDelete={openDeleteFolder}
               onCreateLabel={() => {
                 void (async () => {
                   const auth = authHeaders();
@@ -808,11 +846,75 @@ function LibraryPage() {
       </Dialog>
 
       <Dialog
+        open={createFolderOpen}
+        onOpenChange={(open) => {
+          if (!open && !creatingFolder) {
+            setCreateFolderOpen(false);
+            setCreateFolderName("");
+            setCreateFolderError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitCreateFolder();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>New folder</DialogTitle>
+            </DialogHeader>
+            <div className="py-4">
+              <Label htmlFor="library-folder-create">Folder name</Label>
+              <Input
+                id="library-folder-create"
+                value={createFolderName}
+                onChange={(event) => {
+                  setCreateFolderName(event.target.value);
+                  if (createFolderError) setCreateFolderError(null);
+                }}
+                autoFocus
+                disabled={creatingFolder}
+                aria-invalid={createFolderError ? true : undefined}
+                aria-describedby={createFolderError ? "library-folder-create-error" : undefined}
+                className="mt-2"
+              />
+              {createFolderError ? (
+                <p id="library-folder-create-error" className="mt-2 text-sm text-destructive">
+                  {createFolderError}
+                </p>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={creatingFolder}
+                onClick={() => {
+                  setCreateFolderOpen(false);
+                  setCreateFolderName("");
+                  setCreateFolderError(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creatingFolder || !createFolderName.trim()}>
+                {creatingFolder ? <Loader2 className="size-4 animate-spin" /> : null}
+                Create
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={renameFolderTarget !== null}
         onOpenChange={(open) => {
           if (!open && !renamingFolder) {
             setRenameFolderTarget(null);
             setRenameFolderName("");
+            setRenameFolderError(null);
           }
         }}
       >
@@ -831,11 +933,21 @@ function LibraryPage() {
               <Input
                 id="library-folder-rename"
                 value={renameFolderName}
-                onChange={(event) => setRenameFolderName(event.target.value)}
+                onChange={(event) => {
+                  setRenameFolderName(event.target.value);
+                  if (renameFolderError) setRenameFolderError(null);
+                }}
                 autoFocus
                 disabled={renamingFolder}
+                aria-invalid={renameFolderError ? true : undefined}
+                aria-describedby={renameFolderError ? "library-folder-rename-error" : undefined}
                 className="mt-2"
               />
+              {renameFolderError ? (
+                <p id="library-folder-rename-error" className="mt-2 text-sm text-destructive">
+                  {renameFolderError}
+                </p>
+              ) : null}
             </div>
             <DialogFooter>
               <Button
@@ -845,6 +957,7 @@ function LibraryPage() {
                 onClick={() => {
                   setRenameFolderTarget(null);
                   setRenameFolderName("");
+                  setRenameFolderError(null);
                 }}
               >
                 Cancel
@@ -861,7 +974,10 @@ function LibraryPage() {
       <AlertDialog
         open={deleteFolderTarget !== null}
         onOpenChange={(open) => {
-          if (!open && !deletingFolder) setDeleteFolderTarget(null);
+          if (!open && !deletingFolder) {
+            setDeleteFolderTarget(null);
+            setDeleteFolderError(null);
+          }
         }}
       >
         <AlertDialogContent>
@@ -872,8 +988,13 @@ function LibraryPage() {
               contains files, documents, or subfolders, move or delete them first.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteFolderError ? (
+            <p className="text-sm text-destructive">{deleteFolderError}</p>
+          ) : null}
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deletingFolder}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deletingFolder} onClick={() => setDeleteFolderError(null)}>
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               disabled={deletingFolder}
               onClick={(event) => {

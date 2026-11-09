@@ -9,6 +9,8 @@ import {
   libraryExpandedPathIds,
   libraryTopLevelFolderId,
   libraryViewAfterFolderDelete,
+  LIBRARY_FOLDER_NAME_MAX_LENGTH,
+  validateLibraryFolderName,
   visibleTopLevelFolders,
 } from "../../src/lib/libraryUi.ts";
 
@@ -113,4 +115,23 @@ test("active nested folder expands its ancestor ids", () => {
   ];
   assert.equal(libraryTopLevelFolderId(folders, "pac"), "ex");
   assert.deepEqual(libraryExpandedPathIds(folders, "pac"), ["ex", "fit", "pac"]);
+});
+
+test("validateLibraryFolderName rejects empty or whitespace-only names", () => {
+  assert.equal(validateLibraryFolderName(""), "Folder name is required");
+  assert.equal(validateLibraryFolderName("   "), "Folder name is required");
+});
+
+test("validateLibraryFolderName accepts a trimmed, in-range name", () => {
+  assert.equal(validateLibraryFolderName("  Research  "), null);
+});
+
+test("validateLibraryFolderName enforces the backend's max length", () => {
+  const atLimit = "a".repeat(LIBRARY_FOLDER_NAME_MAX_LENGTH);
+  const overLimit = "a".repeat(LIBRARY_FOLDER_NAME_MAX_LENGTH + 1);
+  assert.equal(validateLibraryFolderName(atLimit), null);
+  assert.equal(
+    validateLibraryFolderName(overLimit),
+    `Folder name must be ${LIBRARY_FOLDER_NAME_MAX_LENGTH} characters or fewer`,
+  );
 });
