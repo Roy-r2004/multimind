@@ -13,6 +13,12 @@ export type PromptBuilderSession = {
   updatedAt: string;
   /** Set only by New Session so an intentional empty original is not repaired from the composer. */
   intentionalEmpty?: boolean;
+  /**
+   * Bumped by every change to latestPrompt (AI success or manual edit). A send()
+   * captures this before calling the API and only applies the result if it still
+   * matches on return, so a late AI response can never clobber a newer manual edit.
+   */
+  promptRevision: number;
 };
 
 export function createPromptBuilderSession(
@@ -27,6 +33,7 @@ export function createPromptBuilderSession(
     latestPrompt: null,
     modelSetId,
     updatedAt: new Date().toISOString(),
+    promptRevision: 0,
   };
 }
 
@@ -54,6 +61,43 @@ export function applyPromptBuilderSuccess(
     ...session,
     messages: [...session.messages, { role: "assistant", content: improvedPrompt }],
     latestPrompt: improvedPrompt,
+    promptRevision: session.promptRevision + 1,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** A clarifying question from the council: shown in the thread, but it is not a
+ * final prompt — latestPrompt and promptRevision are left untouched. */
+export function applyPromptBuilderClarification(
+  session: PromptBuilderSession,
+  question: string,
+): PromptBuilderSession {
+  return {
+    ...session,
+    messages: [...session.messages, { role: "assistant", content: question }],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** A manual edit to the Final Prompt panel. Becomes the new latestPrompt and is
+ * written back into the most recent assistant message so later refinements build
+ * on the edited text, not the stale AI output it replaced. */
+export function applyManualPromptEdit(
+  session: PromptBuilderSession,
+  text: string,
+): PromptBuilderSession {
+  const messages = [...session.messages];
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].role === "assistant") {
+      messages[index] = { ...messages[index], content: text };
+      break;
+    }
+  }
+  return {
+    ...session,
+    messages,
+    latestPrompt: text,
+    promptRevision: session.promptRevision + 1,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -84,6 +128,7 @@ export function loadPromptBuilderSession(key: string): PromptBuilderSession | nu
       typeof candidate.updatedAt !== "string" ||
       (candidate.intentionalEmpty !== undefined &&
         typeof candidate.intentionalEmpty !== "boolean") ||
+      (candidate.promptRevision !== undefined && typeof candidate.promptRevision !== "number") ||
       candidate.messages.some(
         (message) =>
           !message ||
@@ -92,7 +137,8 @@ export function loadPromptBuilderSession(key: string): PromptBuilderSession | nu
       )
     )
       return null;
-    return candidate as PromptBuilderSession;
+    // Sessions persisted before promptRevision existed default to 0.
+    return { ...candidate, promptRevision: candidate.promptRevision ?? 0 } as PromptBuilderSession;
   } catch {
     return null;
   }
@@ -149,6 +195,26 @@ export function resolvePromptBuilderSession(
   return createPromptBuilderSession(currentComposerText, modelSetId);
 }
 
+/**
+ * Hand off current Chat Council composer text into an already-open Builder
+ * session's draft. Only fills an empty draft, so unsent Builder work is never
+ * discarded, and never reintroduces text already sent as a user message in
+ * this session, so reopening with unchanged composer text doesn't keep
+ * re-offering (and risking a duplicate send of) already-consumed text.
+ */
+export function mergeComposerHandoff(
+  session: PromptBuilderSession,
+  composerText: string,
+): PromptBuilderSession {
+  if (!composerText) return session;
+  if (session.draft !== "") return session;
+  const alreadyConsumed = session.messages.some(
+    (message) => message.role === "user" && message.content === composerText,
+  );
+  if (alreadyConsumed) return session;
+  return { ...session, draft: composerText, updatedAt: new Date().toISOString() };
+}
+
 export function persistPromptBuilderSession(key: string, session: PromptBuilderSession): void {
   if (isEmptyPromptBuilderShell(session) && session.intentionalEmpty !== true) {
     clearPersistedPromptBuilderSession(key);
@@ -167,8 +233,9 @@ export function openPromptBuilderSession(
     currentComposerText,
     modelSetId,
   );
-  persistPromptBuilderSession(key, session);
-  return session;
+  const handedOff = mergeComposerHandoff(session, currentComposerText);
+  persistPromptBuilderSession(key, handedOff);
+  return handedOff;
 }
 
 export function clearPersistedPromptBuilderSession(key: string): void {

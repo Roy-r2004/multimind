@@ -15,6 +15,7 @@ from app.db.models import Chat, CostRecord, ModelAnswer, Turn, Verdict
 from app.llm.providers import LLMResponse
 from app.schemas.api import PromptBuilderRefineMessage
 from app.services.prompt_builder_service import (
+    CLARIFY_PREFIX,
     COUNCIL_MAX_TOKENS,
     PROMPT_BUILDER_LLM_TIMEOUT_SECONDS,
     PROMPT_BUILDER_MAX_OUTPUT_TOKENS,
@@ -580,6 +581,91 @@ async def test_long_generated_prompt_is_returned_in_full(
     )
 
     assert result.improved_prompt == long_prompt
+
+
+@pytest.mark.asyncio
+async def test_first_turn_clarifying_question_skips_improved_prompt(
+    db: AsyncSession, auth: AuthContext, monkeypatch: pytest.MonkeyPatch
+):
+    model_set = await create_model_set(db, auth, models=["gpt-4.1"])
+    provider = ScriptedProvider(
+        ["proposal", f"{CLARIFY_PREFIX} What audience is this prompt for?"]
+    )
+    _patch_providers(monkeypatch, provider)
+
+    result = await prompt_builder_service.refine(
+        db,
+        auth,
+        messages=[PromptBuilderRefineMessage(role="user", content="help me write something")],
+        model_set_id=model_set.slug,
+    )
+
+    assert result.is_clarifying_question is True
+    assert result.improved_prompt is None
+    assert result.assistant_message == "What audience is this prompt for?"
+
+
+@pytest.mark.asyncio
+async def test_clarifying_question_is_not_offered_on_later_turns(
+    db: AsyncSession, auth: AuthContext, monkeypatch: pytest.MonkeyPatch
+):
+    model_set = await create_model_set(db, auth, models=["gpt-4.1"])
+    provider = ScriptedProvider(
+        ["proposal", f"{CLARIFY_PREFIX} should not be treated as a question here"]
+    )
+    _patch_providers(monkeypatch, provider)
+
+    result = await prompt_builder_service.refine(
+        db,
+        auth,
+        messages=[
+            PromptBuilderRefineMessage(role="user", content="first idea"),
+            PromptBuilderRefineMessage(role="assistant", content="first improved prompt"),
+            PromptBuilderRefineMessage(role="user", content="refine it further"),
+        ],
+        model_set_id=model_set.slug,
+    )
+
+    assert result.is_clarifying_question is False
+    assert result.improved_prompt == f"{CLARIFY_PREFIX} should not be treated as a question here"
+
+
+@pytest.mark.asyncio
+async def test_first_turn_normal_prompt_is_not_treated_as_clarifying(
+    db: AsyncSession, auth: AuthContext, monkeypatch: pytest.MonkeyPatch
+):
+    model_set = await create_model_set(db, auth, models=["gpt-4.1"])
+    provider = ScriptedProvider(["proposal", "a complete usable prompt"])
+    _patch_providers(monkeypatch, provider)
+
+    result = await prompt_builder_service.refine(
+        db,
+        auth,
+        messages=[PromptBuilderRefineMessage(role="user", content="write a product description")],
+        model_set_id=model_set.slug,
+    )
+
+    assert result.is_clarifying_question is False
+    assert result.improved_prompt == "a complete usable prompt"
+
+
+@pytest.mark.asyncio
+async def test_empty_clarify_prefix_falls_back_to_normal_prompt(
+    db: AsyncSession, auth: AuthContext, monkeypatch: pytest.MonkeyPatch
+):
+    model_set = await create_model_set(db, auth, models=["gpt-4.1"])
+    provider = ScriptedProvider(["proposal", CLARIFY_PREFIX])
+    _patch_providers(monkeypatch, provider)
+
+    result = await prompt_builder_service.refine(
+        db,
+        auth,
+        messages=[PromptBuilderRefineMessage(role="user", content="vague idea")],
+        model_set_id=model_set.slug,
+    )
+
+    assert result.is_clarifying_question is False
+    assert result.improved_prompt == CLARIFY_PREFIX
 
 
 # --- Frontend session contract (mirrors src/lib/promptBuilderSession.ts) ---

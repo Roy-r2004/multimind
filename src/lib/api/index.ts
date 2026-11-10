@@ -554,7 +554,8 @@ export const api = {
     create: (
       auth: Auth,
       data: {
-        turn_id: string;
+        /** Omit for a standalone save (e.g. from Prompt Builder) with no chat turn yet. */
+        turn_id?: string;
         prompt_text?: string | null;
         title?: string | null;
         label_ids?: string[];

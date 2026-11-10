@@ -41,26 +41,63 @@ OUTPUT_LIMIT_ERROR = (
     "Your original prompt and Builder history are still saved."
 )
 
-COUNCIL_SYSTEM = """You are a member of MultiMind's Prompt Builder council.
-Your only job is to improve the user's prompt based on the Prompt Builder conversation.
+CLARIFY_PREFIX = "CLARIFY:"
+
+COUNCIL_SYSTEM = """You are a member of MultiMind's Prompt Builder council, acting as an expert prompt engineer.
+Your only job is to turn the user's idea and the Prompt Builder conversation into a single upgraded prompt the user can paste into another AI.
+
+When they genuinely help the result, draw on:
+- A clear objective (what the output should accomplish).
+- Relevant role or expertise framing for the AI that will receive the prompt.
+- Necessary context the user has already given.
+- Specific, actionable instructions.
+- Constraints the user stated or clearly implied.
+- Expected output format.
+- A quality bar or success criteria.
+
+Match effort to the request: a simple request deserves a short, direct prompt. Only add structure
+(headers, numbered constraints, a format section) when the request is complex enough to need it —
+never pad a simple prompt with sections it doesn't need.
 
 Rules:
-- Preserve the user's important intent and constraints.
+- Preserve the user's actual intent and every constraint they gave.
 - Incorporate refinement instructions from later user messages.
-- Make the prompt clearer, more specific, and more actionable.
-- Do not invent requirements the user did not request.
-- Do not answer the underlying task — produce an improved prompt the user can paste elsewhere.
+- Never invent requirements, facts, or constraints the user did not request or clearly imply.
+- Do not answer the underlying task — produce an improved prompt, not a response to it.
 - Return ONLY the upgraded prompt text. No preamble, no analysis, no markdown fences unless the prompt itself needs them."""
 
-REFEREE_SYSTEM = """You are the Prompt Builder referee.
+COUNCIL_SYSTEM_FIRST_TURN = (
+    COUNCIL_SYSTEM
+    + f"""
+
+Exception for this first message only: if the idea is genuinely too vague to produce a useful
+prompt (for example it has no clear subject, audience, or goal), you may instead ask up to two
+short, targeted clarifying questions. If you do, start your entire response with the exact token
+"{CLARIFY_PREFIX}" followed by the questions and nothing else. Only ask when truly necessary —
+if you can reasonably infer what's needed, produce the improved prompt directly instead."""
+)
+
+REFEREE_SYSTEM = """You are the Prompt Builder referee, an expert prompt engineer.
 You receive independent prompt-improvement proposals from council models and must synthesize ONE best improved prompt.
 
 Rules:
 - Preserve the user's important intent and constraints from the Prompt Builder conversation.
 - Prefer clarity, actionability, and fidelity to refinement instructions over verbosity.
-- Do not invent requirements the user did not request.
+- Keep simple requests short; only add structure (role, context, constraints, output format,
+  quality bar) when the request's complexity genuinely calls for it.
+- Never invent requirements, facts, or constraints the user did not request or clearly imply.
 - Do not answer the underlying task — produce a usable final prompt.
 - Return ONLY the final improved prompt text. No preamble, no analysis, no list of proposals."""
+
+REFEREE_SYSTEM_FIRST_TURN = (
+    REFEREE_SYSTEM
+    + f"""
+
+Exception for this first message only: if the proposals agree the idea is too vague to produce a
+useful prompt, you may synthesize up to two short clarifying questions instead. If you do, start
+your entire response with the exact token "{CLARIFY_PREFIX}" followed by the questions and nothing
+else. Prefer producing the improved prompt directly whenever reasonably possible."""
+)
 
 
 @dataclass(frozen=True)
@@ -96,7 +133,15 @@ class PromptBuilderService:
     ) -> PromptBuilderContextResponse:
         normalized = self._validate_messages(messages, require_user_last=False)
         model_set = await self._resolve_model_set(db, auth, model_set_id)
-        budgets = await self._projected_budgets(model_set, self._format_transcript(normalized))
+        is_first_turn = len(normalized) == 1
+        council_system = COUNCIL_SYSTEM_FIRST_TURN if is_first_turn else COUNCIL_SYSTEM
+        referee_system = REFEREE_SYSTEM_FIRST_TURN if is_first_turn else REFEREE_SYSTEM
+        budgets = await self._projected_budgets(
+            model_set,
+            self._format_transcript(normalized),
+            council_system=council_system,
+            referee_system=referee_system,
+        )
         limiting = min(budgets, key=lambda budget: budget.remaining_tokens)
         return PromptBuilderContextResponse(context_usage=self._usage(limiting))
 
@@ -138,17 +183,23 @@ class PromptBuilderService:
     ) -> PromptBuilderRefineResponse:
         normalized = self._validate_messages(messages)
         model_set = await self._resolve_model_set(db, auth, model_set_id)
+        is_first_turn = len(normalized) == 1
+        council_system = COUNCIL_SYSTEM_FIRST_TURN if is_first_turn else COUNCIL_SYSTEM
+        referee_system = REFEREE_SYSTEM_FIRST_TURN if is_first_turn else REFEREE_SYSTEM
 
         providers = get_provider_registry()
         providers.validate_configured()
 
         transcript = self._format_transcript(normalized)
-        projected = await self._projected_budgets(model_set, transcript)
+        projected = await self._projected_budgets(
+            model_set, transcript, council_system=council_system, referee_system=referee_system
+        )
         self._raise_if_overflow(projected)
         proposals = await self._run_council(
             providers,
             model_ids=list(model_set.models),
             transcript=transcript,
+            system=council_system,
         )
         if not proposals:
             raise AppError(
@@ -156,13 +207,16 @@ class PromptBuilderService:
                 code="LLM_ERROR",
             )
 
-        referee_budget = await self._referee_budget(model_set.verdict_model, transcript, proposals)
+        referee_budget = await self._referee_budget(
+            model_set.verdict_model, transcript, proposals, referee_system
+        )
         self._raise_if_overflow([referee_budget])
-        improved, referee_tokens = await self._run_referee(
+        raw, referee_tokens = await self._run_referee(
             providers,
             verdict_model_id=model_set.verdict_model,
             transcript=transcript,
             proposals=proposals,
+            system=referee_system,
         )
         actual_budgets = [
             await self._actual_budget(p.model_id, "council", p.tokens_input, p.output_limit)
@@ -177,10 +231,25 @@ class PromptBuilderService:
             )
         )
         limiting = min(actual_budgets, key=lambda budget: budget.remaining_tokens)
+        usage = self._usage(limiting, actual=limiting.estimated_input_tokens)
+
+        is_clarifying = is_first_turn and raw.strip().startswith(CLARIFY_PREFIX)
+        question_text = raw.strip()[len(CLARIFY_PREFIX) :].strip() if is_clarifying else ""
+        if is_clarifying and not question_text:
+            is_clarifying = False
+
+        if is_clarifying:
+            return PromptBuilderRefineResponse(
+                assistant_message=question_text,
+                improved_prompt=None,
+                is_clarifying_question=True,
+                context_usage=usage,
+            )
         return PromptBuilderRefineResponse(
-            assistant_message=improved,
-            improved_prompt=improved,
-            context_usage=self._usage(limiting, actual=limiting.estimated_input_tokens),
+            assistant_message=raw,
+            improved_prompt=raw,
+            is_clarifying_question=False,
+            context_usage=usage,
         )
 
     def _validate_messages(
@@ -241,7 +310,14 @@ class PromptBuilderService:
     def _estimated_input(system: str, user: str) -> int:
         return estimate_tokens(f"system:\n{system}\n\nuser:\n{user}")
 
-    async def _projected_budgets(self, model_set: ModelSet, transcript: str) -> list[_CallBudget]:
+    async def _projected_budgets(
+        self,
+        model_set: ModelSet,
+        transcript: str,
+        *,
+        council_system: str,
+        referee_system: str,
+    ) -> list[_CallBudget]:
         council_ids = list(model_set.models)
         council_user = self._council_user_payload(transcript)
         budgets: list[_CallBudget] = []
@@ -252,7 +328,7 @@ class PromptBuilderService:
                     model_id,
                     name,
                     "council",
-                    self._estimated_input(COUNCIL_SYSTEM, council_user),
+                    self._estimated_input(council_system, council_user),
                     limit,
                     output_limit,
                 )
@@ -267,12 +343,14 @@ class PromptBuilderService:
                 _Proposal(model_id, "x" * (output_limit * 4), 0, output_limit)
             )
         budgets.append(
-            await self._referee_budget(model_set.verdict_model, transcript, placeholder_proposals)
+            await self._referee_budget(
+                model_set.verdict_model, transcript, placeholder_proposals, referee_system
+            )
         )
         return budgets
 
     async def _referee_budget(
-        self, model_id: str, transcript: str, proposals: list[_Proposal]
+        self, model_id: str, transcript: str, proposals: list[_Proposal], referee_system: str
     ) -> _CallBudget:
         limit, name, output_limit = await self._model_limits(model_id)
         return _CallBudget(
@@ -280,7 +358,7 @@ class PromptBuilderService:
             name,
             "referee",
             self._estimated_input(
-                REFEREE_SYSTEM, self._referee_user_payload(transcript, proposals)
+                referee_system, self._referee_user_payload(transcript, proposals)
             ),
             limit,
             output_limit,
@@ -349,6 +427,7 @@ class PromptBuilderService:
         *,
         model_ids: list[str],
         transcript: str,
+        system: str,
     ) -> list[_Proposal]:
         user_payload = self._council_user_payload(transcript)
 
@@ -358,7 +437,7 @@ class PromptBuilderService:
                 output_limit = (await self._model_limits(model_id))[2]
                 provider = providers.get_provider(model.provider)
                 response: LLMResponse = await provider.complete(
-                    system=COUNCIL_SYSTEM,
+                    system=system,
                     user=user_payload,
                     model=model.provider_model,
                     max_tokens=output_limit,
@@ -396,6 +475,7 @@ class PromptBuilderService:
         verdict_model_id: str,
         transcript: str,
         proposals: list[_Proposal],
+        system: str,
     ) -> tuple[str, int]:
         user_payload = self._referee_user_payload(transcript, proposals)
 
@@ -404,7 +484,7 @@ class PromptBuilderService:
             output_limit = (await self._model_limits(verdict_model_id))[2]
             provider = providers.get_provider(model.provider)
             response = await provider.complete(
-                system=REFEREE_SYSTEM,
+                system=system,
                 user=user_payload,
                 model=model.provider_model,
                 max_tokens=output_limit,

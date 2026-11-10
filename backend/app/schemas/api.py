@@ -1570,7 +1570,10 @@ class PromptBuilderContextResponse(BaseModel):
 
 class PromptBuilderRefineResponse(BaseModel):
     assistant_message: str
-    improved_prompt: str
+    """The question text when is_clarifying_question is true; otherwise the improved prompt."""
+    improved_prompt: str | None = None
+    """Null when is_clarifying_question is true: no new final prompt was produced this turn."""
+    is_clarifying_question: bool = False
     context_usage: PromptBuilderContextUsage
 
 
@@ -2136,7 +2139,10 @@ class SavedPromptResponse(BaseModel):
 
 
 class SavedPromptCreateRequest(BaseModel):
-    turn_id: str
+    """turn_id is omitted for a standalone save (e.g. from Prompt Builder), which
+    has no chat turn or verdict to attach yet."""
+
+    turn_id: str | None = None
     prompt_text: str | None = None
     title: str | None = None
     label_ids: list[str] = []

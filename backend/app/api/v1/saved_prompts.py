@@ -32,10 +32,19 @@ async def create_prompt(
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    return await saved_prompt_service.create_from_turn(
+    if data.turn_id:
+        return await saved_prompt_service.create_from_turn(
+            db,
+            auth,
+            turn_id=data.turn_id,
+            prompt_text=data.prompt_text,
+            title=data.title,
+            label_ids=data.label_ids,
+            label_names=data.label_names,
+        )
+    return await saved_prompt_service.create_standalone(
         db,
         auth,
-        turn_id=data.turn_id,
         prompt_text=data.prompt_text,
         title=data.title,
         label_ids=data.label_ids,
