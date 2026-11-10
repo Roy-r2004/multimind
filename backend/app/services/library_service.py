@@ -58,6 +58,18 @@ ITEM_TYPE_FILE = "file"
 ITEM_TYPE_DOCUMENT = "document"
 _LABEL_NAME_RE = re.compile(r"\s+")
 
+# Explicit allowlist: the client can only request one of these. Each maps to a
+# stable (primary, tiebreaker) order_by so the hard LIMIT below truncates the
+# same way the UI sorts, instead of always truncating by recency first.
+LIBRARY_SORT_OPTIONS: dict[str, tuple] = {
+    "updated_desc": (LibraryItem.updated_at.desc(), LibraryItem.id.desc()),
+    "updated_asc": (LibraryItem.updated_at.asc(), LibraryItem.id.asc()),
+    "created_desc": (LibraryItem.created_at.desc(), LibraryItem.id.desc()),
+    "name_asc": (func.lower(LibraryItem.title).asc(), LibraryItem.id.asc()),
+    "name_desc": (func.lower(LibraryItem.title).desc(), LibraryItem.id.desc()),
+}
+LIBRARY_DEFAULT_SORT = "updated_desc"
+
 
 class LibraryService:
     # --- Folders ---
@@ -296,6 +308,7 @@ class LibraryService:
         recent: bool = False,
         include_content: bool = False,
         limit: int = 200,
+        sort: str | None = None,
     ) -> list[LibraryItemResponse]:
         stmt = (
             select(LibraryItem)
@@ -344,9 +357,14 @@ class LibraryService:
                     ),
                 )
             )
-        stmt = stmt.order_by(
-            LibraryItem.updated_at.desc(), LibraryItem.id.desc()
-        ).limit(min(max(limit, 1), 500))
+        sort_key = sort or LIBRARY_DEFAULT_SORT
+        if sort_key not in LIBRARY_SORT_OPTIONS:
+            raise ValidationError(
+                "sort must be one of: " + ", ".join(sorted(LIBRARY_SORT_OPTIONS))
+            )
+        stmt = stmt.order_by(*LIBRARY_SORT_OPTIONS[sort_key]).limit(
+            min(max(limit, 1), 500)
+        )
         if recent:
             stmt = stmt.limit(min(50, limit))
 

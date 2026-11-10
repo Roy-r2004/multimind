@@ -8,6 +8,7 @@ import {
   countActiveComposerAttachments,
   endComposerUploadRetention,
 } from "./composerAttachments.ts";
+import { mapWithConcurrencyLimit, LIBRARY_BULK_CONCURRENCY_LIMIT } from "./libraryBulkActions.ts";
 
 export type AttachLibraryItemDeps = {
   activeChatId: string | null;
@@ -30,6 +31,17 @@ export async function saveLibraryDocumentBeforeAttach(
   save: () => Promise<boolean>,
 ): Promise<boolean> {
   return dirty ? save() : true;
+}
+
+/**
+ * After `saveLibraryDocumentBeforeAttach` resolves, re-check dirty against
+ * its live value (not the one captured before the save started): if the
+ * user kept typing while that save was in flight, the just-persisted
+ * snapshot is already stale. Attaching it — or navigating away — would
+ * silently leave those newer edits unsaved, so the caller must abort.
+ */
+export function shouldAbortAttachForStaleEdits(dirtyAfterSave: boolean): boolean {
+  return dirtyAfterSave;
 }
 
 /**
@@ -195,6 +207,150 @@ export async function attachLibraryItemViaApi(options: {
       options.activateChat(targetChatId);
     }
     return { chatId: targetChatId, attachment, createdNewChat };
+  } finally {
+    endComposerUploadRetention(options.retainRef, targetChatId);
+  }
+}
+
+export type AttachLibraryItemsResult = {
+  chatId: string | null;
+  createdNewChat: boolean;
+  successIds: string[];
+  failedIds: string[];
+};
+
+export type LibraryBulkAttachLimitCheck =
+  | { allowed: true; newCount: number }
+  | { allowed: false; newCount: number; message: string };
+
+/**
+ * Pure limit math: a reattach of an item already pending on the chat
+ * refreshes that row instead of consuming a new slot, so only the
+ * genuinely-new ids count against the chat's existing pending total.
+ */
+export function computeLibraryBulkAttachLimit(params: {
+  selectedIds: string[];
+  existingPendingLibraryItemIds: Iterable<string>;
+  existingPendingCount: number;
+  maxPendingAttachments?: number;
+}): LibraryBulkAttachLimitCheck {
+  const max = params.maxPendingAttachments ?? COMPOSER_ATTACHMENT_MAX_COUNT;
+  const existing = new Set(params.existingPendingLibraryItemIds);
+  const newCount = params.selectedIds.filter((id) => !existing.has(id)).length;
+  const projectedTotal = params.existingPendingCount + newCount;
+  if (projectedTotal <= max) {
+    return { allowed: true, newCount };
+  }
+  const message =
+    params.existingPendingCount > 0
+      ? `This chat already has ${params.existingPendingCount} pending attachment` +
+        `${params.existingPendingCount === 1 ? "" : "s"}; attaching ${newCount} more ` +
+        `would exceed the limit of ${max}.`
+      : `You can attach at most ${max} items to a chat at once.`;
+  return { allowed: false, newCount, message };
+}
+
+/**
+ * Bulk counterpart to `attachLibraryItemViaApi`: attaches every id to a
+ * single, once-resolved chat (never one chat per item), reusing the exact
+ * same per-item `attachFromLibrary` call. Rejects up front — before any
+ * attach call — when the selection would push the target chat's pending
+ * attachments over the limit, accounting for both attachments the chat
+ * already has and any selected items already pending on it (which refresh
+ * in place rather than consuming a new slot). Per-item failures are
+ * reported individually rather than aborting the whole batch.
+ */
+export async function attachLibraryItemsViaApi(options: {
+  libraryItemIds: string[];
+  activeChatId: string | null;
+  createChat: (options?: {
+    activate?: boolean;
+    onChatCreated?: (chatId: string) => void;
+  }) => Promise<string | null>;
+  activateChat: (chatId: string) => void;
+  retainRef: { current: string | null };
+  attachFromLibrary: (chatId: string, libraryItemId: string) => Promise<ApiChatAttachment>;
+  /** Pending attachments (library-based and uploaded files alike) already on a known chat. */
+  listPendingAttachments: (chatId: string) => Promise<ApiChatAttachment[]>;
+  concurrencyLimit?: number;
+  maxPendingAttachments?: number;
+  onTooMany?: (message: string) => void;
+  onError?: (message: string) => void;
+}): Promise<AttachLibraryItemsResult> {
+  const ids = options.libraryItemIds;
+  if (ids.length === 0) {
+    return { chatId: options.activeChatId, createdNewChat: false, successIds: [], failedIds: [] };
+  }
+
+  let targetChatId = options.activeChatId;
+  let createdNewChat = false;
+
+  if (targetChatId) {
+    let existingPending: ApiChatAttachment[];
+    try {
+      existingPending = await options.listPendingAttachments(targetChatId);
+    } catch (error) {
+      options.onError?.(
+        error instanceof Error ? error.message : "Could not check this chat's existing attachments",
+      );
+      return { chatId: targetChatId, createdNewChat: false, successIds: [], failedIds: [...ids] };
+    }
+    const existingLibraryItemIds = existingPending
+      .map((attachment) => attachment.library_item_id)
+      .filter((id): id is string => Boolean(id));
+    const check = computeLibraryBulkAttachLimit({
+      selectedIds: ids,
+      existingPendingLibraryItemIds: existingLibraryItemIds,
+      existingPendingCount: existingPending.length,
+      maxPendingAttachments: options.maxPendingAttachments,
+    });
+    if (!check.allowed) {
+      options.onTooMany?.(check.message);
+      return { chatId: targetChatId, createdNewChat: false, successIds: [], failedIds: [...ids] };
+    }
+    beginComposerUploadRetention(options.retainRef, targetChatId);
+  } else {
+    // No chat yet, so it starts with zero pending attachments — the only
+    // possible breach is the selection itself.
+    const check = computeLibraryBulkAttachLimit({
+      selectedIds: ids,
+      existingPendingLibraryItemIds: [],
+      existingPendingCount: 0,
+      maxPendingAttachments: options.maxPendingAttachments,
+    });
+    if (!check.allowed) {
+      options.onTooMany?.(check.message);
+      return { chatId: null, createdNewChat: false, successIds: [], failedIds: [...ids] };
+    }
+    targetChatId = await options.createChat({
+      activate: false,
+      onChatCreated: (chatId) => beginComposerUploadRetention(options.retainRef, chatId),
+    });
+    if (!targetChatId) {
+      options.onError?.("Could not create a chat for these attachments");
+      return { chatId: null, createdNewChat: false, successIds: [], failedIds: [...ids] };
+    }
+    createdNewChat = true;
+  }
+
+  try {
+    const settled = await mapWithConcurrencyLimit(
+      ids,
+      options.concurrencyLimit ?? LIBRARY_BULK_CONCURRENCY_LIMIT,
+      (libraryItemId) => options.attachFromLibrary(targetChatId as string, libraryItemId),
+    );
+    const successIds: string[] = [];
+    const failedIds: string[] = [];
+    ids.forEach((id, index) => {
+      if (settled[index]?.status === "fulfilled") successIds.push(id);
+      else failedIds.push(id);
+    });
+    // Activate only after the attach calls land — same ordering reason as
+    // the single-item path: a chat-switch clear can't drop chips that way.
+    if (successIds.length > 0 && createdNewChat) {
+      options.activateChat(targetChatId);
+    }
+    return { chatId: targetChatId, createdNewChat, successIds, failedIds };
   } finally {
     endComposerUploadRetention(options.retainRef, targetChatId);
   }

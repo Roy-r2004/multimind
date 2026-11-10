@@ -24,21 +24,39 @@ const TABLE_MARKDOWN = `| Facility Type | Estimated Facilities | Source | Notes 
 | --- | --- | --- | --- |
 | Inpatient Rehab | ~2,000–2,500 | SAMHSA | Residential programs |`;
 
-test("default Library document mode is Edit", () => {
+test("the generic default mode (used when no initialMode is passed) is Edit", () => {
   assert.equal(LIBRARY_DOCUMENT_DEFAULT_MODE, "edit");
-  assert.match(editorSrc, /useState<LibraryDocumentMode>\(LIBRARY_DOCUMENT_DEFAULT_MODE\)/);
+  assert.match(
+    editorSrc,
+    /useState<LibraryDocumentMode>\(\s*initialMode \?\? LIBRARY_DOCUMENT_DEFAULT_MODE,?\s*\)/,
+  );
+});
+
+test("the full document page opens in Preview mode, not Edit", () => {
+  // Requirement: every time a user opens a full document page, the initial
+  // mode must be Preview — wired via the editor's initialMode prop.
+  assert.match(itemSrc, /<LibraryDocumentEditor[\s\S]{0,400}initialMode="preview"/);
+});
+
+test("the Create Document dialog keeps the generic (Edit) default — unaffected by the item page override", () => {
+  const indexSrc = readFileSync(join(root, "src/routes/library.index.tsx"), "utf8");
+  const createEditorBlock = indexSrc.slice(
+    indexSrc.indexOf("library-create-body"),
+    indexSrc.indexOf("library-create-body") + 400,
+  );
+  assert.doesNotMatch(createEditorBlock, /initialMode/);
 });
 
 test("Preview renders live unsaved content, not the last saved snapshot", () => {
   assert.equal(libraryDocumentPreviewContent("unsaved draft"), "unsaved draft");
   assert.notEqual(libraryDocumentPreviewContent("unsaved draft"), "saved from db");
   assert.match(editorSrc, /libraryDocumentPreviewContent\(value\)/);
-  assert.match(editorSrc, /<MessageContent variant="verdict" showTableCopy=\{false\}>\{previewText\}<\/MessageContent>/);
-  assert.match(itemSrc, /value=\{content\}/);
   assert.match(
-    itemSrc,
-    /onChange=\{\(next\) => \{\s*setContent\(next\);\s*setDirty\(true\);/,
+    editorSrc,
+    /<MessageContent variant="verdict" showTableCopy=\{false\}>\s*\{previewText\}\s*<\/MessageContent>/,
   );
+  assert.match(itemSrc, /value=\{content\}/);
+  assert.match(itemSrc, /onChange=\{\(next\) => \{\s*setContent\(next\);\s*markDirty\(\);/);
 });
 
 test("Preview uses MessageContent table markup instead of raw pipes", () => {
@@ -55,7 +73,7 @@ test("Preview uses MessageContent table markup instead of raw pipes", () => {
     /<pre[^>]*>\{previewText\}/,
   );
   assert.match(TABLE_MARKDOWN, /\| Facility Type \|/);
-  assert.match(editorSrc, /MessageContent[^>]*>\{\s*previewText\s*\}<\/MessageContent>/);
+  assert.match(editorSrc, /MessageContent[^>]*>\s*\{\s*previewText\s*\}\s*<\/MessageContent>/);
 });
 
 test("switching Preview back to Edit does not mutate Markdown or call onChange", () => {
@@ -90,4 +108,32 @@ test("existing editor toolbar, paste, and textarea remain in Edit mode", () => {
   assert.match(editorSrc, /<textarea/);
   assert.match(editorSrc, /formatLibraryDocumentInline/);
   assert.match(editorSrc, /handleLibraryDocumentListKey/);
+});
+
+test("opening in Preview still shows the current (possibly unsaved) draft, not a blank/empty view", () => {
+  // Since `mode` only ever controls which renderer is shown, and the editor
+  // never substitutes a different value for Preview, a document that loads
+  // with unsaved local edits (or any content at all) is fully visible on
+  // first render, even though that first render is Preview.
+  assert.equal(libraryDocumentPreviewContent("loaded draft text"), "loaded draft text");
+  assert.doesNotMatch(editorSrc, /mode === "preview".*value\s*=\s*""/);
+});
+
+test("switching modes never discards or alters the draft: value/onChange are independent of mode", () => {
+  // The textarea (Edit) and the preview renderer (Preview) are fed from the
+  // exact same `value` prop and the same `onChange` callback lives only on
+  // the textarea — toggling `mode` itself never calls onChange or mutates
+  // `value`, so flipping Edit -> Preview -> Edit round-trips the same draft.
+  assert.match(editorSrc, /<textarea[\s\S]{0,120}value=\{value\}/);
+  assert.match(editorSrc, /libraryDocumentPreviewContent\(value\)/);
+  assert.doesNotMatch(editorSrc, /setMode\([^)]*\)[^}]*onChange/);
+  assert.doesNotMatch(editorSrc, /onChange[^}]*setMode\(/);
+});
+
+test("a successful save never forces a mode change — Edit stays Edit after Save", () => {
+  // save() in the item page only touches title/content/folder/labels/dirty;
+  // it must never call setMode, and the editor itself never resets mode as
+  // a side effect of a value/prop change (e.g. after save re-syncs `value`).
+  assert.doesNotMatch(itemSrc, /setMode/);
+  assert.doesNotMatch(editorSrc, /useEffect\([^)]*setMode/);
 });

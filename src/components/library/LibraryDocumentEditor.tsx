@@ -42,6 +42,8 @@ type Props = {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  /** Mode to open in. Defaults to LIBRARY_DOCUMENT_DEFAULT_MODE (Edit) when omitted. */
+  initialMode?: LibraryDocumentMode;
 };
 
 export function LibraryDocumentEditor({
@@ -52,12 +54,15 @@ export function LibraryDocumentEditor({
   placeholder,
   disabled,
   className,
+  initialMode,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingSelection = useRef<Pick<TextareaEdit, "selectionStart" | "selectionEnd"> | null>(
     null,
   );
-  const [mode, setMode] = useState<LibraryDocumentMode>(LIBRARY_DOCUMENT_DEFAULT_MODE);
+  const [mode, setMode] = useState<LibraryDocumentMode>(
+    initialMode ?? LIBRARY_DOCUMENT_DEFAULT_MODE,
+  );
 
   useLayoutEffect(() => {
     const selection = pendingSelection.current;
@@ -149,7 +154,11 @@ export function LibraryDocumentEditor({
             <ToolbarButton label="Italic" disabled={disabled} onClick={() => applyInline("italic")}>
               <Italic className="size-4" />
             </ToolbarButton>
-            <ToolbarButton label="Heading" disabled={disabled} onClick={() => applyBlock("heading")}>
+            <ToolbarButton
+              label="Heading"
+              disabled={disabled}
+              onClick={() => applyBlock("heading")}
+            >
               <Heading2 className="size-4" />
             </ToolbarButton>
             <div className="mx-0.5 h-5 w-px bg-border" aria-hidden="true" />
@@ -185,7 +194,11 @@ export function LibraryDocumentEditor({
               <ListChecks className="size-4" />
             </ToolbarButton>
             <div className="mx-0.5 h-5 w-px bg-border" aria-hidden="true" />
-            <ToolbarButton label="Outdent" disabled={disabled} onClick={() => applyBlock("outdent")}>
+            <ToolbarButton
+              label="Outdent"
+              disabled={disabled}
+              onClick={() => applyBlock("outdent")}
+            >
               <IndentDecrease className="size-4" />
             </ToolbarButton>
             <ToolbarButton label="Indent" disabled={disabled} onClick={() => applyBlock("indent")}>
@@ -245,7 +258,9 @@ export function LibraryDocumentEditor({
           )}
         >
           {previewText.trim() ? (
-            <MessageContent variant="verdict" showTableCopy={false}>{previewText}</MessageContent>
+            <MessageContent variant="verdict" showTableCopy={false}>
+              {previewText}
+            </MessageContent>
           ) : (
             <p className="text-sm text-muted-foreground">Nothing to preview yet.</p>
           )}

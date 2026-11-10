@@ -33,7 +33,6 @@ export function formatLibraryUpdatedAt(iso: string): string {
 export type LibraryFolderNode = ApiLibraryFolder & { children: LibraryFolderNode[] };
 
 export type LibraryViewMode =
-  | { kind: "home" }
   | { kind: "all" }
   | { kind: "favorites" }
   | { kind: "recent" }
@@ -41,8 +40,88 @@ export type LibraryViewMode =
   | { kind: "unfiled" }
   | { kind: "label"; labelId: string };
 
+/** The 4 options in the primary navigation dropdown (folder/label are selected separately). */
+export const LIBRARY_NAV_ITEMS: {
+  kind: "all" | "favorites" | "recent" | "unfiled";
+  label: string;
+}[] = [
+  { kind: "all", label: "All Items" },
+  { kind: "favorites", label: "Favorites" },
+  { kind: "recent", label: "Recent" },
+  { kind: "unfiled", label: "Unfiled" },
+];
+
+/** Label for the nav dropdown's own trigger — falls back to "All Items" while a folder/label is active. */
+export function libraryNavLabel(view: LibraryViewMode): string {
+  const match = LIBRARY_NAV_ITEMS.find((item) => item.kind === view.kind);
+  return match?.label ?? "All Items";
+}
+
 export const LIBRARY_SIDEBAR_FOLDER_LIMIT = 7;
-export const LIBRARY_HOME_RECENT_LIMIT = 5;
+export const LIBRARY_FOLDER_NAME_MAX_LENGTH = 255;
+
+/** Mirrors the backend's sort allowlist (library_service.LIBRARY_SORT_OPTIONS). */
+export type LibrarySortOption =
+  | "updated_desc"
+  | "updated_asc"
+  | "created_desc"
+  | "name_asc"
+  | "name_desc";
+
+export const LIBRARY_DEFAULT_SORT: LibrarySortOption = "updated_desc";
+
+export const LIBRARY_SORT_OPTIONS: { value: LibrarySortOption; label: string }[] = [
+  { value: "updated_desc", label: "Recently modified" },
+  { value: "updated_asc", label: "Oldest modified" },
+  { value: "created_desc", label: "Recently created" },
+  { value: "name_asc", label: "Name A–Z" },
+  { value: "name_desc", label: "Name Z–A" },
+];
+
+export function isLibrarySortOption(value: unknown): value is LibrarySortOption {
+  return typeof value === "string" && LIBRARY_SORT_OPTIONS.some((option) => option.value === value);
+}
+
+export function libraryFileTypeFilterLabel(fileTypeFilter: string): string {
+  if (fileTypeFilter === "document") return "MultiMind Document";
+  if (fileTypeFilter === "file") return "Uploaded files";
+  if (!fileTypeFilter) return "";
+  return fileTypeFilter.toUpperCase();
+}
+
+export type LibraryActiveFilterChip = { key: "query" | "fileType" | "sort"; label: string };
+
+/** Summarize the non-default filters/sort as small, individually understandable chips. */
+export function libraryActiveFilterChips(params: {
+  query: string;
+  fileTypeFilter: string;
+  sort: LibrarySortOption;
+}): LibraryActiveFilterChip[] {
+  const chips: LibraryActiveFilterChip[] = [];
+  const trimmedQuery = params.query.trim();
+  if (trimmedQuery) chips.push({ key: "query", label: `Search: "${trimmedQuery}"` });
+  if (params.fileTypeFilter) {
+    chips.push({
+      key: "fileType",
+      label: `Type: ${libraryFileTypeFilterLabel(params.fileTypeFilter)}`,
+    });
+  }
+  if (params.sort !== LIBRARY_DEFAULT_SORT) {
+    const option = LIBRARY_SORT_OPTIONS.find((candidate) => candidate.value === params.sort);
+    chips.push({ key: "sort", label: `Sort: ${option?.label ?? params.sort}` });
+  }
+  return chips;
+}
+
+/** Mirrors the backend's folder-name rules so the dialog can show errors before submitting. */
+export function validateLibraryFolderName(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return "Folder name is required";
+  if (trimmed.length > LIBRARY_FOLDER_NAME_MAX_LENGTH) {
+    return `Folder name must be ${LIBRARY_FOLDER_NAME_MAX_LENGTH} characters or fewer`;
+  }
+  return null;
+}
 
 /** Preserve an unrelated view, or leave a deleted active folder for its parent/root. */
 export function libraryViewAfterFolderDelete(
@@ -50,7 +129,7 @@ export function libraryViewAfterFolderDelete(
   deleted: Pick<ApiLibraryFolder, "id" | "parent_id">,
 ): LibraryViewMode {
   if (current.kind !== "folder" || current.folderId !== deleted.id) return current;
-  return deleted.parent_id ? { kind: "folder", folderId: deleted.parent_id } : { kind: "home" };
+  return deleted.parent_id ? { kind: "folder", folderId: deleted.parent_id } : { kind: "all" };
 }
 
 export function buildLibraryFolderTree(folders: ApiLibraryFolder[]): LibraryFolderNode[] {
@@ -198,7 +277,6 @@ export function libraryViewHeading(
   folders: ApiLibraryFolder[],
   labels: { id: string; name: string }[] = [],
 ): string {
-  if (view.kind === "home") return "Library";
   if (view.kind === "all") return "All Items";
   if (view.kind === "favorites") return "Favorites";
   if (view.kind === "recent") return "Recent";
@@ -208,4 +286,16 @@ export function libraryViewHeading(
   }
   const current = folders.find((folder) => folder.id === view.folderId);
   return current?.name ?? "Folder";
+}
+
+/** The item id to preview next/previous within the current (filtered/sorted) list, or null at either end. */
+export function libraryAdjacentItemId(
+  itemIds: string[],
+  currentId: string,
+  direction: "prev" | "next",
+): string | null {
+  const index = itemIds.indexOf(currentId);
+  if (index === -1) return null;
+  const nextIndex = direction === "prev" ? index - 1 : index + 1;
+  return nextIndex >= 0 && nextIndex < itemIds.length ? itemIds[nextIndex] : null;
 }

@@ -658,6 +658,7 @@ export const api = {
         item_type?: string;
         favorites?: boolean;
         recent?: boolean;
+        sort?: string;
       },
     ) => {
       const search = new URLSearchParams();
@@ -668,6 +669,7 @@ export const api = {
       if (params?.item_type) search.set("item_type", params.item_type);
       if (params?.favorites) search.set("favorites", "true");
       if (params?.recent) search.set("recent", "true");
+      if (params?.sort) search.set("sort", params.sort);
       const qs = search.toString();
       return apiRequest<ApiLibraryItem[]>(`/library/items${qs ? `?${qs}` : ""}`, {
         token: auth.token,

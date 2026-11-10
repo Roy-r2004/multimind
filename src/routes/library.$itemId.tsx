@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useBlocker, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Download, Loader2, Paperclip, Save, Star, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -6,11 +6,25 @@ import { AppShell } from "@/components/AppShell";
 import { GlassCard } from "@/components/cinematic/PageChrome";
 import { LibraryDocumentEditor } from "@/components/library/LibraryDocumentEditor";
 import { LibraryFolderSelect } from "@/components/library/LibraryFolderSelect";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
 import type { ApiLibraryFolder, ApiLibraryItem, ApiLibraryLabel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
-import { attachLibraryItemViaApi, saveLibraryDocumentBeforeAttach } from "@/lib/libraryAttach";
+import {
+  attachLibraryItemViaApi,
+  saveLibraryDocumentBeforeAttach,
+  shouldAbortAttachForStaleEdits,
+} from "@/lib/libraryAttach";
 import { libraryFileContentView, libraryItemOpensDetail } from "@/lib/libraryContent";
 import { formatLibraryBytes, formatLibraryUpdatedAt, libraryItemTypeLabel } from "@/lib/libraryUi";
 import { useChatStore } from "@/lib/store";
@@ -42,9 +56,26 @@ function LibraryItemPage() {
   const [dirty, setDirty] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  // Bumped on every edit so an in-flight save can detect whether newer edits
+  // arrived after it read its payload, and avoid clobbering them on resolve.
+  const editGenerationRef = useRef(0);
+  // Mirrors `dirty` so attachToChat can read the true current value right
+  // after awaiting a save, instead of the value captured when it started.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
   const isDocument = item?.item_type === "document";
   const isFile = item?.item_type === "file";
+
+  const shouldBlockNavigation = useCallback(() => dirty, [dirty]);
+
+  // Guards internal navigation, browser back/forward, and (via enableBeforeUnload)
+  // refresh/tab-close while the document has unsaved edits.
+  const blocker = useBlocker({
+    shouldBlockFn: shouldBlockNavigation,
+    enableBeforeUnload: shouldBlockNavigation,
+    withResolver: true,
+  });
 
   const load = useCallback(async () => {
     const auth = authHeaders();
@@ -93,9 +124,18 @@ function LibraryItemPage() {
     void load();
   }, [load]);
 
+  function markDirty() {
+    editGenerationRef.current += 1;
+    setDirty(true);
+  }
+
   async function save(): Promise<boolean> {
     const auth = authHeaders();
     if (!auth || !item) return false;
+    // Snapshot the edit generation before the request goes out: if the user
+    // keeps typing while we're awaiting the server, we must not stomp those
+    // newer, not-yet-submitted edits with this request's (now stale) payload.
+    const generationAtSave = editGenerationRef.current;
     setSaving(true);
     try {
       let labelIds = selectedLabelIds;
@@ -115,13 +155,22 @@ function LibraryItemPage() {
         payload.content_text = content;
       }
       const updated = await api.library.updateItem(auth, item.id, payload);
+      const editedDuringSave = editGenerationRef.current !== generationAtSave;
       setItem(updated);
-      setTitle(updated.title);
-      setContent(updated.content_text ?? "");
-      setFolderId(updated.folder_id ?? null);
-      setSelectedLabelIds(updated.labels.map((label) => label.id));
-      setDirty(false);
-      toast.success("Saved");
+      if (!editedDuringSave) {
+        // Safe to sync local form state to the server response: nothing changed
+        // underneath us while the request was in flight.
+        setTitle(updated.title);
+        setContent(updated.content_text ?? "");
+        setFolderId(updated.folder_id ?? null);
+        setSelectedLabelIds(updated.labels.map((label) => label.id));
+        setDirty(false);
+        toast.success("Saved");
+      } else {
+        // Newer edits arrived mid-save: keep them on screen and keep `dirty`
+        // true so the unsaved-changes guard and Save button still protect them.
+        toast.success("Saved — newer edits are still unsaved");
+      }
       return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Save failed");
@@ -150,6 +199,7 @@ function LibraryItemPage() {
     if (!window.confirm(`Delete “${item.title}”?`)) return;
     try {
       await api.library.deleteItem(auth, item.id);
+      setDirty(false);
       toast.success("Deleted");
       await navigate({ to: "/library" });
     } catch (error) {
@@ -191,6 +241,10 @@ function LibraryItemPage() {
     setAttaching(true);
     try {
       if (!(await saveLibraryDocumentBeforeAttach(dirty, save))) return;
+      if (shouldAbortAttachForStaleEdits(dirtyRef.current)) {
+        toast.error("Your latest edits are still unsaved — click Save, then Attach again.");
+        return;
+      }
       const result = await attachLibraryItemViaApi({
         libraryItemId: item.id,
         activeChatId,
@@ -217,7 +271,7 @@ function LibraryItemPage() {
     setSelectedLabelIds((prev) =>
       prev.includes(labelId) ? prev.filter((id) => id !== labelId) : [...prev, labelId],
     );
-    setDirty(true);
+    markDirty();
   }
 
   if (loading) {
@@ -331,7 +385,7 @@ function LibraryItemPage() {
               value={title}
               onChange={(e) => {
                 setTitle(e.target.value);
-                setDirty(true);
+                markDirty();
               }}
               className="w-full border-0 bg-transparent font-display text-2xl font-semibold outline-none"
               placeholder="Document title"
@@ -359,7 +413,7 @@ function LibraryItemPage() {
                 value={folderId}
                 onChange={(next) => {
                   setFolderId(next);
-                  setDirty(true);
+                  markDirty();
                 }}
               />
             </div>
@@ -386,7 +440,7 @@ function LibraryItemPage() {
                 value={newLabel}
                 onChange={(e) => {
                   setNewLabel(e.target.value);
-                  setDirty(true);
+                  markDirty();
                 }}
                 placeholder="Add label…"
                 className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
@@ -400,11 +454,12 @@ function LibraryItemPage() {
                 value={content}
                 onChange={(next) => {
                   setContent(next);
-                  setDirty(true);
+                  markDirty();
                 }}
                 rows={22}
                 placeholder="Write your document…"
                 className="min-h-[32rem]"
+                initialMode="preview"
               />
               <p className="text-[11px] text-muted-foreground">
                 {dirty ? "Unsaved changes" : "All changes saved"} · MultiMind Document
@@ -432,6 +487,31 @@ function LibraryItemPage() {
           )}
         </GlassCard>
       </div>
+
+      <AlertDialog
+        open={blocker.status === "blocked"}
+        onOpenChange={(open) => {
+          if (!open) blocker.reset?.();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unsaved changes</AlertDialogTitle>
+            <AlertDialogDescription>
+              This document has unsaved changes. If you leave now, your edits will be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => blocker.reset?.()}>Stay</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => blocker.proceed?.()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Discard &amp; Leave
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppShell>
   );
 }

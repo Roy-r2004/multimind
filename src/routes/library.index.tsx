@@ -1,16 +1,20 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Plus, Search, Upload } from "lucide-react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
+import { ChevronDown, Loader2, Plus, Search, Tag, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard } from "@/components/cinematic/PageChrome";
 import { LibraryBreadcrumb } from "@/components/library/LibraryBreadcrumb";
 import { LibraryDocumentEditor } from "@/components/library/LibraryDocumentEditor";
+import { LibraryFiltersMenu } from "@/components/library/LibraryFiltersMenu";
 import { LibraryFolderSelect } from "@/components/library/LibraryFolderSelect";
-import { LibraryHome } from "@/components/library/LibraryHome";
+import { LibraryFoldersMenu } from "@/components/library/LibraryFoldersMenu";
 import { LibraryItemRow } from "@/components/library/LibraryItemRow";
-import { LibrarySidebar } from "@/components/library/LibrarySidebar";
+import { LibraryPreviewPanel } from "@/components/library/LibraryPreviewPanel";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,26 +32,61 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { api } from "@/lib/api";
 import type { ApiLibraryFolder, ApiLibraryItem, ApiLibraryLabel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 import { COMPOSER_FILE_ACCEPT } from "@/lib/composerAttachments";
-import { attachLibraryItemViaApi } from "@/lib/libraryAttach";
+import { attachLibraryItemsViaApi, attachLibraryItemViaApi } from "@/lib/libraryAttach";
+import {
+  addLabelToIds,
+  bulkResultMessage,
+  intersectSelection,
+  LIBRARY_BULK_CONCURRENCY_LIMIT,
+  mapWithConcurrencyLimit,
+  removeLabelFromIds,
+  selectAll,
+  selectRange,
+  summarizeBulkResults,
+  toggleSelection,
+} from "@/lib/libraryBulkActions";
 import {
   buildLibraryFolderTree,
+  libraryActiveFilterChips,
+  libraryAdjacentItemId,
   libraryFolderPath,
+  libraryNavLabel,
   libraryViewAfterFolderDelete,
-  libraryViewHeading,
+  validateLibraryFolderName,
+  LIBRARY_DEFAULT_SORT,
+  LIBRARY_NAV_ITEMS,
 } from "@/lib/libraryUi";
+import {
+  libraryPreviewWidthPctFromDrag,
+  librarySafeLocalStorage,
+  nextLibraryPreviewWidthPctForKey,
+  readLibraryPreviewWidthPct,
+  writeLibraryPreviewWidthPct,
+  LIBRARY_PREVIEW_DEFAULT_PCT,
+  LIBRARY_PREVIEW_EXPANDED_PCT,
+} from "@/lib/libraryPreviewLayout";
 import {
   applyLibraryBrowseChange,
   browserSessionStorage,
+  consumeLibraryReturnExpected,
   EMPTY_LIBRARY_BROWSE,
   libraryBrowseContextKey,
   libraryListQuery,
   libraryScrollToRestore,
+  markLibraryReturnExpected,
   readLibraryBrowseState,
   readLibraryScrollTop,
   rememberLibraryScroll,
@@ -56,6 +95,7 @@ import {
   type LibraryBrowseState,
 } from "@/lib/libraryBrowseMemory";
 import { useChatStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/library/")({
   head: () => ({ meta: [{ title: "Library — MultiAI" }] }),
@@ -84,11 +124,27 @@ function LibraryPage() {
   const view = browse.view;
   const query = browse.query;
   const folderQuery = browse.folderQuery;
-  const foldersExpanded = browse.foldersExpanded;
   const fileTypeFilter = browse.fileTypeFilter;
+  const sort = browse.sort;
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const lastSelectedIndexRef = useRef<number | null>(null);
+  // Bumped on every reloadItems() call so a reload that's superseded by a
+  // newer one (e.g. the user switched folders while a bulk action's own
+  // reload was still in flight) can detect it's stale and skip applying.
+  const reloadGenerationRef = useRef(0);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    lastSelectedIndexRef.current = null;
+  }, []);
 
   const updateBrowse = useCallback(
-    (patch: Partial<LibraryBrowseState> | ((current: LibraryBrowseState) => Partial<LibraryBrowseState>)) => {
+    (
+      patch:
+        | Partial<LibraryBrowseState>
+        | ((current: LibraryBrowseState) => Partial<LibraryBrowseState>),
+    ) => {
       const current = browseRef.current;
       const resolved = typeof patch === "function" ? patch(current) : patch;
       const next = applyLibraryBrowseChange(current, resolved);
@@ -101,10 +157,16 @@ function LibraryPage() {
         window.requestAnimationFrame(() => {
           ignoreScrollRef.current = false;
         });
+        // Folder/search/filter/sort changes mean the visible rows are about to
+        // change: a stale selection could otherwise end up acting on items the
+        // user never intended once the new list loads, and any open preview
+        // belongs to the old context.
+        clearSelection();
+        setPreviewItemId(null);
       }
       setBrowse(next);
     },
-    [],
+    [clearSelection],
   );
 
   const flushLibraryScroll = useCallback(() => {
@@ -118,10 +180,23 @@ function LibraryPage() {
   const rememberBeforeDocument = useCallback(() => {
     flushLibraryScroll();
     leaveLibraryRef.current = true;
+    // Tell the next mount of this page "this is a return trip" so it
+    // restores browse state/scroll instead of resetting to defaults.
+    markLibraryReturnExpected(browserSessionStorage());
   }, [flushLibraryScroll]);
 
   useLayoutEffect(() => {
-    const stored = readLibraryBrowseState(browserSessionStorage());
+    // Only a genuine return from this document's own detail page restores
+    // the previous view/folder/search/scroll; any other arrival at /library
+    // (first visit, a link from elsewhere, a new tab) starts fresh on
+    // All Items, per the new navigation design.
+    const returning = consumeLibraryReturnExpected(browserSessionStorage());
+    const stored = returning
+      ? readLibraryBrowseState(browserSessionStorage())
+      : { ...EMPTY_LIBRARY_BROWSE };
+    if (!returning) {
+      writeLibraryBrowseState(browserSessionStorage(), stored);
+    }
     pendingScrollRef.current = stored.scrollY;
     browseRef.current = stored;
     setBrowse(stored);
@@ -143,11 +218,53 @@ function LibraryPage() {
   const [moveFolderId, setMoveFolderId] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
 
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [createFolderParentId, setCreateFolderParentId] = useState<string | null>(null);
+  const [createFolderName, setCreateFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [createFolderError, setCreateFolderError] = useState<string | null>(null);
+
   const [renameFolderTarget, setRenameFolderTarget] = useState<ApiLibraryFolder | null>(null);
   const [renameFolderName, setRenameFolderName] = useState("");
   const [renamingFolder, setRenamingFolder] = useState(false);
+  const [renameFolderError, setRenameFolderError] = useState<string | null>(null);
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<ApiLibraryFolder | null>(null);
   const [deletingFolder, setDeletingFolder] = useState(false);
+  const [deleteFolderError, setDeleteFolderError] = useState<string | null>(null);
+
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
+  const [bulkMoveFolderId, setBulkMoveFolderId] = useState<string | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+
+  const [previewItemId, setPreviewItemId] = useState<string | null>(null);
+  // Optional wide "reading mode" — never persisted. Resets when a preview is
+  // opened fresh from the list or closed, but stays on across Prev/Next.
+  const [previewExpanded, setPreviewExpanded] = useState(false);
+  // Safe default for SSR; the real stored width is read client-side below.
+  const [previewWidthPct, setPreviewWidthPct] = useState(LIBRARY_PREVIEW_DEFAULT_PCT);
+  const previewResizeContainerRef = useRef<HTMLDivElement>(null);
+  const previewResizingRef = useRef(false);
+  const previewResizeCleanupRef = useRef<(() => void) | null>(null);
+  // Matches the lg breakpoint the sidebar/content grid already switches on.
+  const isDesktopPreview = useMediaQuery("(min-width: 1024px)");
+
+  useEffect(() => {
+    // If the page navigates away (e.g. "Open full document") mid-drag, drop
+    // the global listeners instead of leaking them past unmount.
+    return () => previewResizeCleanupRef.current?.();
+  }, []);
+
+  useLayoutEffect(() => {
+    setPreviewWidthPct(readLibraryPreviewWidthPct(librarySafeLocalStorage()));
+  }, []);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      writeLibraryPreviewWidthPct(librarySafeLocalStorage(), previewWidthPct);
+    }, 300);
+    return () => window.clearTimeout(id);
+  }, [previewWidthPct]);
 
   const folderTree = useMemo(() => buildLibraryFolderTree(folders), [folders]);
 
@@ -172,9 +289,10 @@ function LibraryPage() {
       setLoading(false);
       return;
     }
+    const generation = ++reloadGenerationRef.current;
     setLoading(true);
     try {
-      const listQuery = libraryListQuery({ view, query, fileTypeFilter });
+      const listQuery = libraryListQuery({ view, query, fileTypeFilter, sort });
       const params: Parameters<typeof api.library.listItems>[1] = {};
       if (listQuery.recent) params.recent = true;
       if (listQuery.q) params.q = listQuery.q;
@@ -183,6 +301,7 @@ function LibraryPage() {
       if (listQuery.folder_id) params.folder_id = listQuery.folder_id;
       if (listQuery.unfiled) params.unfiled = true;
       if (listQuery.label_id) params.label_id = listQuery.label_id;
+      if (listQuery.sort) params.sort = listQuery.sort;
 
       let list = await api.library.listItems(auth, params);
       if (listQuery.extension) {
@@ -191,16 +310,25 @@ function LibraryPage() {
           (item.original_filename || item.title || "").toLowerCase().endsWith(ext),
         );
       }
-      if (listQuery.homeLimit) {
-        list = list.slice(0, listQuery.homeLimit);
-      }
+      // A newer reload (folder/search/filter/sort change, or another bulk
+      // action) started after this one — applying this response now would
+      // overwrite more current data and could resurrect a stale selection.
+      if (reloadGenerationRef.current !== generation) return;
       setItems(list);
+      // Drop any selected id that fell out of view (moved, deleted, filtered out)
+      // instead of letting a bulk action silently act on it later.
+      const nextIds = list.map((item) => item.id);
+      setSelectedIds((prev) => intersectSelection(prev, nextIds));
+      // Same for an open preview: don't keep showing a document that's no
+      // longer part of the current view.
+      setPreviewItemId((prev) => (prev && nextIds.includes(prev) ? prev : null));
     } catch (error) {
+      if (reloadGenerationRef.current !== generation) return;
       toast.error(error instanceof Error ? error.message : "Failed to load Library");
     } finally {
-      setLoading(false);
+      if (reloadGenerationRef.current === generation) setLoading(false);
     }
-  }, [authHeaders, query, view, fileTypeFilter]);
+  }, [authHeaders, query, view, fileTypeFilter, sort]);
 
   useEffect(() => {
     if (!browseReady) return;
@@ -233,48 +361,73 @@ function LibraryPage() {
     window.requestAnimationFrame(() => writeLibraryScrollTop(top));
   }, [browseReady, loading, items.length]);
 
-  async function createFolder(parentId: string | null) {
+  function openCreateFolder(parentId: string | null) {
+    setCreateFolderParentId(parentId);
+    setCreateFolderName("");
+    setCreateFolderError(null);
+    setCreateFolderOpen(true);
+  }
+
+  async function submitCreateFolder() {
     const auth = authHeaders();
-    if (!auth) return;
-    const name = window.prompt("Folder name");
-    if (!name?.trim()) return;
+    if (!auth || creatingFolder) return;
+    const validationError = validateLibraryFolderName(createFolderName);
+    if (validationError) {
+      setCreateFolderError(validationError);
+      return;
+    }
+    setCreatingFolder(true);
+    setCreateFolderError(null);
     try {
       await api.library.createFolder(auth, {
-        name: name.trim(),
-        parent_id: parentId,
+        name: createFolderName.trim(),
+        parent_id: createFolderParentId,
       });
       await reloadMeta();
+      setCreateFolderOpen(false);
+      setCreateFolderName("");
       toast.success("Folder created");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create folder");
+      setCreateFolderError(error instanceof Error ? error.message : "Could not create folder");
+    } finally {
+      setCreatingFolder(false);
     }
   }
 
   function openRenameFolder(folder: ApiLibraryFolder) {
     setRenameFolderTarget(folder);
     setRenameFolderName(folder.name);
+    setRenameFolderError(null);
   }
 
   async function submitRenameFolder() {
     const auth = authHeaders();
-    const name = renameFolderName.trim();
     if (!auth || !renameFolderTarget || renamingFolder) return;
-    if (!name) {
-      toast.error("Folder name is required");
+    const validationError = validateLibraryFolderName(renameFolderName);
+    if (validationError) {
+      setRenameFolderError(validationError);
       return;
     }
     setRenamingFolder(true);
+    setRenameFolderError(null);
     try {
-      await api.library.updateFolder(auth, renameFolderTarget.id, { name });
+      await api.library.updateFolder(auth, renameFolderTarget.id, {
+        name: renameFolderName.trim(),
+      });
       await reloadMeta();
       setRenameFolderTarget(null);
       setRenameFolderName("");
       toast.success("Folder renamed");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not rename folder");
+      setRenameFolderError(error instanceof Error ? error.message : "Could not rename folder");
     } finally {
       setRenamingFolder(false);
     }
+  }
+
+  function openDeleteFolder(folder: ApiLibraryFolder) {
+    setDeleteFolderTarget(folder);
+    setDeleteFolderError(null);
   }
 
   async function submitDeleteFolder() {
@@ -282,6 +435,7 @@ function LibraryPage() {
     if (!auth || !deleteFolderTarget || deletingFolder) return;
     const target = deleteFolderTarget;
     setDeletingFolder(true);
+    setDeleteFolderError(null);
     try {
       await api.library.deleteFolder(auth, target.id);
       updateBrowse((current) => ({
@@ -291,8 +445,7 @@ function LibraryPage() {
       setDeleteFolderTarget(null);
       toast.success("Folder deleted");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not delete folder");
-      setDeleteFolderTarget(null);
+      setDeleteFolderError(error instanceof Error ? error.message : "Could not delete folder");
     } finally {
       setDeletingFolder(false);
     }
@@ -324,6 +477,7 @@ function LibraryPage() {
       await reloadItems();
       await reloadMeta();
       toast.success("Document created");
+      rememberBeforeDocument();
       await navigate({ to: "/library/$itemId", params: { itemId: doc.id } });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create document");
@@ -473,9 +627,266 @@ function LibraryPage() {
     }
   }
 
+  function openPreview(item: ApiLibraryItem) {
+    setPreviewItemId(item.id);
+    setPreviewExpanded(false);
+  }
+
+  function closePreview() {
+    setPreviewItemId(null);
+    setPreviewExpanded(false);
+  }
+
+  function navigatePreview(direction: "prev" | "next") {
+    if (!previewItemId) return;
+    const nextId = libraryAdjacentItemId(
+      items.map((item) => item.id),
+      previewItemId,
+      direction,
+    );
+    if (nextId) setPreviewItemId(nextId);
+  }
+
+  async function openFullFromPreview(itemId: string) {
+    rememberBeforeDocument();
+    setPreviewItemId(null);
+    await navigate({ to: "/library/$itemId", params: { itemId } });
+  }
+
+  function startPreviewResize(event: ReactMouseEvent) {
+    event.preventDefault();
+    const container = previewResizeContainerRef.current;
+    if (!container) return;
+    const containerWidthPx = container.getBoundingClientRect().width;
+    const startClientX = event.clientX;
+    const startWidthPct = previewWidthPct;
+    previewResizingRef.current = true;
+
+    function onMove(moveEvent: globalThis.MouseEvent) {
+      if (!previewResizingRef.current) return;
+      setPreviewWidthPct(
+        libraryPreviewWidthPctFromDrag({
+          startWidthPct,
+          startClientX,
+          currentClientX: moveEvent.clientX,
+          containerWidthPx,
+        }),
+      );
+    }
+    function onUp() {
+      previewResizingRef.current = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      previewResizeCleanupRef.current = null;
+    }
+    previewResizeCleanupRef.current = onUp;
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function handlePreviewResizeKeyDown(event: ReactKeyboardEvent) {
+    const next = nextLibraryPreviewWidthPctForKey(previewWidthPct, event.key);
+    if (next != null) {
+      event.preventDefault();
+      setPreviewWidthPct(next);
+    }
+  }
+
+  function handleToggleItemSelect(item: ApiLibraryItem, index: number, event: ReactMouseEvent) {
+    if (event.shiftKey && lastSelectedIndexRef.current != null) {
+      setSelectedIds((prev) =>
+        selectRange(
+          prev,
+          items.map((row) => row.id),
+          lastSelectedIndexRef.current ?? index,
+          index,
+        ),
+      );
+    } else {
+      setSelectedIds((prev) => toggleSelection(prev, item.id));
+    }
+    lastSelectedIndexRef.current = index;
+  }
+
+  function selectAllVisible() {
+    setSelectedIds(selectAll(items.map((item) => item.id)));
+  }
+
+  /** Runs `action` over every selected id, tolerating per-item failures, and reports accurate counts. */
+  async function runBulkAction(
+    label: string,
+    ids: string[],
+    action: (id: string) => Promise<unknown>,
+  ): Promise<void> {
+    if (bulkBusy || ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      // Cap concurrent requests instead of firing one per selected item at
+      // once — a large "select all" could otherwise launch hundreds of
+      // simultaneous API calls.
+      const results = await mapWithConcurrencyLimit(ids, LIBRARY_BULK_CONCURRENCY_LIMIT, (id) =>
+        action(id),
+      );
+      const outcome = summarizeBulkResults(
+        ids.map((id, index) => ({ id, ok: results[index]?.status === "fulfilled" })),
+      );
+      const { level, text } = bulkResultMessage(label, outcome);
+      if (level === "success") toast.success(text);
+      else toast.error(text);
+      // Keep only the failures selected so the user can see and retry exactly
+      // what didn't work; successes are done and drop out of the selection.
+      setSelectedIds(new Set(outcome.failedIds));
+      await reloadItems();
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkAttachToChat() {
+    const auth = authHeaders();
+    if (!auth || bulkBusy) return;
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    // onTooMany/onError already give the user the full, specific reason
+    // (too many selected, or no chat could be created) before any attach
+    // call is attempted — the generic per-item summary below must not also
+    // fire in those cases, or the user sees two conflicting toasts.
+    let blockedBeforeAttempting = false;
+    try {
+      const result = await attachLibraryItemsViaApi({
+        libraryItemIds: ids,
+        activeChatId,
+        createChat,
+        activateChat: setActiveChatId,
+        retainRef,
+        attachFromLibrary: (chatId, libraryItemId) =>
+          api.chats.attachFromLibrary(auth, chatId, libraryItemId),
+        listPendingAttachments: async (chatId) =>
+          (await api.chats.listAttachments(auth, chatId)).items,
+        onTooMany: (message) => {
+          blockedBeforeAttempting = true;
+          toast.error(message);
+        },
+        onError: (message) => {
+          blockedBeforeAttempting = true;
+          toast.error(message);
+        },
+      });
+      if (blockedBeforeAttempting) return;
+      const outcome = summarizeBulkResults([
+        ...result.successIds.map((id) => ({ id, ok: true })),
+        ...result.failedIds.map((id) => ({ id, ok: false })),
+      ]);
+      const { level, text } = bulkResultMessage("Attached", outcome);
+      if (level === "success") toast.success(text);
+      else toast.error(text);
+      // Selection is left exactly as the user made it — attach never changes
+      // folder/label/favorite state, and a failure must not lose the pick.
+      // Only navigate away on complete success: any failure (even partial)
+      // must leave the user on Library, looking at exactly what still needs
+      // a retry, instead of auto-jumping to a chat that's missing items.
+      if (outcome.failed > 0) return;
+      await navigate({ to: "/chat" });
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkMove() {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    await runBulkAction("Moved", ids, (id) =>
+      api.library.updateItem(auth, id, {
+        folder_id: bulkMoveFolderId ?? undefined,
+        clear_folder: !bulkMoveFolderId,
+      }),
+    );
+    setBulkMoveOpen(false);
+  }
+
+  async function bulkSetFavorite(value: boolean) {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    await runBulkAction(value ? "Favorited" : "Unfavorited", ids, (id) =>
+      api.library.updateItem(auth, id, { is_favorite: value }),
+    );
+  }
+
+  async function bulkAddLabel(labelId: string) {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    const byId = new Map(items.map((item) => [item.id, item]));
+    await runBulkAction("Labeled", ids, (id) => {
+      const current = byId.get(id)?.labels.map((label) => label.id) ?? [];
+      return api.library.updateItem(auth, id, { label_ids: addLabelToIds(current, labelId) });
+    });
+  }
+
+  async function bulkRemoveLabel(labelId: string) {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    const byId = new Map(items.map((item) => [item.id, item]));
+    await runBulkAction("Updated labels for", ids, (id) => {
+      const current = byId.get(id)?.labels.map((label) => label.id) ?? [];
+      return api.library.updateItem(auth, id, {
+        label_ids: removeLabelFromIds(current, labelId),
+      });
+    });
+  }
+
+  async function bulkDelete() {
+    const auth = authHeaders();
+    if (!auth) return;
+    const ids = [...selectedIds];
+    await runBulkAction("Deleted", ids, (id) => api.library.deleteItem(auth, id));
+    setBulkDeleteOpen(false);
+  }
+
   const folderPath = view.kind === "folder" ? libraryFolderPath(folders, view.folderId) : [];
-  const heading = libraryViewHeading(view, folders, labels);
   const itemCountLabel = `${items.length} ${items.length === 1 ? "item" : "items"}`;
+  const activeFilterChips = libraryActiveFilterChips({ query, fileTypeFilter, sort });
+  const activeFolderId = view.kind === "folder" ? view.folderId : null;
+  const activeFolderName =
+    view.kind === "folder"
+      ? (folders.find((folder) => folder.id === view.folderId)?.name ?? "Folder")
+      : null;
+  const activeLabelId = view.kind === "label" ? view.labelId : null;
+  const filtersActiveCount = activeFilterChips.length + (activeLabelId ? 1 : 0);
+  const allVisibleSelected = items.length > 0 && items.every((item) => selectedIds.has(item.id));
+  const someVisibleSelected = selectedIds.size > 0 && !allVisibleSelected;
+  const previewItem = previewItemId
+    ? (items.find((item) => item.id === previewItemId) ?? null)
+    : null;
+  const previewIndex = previewItem ? items.findIndex((item) => item.id === previewItem.id) : -1;
+  const previewHasPrev = previewIndex > 0;
+  const previewHasNext = previewIndex >= 0 && previewIndex < items.length - 1;
+  const desktopPreviewOpen = Boolean(previewItem && isDesktopPreview);
+  const mobilePreviewOpen = Boolean(previewItem && !isDesktopPreview);
+  const effectivePreviewWidthPct = previewExpanded ? LIBRARY_PREVIEW_EXPANDED_PCT : previewWidthPct;
+
+  function clearActiveFilterChip(key: "query" | "fileType" | "sort") {
+    if (key === "query") updateBrowse({ query: "" });
+    else if (key === "fileType") updateBrowse({ fileTypeFilter: "" });
+    else updateBrowse({ sort: LIBRARY_DEFAULT_SORT });
+  }
+
+  async function handleCreateLabel() {
+    const auth = authHeaders();
+    if (!auth) return;
+    const name = window.prompt("Label name");
+    if (!name?.trim()) return;
+    try {
+      await api.library.createLabel(auth, name.trim());
+      await reloadMeta();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create label");
+    }
+  }
 
   const itemRowHandlers = {
     onToggleFavorite: (item: ApiLibraryItem) => void toggleFavorite(item),
@@ -499,7 +910,7 @@ function LibraryPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 md:px-8">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-8 md:px-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="font-display text-3xl font-semibold tracking-tight">Library</h1>
@@ -527,109 +938,235 @@ function LibraryPage() {
           </div>
         </div>
 
-        <div className="grid items-start gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <GlassCard className="flex max-h-[min(70vh,calc(100vh-10rem))] flex-col overflow-hidden p-3 lg:sticky lg:top-4">
-            <LibrarySidebar
-              view={view}
-              folders={folders}
-              folderTree={folderTree}
-              labels={labels}
-              folderQuery={folderQuery}
-              foldersExpanded={foldersExpanded}
-              onFolderQueryChange={(value) => updateBrowse({ folderQuery: value })}
-              onToggleFoldersExpanded={() =>
-                updateBrowse((current) => ({ foldersExpanded: !current.foldersExpanded }))
-              }
-              onView={(next) => updateBrowse({ view: next })}
-              onSelectFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
-              onCreateRootFolder={() => void createFolder(null)}
-              onAddChild={(id) => void createFolder(id)}
-              onRename={openRenameFolder}
-              onDelete={setDeleteFolderTarget}
-              onCreateLabel={() => {
-                void (async () => {
-                  const auth = authHeaders();
-                  if (!auth) return;
-                  const name = window.prompt("Label name");
-                  if (!name?.trim()) return;
-                  try {
-                    await api.library.createLabel(auth, name.trim());
-                    await reloadMeta();
-                  } catch (error) {
-                    toast.error(error instanceof Error ? error.message : "Could not create label");
+        <div ref={previewResizeContainerRef} className="flex min-w-0 items-start">
+          <div
+            className="min-w-0"
+            style={
+              desktopPreviewOpen
+                ? {
+                    flexBasis: `${100 - effectivePreviewWidthPct}%`,
+                    flexGrow: 0,
+                    flexShrink: 1,
+                    minWidth: 0,
                   }
-                })();
-              }}
-            />
-          </GlassCard>
+                : { flexBasis: "100%", flexGrow: 1, flexShrink: 1, minWidth: 0 }
+            }
+          >
+            <div className="min-w-0 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button type="button" variant="outline" className="gap-1.5">
+                      {libraryNavLabel(view)}
+                      <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    {LIBRARY_NAV_ITEMS.map((item) => (
+                      <DropdownMenuItem
+                        key={item.kind}
+                        onSelect={() => updateBrowse({ view: { kind: item.kind } })}
+                      >
+                        {item.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
 
-          <div className="min-w-0 space-y-3">
-            <LibraryBreadcrumb
-              view={view}
-              folderPath={folderPath}
-              labelName={
-                view.kind === "label"
-                  ? labels.find((label) => label.id === view.labelId)?.name
-                  : undefined
-              }
-              onHome={() => updateBrowse({ view: { kind: "home" } })}
-              onFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
-              onView={(kind) => updateBrowse({ view: { kind } })}
-            />
-
-            {view.kind === "home" ? (
-              loading ? (
-                <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  Loading…
-                </div>
-              ) : (
-                <LibraryHome
-                  recentItems={items}
-                  folders={folderTree}
-                  attachingId={attachingId}
-                  onOpenFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
-                  onOpenItem={rememberBeforeDocument}
-                  {...itemRowHandlers}
+                <LibraryFoldersMenu
+                  folderTree={folderTree}
+                  folders={folders}
+                  activeFolderId={activeFolderId}
+                  activeFolderName={activeFolderName}
+                  folderQuery={folderQuery}
+                  onFolderQueryChange={(value) => updateBrowse({ folderQuery: value })}
+                  onSelectFolder={(folderId) =>
+                    updateBrowse({ view: { kind: "folder", folderId } })
+                  }
+                  onCreateRootFolder={() => openCreateFolder(null)}
+                  onAddChild={(id) => openCreateFolder(id)}
+                  onRename={openRenameFolder}
+                  onDelete={openDeleteFolder}
                 />
-              )
-            ) : (
-              <>
-                <div className="min-w-0">
-                  <h2 className="truncate text-xl font-semibold tracking-tight">{heading}</h2>
-                  {!loading && (
-                    <p className="mt-0.5 text-xs text-muted-foreground">{itemCountLabel}</p>
-                  )}
+
+                <div className="relative min-w-[200px] flex-1">
+                  <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    value={query}
+                    onChange={(e) => updateBrowse({ query: e.target.value })}
+                    placeholder={
+                      view.kind === "folder"
+                        ? "Search this folder..."
+                        : "Search title, filename, labels, content…"
+                    }
+                    className="w-full rounded-lg border border-border bg-background/70 py-2 pr-3 pl-9 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
                 </div>
 
-                <div className="flex flex-wrap gap-3">
-                  <div className="relative min-w-[180px] flex-1">
-                    <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-                    <input
-                      value={query}
-                      onChange={(e) => updateBrowse({ query: e.target.value })}
-                      placeholder={
-                        view.kind === "folder"
-                          ? "Search this folder..."
-                          : "Search title, filename, labels, content…"
+                <LibraryFiltersMenu
+                  fileTypeFilter={fileTypeFilter}
+                  onFileTypeFilterChange={(value) => updateBrowse({ fileTypeFilter: value })}
+                  sort={sort}
+                  onSortChange={(value) => updateBrowse({ sort: value })}
+                  labels={labels}
+                  activeLabelId={activeLabelId}
+                  onSelectLabel={(labelId) => updateBrowse({ view: { kind: "label", labelId } })}
+                  onCreateLabel={() => void handleCreateLabel()}
+                  activeCount={filtersActiveCount}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <LibraryBreadcrumb
+                  view={view}
+                  folderPath={folderPath}
+                  labelName={
+                    view.kind === "label"
+                      ? labels.find((label) => label.id === view.labelId)?.name
+                      : undefined
+                  }
+                  onHome={() => updateBrowse({ view: { kind: "all" } })}
+                  onFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
+                  onView={(kind) => updateBrowse({ view: { kind } })}
+                />
+                {!loading && (
+                  <p className="shrink-0 text-xs text-muted-foreground">{itemCountLabel}</p>
+                )}
+              </div>
+
+              <>
+                {activeFilterChips.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {activeFilterChips.map((chip) => (
+                      <button
+                        key={chip.key}
+                        type="button"
+                        onClick={() => clearActiveFilterChip(chip.key)}
+                        className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted"
+                        title={`Clear: ${chip.label}`}
+                      >
+                        {chip.label}
+                        <X className="size-3" />
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateBrowse({
+                          query: "",
+                          fileTypeFilter: "",
+                          sort: LIBRARY_DEFAULT_SORT,
+                        })
                       }
-                      className="w-full rounded-lg border border-border bg-background/70 py-2 pr-3 pl-9 text-sm outline-none focus:ring-2 focus:ring-ring"
-                    />
+                      className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                    >
+                      Clear all filters
+                    </button>
                   </div>
-                  <select
-                    value={fileTypeFilter}
-                    onChange={(e) => updateBrowse({ fileTypeFilter: e.target.value })}
-                    className="rounded-lg border border-border bg-background/70 px-3 py-2 text-sm"
-                  >
-                    <option value="">All types</option>
-                    <option value="document">MultiMind Document</option>
-                    <option value="file">Uploaded files</option>
-                    <option value=".pdf">PDF</option>
-                    <option value=".docx">Word</option>
-                    <option value=".xlsx">Excel</option>
-                    <option value=".txt">Text</option>
-                  </select>
-                </div>
+                )}
+
+                {selectedIds.size > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+                    <span className="font-medium">{selectedIds.size} selected</span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={clearSelection}
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => void bulkAttachToChat()}
+                    >
+                      Attach to Chat
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => {
+                        setBulkMoveFolderId(null);
+                        setBulkMoveOpen(true);
+                      }}
+                    >
+                      Move
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={bulkBusy || labels.length === 0}
+                        >
+                          <Tag className="size-4" />
+                          Add label
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        {labels.map((label) => (
+                          <DropdownMenuItem
+                            key={label.id}
+                            onSelect={() => void bulkAddLabel(label.id)}
+                          >
+                            {label.name}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={bulkBusy || labels.length === 0}
+                        >
+                          <Tag className="size-4" />
+                          Remove label
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        {labels.map((label) => (
+                          <DropdownMenuItem
+                            key={label.id}
+                            onSelect={() => void bulkRemoveLabel(label.id)}
+                          >
+                            {label.name}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => void bulkSetFavorite(true)}
+                    >
+                      Favorite
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => void bulkSetFavorite(false)}
+                    >
+                      Unfavorite
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => setBulkDeleteOpen(true)}
+                      className="text-destructive hover:text-destructive"
+                    >
+                      Delete
+                    </Button>
+                    {bulkBusy && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
+                  </div>
+                )}
 
                 <GlassCard className="overflow-hidden">
                   {loading ? (
@@ -642,24 +1179,127 @@ function LibraryPage() {
                       Nothing here yet. Create a document or upload a file.
                     </div>
                   ) : (
-                    <ul className="divide-y divide-border">
-                      {items.map((item) => (
-                        <LibraryItemRow
-                          key={item.id}
-                          item={item}
-                          attaching={attachingId === item.id}
-                          onOpen={rememberBeforeDocument}
-                          {...itemRowHandlers}
+                    <>
+                      <div className="flex items-center gap-3 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+                        <Checkbox
+                          checked={
+                            allVisibleSelected
+                              ? true
+                              : someVisibleSelected
+                                ? "indeterminate"
+                                : false
+                          }
+                          disabled={bulkBusy}
+                          onClick={() => {
+                            if (allVisibleSelected) clearSelection();
+                            else selectAllVisible();
+                          }}
+                          aria-label={
+                            allVisibleSelected
+                              ? "Deselect all visible items"
+                              : "Select all visible items"
+                          }
                         />
-                      ))}
-                    </ul>
+                        <span>
+                          {allVisibleSelected
+                            ? `All ${items.length} selected`
+                            : `Select all ${items.length} visible`}
+                        </span>
+                      </div>
+                      <ul className="divide-y divide-border">
+                        {items.map((item, index) => (
+                          <LibraryItemRow
+                            key={item.id}
+                            item={item}
+                            attaching={attachingId === item.id}
+                            onOpen={rememberBeforeDocument}
+                            selected={selectedIds.has(item.id)}
+                            selectDisabled={bulkBusy}
+                            onToggleSelect={(event) => handleToggleItemSelect(item, index, event)}
+                            previewing={previewItemId === item.id}
+                            onOpenPreview={openPreview}
+                            {...itemRowHandlers}
+                          />
+                        ))}
+                      </ul>
+                    </>
                   )}
                 </GlassCard>
               </>
-            )}
+            </div>
           </div>
+          {desktopPreviewOpen && previewItem && (
+            <>
+              {!previewExpanded && (
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize preview panel"
+                  aria-valuenow={Math.round(effectivePreviewWidthPct)}
+                  tabIndex={0}
+                  onMouseDown={startPreviewResize}
+                  onKeyDown={handlePreviewResizeKeyDown}
+                  className="mx-2 w-1.5 shrink-0 cursor-col-resize self-stretch rounded bg-border outline-none hover:bg-primary/40 focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              )}
+              <GlassCard
+                className={cn(
+                  "shrink-0 overflow-hidden lg:sticky lg:top-4",
+                  previewExpanded && "ml-2",
+                )}
+                style={{ flexBasis: `${effectivePreviewWidthPct}%`, flexGrow: 0, flexShrink: 0 }}
+              >
+                <LibraryPreviewPanel
+                  summary={previewItem}
+                  onClose={closePreview}
+                  onOpenFull={() => void openFullFromPreview(previewItem.id)}
+                  onDownload={() => void downloadItem(previewItem)}
+                  onAttach={() => void attachToChat(previewItem)}
+                  attaching={attachingId === previewItem.id}
+                  onNavigate={navigatePreview}
+                  hasPrev={previewHasPrev}
+                  hasNext={previewHasNext}
+                  expanded={previewExpanded}
+                  onToggleExpand={() => setPreviewExpanded((value) => !value)}
+                  className="max-h-[calc(100vh-10rem)]"
+                />
+              </GlassCard>
+            </>
+          )}
         </div>
       </div>
+
+      <Sheet
+        open={mobilePreviewOpen}
+        onOpenChange={(open) => {
+          if (!open) closePreview();
+        }}
+      >
+        <SheetContent
+          side="right"
+          className="flex w-full max-w-full flex-col gap-0 p-0 sm:max-w-full"
+        >
+          <SheetTitle className="sr-only">{previewItem?.title ?? "Document preview"}</SheetTitle>
+          <SheetDescription className="sr-only">
+            Quick preview of the selected Library item.
+          </SheetDescription>
+          {previewItem && (
+            <LibraryPreviewPanel
+              summary={previewItem}
+              onClose={closePreview}
+              onOpenFull={() => void openFullFromPreview(previewItem.id)}
+              onDownload={() => void downloadItem(previewItem)}
+              onAttach={() => void attachToChat(previewItem)}
+              attaching={attachingId === previewItem.id}
+              onNavigate={navigatePreview}
+              hasPrev={previewHasPrev}
+              hasNext={previewHasNext}
+              showCloseButton={false}
+              className="h-full"
+            />
+          )}
+        </SheetContent>
+      </Sheet>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-xl">
@@ -808,11 +1448,75 @@ function LibraryPage() {
       </Dialog>
 
       <Dialog
+        open={createFolderOpen}
+        onOpenChange={(open) => {
+          if (!open && !creatingFolder) {
+            setCreateFolderOpen(false);
+            setCreateFolderName("");
+            setCreateFolderError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitCreateFolder();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>New folder</DialogTitle>
+            </DialogHeader>
+            <div className="py-4">
+              <Label htmlFor="library-folder-create">Folder name</Label>
+              <Input
+                id="library-folder-create"
+                value={createFolderName}
+                onChange={(event) => {
+                  setCreateFolderName(event.target.value);
+                  if (createFolderError) setCreateFolderError(null);
+                }}
+                autoFocus
+                disabled={creatingFolder}
+                aria-invalid={createFolderError ? true : undefined}
+                aria-describedby={createFolderError ? "library-folder-create-error" : undefined}
+                className="mt-2"
+              />
+              {createFolderError ? (
+                <p id="library-folder-create-error" className="mt-2 text-sm text-destructive">
+                  {createFolderError}
+                </p>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={creatingFolder}
+                onClick={() => {
+                  setCreateFolderOpen(false);
+                  setCreateFolderName("");
+                  setCreateFolderError(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creatingFolder || !createFolderName.trim()}>
+                {creatingFolder ? <Loader2 className="size-4 animate-spin" /> : null}
+                Create
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={renameFolderTarget !== null}
         onOpenChange={(open) => {
           if (!open && !renamingFolder) {
             setRenameFolderTarget(null);
             setRenameFolderName("");
+            setRenameFolderError(null);
           }
         }}
       >
@@ -831,11 +1535,21 @@ function LibraryPage() {
               <Input
                 id="library-folder-rename"
                 value={renameFolderName}
-                onChange={(event) => setRenameFolderName(event.target.value)}
+                onChange={(event) => {
+                  setRenameFolderName(event.target.value);
+                  if (renameFolderError) setRenameFolderError(null);
+                }}
                 autoFocus
                 disabled={renamingFolder}
+                aria-invalid={renameFolderError ? true : undefined}
+                aria-describedby={renameFolderError ? "library-folder-rename-error" : undefined}
                 className="mt-2"
               />
+              {renameFolderError ? (
+                <p id="library-folder-rename-error" className="mt-2 text-sm text-destructive">
+                  {renameFolderError}
+                </p>
+              ) : null}
             </div>
             <DialogFooter>
               <Button
@@ -845,6 +1559,7 @@ function LibraryPage() {
                 onClick={() => {
                   setRenameFolderTarget(null);
                   setRenameFolderName("");
+                  setRenameFolderError(null);
                 }}
               >
                 Cancel
@@ -861,7 +1576,10 @@ function LibraryPage() {
       <AlertDialog
         open={deleteFolderTarget !== null}
         onOpenChange={(open) => {
-          if (!open && !deletingFolder) setDeleteFolderTarget(null);
+          if (!open && !deletingFolder) {
+            setDeleteFolderTarget(null);
+            setDeleteFolderError(null);
+          }
         }}
       >
         <AlertDialogContent>
@@ -872,8 +1590,13 @@ function LibraryPage() {
               contains files, documents, or subfolders, move or delete them first.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteFolderError ? (
+            <p className="text-sm text-destructive">{deleteFolderError}</p>
+          ) : null}
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deletingFolder}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deletingFolder} onClick={() => setDeleteFolderError(null)}>
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               disabled={deletingFolder}
               onClick={(event) => {
@@ -884,6 +1607,75 @@ function LibraryPage() {
             >
               {deletingFolder ? <Loader2 className="size-4 animate-spin" /> : null}
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog
+        open={bulkMoveOpen}
+        onOpenChange={(open) => {
+          if (!open && !bulkBusy) setBulkMoveOpen(false);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move {selectedIds.size} items to folder</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="library-bulk-move-folder">Folder</Label>
+            <LibraryFolderSelect
+              id="library-bulk-move-folder"
+              folders={folders}
+              value={bulkMoveFolderId}
+              onChange={setBulkMoveFolderId}
+              disabled={bulkBusy}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setBulkMoveOpen(false)}
+              disabled={bulkBusy}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void bulkMove()} disabled={bulkBusy}>
+              {bulkBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+              Move
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={bulkDeleteOpen}
+        onOpenChange={(open) => {
+          if (!open && !bulkBusy) setBulkDeleteOpen(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedIds.size} items?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes {selectedIds.size}{" "}
+              {selectedIds.size === 1 ? "item" : "items"}. Library does not currently support a
+              trash or restore — this action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={bulkBusy}
+              onClick={(event) => {
+                event.preventDefault();
+                void bulkDelete();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {bulkBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+              Delete permanently
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
