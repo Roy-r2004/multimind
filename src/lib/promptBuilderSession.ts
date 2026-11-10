@@ -195,6 +195,26 @@ export function resolvePromptBuilderSession(
   return createPromptBuilderSession(currentComposerText, modelSetId);
 }
 
+/**
+ * Hand off current Chat Council composer text into an already-open Builder
+ * session's draft. Only fills an empty draft, so unsent Builder work is never
+ * discarded, and never reintroduces text already sent as a user message in
+ * this session, so reopening with unchanged composer text doesn't keep
+ * re-offering (and risking a duplicate send of) already-consumed text.
+ */
+export function mergeComposerHandoff(
+  session: PromptBuilderSession,
+  composerText: string,
+): PromptBuilderSession {
+  if (!composerText) return session;
+  if (session.draft !== "") return session;
+  const alreadyConsumed = session.messages.some(
+    (message) => message.role === "user" && message.content === composerText,
+  );
+  if (alreadyConsumed) return session;
+  return { ...session, draft: composerText, updatedAt: new Date().toISOString() };
+}
+
 export function persistPromptBuilderSession(key: string, session: PromptBuilderSession): void {
   if (isEmptyPromptBuilderShell(session) && session.intentionalEmpty !== true) {
     clearPersistedPromptBuilderSession(key);
@@ -213,8 +233,9 @@ export function openPromptBuilderSession(
     currentComposerText,
     modelSetId,
   );
-  persistPromptBuilderSession(key, session);
-  return session;
+  const handedOff = mergeComposerHandoff(session, currentComposerText);
+  persistPromptBuilderSession(key, handedOff);
+  return handedOff;
 }
 
 export function clearPersistedPromptBuilderSession(key: string): void {

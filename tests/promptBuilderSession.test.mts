@@ -12,6 +12,7 @@ import {
   clearPersistedPromptBuilderSession,
   createPromptBuilderSession,
   loadPromptBuilderSession,
+  mergeComposerHandoff,
   openPromptBuilderSession,
   originalPromptClipboardText,
   persistPromptBuilderSession,
@@ -288,15 +289,17 @@ test("New Session does not modify the normal composer", () => {
   assert.equal(composer, "Some text currently in composer");
 });
 
-test("New Session persists empty original and is not repaired from composer on reopen", () => {
+test("New Session persists empty original and is not repaired from composer on reopen, but a now-empty draft still gets the composer handoff", () => {
   const key = keyFor("new-session-empty");
   const composer = "Some text currently in composer";
   openPromptBuilderSession(key, composer, "set-a");
   persistPromptBuilderSession(key, startNewPromptBuilderSession("set-a"));
 
   const reopened = openPromptBuilderSession(key, composer, "set-b");
+  // Session identity (originalPrompt/messages/latestPrompt/modelSetId) is not
+  // repaired/reset — only the empty draft is handed the new composer text.
   assert.equal(reopened.originalPrompt, "");
-  assert.equal(reopened.draft, "");
+  assert.equal(reopened.draft, composer);
   assert.deepEqual(reopened.messages, []);
   assert.equal(reopened.latestPrompt, null);
   assert.equal(reopened.modelSetId, "set-a");
@@ -555,6 +558,127 @@ test("promptRevision round-trips through persistence and defaults to 0 for sessi
   const withRevision = applyPromptBuilderSuccess(createPromptBuilderSession("x", "set-a"), "y");
   savePromptBuilderSession(key, withRevision);
   assert.equal(loadPromptBuilderSession(key)?.promptRevision, 1);
+});
+
+// --- Composer-to-Builder handoff ---
+
+test("mergeComposerHandoff fills an empty draft with composer text, ready to send", () => {
+  const session = createPromptBuilderSession("", "set-a");
+  assert.equal(session.draft, "");
+  const merged = mergeComposerHandoff(session, "Help me write something");
+  assert.equal(merged.draft, "Help me write something");
+});
+
+test("mergeComposerHandoff does not submit or touch originalPrompt/messages — only fills draft", () => {
+  const session = createPromptBuilderSession("", "set-a");
+  const merged = mergeComposerHandoff(session, "Help me write something");
+  assert.equal(merged.originalPrompt, "");
+  assert.deepEqual(merged.messages, []);
+  assert.equal(merged.latestPrompt, null);
+});
+
+test("mergeComposerHandoff with empty composer text preserves the session untouched", () => {
+  const session = { ...createPromptBuilderSession("", "set-a"), draft: "existing draft" };
+  const merged = mergeComposerHandoff(session, "");
+  assert.deepEqual(merged, session);
+});
+
+test("mergeComposerHandoff never overwrites an existing unsent draft", () => {
+  const session = { ...createPromptBuilderSession("", "set-a"), draft: "my unsent work" };
+  const merged = mergeComposerHandoff(session, "new composer text");
+  assert.equal(merged.draft, "my unsent work");
+});
+
+test("mergeComposerHandoff does not reintroduce composer text already sent as a user message", () => {
+  const sent = applyPromptBuilderSuccess(
+    beginPromptBuilderSend(createPromptBuilderSession("", "set-a"), "already sent idea"),
+    "the AI's improved prompt",
+  );
+  assert.equal(sent.draft, "");
+  const merged = mergeComposerHandoff(sent, "already sent idea");
+  assert.equal(merged.draft, "");
+});
+
+test("mergeComposerHandoff offers unconsumed composer text even with other history present", () => {
+  const session = applyPromptBuilderSuccess(
+    beginPromptBuilderSend(createPromptBuilderSession("", "set-a"), "first idea"),
+    "first improved prompt",
+  );
+  assert.equal(session.draft, "");
+  const merged = mergeComposerHandoff(session, "a brand new instruction");
+  assert.equal(merged.draft, "a brand new instruction");
+  assert.equal(merged.messages.length, 2);
+});
+
+test("openPromptBuilderSession hands off composer text into a brand-new session's draft without sending", () => {
+  const key = keyFor("handoff-fresh");
+  const opened = openPromptBuilderSession(key, "Draft my business plan", "set-a");
+  assert.equal(opened.draft, "Draft my business plan");
+  assert.deepEqual(opened.messages, []);
+  assert.equal(opened.latestPrompt, null);
+});
+
+test("openPromptBuilderSession hands composer text into an existing session's empty draft without resetting history", () => {
+  const key = keyFor("handoff-existing-empty-draft");
+  const existing = applyPromptBuilderSuccess(
+    beginPromptBuilderSend(createPromptBuilderSession("first idea", "set-a"), "first idea"),
+    "first improved prompt",
+  );
+  savePromptBuilderSession(key, existing);
+
+  const reopened = openPromptBuilderSession(key, "a new refinement idea", "set-b");
+  assert.equal(reopened.draft, "a new refinement idea");
+  assert.equal(reopened.originalPrompt, "first idea");
+  assert.equal(reopened.messages.length, 2);
+  assert.equal(reopened.latestPrompt, "first improved prompt");
+  assert.equal(reopened.modelSetId, "set-a");
+});
+
+test("openPromptBuilderSession never discards an existing unsent draft for new composer text", () => {
+  const key = keyFor("handoff-existing-nonempty-draft");
+  const existing = { ...createPromptBuilderSession("idea", "set-a"), draft: "my careful edit" };
+  savePromptBuilderSession(key, existing);
+
+  const reopened = openPromptBuilderSession(key, "different composer text", "set-a");
+  assert.equal(reopened.draft, "my careful edit");
+});
+
+test("openPromptBuilderSession with no composer text preserves normal existing behavior", () => {
+  const key = keyFor("handoff-no-composer-text");
+  const existing = applyPromptBuilderSuccess(
+    beginPromptBuilderSend(createPromptBuilderSession("idea", "set-a"), "idea"),
+    "improved",
+  );
+  savePromptBuilderSession(key, existing);
+
+  const reopened = openPromptBuilderSession(key, "", "set-a");
+  assert.equal(reopened.draft, "");
+  assert.equal(reopened.originalPrompt, "idea");
+});
+
+test("reopening repeatedly with the same unchanged composer text does not keep re-offering already-sent text", () => {
+  const key = keyFor("handoff-repeated-reopen");
+  const composer = "write me a poem";
+  const opened = openPromptBuilderSession(key, composer, "set-a");
+  assert.equal(opened.draft, composer);
+
+  // User sends the handed-off draft.
+  const sent = applyPromptBuilderSuccess(beginPromptBuilderSend(opened, opened.draft), "a poem");
+  savePromptBuilderSession(key, sent);
+
+  // Composer in the main chat still has the same unchanged text; reopening
+  // must not re-offer it (it was already sent) even though the draft is empty.
+  const reopenedOnce = openPromptBuilderSession(key, composer, "set-a");
+  assert.equal(reopenedOnce.draft, "");
+  const reopenedTwice = openPromptBuilderSession(key, composer, "set-a");
+  assert.equal(reopenedTwice.draft, "");
+});
+
+test("startNewPromptBuilderSession still seeds draft/originalPrompt from composer text directly", () => {
+  const next = startNewPromptBuilderSession("set-a", "fresh idea from composer");
+  assert.equal(next.originalPrompt, "fresh idea from composer");
+  assert.equal(next.draft, "fresh idea from composer");
+  assert.deepEqual(next.messages, []);
 });
 
 test("resolvePromptBuilderSession is the actual open-time restore/create decision", () => {
