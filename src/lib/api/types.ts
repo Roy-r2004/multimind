@@ -339,7 +339,9 @@ export type ApiPromptBuilderContextResponse = {
 
 export type ApiPromptBuilderRefineResponse = {
   assistant_message: string;
-  improved_prompt: string;
+  /** Null when is_clarifying_question is true: no new final prompt was produced this turn. */
+  improved_prompt: string | null;
+  is_clarifying_question: boolean;
   context_usage: ApiPromptBuilderContextUsage;
 };
 

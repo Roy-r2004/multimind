@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  applyManualPromptEdit,
+  applyPromptBuilderClarification,
   applyPromptBuilderSuccess,
   beginPromptBuilderSend,
   clearPersistedPromptBuilderSession,
@@ -447,11 +449,21 @@ test("Prompt Builder modal keeps context math and hides the context token block"
   assert.doesNotMatch(source, /Context \(/);
   assert.doesNotMatch(source, /remaining after/);
   assert.doesNotMatch(source, /compactTokens/);
-  assert.match(source, /h-\[50px\] overflow-y-auto/);
   assert.match(source, /min\(94vh,calc\(100dvh-2rem\)\)/);
-  assert.match(source, /min\(95vw,1400px,calc\(100vw-2rem\)\)/);
+  assert.match(source, /min\(96vw,1500px,calc\(100vw-2rem\)\)/);
   assert.match(source, /max-h-\[none\]/);
   assert.match(source, /min-h-0 flex-1 basis-0 space-y-3 overflow-y-auto/);
+});
+
+test("Prompt Builder modal is a responsive two-panel layout (Conversation + Final Prompt)", () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/components/chat/PromptBuilderModal.tsx"),
+    "utf8",
+  );
+  assert.match(source, /grid-cols-1[\s\S]{0,40}lg:grid-cols-2/);
+  assert.match(source, /mobileTab === "conversation" \? "flex" : "hidden"/);
+  assert.match(source, /mobileTab === "final" \? "flex" : "hidden"/);
+  assert.match(source, /"lg:hidden"|lg:hidden/);
 });
 
 test("empty composer shells are not persisted, so a later open can capture the composer", () => {
@@ -475,6 +487,74 @@ test("storage keys isolate organization and new-chat draft identity", () => {
   openPromptBuilderSession(chatKey, "CHAT ORIGINAL", "set-a");
   assert.equal(loadPromptBuilderSession(newKey)?.originalPrompt, "NEW CHAT ORIGINAL");
   assert.equal(loadPromptBuilderSession(chatKey)?.originalPrompt, "CHAT ORIGINAL");
+});
+
+test("promptRevision starts at 0 and increments once per successful AI result", () => {
+  let session = createPromptBuilderSession("idea", "set-a");
+  assert.equal(session.promptRevision, 0);
+  session = beginPromptBuilderSend(session, session.draft);
+  assert.equal(session.promptRevision, 0);
+  session = applyPromptBuilderSuccess(session, "first prompt");
+  assert.equal(session.promptRevision, 1);
+  session = beginPromptBuilderSend(session, "refine it");
+  session = applyPromptBuilderSuccess(session, "second prompt");
+  assert.equal(session.promptRevision, 2);
+});
+
+test("a clarifying question does not touch latestPrompt or promptRevision", () => {
+  const session = beginPromptBuilderSend(createPromptBuilderSession("", "set-a"), "vague idea");
+  const clarified = applyPromptBuilderClarification(session, "Who is the audience?");
+  assert.equal(clarified.latestPrompt, null);
+  assert.equal(clarified.promptRevision, 0);
+  assert.equal(clarified.messages.at(-1)?.content, "Who is the audience?");
+  assert.equal(clarified.messages.at(-1)?.role, "assistant");
+});
+
+test("a manual edit becomes latestPrompt, bumps promptRevision, and rewrites the last assistant message", () => {
+  let session = applyPromptBuilderSuccess(
+    beginPromptBuilderSend(createPromptBuilderSession("idea", "set-a"), "idea"),
+    "AI-generated prompt",
+  );
+  assert.equal(session.promptRevision, 1);
+
+  const edited = applyManualPromptEdit(session, "my manually edited prompt");
+  assert.equal(edited.latestPrompt, "my manually edited prompt");
+  assert.equal(edited.promptRevision, 2);
+  assert.equal(edited.messages.at(-1)?.content, "my manually edited prompt");
+  assert.equal(edited.messages.at(-1)?.role, "assistant");
+  // Earlier turns and the original prompt are untouched.
+  assert.equal(edited.messages[0]?.content, "idea");
+  assert.equal(edited.originalPrompt, "idea");
+});
+
+test("a manual edit targets the most recent assistant message even with a trailing unanswered user turn", () => {
+  let session = applyPromptBuilderSuccess(
+    beginPromptBuilderSend(createPromptBuilderSession("idea", "set-a"), "idea"),
+    "first AI prompt",
+  );
+  // Optimistically appended by send() while a refine() call is still in flight.
+  session = beginPromptBuilderSend(session, "make it shorter");
+
+  const edited = applyManualPromptEdit(session, "edited while a request is in flight");
+  assert.equal(edited.latestPrompt, "edited while a request is in flight");
+  assert.equal(edited.messages.at(-1)?.role, "user");
+  assert.equal(edited.messages.at(-1)?.content, "make it shorter");
+  assert.equal(edited.messages.at(-2)?.role, "assistant");
+  assert.equal(edited.messages.at(-2)?.content, "edited while a request is in flight");
+});
+
+test("promptRevision round-trips through persistence and defaults to 0 for sessions saved before it existed", () => {
+  const key = keyFor("legacy-session-without-revision");
+  const legacy = { ...createPromptBuilderSession("legacy", "set-a") } as Record<string, unknown>;
+  delete legacy.promptRevision;
+  savePromptBuilderSession(key, legacy as never);
+
+  const loaded = loadPromptBuilderSession(key);
+  assert.equal(loaded?.promptRevision, 0);
+
+  const withRevision = applyPromptBuilderSuccess(createPromptBuilderSession("x", "set-a"), "y");
+  savePromptBuilderSession(key, withRevision);
+  assert.equal(loadPromptBuilderSession(key)?.promptRevision, 1);
 });
 
 test("resolvePromptBuilderSession is the actual open-time restore/create decision", () => {
