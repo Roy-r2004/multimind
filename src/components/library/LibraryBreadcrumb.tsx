@@ -23,7 +23,7 @@ export function LibraryBreadcrumb({
   labelName?: string;
   onHome: () => void;
   onFolder: (folderId: string) => void;
-  onView?: (kind: Exclude<LibraryViewMode["kind"], "folder" | "label" | "home">) => void;
+  onView?: (kind: Exclude<LibraryViewMode["kind"], "folder" | "label">) => void;
   className?: string;
 }) {
   const crumbs: Crumb[] = [{ key: "home", label: "Library", onClick: onHome }];

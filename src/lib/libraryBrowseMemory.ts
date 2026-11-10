@@ -2,20 +2,23 @@
 
 import {
   LIBRARY_DEFAULT_SORT,
-  LIBRARY_HOME_RECENT_LIMIT,
   isLibrarySortOption,
   type LibrarySortOption,
   type LibraryViewMode,
 } from "./libraryUi.ts";
 
 export const LIBRARY_BROWSE_STORAGE_KEY = "multimind.library.browse";
+/** Set right before navigating from the Library list to a document's full
+ * page, and consumed once when the list next mounts. Its presence is how the
+ * list tells "returning from a document" (restore browse state) apart from
+ * any other, independent arrival at /library (reset to defaults). */
+const LIBRARY_RETURN_FLAG_KEY = "multimind.library.expectReturn";
 
 export type LibraryBrowseState = {
   view: LibraryViewMode;
   query: string;
   fileTypeFilter: string;
   folderQuery: string;
-  foldersExpanded: boolean;
   sort: LibrarySortOption;
   scrollY: number;
 };
@@ -29,21 +32,19 @@ export type LibraryListQuery = {
   unfiled?: boolean;
   label_id?: string;
   extension?: string;
-  homeLimit?: number;
   sort?: LibrarySortOption;
 };
 
 export const EMPTY_LIBRARY_BROWSE: LibraryBrowseState = {
-  view: { kind: "home" },
+  view: { kind: "all" },
   query: "",
   fileTypeFilter: "",
   folderQuery: "",
-  foldersExpanded: false,
   sort: LIBRARY_DEFAULT_SORT,
   scrollY: 0,
 };
 
-const VIEW_KINDS = new Set(["home", "all", "favorites", "recent", "unfiled", "folder", "label"]);
+const VIEW_KINDS = new Set(["all", "favorites", "recent", "unfiled", "folder", "label"]);
 
 export function libraryViewsEqual(a: LibraryViewMode, b: LibraryViewMode): boolean {
   if (a.kind !== b.kind) return false;
@@ -73,13 +74,7 @@ function isLibraryView(value: unknown): value is LibraryViewMode {
   if (kind === "label") {
     return typeof (value as { labelId?: unknown }).labelId === "string";
   }
-  return (
-    kind === "home" ||
-    kind === "all" ||
-    kind === "favorites" ||
-    kind === "recent" ||
-    kind === "unfiled"
-  );
+  return kind === "all" || kind === "favorites" || kind === "recent" || kind === "unfiled";
 }
 
 function finiteScroll(value: unknown): number {
@@ -97,7 +92,6 @@ export function parseLibraryBrowseState(raw: unknown): LibraryBrowseState {
     query: typeof record.query === "string" ? record.query : "",
     fileTypeFilter: typeof record.fileTypeFilter === "string" ? record.fileTypeFilter : "",
     folderQuery: typeof record.folderQuery === "string" ? record.folderQuery : "",
-    foldersExpanded: record.foldersExpanded === true,
     sort: isLibrarySortOption(record.sort) ? record.sort : LIBRARY_DEFAULT_SORT,
     scrollY: finiteScroll(record.scrollY),
   };
@@ -169,24 +163,48 @@ export function libraryListQuery(
 ): LibraryListQuery {
   const { view, query, fileTypeFilter, sort } = state;
   const params: LibraryListQuery = {};
-  if (view.kind === "home" || view.kind === "recent") params.recent = true;
-  if (view.kind !== "home") {
-    const q = query.trim();
-    if (q) params.q = q;
-    if (fileTypeFilter === "document") params.item_type = "document";
-    if (fileTypeFilter === "file") params.item_type = "file";
-    if (fileTypeFilter && fileTypeFilter !== "document" && fileTypeFilter !== "file") {
-      params.extension = fileTypeFilter.toLowerCase();
-    }
-    // Sorting only applies to the explicit browse views; Home/Recent stay recency-first.
-    if (sort && sort !== LIBRARY_DEFAULT_SORT) params.sort = sort;
+  if (view.kind === "recent") params.recent = true;
+  const q = query.trim();
+  if (q) params.q = q;
+  if (fileTypeFilter === "document") params.item_type = "document";
+  if (fileTypeFilter === "file") params.item_type = "file";
+  if (fileTypeFilter && fileTypeFilter !== "document" && fileTypeFilter !== "file") {
+    params.extension = fileTypeFilter.toLowerCase();
   }
+  if (sort && sort !== LIBRARY_DEFAULT_SORT) params.sort = sort;
   if (view.kind === "favorites") params.favorites = true;
   if (view.kind === "folder") params.folder_id = view.folderId;
   if (view.kind === "unfiled") params.unfiled = true;
   if (view.kind === "label") params.label_id = view.labelId;
-  if (view.kind === "home") params.homeLimit = LIBRARY_HOME_RECENT_LIMIT;
   return params;
+}
+
+/** Call right before navigating away from the Library list to a document's full page. */
+export function markLibraryReturnExpected(storage: Storage | null | undefined): void {
+  if (!storage) return;
+  try {
+    storage.setItem(LIBRARY_RETURN_FLAG_KEY, "1");
+  } catch {
+    // Private mode or a full quota just means a fresh-entry reset next time — never fatal.
+  }
+}
+
+/**
+ * Call once when the Library list mounts. Returns true (and consumes the
+ * flag) when the previous page in this tab was this same list's own document
+ * detail route — meaning browse state/scroll should be restored. Returns
+ * false for any other arrival (first visit, coming from elsewhere in the
+ * app, a new tab), meaning the list should reset to its defaults instead.
+ */
+export function consumeLibraryReturnExpected(storage: Storage | null | undefined): boolean {
+  if (!storage) return false;
+  try {
+    const flagged = storage.getItem(LIBRARY_RETURN_FLAG_KEY) === "1";
+    storage.removeItem(LIBRARY_RETURN_FLAG_KEY);
+    return flagged;
+  } catch {
+    return false;
+  }
 }
 
 export function readLibraryScrollTop(): number {

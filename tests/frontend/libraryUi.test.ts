@@ -7,11 +7,14 @@ import {
   filterFolderTreeByQuery,
   folderIdsToExpandInTree,
   libraryActiveFilterChips,
+  libraryAdjacentItemId,
   libraryExpandedPathIds,
   libraryFileTypeFilterLabel,
+  libraryNavLabel,
   libraryTopLevelFolderId,
   libraryViewAfterFolderDelete,
   LIBRARY_FOLDER_NAME_MAX_LENGTH,
+  LIBRARY_NAV_ITEMS,
   validateLibraryFolderName,
   visibleTopLevelFolders,
 } from "../../src/lib/libraryUi.ts";
@@ -36,14 +39,30 @@ test("deleting the active nested folder selects its parent", () => {
   );
 });
 
-test("deleting the active root folder returns to library home", () => {
+test("deleting the active root folder returns to All Items", () => {
   assert.deepEqual(
     libraryViewAfterFolderDelete(
       { kind: "folder", folderId: "root" },
       { id: "root", parent_id: null },
     ),
-    { kind: "home" },
+    { kind: "all" },
   );
+});
+
+test("LIBRARY_NAV_ITEMS lists exactly the 4 primary nav options", () => {
+  assert.deepEqual(
+    LIBRARY_NAV_ITEMS.map((item) => item.kind),
+    ["all", "favorites", "recent", "unfiled"],
+  );
+});
+
+test("libraryNavLabel resolves the 4 nav kinds and falls back for folder/label views", () => {
+  assert.equal(libraryNavLabel({ kind: "all" }), "All Items");
+  assert.equal(libraryNavLabel({ kind: "favorites" }), "Favorites");
+  assert.equal(libraryNavLabel({ kind: "recent" }), "Recent");
+  assert.equal(libraryNavLabel({ kind: "unfiled" }), "Unfiled");
+  assert.equal(libraryNavLabel({ kind: "folder", folderId: "f1" }), "All Items");
+  assert.equal(libraryNavLabel({ kind: "label", labelId: "l1" }), "All Items");
 });
 
 test("deleting an inactive folder preserves the current view", () => {
@@ -163,4 +182,17 @@ test("libraryActiveFilterChips describes each active filter independently", () =
     { key: "fileType", label: "Type: MultiMind Document" },
     { key: "sort", label: "Sort: Name A–Z" },
   ]);
+});
+
+test("libraryAdjacentItemId moves within the list and stops at either end", () => {
+  const ids = ["a", "b", "c"];
+  assert.equal(libraryAdjacentItemId(ids, "a", "next"), "b");
+  assert.equal(libraryAdjacentItemId(ids, "b", "next"), "c");
+  assert.equal(libraryAdjacentItemId(ids, "c", "next"), null);
+  assert.equal(libraryAdjacentItemId(ids, "c", "prev"), "b");
+  assert.equal(libraryAdjacentItemId(ids, "a", "prev"), null);
+});
+
+test("libraryAdjacentItemId returns null when the current id is not in the list", () => {
+  assert.equal(libraryAdjacentItemId(["a", "b"], "missing", "next"), null);
 });

@@ -1,18 +1,20 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
-import { Loader2, Plus, Search, Tag, Upload, X } from "lucide-react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
+import { ChevronDown, Loader2, Plus, Search, Tag, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard } from "@/components/cinematic/PageChrome";
 import { LibraryBreadcrumb } from "@/components/library/LibraryBreadcrumb";
 import { LibraryDocumentEditor } from "@/components/library/LibraryDocumentEditor";
+import { LibraryFiltersMenu } from "@/components/library/LibraryFiltersMenu";
 import { LibraryFolderSelect } from "@/components/library/LibraryFolderSelect";
-import { LibraryHome } from "@/components/library/LibraryHome";
+import { LibraryFoldersMenu } from "@/components/library/LibraryFoldersMenu";
 import { LibraryItemRow } from "@/components/library/LibraryItemRow";
-import { LibrarySidebar } from "@/components/library/LibrarySidebar";
+import { LibraryPreviewPanel } from "@/components/library/LibraryPreviewPanel";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,11 +40,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { api } from "@/lib/api";
 import type { ApiLibraryFolder, ApiLibraryItem, ApiLibraryLabel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
 import { COMPOSER_FILE_ACCEPT } from "@/lib/composerAttachments";
-import { attachLibraryItemViaApi } from "@/lib/libraryAttach";
+import { attachLibraryItemsViaApi, attachLibraryItemViaApi } from "@/lib/libraryAttach";
 import {
   addLabelToIds,
   bulkResultMessage,
@@ -58,20 +61,32 @@ import {
 import {
   buildLibraryFolderTree,
   libraryActiveFilterChips,
+  libraryAdjacentItemId,
   libraryFolderPath,
+  libraryNavLabel,
   libraryViewAfterFolderDelete,
-  libraryViewHeading,
   validateLibraryFolderName,
   LIBRARY_DEFAULT_SORT,
-  LIBRARY_SORT_OPTIONS,
+  LIBRARY_NAV_ITEMS,
 } from "@/lib/libraryUi";
+import {
+  libraryPreviewWidthPctFromDrag,
+  librarySafeLocalStorage,
+  nextLibraryPreviewWidthPctForKey,
+  readLibraryPreviewWidthPct,
+  writeLibraryPreviewWidthPct,
+  LIBRARY_PREVIEW_DEFAULT_PCT,
+  LIBRARY_PREVIEW_EXPANDED_PCT,
+} from "@/lib/libraryPreviewLayout";
 import {
   applyLibraryBrowseChange,
   browserSessionStorage,
+  consumeLibraryReturnExpected,
   EMPTY_LIBRARY_BROWSE,
   libraryBrowseContextKey,
   libraryListQuery,
   libraryScrollToRestore,
+  markLibraryReturnExpected,
   readLibraryBrowseState,
   readLibraryScrollTop,
   rememberLibraryScroll,
@@ -80,6 +95,7 @@ import {
   type LibraryBrowseState,
 } from "@/lib/libraryBrowseMemory";
 import { useChatStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/library/")({
   head: () => ({ meta: [{ title: "Library — MultiAI" }] }),
@@ -108,7 +124,6 @@ function LibraryPage() {
   const view = browse.view;
   const query = browse.query;
   const folderQuery = browse.folderQuery;
-  const foldersExpanded = browse.foldersExpanded;
   const fileTypeFilter = browse.fileTypeFilter;
   const sort = browse.sort;
 
@@ -144,8 +159,10 @@ function LibraryPage() {
         });
         // Folder/search/filter/sort changes mean the visible rows are about to
         // change: a stale selection could otherwise end up acting on items the
-        // user never intended once the new list loads.
+        // user never intended once the new list loads, and any open preview
+        // belongs to the old context.
         clearSelection();
+        setPreviewItemId(null);
       }
       setBrowse(next);
     },
@@ -163,10 +180,23 @@ function LibraryPage() {
   const rememberBeforeDocument = useCallback(() => {
     flushLibraryScroll();
     leaveLibraryRef.current = true;
+    // Tell the next mount of this page "this is a return trip" so it
+    // restores browse state/scroll instead of resetting to defaults.
+    markLibraryReturnExpected(browserSessionStorage());
   }, [flushLibraryScroll]);
 
   useLayoutEffect(() => {
-    const stored = readLibraryBrowseState(browserSessionStorage());
+    // Only a genuine return from this document's own detail page restores
+    // the previous view/folder/search/scroll; any other arrival at /library
+    // (first visit, a link from elsewhere, a new tab) starts fresh on
+    // All Items, per the new navigation design.
+    const returning = consumeLibraryReturnExpected(browserSessionStorage());
+    const stored = returning
+      ? readLibraryBrowseState(browserSessionStorage())
+      : { ...EMPTY_LIBRARY_BROWSE };
+    if (!returning) {
+      writeLibraryBrowseState(browserSessionStorage(), stored);
+    }
     pendingScrollRef.current = stored.scrollY;
     browseRef.current = stored;
     setBrowse(stored);
@@ -206,6 +236,35 @@ function LibraryPage() {
   const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
   const [bulkMoveFolderId, setBulkMoveFolderId] = useState<string | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+
+  const [previewItemId, setPreviewItemId] = useState<string | null>(null);
+  // Optional wide "reading mode" — never persisted. Resets when a preview is
+  // opened fresh from the list or closed, but stays on across Prev/Next.
+  const [previewExpanded, setPreviewExpanded] = useState(false);
+  // Safe default for SSR; the real stored width is read client-side below.
+  const [previewWidthPct, setPreviewWidthPct] = useState(LIBRARY_PREVIEW_DEFAULT_PCT);
+  const previewResizeContainerRef = useRef<HTMLDivElement>(null);
+  const previewResizingRef = useRef(false);
+  const previewResizeCleanupRef = useRef<(() => void) | null>(null);
+  // Matches the lg breakpoint the sidebar/content grid already switches on.
+  const isDesktopPreview = useMediaQuery("(min-width: 1024px)");
+
+  useEffect(() => {
+    // If the page navigates away (e.g. "Open full document") mid-drag, drop
+    // the global listeners instead of leaking them past unmount.
+    return () => previewResizeCleanupRef.current?.();
+  }, []);
+
+  useLayoutEffect(() => {
+    setPreviewWidthPct(readLibraryPreviewWidthPct(librarySafeLocalStorage()));
+  }, []);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      writeLibraryPreviewWidthPct(librarySafeLocalStorage(), previewWidthPct);
+    }, 300);
+    return () => window.clearTimeout(id);
+  }, [previewWidthPct]);
 
   const folderTree = useMemo(() => buildLibraryFolderTree(folders), [folders]);
 
@@ -251,9 +310,6 @@ function LibraryPage() {
           (item.original_filename || item.title || "").toLowerCase().endsWith(ext),
         );
       }
-      if (listQuery.homeLimit) {
-        list = list.slice(0, listQuery.homeLimit);
-      }
       // A newer reload (folder/search/filter/sort change, or another bulk
       // action) started after this one — applying this response now would
       // overwrite more current data and could resurrect a stale selection.
@@ -261,12 +317,11 @@ function LibraryPage() {
       setItems(list);
       // Drop any selected id that fell out of view (moved, deleted, filtered out)
       // instead of letting a bulk action silently act on it later.
-      setSelectedIds((prev) =>
-        intersectSelection(
-          prev,
-          list.map((item) => item.id),
-        ),
-      );
+      const nextIds = list.map((item) => item.id);
+      setSelectedIds((prev) => intersectSelection(prev, nextIds));
+      // Same for an open preview: don't keep showing a document that's no
+      // longer part of the current view.
+      setPreviewItemId((prev) => (prev && nextIds.includes(prev) ? prev : null));
     } catch (error) {
       if (reloadGenerationRef.current !== generation) return;
       toast.error(error instanceof Error ? error.message : "Failed to load Library");
@@ -422,6 +477,7 @@ function LibraryPage() {
       await reloadItems();
       await reloadMeta();
       toast.success("Document created");
+      rememberBeforeDocument();
       await navigate({ to: "/library/$itemId", params: { itemId: doc.id } });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create document");
@@ -571,6 +627,71 @@ function LibraryPage() {
     }
   }
 
+  function openPreview(item: ApiLibraryItem) {
+    setPreviewItemId(item.id);
+    setPreviewExpanded(false);
+  }
+
+  function closePreview() {
+    setPreviewItemId(null);
+    setPreviewExpanded(false);
+  }
+
+  function navigatePreview(direction: "prev" | "next") {
+    if (!previewItemId) return;
+    const nextId = libraryAdjacentItemId(
+      items.map((item) => item.id),
+      previewItemId,
+      direction,
+    );
+    if (nextId) setPreviewItemId(nextId);
+  }
+
+  async function openFullFromPreview(itemId: string) {
+    rememberBeforeDocument();
+    setPreviewItemId(null);
+    await navigate({ to: "/library/$itemId", params: { itemId } });
+  }
+
+  function startPreviewResize(event: ReactMouseEvent) {
+    event.preventDefault();
+    const container = previewResizeContainerRef.current;
+    if (!container) return;
+    const containerWidthPx = container.getBoundingClientRect().width;
+    const startClientX = event.clientX;
+    const startWidthPct = previewWidthPct;
+    previewResizingRef.current = true;
+
+    function onMove(moveEvent: globalThis.MouseEvent) {
+      if (!previewResizingRef.current) return;
+      setPreviewWidthPct(
+        libraryPreviewWidthPctFromDrag({
+          startWidthPct,
+          startClientX,
+          currentClientX: moveEvent.clientX,
+          containerWidthPx,
+        }),
+      );
+    }
+    function onUp() {
+      previewResizingRef.current = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      previewResizeCleanupRef.current = null;
+    }
+    previewResizeCleanupRef.current = onUp;
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function handlePreviewResizeKeyDown(event: ReactKeyboardEvent) {
+    const next = nextLibraryPreviewWidthPctForKey(previewWidthPct, event.key);
+    if (next != null) {
+      event.preventDefault();
+      setPreviewWidthPct(next);
+    }
+  }
+
   function handleToggleItemSelect(item: ApiLibraryItem, index: number, event: ReactMouseEvent) {
     if (event.shiftKey && lastSelectedIndexRef.current != null) {
       setSelectedIds((prev) =>
@@ -616,6 +737,57 @@ function LibraryPage() {
       // what didn't work; successes are done and drop out of the selection.
       setSelectedIds(new Set(outcome.failedIds));
       await reloadItems();
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkAttachToChat() {
+    const auth = authHeaders();
+    if (!auth || bulkBusy) return;
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    // onTooMany/onError already give the user the full, specific reason
+    // (too many selected, or no chat could be created) before any attach
+    // call is attempted — the generic per-item summary below must not also
+    // fire in those cases, or the user sees two conflicting toasts.
+    let blockedBeforeAttempting = false;
+    try {
+      const result = await attachLibraryItemsViaApi({
+        libraryItemIds: ids,
+        activeChatId,
+        createChat,
+        activateChat: setActiveChatId,
+        retainRef,
+        attachFromLibrary: (chatId, libraryItemId) =>
+          api.chats.attachFromLibrary(auth, chatId, libraryItemId),
+        listPendingAttachments: async (chatId) =>
+          (await api.chats.listAttachments(auth, chatId)).items,
+        onTooMany: (message) => {
+          blockedBeforeAttempting = true;
+          toast.error(message);
+        },
+        onError: (message) => {
+          blockedBeforeAttempting = true;
+          toast.error(message);
+        },
+      });
+      if (blockedBeforeAttempting) return;
+      const outcome = summarizeBulkResults([
+        ...result.successIds.map((id) => ({ id, ok: true })),
+        ...result.failedIds.map((id) => ({ id, ok: false })),
+      ]);
+      const { level, text } = bulkResultMessage("Attached", outcome);
+      if (level === "success") toast.success(text);
+      else toast.error(text);
+      // Selection is left exactly as the user made it — attach never changes
+      // folder/label/favorite state, and a failure must not lose the pick.
+      // Only navigate away on complete success: any failure (even partial)
+      // must leave the user on Library, looking at exactly what still needs
+      // a retry, instead of auto-jumping to a chat that's missing items.
+      if (outcome.failed > 0) return;
+      await navigate({ to: "/chat" });
     } finally {
       setBulkBusy(false);
     }
@@ -676,16 +848,44 @@ function LibraryPage() {
   }
 
   const folderPath = view.kind === "folder" ? libraryFolderPath(folders, view.folderId) : [];
-  const heading = libraryViewHeading(view, folders, labels);
   const itemCountLabel = `${items.length} ${items.length === 1 ? "item" : "items"}`;
   const activeFilterChips = libraryActiveFilterChips({ query, fileTypeFilter, sort });
+  const activeFolderId = view.kind === "folder" ? view.folderId : null;
+  const activeFolderName =
+    view.kind === "folder"
+      ? (folders.find((folder) => folder.id === view.folderId)?.name ?? "Folder")
+      : null;
+  const activeLabelId = view.kind === "label" ? view.labelId : null;
+  const filtersActiveCount = activeFilterChips.length + (activeLabelId ? 1 : 0);
   const allVisibleSelected = items.length > 0 && items.every((item) => selectedIds.has(item.id));
   const someVisibleSelected = selectedIds.size > 0 && !allVisibleSelected;
+  const previewItem = previewItemId
+    ? (items.find((item) => item.id === previewItemId) ?? null)
+    : null;
+  const previewIndex = previewItem ? items.findIndex((item) => item.id === previewItem.id) : -1;
+  const previewHasPrev = previewIndex > 0;
+  const previewHasNext = previewIndex >= 0 && previewIndex < items.length - 1;
+  const desktopPreviewOpen = Boolean(previewItem && isDesktopPreview);
+  const mobilePreviewOpen = Boolean(previewItem && !isDesktopPreview);
+  const effectivePreviewWidthPct = previewExpanded ? LIBRARY_PREVIEW_EXPANDED_PCT : previewWidthPct;
 
   function clearActiveFilterChip(key: "query" | "fileType" | "sort") {
     if (key === "query") updateBrowse({ query: "" });
     else if (key === "fileType") updateBrowse({ fileTypeFilter: "" });
     else updateBrowse({ sort: LIBRARY_DEFAULT_SORT });
+  }
+
+  async function handleCreateLabel() {
+    const auth = authHeaders();
+    if (!auth) return;
+    const name = window.prompt("Label name");
+    if (!name?.trim()) return;
+    try {
+      await api.library.createLabel(auth, name.trim());
+      await reloadMeta();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create label");
+    }
   }
 
   const itemRowHandlers = {
@@ -710,7 +910,7 @@ function LibraryPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 md:px-8">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-8 md:px-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="font-display text-3xl font-semibold tracking-tight">Library</h1>
@@ -738,124 +938,103 @@ function LibraryPage() {
           </div>
         </div>
 
-        <div className="grid items-start gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <GlassCard className="flex max-h-[min(70vh,calc(100vh-10rem))] flex-col overflow-hidden p-3 lg:sticky lg:top-4">
-            <LibrarySidebar
-              view={view}
-              folders={folders}
-              folderTree={folderTree}
-              labels={labels}
-              folderQuery={folderQuery}
-              foldersExpanded={foldersExpanded}
-              onFolderQueryChange={(value) => updateBrowse({ folderQuery: value })}
-              onToggleFoldersExpanded={() =>
-                updateBrowse((current) => ({ foldersExpanded: !current.foldersExpanded }))
-              }
-              onView={(next) => updateBrowse({ view: next })}
-              onSelectFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
-              onCreateRootFolder={() => openCreateFolder(null)}
-              onAddChild={(id) => openCreateFolder(id)}
-              onRename={openRenameFolder}
-              onDelete={openDeleteFolder}
-              onCreateLabel={() => {
-                void (async () => {
-                  const auth = authHeaders();
-                  if (!auth) return;
-                  const name = window.prompt("Label name");
-                  if (!name?.trim()) return;
-                  try {
-                    await api.library.createLabel(auth, name.trim());
-                    await reloadMeta();
-                  } catch (error) {
-                    toast.error(error instanceof Error ? error.message : "Could not create label");
+        <div ref={previewResizeContainerRef} className="flex min-w-0 items-start">
+          <div
+            className="min-w-0"
+            style={
+              desktopPreviewOpen
+                ? {
+                    flexBasis: `${100 - effectivePreviewWidthPct}%`,
+                    flexGrow: 0,
+                    flexShrink: 1,
+                    minWidth: 0,
                   }
-                })();
-              }}
-            />
-          </GlassCard>
-
-          <div className="min-w-0 space-y-3">
-            <LibraryBreadcrumb
-              view={view}
-              folderPath={folderPath}
-              labelName={
-                view.kind === "label"
-                  ? labels.find((label) => label.id === view.labelId)?.name
-                  : undefined
-              }
-              onHome={() => updateBrowse({ view: { kind: "home" } })}
-              onFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
-              onView={(kind) => updateBrowse({ view: { kind } })}
-            />
-
-            {view.kind === "home" ? (
-              loading ? (
-                <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  Loading…
-                </div>
-              ) : (
-                <LibraryHome
-                  recentItems={items}
-                  folders={folderTree}
-                  attachingId={attachingId}
-                  onOpenFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
-                  onOpenItem={rememberBeforeDocument}
-                  {...itemRowHandlers}
-                />
-              )
-            ) : (
-              <>
-                <div className="min-w-0">
-                  <h2 className="truncate text-xl font-semibold tracking-tight">{heading}</h2>
-                  {!loading && (
-                    <p className="mt-0.5 text-xs text-muted-foreground">{itemCountLabel}</p>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap gap-3">
-                  <div className="relative min-w-[180px] flex-1">
-                    <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-                    <input
-                      value={query}
-                      onChange={(e) => updateBrowse({ query: e.target.value })}
-                      placeholder={
-                        view.kind === "folder"
-                          ? "Search this folder..."
-                          : "Search title, filename, labels, content…"
-                      }
-                      className="w-full rounded-lg border border-border bg-background/70 py-2 pr-3 pl-9 text-sm outline-none focus:ring-2 focus:ring-ring"
-                    />
-                  </div>
-                  <select
-                    value={fileTypeFilter}
-                    onChange={(e) => updateBrowse({ fileTypeFilter: e.target.value })}
-                    className="rounded-lg border border-border bg-background/70 px-3 py-2 text-sm"
-                  >
-                    <option value="">All types</option>
-                    <option value="document">MultiMind Document</option>
-                    <option value="file">Uploaded files</option>
-                    <option value=".pdf">PDF</option>
-                    <option value=".docx">Word</option>
-                    <option value=".xlsx">Excel</option>
-                    <option value=".txt">Text</option>
-                  </select>
-                  <select
-                    value={sort}
-                    onChange={(e) =>
-                      updateBrowse({ sort: e.target.value as LibraryBrowseState["sort"] })
-                    }
-                    className="rounded-lg border border-border bg-background/70 px-3 py-2 text-sm"
-                    aria-label="Sort Library items"
-                  >
-                    {LIBRARY_SORT_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
+                : { flexBasis: "100%", flexGrow: 1, flexShrink: 1, minWidth: 0 }
+            }
+          >
+            <div className="min-w-0 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button type="button" variant="outline" className="gap-1.5">
+                      {libraryNavLabel(view)}
+                      <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    {LIBRARY_NAV_ITEMS.map((item) => (
+                      <DropdownMenuItem
+                        key={item.kind}
+                        onSelect={() => updateBrowse({ view: { kind: item.kind } })}
+                      >
+                        {item.label}
+                      </DropdownMenuItem>
                     ))}
-                  </select>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
+                <LibraryFoldersMenu
+                  folderTree={folderTree}
+                  folders={folders}
+                  activeFolderId={activeFolderId}
+                  activeFolderName={activeFolderName}
+                  folderQuery={folderQuery}
+                  onFolderQueryChange={(value) => updateBrowse({ folderQuery: value })}
+                  onSelectFolder={(folderId) =>
+                    updateBrowse({ view: { kind: "folder", folderId } })
+                  }
+                  onCreateRootFolder={() => openCreateFolder(null)}
+                  onAddChild={(id) => openCreateFolder(id)}
+                  onRename={openRenameFolder}
+                  onDelete={openDeleteFolder}
+                />
+
+                <div className="relative min-w-[200px] flex-1">
+                  <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    value={query}
+                    onChange={(e) => updateBrowse({ query: e.target.value })}
+                    placeholder={
+                      view.kind === "folder"
+                        ? "Search this folder..."
+                        : "Search title, filename, labels, content…"
+                    }
+                    className="w-full rounded-lg border border-border bg-background/70 py-2 pr-3 pl-9 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
                 </div>
 
+                <LibraryFiltersMenu
+                  fileTypeFilter={fileTypeFilter}
+                  onFileTypeFilterChange={(value) => updateBrowse({ fileTypeFilter: value })}
+                  sort={sort}
+                  onSortChange={(value) => updateBrowse({ sort: value })}
+                  labels={labels}
+                  activeLabelId={activeLabelId}
+                  onSelectLabel={(labelId) => updateBrowse({ view: { kind: "label", labelId } })}
+                  onCreateLabel={() => void handleCreateLabel()}
+                  activeCount={filtersActiveCount}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <LibraryBreadcrumb
+                  view={view}
+                  folderPath={folderPath}
+                  labelName={
+                    view.kind === "label"
+                      ? labels.find((label) => label.id === view.labelId)?.name
+                      : undefined
+                  }
+                  onHome={() => updateBrowse({ view: { kind: "all" } })}
+                  onFolder={(folderId) => updateBrowse({ view: { kind: "folder", folderId } })}
+                  onView={(kind) => updateBrowse({ view: { kind } })}
+                />
+                {!loading && (
+                  <p className="shrink-0 text-xs text-muted-foreground">{itemCountLabel}</p>
+                )}
+              </div>
+
+              <>
                 {activeFilterChips.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2">
                     {activeFilterChips.map((chip) => (
@@ -873,7 +1052,11 @@ function LibraryPage() {
                     <button
                       type="button"
                       onClick={() =>
-                        updateBrowse({ query: "", fileTypeFilter: "", sort: LIBRARY_DEFAULT_SORT })
+                        updateBrowse({
+                          query: "",
+                          fileTypeFilter: "",
+                          sort: LIBRARY_DEFAULT_SORT,
+                        })
                       }
                       className="text-xs text-muted-foreground underline-offset-2 hover:underline"
                     >
@@ -892,6 +1075,14 @@ function LibraryPage() {
                       onClick={clearSelection}
                     >
                       Clear
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkBusy}
+                      onClick={() => void bulkAttachToChat()}
+                    >
+                      Attach to Chat
                     </Button>
                     <Button
                       size="sm"
@@ -1025,6 +1216,8 @@ function LibraryPage() {
                             selected={selectedIds.has(item.id)}
                             selectDisabled={bulkBusy}
                             onToggleSelect={(event) => handleToggleItemSelect(item, index, event)}
+                            previewing={previewItemId === item.id}
+                            onOpenPreview={openPreview}
                             {...itemRowHandlers}
                           />
                         ))}
@@ -1033,10 +1226,80 @@ function LibraryPage() {
                   )}
                 </GlassCard>
               </>
-            )}
+            </div>
           </div>
+          {desktopPreviewOpen && previewItem && (
+            <>
+              {!previewExpanded && (
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize preview panel"
+                  aria-valuenow={Math.round(effectivePreviewWidthPct)}
+                  tabIndex={0}
+                  onMouseDown={startPreviewResize}
+                  onKeyDown={handlePreviewResizeKeyDown}
+                  className="mx-2 w-1.5 shrink-0 cursor-col-resize self-stretch rounded bg-border outline-none hover:bg-primary/40 focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              )}
+              <GlassCard
+                className={cn(
+                  "shrink-0 overflow-hidden lg:sticky lg:top-4",
+                  previewExpanded && "ml-2",
+                )}
+                style={{ flexBasis: `${effectivePreviewWidthPct}%`, flexGrow: 0, flexShrink: 0 }}
+              >
+                <LibraryPreviewPanel
+                  summary={previewItem}
+                  onClose={closePreview}
+                  onOpenFull={() => void openFullFromPreview(previewItem.id)}
+                  onDownload={() => void downloadItem(previewItem)}
+                  onAttach={() => void attachToChat(previewItem)}
+                  attaching={attachingId === previewItem.id}
+                  onNavigate={navigatePreview}
+                  hasPrev={previewHasPrev}
+                  hasNext={previewHasNext}
+                  expanded={previewExpanded}
+                  onToggleExpand={() => setPreviewExpanded((value) => !value)}
+                  className="max-h-[calc(100vh-10rem)]"
+                />
+              </GlassCard>
+            </>
+          )}
         </div>
       </div>
+
+      <Sheet
+        open={mobilePreviewOpen}
+        onOpenChange={(open) => {
+          if (!open) closePreview();
+        }}
+      >
+        <SheetContent
+          side="right"
+          className="flex w-full max-w-full flex-col gap-0 p-0 sm:max-w-full"
+        >
+          <SheetTitle className="sr-only">{previewItem?.title ?? "Document preview"}</SheetTitle>
+          <SheetDescription className="sr-only">
+            Quick preview of the selected Library item.
+          </SheetDescription>
+          {previewItem && (
+            <LibraryPreviewPanel
+              summary={previewItem}
+              onClose={closePreview}
+              onOpenFull={() => void openFullFromPreview(previewItem.id)}
+              onDownload={() => void downloadItem(previewItem)}
+              onAttach={() => void attachToChat(previewItem)}
+              attaching={attachingId === previewItem.id}
+              onNavigate={navigatePreview}
+              hasPrev={previewHasPrev}
+              hasNext={previewHasNext}
+              showCloseButton={false}
+              className="h-full"
+            />
+          )}
+        </SheetContent>
+      </Sheet>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-xl">

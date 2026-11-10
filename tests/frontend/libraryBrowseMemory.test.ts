@@ -6,10 +6,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   applyLibraryBrowseChange,
+  consumeLibraryReturnExpected,
   EMPTY_LIBRARY_BROWSE,
   libraryBrowseContextKey,
   libraryListQuery,
   libraryScrollToRestore,
+  markLibraryReturnExpected,
   parseLibraryBrowseState,
   readLibraryBrowseState,
   writeLibraryBrowseState,
@@ -43,7 +45,6 @@ const browsing: LibraryBrowseState = {
   query: "clinic",
   fileTypeFilter: ".pdf",
   folderQuery: "alc",
-  foldersExpanded: true,
   sort: "updated_desc",
   scrollY: 640,
 };
@@ -116,11 +117,15 @@ test("choosing another folder, search, or filter replaces the restored location"
   assert.equal(nextFilter.fileTypeFilter, ".docx");
   assert.equal(libraryListQuery(nextFilter).extension, ".docx");
 
-  const home = applyLibraryBrowseChange(nextFilter, { view: { kind: "home" } });
-  assert.equal(home.view.kind, "home");
-  assert.equal(home.scrollY, 0);
-  assert.equal(libraryListQuery(home).homeLimit, 5);
-  assert.equal(libraryListQuery(EMPTY_LIBRARY_BROWSE).recent, true);
+  const allItems = applyLibraryBrowseChange(nextFilter, { view: { kind: "all" } });
+  assert.equal(allItems.view.kind, "all");
+  assert.equal(allItems.scrollY, 0);
+  assert.equal(libraryListQuery(allItems).recent, undefined);
+  assert.equal(libraryListQuery(EMPTY_LIBRARY_BROWSE).recent, undefined);
+  assert.equal(
+    libraryListQuery({ ...EMPTY_LIBRARY_BROWSE, view: { kind: "recent" } }).recent,
+    true,
+  );
 });
 
 test("corrupt library browse storage falls back to the initial view", () => {
@@ -149,8 +154,33 @@ test("a non-default sort is sent to the API and changes the browse context key",
   assert.equal(resorted.scrollY, 0);
   assert.notEqual(libraryBrowseContextKey(restored), libraryBrowseContextKey(resorted));
 
-  // Home always stays recency-first regardless of the stored sort.
-  const home = applyLibraryBrowseChange(resorted, { view: { kind: "home" } });
-  assert.equal(libraryListQuery(home).sort, undefined);
-  assert.equal(libraryListQuery(home).recent, true);
+  // Recent is a real, sortable view now (not the old mini-dashboard), so a
+  // chosen sort still applies on top of its recent=true flag.
+  const recent = applyLibraryBrowseChange(resorted, { view: { kind: "recent" } });
+  assert.equal(libraryListQuery(recent).sort, "name_asc");
+  assert.equal(libraryListQuery(recent).recent, true);
+});
+
+test("consumeLibraryReturnExpected is false until marked, then consumes the flag exactly once", () => {
+  const storage = memoryStorage();
+  assert.equal(consumeLibraryReturnExpected(storage), false);
+  markLibraryReturnExpected(storage);
+  assert.equal(consumeLibraryReturnExpected(storage), true);
+  // Consumed: a second check without marking again reports a fresh entry.
+  assert.equal(consumeLibraryReturnExpected(storage), false);
+});
+
+test("the return flag is independent of the browse-state storage and survives being read", () => {
+  const storage = memoryStorage();
+  writeLibraryBrowseState(storage, browsing);
+  markLibraryReturnExpected(storage);
+  // Reading browse state must not itself consume or disturb the return flag.
+  readLibraryBrowseState(storage);
+  assert.equal(consumeLibraryReturnExpected(storage), true);
+});
+
+test("mark/consume are no-ops without storage (SSR-safe) and never throw", () => {
+  assert.doesNotThrow(() => markLibraryReturnExpected(null));
+  assert.equal(consumeLibraryReturnExpected(null), false);
+  assert.equal(consumeLibraryReturnExpected(undefined), false);
 });

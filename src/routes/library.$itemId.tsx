@@ -20,7 +20,11 @@ import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
 import type { ApiLibraryFolder, ApiLibraryItem, ApiLibraryLabel } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth";
-import { attachLibraryItemViaApi, saveLibraryDocumentBeforeAttach } from "@/lib/libraryAttach";
+import {
+  attachLibraryItemViaApi,
+  saveLibraryDocumentBeforeAttach,
+  shouldAbortAttachForStaleEdits,
+} from "@/lib/libraryAttach";
 import { libraryFileContentView, libraryItemOpensDetail } from "@/lib/libraryContent";
 import { formatLibraryBytes, formatLibraryUpdatedAt, libraryItemTypeLabel } from "@/lib/libraryUi";
 import { useChatStore } from "@/lib/store";
@@ -55,6 +59,10 @@ function LibraryItemPage() {
   // Bumped on every edit so an in-flight save can detect whether newer edits
   // arrived after it read its payload, and avoid clobbering them on resolve.
   const editGenerationRef = useRef(0);
+  // Mirrors `dirty` so attachToChat can read the true current value right
+  // after awaiting a save, instead of the value captured when it started.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
   const isDocument = item?.item_type === "document";
   const isFile = item?.item_type === "file";
@@ -233,6 +241,10 @@ function LibraryItemPage() {
     setAttaching(true);
     try {
       if (!(await saveLibraryDocumentBeforeAttach(dirty, save))) return;
+      if (shouldAbortAttachForStaleEdits(dirtyRef.current)) {
+        toast.error("Your latest edits are still unsaved — click Save, then Attach again.");
+        return;
+      }
       const result = await attachLibraryItemViaApi({
         libraryItemId: item.id,
         activeChatId,
@@ -447,6 +459,7 @@ function LibraryItemPage() {
                 rows={22}
                 placeholder="Write your document…"
                 className="min-h-[32rem]"
+                initialMode="preview"
               />
               <p className="text-[11px] text-muted-foreground">
                 {dirty ? "Unsaved changes" : "All changes saved"} · MultiMind Document

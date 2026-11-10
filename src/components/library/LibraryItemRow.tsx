@@ -31,6 +31,8 @@ export function LibraryItemRow({
   selected,
   selectDisabled,
   onToggleSelect,
+  previewing,
+  onOpenPreview,
   onToggleFavorite,
   onRename,
   onMove,
@@ -45,6 +47,11 @@ export function LibraryItemRow({
   /** True while a bulk action is in flight — freezes the selection so it can't change mid-operation. */
   selectDisabled?: boolean;
   onToggleSelect?: (event: MouseEvent) => void;
+  /** True while this row's item is the one currently open in the quick-preview panel. */
+  previewing?: boolean;
+  /** Plain clicks on the row open the quick preview instead of navigating. Modified clicks
+   * (ctrl/cmd/shift/middle-click) still navigate directly to the full document route. */
+  onOpenPreview?: (item: ApiLibraryItem) => void;
   onToggleFavorite: (item: ApiLibraryItem) => void;
   onRename: (item: ApiLibraryItem) => void;
   onMove: (item: ApiLibraryItem) => void;
@@ -67,13 +74,18 @@ export function LibraryItemRow({
       className={cn(
         "flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40",
         selected && "bg-primary/5",
+        previewing && "bg-accent/70 hover:bg-accent/70",
       )}
+      onClick={() => onOpenPreview?.(item)}
     >
       {onToggleSelect ? (
         <Checkbox
           checked={Boolean(selected)}
           disabled={selectDisabled}
-          onClick={(event) => onToggleSelect(event)}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleSelect(event);
+          }}
           aria-label={selected ? `Deselect ${item.title}` : `Select ${item.title}`}
         />
       ) : null}
@@ -84,7 +96,21 @@ export function LibraryItemRow({
           params={{ itemId: item.id }}
           className="block truncate font-medium hover:underline"
           title={item.title}
-          onClick={() => onOpen?.()}
+          onClick={(event) => {
+            const modified =
+              event.metaKey ||
+              event.ctrlKey ||
+              event.shiftKey ||
+              event.altKey ||
+              event.button !== 0;
+            if (onOpenPreview && !modified) {
+              // Let the click bubble to the row, which opens the preview instead
+              // of navigating; the full document route stays one click away.
+              event.preventDefault();
+              return;
+            }
+            onOpen?.();
+          }}
         >
           {item.title}
         </Link>
@@ -102,7 +128,10 @@ export function LibraryItemRow({
           </div>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-0.5">
+      <div
+        className="flex shrink-0 items-center gap-0.5"
+        onClick={(event) => event.stopPropagation()}
+      >
         <button
           type="button"
           title={item.is_favorite ? "Unfavorite" : "Favorite"}
