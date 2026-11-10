@@ -1,8 +1,9 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useState, type ReactNode, useMemo } from "react";
+import { useEffect, useState, type ReactNode, useMemo } from "react";
 import {
   BookOpen,
   Brain,
+  ChevronDown,
   FolderKanban,
   LayoutGrid,
   Library,
@@ -24,17 +25,30 @@ import { ScrapingDreamSky } from "@/components/scraping/ScrapingDreamSky";
 import { ChatSidebarContent } from "@/components/sidebar/ChatSidebarContent";
 import { ScrapingSidebarContent } from "@/components/sidebar/ScrapingSidebarContent";
 import { useAuth } from "@/lib/auth";
+import { groupContainsPath, isSidebarNavGroup, type SidebarNavEntry } from "@/lib/sidebarNav";
 import { cn } from "@/lib/utils";
 
-const NAV = [
+const NAV: SidebarNavEntry[] = [
   { to: "/model-sets", label: "Model Sets", icon: LayoutGrid },
   { to: "/projects", label: "Projects", icon: FolderKanban },
-  { to: "/brain", label: "Brain", icon: Brain },
-  { to: "/playbooks", label: "My Playbooks", icon: NotebookTabs },
-  { to: "/lessons", label: "Lessons", icon: BookOpen },
-  { to: "/saved-documents", label: "Saved Documents", icon: FileText },
-  { to: "/saved-prompts", label: "Saved Prompts", icon: MessageSquareText },
-  { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
+  {
+    label: "Learning Hub",
+    icon: Brain,
+    children: [
+      { to: "/brain", label: "Brain", icon: Brain },
+      { to: "/playbooks", label: "My Playbooks", icon: NotebookTabs },
+      { to: "/lessons", label: "Lessons", icon: BookOpen },
+    ],
+  },
+  {
+    label: "Saved Items",
+    icon: Bookmark,
+    children: [
+      { to: "/saved-documents", label: "Saved Documents", icon: FileText },
+      { to: "/saved-prompts", label: "Saved Prompts", icon: MessageSquareText },
+      { to: "/saved-verdicts", label: "Saved Verdicts", icon: Bookmark },
+    ],
+  },
   { to: "/library", label: "Library", icon: Library },
 ];
 
@@ -65,6 +79,38 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isScraping = path.startsWith("/scraping");
   const isMaps = path.startsWith("/maps");
   const isGosomMaps = path === "/maps/gosom";
+
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
+    const initial = new Set<string>();
+    for (const entry of NAV) {
+      if (isSidebarNavGroup(entry) && groupContainsPath(entry, path)) {
+        initial.add(entry.label);
+      }
+    }
+    return initial;
+  });
+
+  useEffect(() => {
+    for (const entry of NAV) {
+      if (isSidebarNavGroup(entry) && groupContainsPath(entry, path)) {
+        setExpandedGroups((prev) =>
+          prev.has(entry.label) ? prev : new Set(prev).add(entry.label),
+        );
+      }
+    }
+  }, [path]);
+
+  function toggleGroup(label: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) {
+        next.delete(label);
+      } else {
+        next.add(label);
+      }
+      return next;
+    });
+  }
 
   function closeSidebar() {
     setOpen(false);
@@ -140,21 +186,75 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <nav className="shrink-0 space-y-0.5 px-3 pb-1">
-          {NAV.map((n) => (
-            <Link
-              key={n.to}
-              to={n.to}
-              onClick={closeSidebar}
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
-                path.startsWith(n.to)
-                  ? "bg-accent font-medium text-foreground"
-                  : "text-sidebar-foreground/80 hover:bg-accent",
-              )}
-            >
-              <n.icon className="size-4" /> {n.label}
-            </Link>
-          ))}
+          {NAV.map((n) => {
+            if (isSidebarNavGroup(n)) {
+              const expanded = expandedGroups.has(n.label);
+              const active = groupContainsPath(n, path);
+              return (
+                <div key={n.label}>
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(n.label)}
+                    aria-expanded={expanded}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
+                      active
+                        ? "bg-accent font-medium text-foreground"
+                        : "text-sidebar-foreground/80 hover:bg-accent",
+                    )}
+                  >
+                    <n.icon className="size-4" />
+                    <span className="flex-1 text-left">{n.label}</span>
+                    <ChevronDown
+                      className={cn(
+                        "size-4 transition-transform duration-200",
+                        expanded && "rotate-180",
+                      )}
+                    />
+                  </button>
+                  <div
+                    className={cn(
+                      "overflow-hidden transition-all duration-200",
+                      expanded ? "max-h-96 opacity-100" : "max-h-0 opacity-0",
+                    )}
+                  >
+                    <div className="space-y-0.5 pt-0.5 pl-4">
+                      {n.children.map((child) => (
+                        <Link
+                          key={child.to}
+                          to={child.to}
+                          onClick={closeSidebar}
+                          className={cn(
+                            "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
+                            path.startsWith(child.to)
+                              ? "bg-accent font-medium text-foreground"
+                              : "text-sidebar-foreground/80 hover:bg-accent",
+                          )}
+                        >
+                          <child.icon className="size-4" /> {child.label}
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <Link
+                key={n.to}
+                to={n.to}
+                onClick={closeSidebar}
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
+                  path.startsWith(n.to)
+                    ? "bg-accent font-medium text-foreground"
+                    : "text-sidebar-foreground/80 hover:bg-accent",
+                )}
+              >
+                <n.icon className="size-4" /> {n.label}
+              </Link>
+            );
+          })}
         </nav>
 
         {isScraping ? (
