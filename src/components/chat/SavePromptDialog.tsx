@@ -35,7 +35,7 @@ export function SavePromptDialog({
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!open || !turnId) return;
+    if (!open) return;
     const auth = authHeaders();
     if (!auth) return;
     setLoading(true);
@@ -71,20 +71,20 @@ export function SavePromptDialog({
 
   async function handleSave() {
     const auth = authHeaders();
-    if (!auth || !turnId) return;
+    if (!auth) return;
     const text = promptText.trim();
     if (!text) {
       toast.error("Prompt text is required");
       return;
     }
-    if (!verdictPreview.trim()) {
+    if (turnId && !verdictPreview.trim()) {
       toast.error("The verdict must finish before this prompt can be saved.");
       return;
     }
     setSaving(true);
     try {
       await api.savedPrompts.create(auth, {
-        turn_id: turnId,
+        turn_id: turnId ?? undefined,
         prompt_text: text,
         title: title.trim() || null,
         label_ids: [...selectedIds],
@@ -136,20 +136,22 @@ export function SavePromptDialog({
             />
           </label>
 
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-muted-foreground">Verdict (read-only)</p>
-            <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-muted/20 px-3 py-2.5">
-              {verdictPreview.trim() ? (
-                <MessageContent muted compact>
-                  {verdictPreview}
-                </MessageContent>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  The verdict must finish before this prompt can be saved.
-                </p>
-              )}
+          {turnId && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">Verdict (read-only)</p>
+              <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-muted/20 px-3 py-2.5">
+                {verdictPreview.trim() ? (
+                  <MessageContent muted compact>
+                    {verdictPreview}
+                  </MessageContent>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    The verdict must finish before this prompt can be saved.
+                  </p>
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Labels</p>
@@ -173,7 +175,9 @@ export function SavePromptDialog({
                 );
               })}
               {labels.length === 0 && (
-                <span className="text-xs text-muted-foreground">No labels yet — create one below.</span>
+                <span className="text-xs text-muted-foreground">
+                  No labels yet — create one below.
+                </span>
               )}
             </div>
             <div className="flex gap-2">
@@ -212,7 +216,7 @@ export function SavePromptDialog({
             <button
               type="button"
               onClick={() => void handleSave()}
-              disabled={saving || !promptText.trim() || !verdictPreview.trim()}
+              disabled={saving || !promptText.trim() || (Boolean(turnId) && !verdictPreview.trim())}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {saving ? <Loader2 className="size-3.5 animate-spin" /> : null}

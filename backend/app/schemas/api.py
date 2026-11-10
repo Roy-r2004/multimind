@@ -2136,7 +2136,10 @@ class SavedPromptResponse(BaseModel):
 
 
 class SavedPromptCreateRequest(BaseModel):
-    turn_id: str
+    """turn_id is omitted for a standalone save (e.g. from Prompt Builder), which
+    has no chat turn or verdict to attach yet."""
+
+    turn_id: str | None = None
     prompt_text: str | None = None
     title: str | None = None
     label_ids: list[str] = []

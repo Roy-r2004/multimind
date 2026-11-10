@@ -57,6 +57,40 @@ class SavedPromptService:
         await db.flush()
         return await self.get_prompt(db, auth, row.id)
 
+    async def create_standalone(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        *,
+        prompt_text: str | None,
+        title: str | None,
+        label_ids: list[str],
+        label_names: list[str],
+    ) -> SavedPromptResponse:
+        """Save prompt text with no chat turn or verdict yet (e.g. from Prompt Builder)."""
+        text = (prompt_text or "").strip()
+        if not text:
+            raise ValidationError("Prompt text is required")
+
+        cleaned_title = self._clean_optional_title(title)
+        row = SavedPrompt(
+            org_id=auth.org_id,
+            user_id=auth.user.id,
+            title=cleaned_title,
+            prompt_text=text,
+            verdict_text=None,
+            chat_id=None,
+            turn_id=None,
+        )
+        db.add(row)
+        await db.flush()
+
+        labels = await self._resolve_labels(db, auth, label_ids, label_names)
+        for label in labels:
+            db.add(SavedPromptLabel(prompt_id=row.id, label_id=label.id))
+        await db.flush()
+        return await self.get_prompt(db, auth, row.id)
+
     async def update_prompt(
         self,
         db: AsyncSession,
