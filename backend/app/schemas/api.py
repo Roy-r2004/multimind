@@ -1570,7 +1570,10 @@ class PromptBuilderContextResponse(BaseModel):
 
 class PromptBuilderRefineResponse(BaseModel):
     assistant_message: str
-    improved_prompt: str
+    """The question text when is_clarifying_question is true; otherwise the improved prompt."""
+    improved_prompt: str | None = None
+    """Null when is_clarifying_question is true: no new final prompt was produced this turn."""
+    is_clarifying_question: bool = False
     context_usage: PromptBuilderContextUsage
 
 
