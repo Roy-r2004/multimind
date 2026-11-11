@@ -214,7 +214,13 @@ class DebateOrchestrator:
                 logger.warning(
                     "debate_llm_call_failed", model_id=model_id, error_type=type(exc).__name__
                 )
-                return None, LLMCallOutcome(model_id=model_id, error=str(exc))
+                # asyncio.wait_for raises a bare TimeoutError() with an empty
+                # str() — never persist that as an empty-but-truthy-looking
+                # "" error; a caller doing `if error:` (as debate_service.py's
+                # persistence layer does) would silently treat "" as "no
+                # error" and misclassify a real failure as completed.
+                error_message = str(exc) or f"{type(exc).__name__} (no further detail)"
+                return None, LLMCallOutcome(model_id=model_id, error=error_message)
 
         cost = response.cost_usd
         outcome = LLMCallOutcome(

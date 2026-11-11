@@ -411,6 +411,59 @@ async def test_partial_completion_and_cost_accounting(db: AsyncSession, auth: Au
     assert cost_records[0].cost_usd == pytest.approx(0.002)
 
 
+# --- Regression: an empty-but-non-None error string must still persist as FAILED
+# (a real production debate hit this exact case — see app.llm.debate_orchestrator's
+# bare-TimeoutError fix and app.services.debate_service's `is not None` fix).
+
+
+async def test_persist_challenge_result_with_empty_string_error_is_still_failed(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    factory = _session_factory_for(db)
+    monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+
+    await debate_service._persist_challenge_result(
+        org_id=session.org_id,
+        turn_id=turn.id,
+        chat_id=turn.chat_id,
+        session_id=session.id,
+        model_id=MODEL_A,
+        data={"challenges": None, "tokens_input": None, "tokens_output": None, "cost_usd": None, "error": ""},
+    )
+
+    row = (
+        await db.execute(select(DebateChallenge).where(DebateChallenge.author_model_id == MODEL_A))
+    ).scalar_one()
+    assert row.status.value == "failed"
+
+
+async def test_persist_response_result_with_empty_string_error_is_still_failed(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    factory = _session_factory_for(db)
+    monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+
+    await debate_service._persist_response_result(
+        org_id=session.org_id,
+        turn_id=turn.id,
+        chat_id=turn.chat_id,
+        session_id=session.id,
+        model_id=MODEL_A,
+        data={"responses": None, "tokens_input": None, "tokens_output": None, "cost_usd": None, "error": ""},
+    )
+
+    row = (
+        await db.execute(select(DebateResponse).where(DebateResponse.author_model_id == MODEL_A))
+    ).scalar_one()
+    assert row.status.value == "failed"
+
+
 async def test_fully_successful_debate_with_rebuttal_completes(db: AsyncSession, auth: AuthContext, monkeypatch):
     turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
     provider = ScriptedProvider(

@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Ban, Loader2, MessagesSquare, ShieldAlert, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Ban,
+  Loader2,
+  MessagesSquare,
+  ShieldAlert,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { Modal } from "@/components/Modal";
 import { MessageContent } from "@/components/chat/MessageContent";
 import { VendorLogo } from "@/components/chat/VendorLogo";
@@ -15,11 +23,17 @@ import type { ApiDebateSession, ApiModelAnswer } from "@/lib/api/types";
 import { ApiClientError } from "@/lib/api/types";
 import {
   buildChallengeRows,
+  debateFailureDetails,
+  debatePlainFindings,
+  debateSummaryCounts,
   debateUsageDisplay,
   DEBATE_MAX_ATTEMPTS_PER_TURN,
+  type DebateFailureDetail,
   groupRowsByTarget,
   isDebateStatusActive,
+  isDebateStatusTerminal,
   isZeroChallengeDebate,
+  safeFailureReason,
   type DebateChallengeRow,
 } from "@/lib/debateState";
 import { cancelDebate, loadDebateForTurn, startDebate, subscribeDebate } from "@/lib/debateRunner";
@@ -81,6 +95,15 @@ function progressSummary(session: ApiDebateSession): string {
   return `Responses in progress — ${responseCalls} model(s) replied so far.`;
 }
 
+/** Keeps the original reasoning in full underneath (expanded), but leads
+ * with a one-glance summary so a non-technical user can tell what
+ * happened without opening anything: "GPT challenged Claude — Problem:
+ * ... — Claude's response: Agreed, this is a valid limitation." */
+function truncate(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1).trimEnd()}…` : trimmed;
+}
+
 function ChallengeCard({ row, modelById }: { row: DebateChallengeRow; modelById: ModelLookup }) {
   const challenger = modelById(row.challengerModelId);
   const target = modelById(row.targetModelId);
@@ -88,40 +111,49 @@ function ChallengeCard({ row, modelById }: { row: DebateChallengeRow; modelById:
   return (
     <AccordionItem value={row.key} className="rounded-xl border border-border/70 bg-card/60 px-3">
       <AccordionTrigger className="py-3 text-left hover:no-underline">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 pr-2">
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold">
-            <VendorLogo vendor={challenger.vendor} className="size-4" title={challenger.name} />
-            {challenger.name}
-          </span>
-          <span className="text-muted-foreground text-xs">challenged</span>
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold">
-            <VendorLogo vendor={target.vendor} className="size-4" title={target.name} />
-            {target.name}
-          </span>
-          <Badge
-            variant="outline"
-            className={cn("ml-1 text-[10px]", severityTone(row.challenge.severity))}
-          >
-            {row.challenge.severity}
-          </Badge>
-          {response ? (
-            <Badge variant="outline" className="text-[10px]">
-              {stanceLabel(response.stance)}
+        <div className="min-w-0 flex-1 space-y-1 pr-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold">
+              <VendorLogo vendor={challenger.vendor} className="size-4" title={challenger.name} />
+              {challenger.name}
+            </span>
+            <span className="text-xs text-muted-foreground">challenged</span>
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold">
+              <VendorLogo vendor={target.vendor} className="size-4" title={target.name} />
+              {target.name}
+            </span>
+            <Badge
+              variant="outline"
+              className={cn("ml-1 text-[10px]", severityTone(row.challenge.severity))}
+            >
+              {row.challenge.severity}
             </Badge>
-          ) : (
-            <Badge variant="outline" className="text-[10px] text-muted-foreground">
-              Awaiting response
-            </Badge>
-          )}
-          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            {response ? (
+              <Badge variant="outline" className="text-[10px]">
+                {stanceLabel(response.stance)}
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                Awaiting response
+              </Badge>
+            )}
+          </div>
+          <p className="truncate text-xs text-foreground/90">
+            <span className="font-medium text-muted-foreground">Problem: </span>
             {row.challenge.issue}
-          </span>
+          </p>
+          {response ? (
+            <p className="truncate text-xs text-muted-foreground">
+              <span className="font-medium">{target.name}'s response: </span>
+              {stanceLabel(response.stance)} — {truncate(response.explanation, 90)}
+            </p>
+          ) : null}
         </div>
       </AccordionTrigger>
       <AccordionContent className="space-y-3 pb-3">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Criticism
+            Full criticism (as written by {challenger.name})
           </p>
           <MessageContent compact muted>
             {row.challenge.reasoning}
@@ -140,7 +172,7 @@ function ChallengeCard({ row, modelById }: { row: DebateChallengeRow; modelById:
         {response ? (
           <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {target.name}'s response — {stanceLabel(response.stance)}
+              {target.name}'s full response — {stanceLabel(response.stance)}
             </p>
             <MessageContent compact>{response.explanation}</MessageContent>
             {response.updated_position ? (
@@ -164,6 +196,102 @@ function ChallengeCard({ row, modelById }: { row: DebateChallengeRow; modelById:
   );
 }
 
+function SummaryCountsBar({ counts }: { counts: ReturnType<typeof debateSummaryCounts> }) {
+  const items: Array<{ label: string; value: number; tone: string }> = [
+    { label: "Challenges raised", value: counts.challengesRaised, tone: "text-foreground" },
+    { label: "Conceded", value: counts.conceded, tone: "text-emerald-700" },
+    { label: "Revised", value: counts.revised, tone: "text-emerald-700" },
+    { label: "Unresolved", value: counts.unresolved, tone: "text-amber-700" },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {items.map((item) => (
+        <div
+          key={item.label}
+          className="rounded-lg border border-border/60 bg-card/60 px-3 py-2 text-center"
+        >
+          <div className={cn("text-lg font-semibold leading-none", item.tone)}>{item.value}</div>
+          <div className="mt-1 text-[11px] text-muted-foreground">{item.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PlainFindingsGroup({
+  title,
+  items,
+  emptyText,
+}: {
+  title: string;
+  items: string[];
+  emptyText: string;
+}) {
+  return (
+    <div className="rounded-xl border border-border/70 bg-card/60 p-3">
+      <p className="mb-1.5 text-xs font-semibold text-foreground/80">{title}</p>
+      {items.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{emptyText}</p>
+      ) : (
+        <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+          {items.map((text, i) => (
+            <li key={i}>{text}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** PART B §3 — "Instead of simply showing 'Partial', show an understandable
+ * explanation, based on actual persisted errors." Every fact here comes
+ * from a DebateChallenge/DebateResponse row's own status/error_message —
+ * nothing is inferred or assumed. */
+function WhatWentWrongSection({
+  session,
+  failures,
+  modelById,
+}: {
+  session: ApiDebateSession;
+  failures: DebateFailureDetail[];
+  modelById: ModelLookup;
+}) {
+  const succeededChallenges = (session.challenges ?? []).filter(
+    (c) => c.status === "completed",
+  ).length;
+  const succeededResponses = (session.responses ?? []).filter(
+    (r) => r.status === "completed",
+  ).length;
+  return (
+    <Accordion type="single" collapsible className="rounded-xl border border-amber-500/30">
+      <AccordionItem value="went-wrong" className="border-none px-3">
+        <AccordionTrigger className="py-2.5 text-xs font-semibold text-amber-800 hover:no-underline">
+          <span className="inline-flex items-center gap-1.5">
+            <TriangleAlert className="size-3.5" /> What went wrong?
+          </span>
+        </AccordionTrigger>
+        <AccordionContent className="space-y-2 pb-3 text-xs text-muted-foreground">
+          {failures.map((failure) => (
+            <p key={`${failure.modelId}-${failure.stage}`}>
+              <span className="font-medium text-foreground">{modelById(failure.modelId).name}</span>
+              's {failure.stage === "challenge" ? "peer-review" : "response"} request{" "}
+              {safeFailureReason(failure.rawError)}.
+            </p>
+          ))}
+          <p>
+            {succeededChallenges} peer-review call(s) and {succeededResponses} response call(s)
+            completed successfully — those results are shown below and remain usable.
+          </p>
+          <p>
+            A new debate attempt can be started from this panel (subject to the per-answer attempt
+            limit) — paid model calls are never retried automatically.
+          </p>
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
+  );
+}
+
 function FindingsSection({
   session,
   modelById,
@@ -178,117 +306,180 @@ function FindingsSection({
   const risks = session.risks ?? [];
   const uncertainties = session.uncertainties ?? [];
   const zeroChallenge = isZeroChallengeDebate(session);
+  const stillRunning = !isDebateStatusTerminal(session.status);
+  const counts = debateSummaryCounts(session);
+  const plain = debatePlainFindings(session);
+  const failures = debateFailureDetails(session);
+  const isIncomplete = session.status === "partial" || session.status === "failed";
 
-  if (zeroChallenge && session.status !== "running" && session.status !== "pending") {
+  if (stillRunning) {
     return (
       <div className="rounded-xl border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
-        No model raised a challenge against any other answer in this debate. That means peer review
-        found nothing to contest — it does not by itself confirm the answers are correct.
+        Findings are built once the debate finishes — check back after the panel's review completes.
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
+      {isIncomplete && failures.length > 0 ? (
+        <>
+          <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-900">
+            Debate {session.status === "failed" ? "could not complete" : "partially completed"}.{" "}
+            {failures
+              .map(
+                (f) =>
+                  `${modelById(f.modelId).name}'s ${f.stage === "challenge" ? "peer-review" : "response"} request ${safeFailureReason(f.rawError)}`,
+              )
+              .join("; ")}
+            {session.status === "partial" ? ", but the other model(s) finished successfully." : "."}
+          </p>
+          <WhatWentWrongSection session={session} failures={failures} modelById={modelById} />
+        </>
+      ) : null}
+
+      {zeroChallenge ? (
+        <div className="rounded-xl border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
+          No model raised a challenge against any other answer in this debate. That means peer
+          review found nothing to contest — it does not by itself confirm the answers are correct.
+        </div>
+      ) : (
+        <>
+          <SummaryCountsBar counts={counts} />
+          <PlainFindingsGroup
+            title="What problems did the AIs identify?"
+            items={plain.problems}
+            emptyText="No specific problems were raised."
+          />
+          <PlainFindingsGroup
+            title="What did the AIs change or acknowledge?"
+            items={plain.acknowledgements}
+            emptyText="No model revised or conceded a point."
+          />
+          <PlainFindingsGroup
+            title="What should you consider now?"
+            items={plain.considerations}
+            emptyText="Nothing unresolved to flag."
+          />
+        </>
+      )}
+
       {session.final_summary ? (
         <p className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">
           {session.final_summary}
         </p>
       ) : null}
 
-      {agreements.length > 0 ? (
-        <FindingsGroup title="Explicit agreements" tone="emerald">
-          <p className="text-xs text-muted-foreground">
-            {agreements.length} point(s) where a model explicitly stated agreement.
-          </p>
-        </FindingsGroup>
-      ) : null}
+      <Accordion type="single" collapsible>
+        <AccordionItem value="technical-details" className="border-border/70">
+          <AccordionTrigger className="text-xs font-semibold text-muted-foreground hover:no-underline">
+            Technical details
+          </AccordionTrigger>
+          <AccordionContent className="space-y-3 pt-2">
+            {agreements.length > 0 ? (
+              <FindingsGroup title="Explicit agreements" tone="emerald">
+                <p className="text-xs text-muted-foreground">
+                  {agreements.length} point(s) where a model explicitly stated agreement.
+                </p>
+              </FindingsGroup>
+            ) : null}
 
-      {unchallenged.length > 0 ? (
-        <FindingsGroup title="Unchallenged positions" tone="default">
-          <p className="mb-2 text-xs text-muted-foreground">
-            No challenge was raised against these answers — this reflects an absence of objection,
-            not confirmed agreement.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {unchallenged.map((id) => {
-              const m = modelById(id);
-              return (
-                <span
-                  key={id}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-2.5 py-1 text-xs"
-                >
-                  <VendorLogo vendor={m.vendor} className="size-3.5" title={m.name} />
-                  {m.name}
-                </span>
-              );
-            })}
-          </div>
-        </FindingsGroup>
-      ) : null}
+            {unchallenged.length > 0 ? (
+              <FindingsGroup title="Unchallenged positions" tone="default">
+                <p className="mb-2 text-xs text-muted-foreground">
+                  No challenge was raised against these answers — this reflects an absence of
+                  objection, not confirmed agreement.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {unchallenged.map((id) => {
+                    const m = modelById(id);
+                    return (
+                      <span
+                        key={id}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-2.5 py-1 text-xs"
+                      >
+                        <VendorLogo vendor={m.vendor} className="size-3.5" title={m.name} />
+                        {m.name}
+                      </span>
+                    );
+                  })}
+                </div>
+              </FindingsGroup>
+            ) : null}
 
-      {unresolved.length > 0 ? (
-        <FindingsGroup title={`Unresolved disagreements (${unresolved.length})`} tone="amber">
-          <ul className="space-y-1.5 text-xs">
-            {unresolved.map((item) => (
-              <li
-                key={`${item.challenger_model_id}-${item.challenge_id}`}
-                className="text-muted-foreground"
+            {unresolved.length > 0 ? (
+              <FindingsGroup title={`Unresolved disagreements (${unresolved.length})`} tone="amber">
+                <ul className="space-y-1.5 text-xs">
+                  {unresolved.map((item) => (
+                    <li
+                      key={`${item.challenger_model_id}-${item.challenge_id}`}
+                      className="text-muted-foreground"
+                    >
+                      <span className="font-medium text-foreground">
+                        {modelById(item.target_model_id).name}
+                      </span>{" "}
+                      still defends against{" "}
+                      <span className="font-medium text-foreground">
+                        {modelById(item.challenger_model_id).name}
+                      </span>
+                      's challenge: {item.description}
+                    </li>
+                  ))}
+                </ul>
+              </FindingsGroup>
+            ) : null}
+
+            {corrections.length > 0 ? (
+              <FindingsGroup
+                title={`Revisions & concessions (${corrections.length})`}
+                tone="emerald"
               >
-                <span className="font-medium text-foreground">
-                  {modelById(item.target_model_id).name}
-                </span>{" "}
-                still defends against{" "}
-                <span className="font-medium text-foreground">
-                  {modelById(item.challenger_model_id).name}
-                </span>
-                's challenge: {item.description}
-              </li>
-            ))}
-          </ul>
-        </FindingsGroup>
-      ) : null}
+                <ul className="space-y-1.5 text-xs">
+                  {corrections.map((item) => (
+                    <li
+                      key={`${item.model_id}-${item.challenge_id}`}
+                      className="text-muted-foreground"
+                    >
+                      <span className="font-medium text-foreground">
+                        {modelById(item.model_id).name}
+                      </span>{" "}
+                      {stanceLabel(item.stance).toLowerCase()}: {item.updated_position}
+                    </li>
+                  ))}
+                </ul>
+              </FindingsGroup>
+            ) : null}
 
-      {corrections.length > 0 ? (
-        <FindingsGroup title={`Revisions & concessions (${corrections.length})`} tone="emerald">
-          <ul className="space-y-1.5 text-xs">
-            {corrections.map((item) => (
-              <li key={`${item.model_id}-${item.challenge_id}`} className="text-muted-foreground">
-                <span className="font-medium text-foreground">{modelById(item.model_id).name}</span>{" "}
-                {stanceLabel(item.stance).toLowerCase()}: {item.updated_position}
-              </li>
-            ))}
-          </ul>
-        </FindingsGroup>
-      ) : null}
+            {risks.length > 0 ? (
+              <FindingsGroup
+                title={`Risks raised (${risks.length})`}
+                tone="red"
+                icon={<ShieldAlert className="size-3.5" />}
+              >
+                <ul className="space-y-1.5 text-xs text-muted-foreground">
+                  {risks.map((item, i) => (
+                    <li key={i}>{item.description}</li>
+                  ))}
+                </ul>
+              </FindingsGroup>
+            ) : null}
 
-      {risks.length > 0 ? (
-        <FindingsGroup
-          title={`Risks raised (${risks.length})`}
-          tone="red"
-          icon={<ShieldAlert className="size-3.5" />}
-        >
-          <ul className="space-y-1.5 text-xs text-muted-foreground">
-            {risks.map((item, i) => (
-              <li key={i}>{item.description}</li>
-            ))}
-          </ul>
-        </FindingsGroup>
-      ) : null}
-
-      {uncertainties.length > 0 ? (
-        <FindingsGroup
-          title={`Flagged uncertainties (${uncertainties.length})`}
-          tone="default"
-          icon={<AlertTriangle className="size-3.5" />}
-        >
-          <ul className="space-y-1.5 text-xs text-muted-foreground">
-            {uncertainties.map((item, i) => (
-              <li key={i}>{item.description}</li>
-            ))}
-          </ul>
-        </FindingsGroup>
-      ) : null}
+            {uncertainties.length > 0 ? (
+              <FindingsGroup
+                title={`Flagged uncertainties (${uncertainties.length})`}
+                tone="default"
+                icon={<AlertTriangle className="size-3.5" />}
+              >
+                <ul className="space-y-1.5 text-xs text-muted-foreground">
+                  {uncertainties.map((item, i) => (
+                    <li key={i}>{item.description}</li>
+                  ))}
+                </ul>
+              </FindingsGroup>
+            ) : null}
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
     </div>
   );
 }

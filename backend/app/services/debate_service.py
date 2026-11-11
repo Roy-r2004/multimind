@@ -379,7 +379,13 @@ async def _persist_challenge_result(
         if not await _session_is_running(db, session_id):
             return  # a late result after the session already finalized/cancelled
         error = data.get("error")
-        status = DebateChallengeStatus.FAILED if error else DebateChallengeStatus.COMPLETED
+        # `is not None`, never a truthiness check: LLMCallOutcome.succeeded (the
+        # engine's own classification, which correctly drove this session's
+        # PARTIAL status) checks `error is None` — persistence must agree, or
+        # a technically-non-None-but-falsy error string (an empty "" from a
+        # bare asyncio.TimeoutError(), before the orchestrator-side fix) gets
+        # silently reclassified as "completed" here despite being a failure.
+        status = DebateChallengeStatus.FAILED if error is not None else DebateChallengeStatus.COMPLETED
         row = DebateChallenge(
             org_id=org_id,
             debate_session_id=session_id,
@@ -415,7 +421,8 @@ async def _persist_response_result(
         if not await _session_is_running(db, session_id):
             return
         error = data.get("error")
-        status = DebateResponseStatus.FAILED if error else DebateResponseStatus.COMPLETED
+        # See the identical `is not None` note in _persist_challenge_result above.
+        status = DebateResponseStatus.FAILED if error is not None else DebateResponseStatus.COMPLETED
         row = DebateResponse(
             org_id=org_id,
             debate_session_id=session_id,

@@ -229,3 +229,111 @@ export function mergeDebateSnapshot(
       : remote.responses;
   return { ...remote, challenges, responses };
 }
+
+// --- Plain-language summary (Debate Findings UX) ----------------------------
+
+export type DebateSummaryCounts = {
+  /** Total individual challenges raised, across every reviewing model. */
+  challengesRaised: number;
+  conceded: number;
+  revised: number;
+  /** Still defended OR never answered — both are "unresolved" from the
+   * user's point of view, and the backend's own unresolved_disagreements
+   * list already combines them (see app.llm.debate_orchestrator.reduce_findings). */
+  unresolved: number;
+};
+
+/** Every count here is read directly from already-persisted findings —
+ * never recomputed by inference, so it can never drift from what the
+ * backend actually determined. */
+export function debateSummaryCounts(session: ApiDebateSession): DebateSummaryCounts {
+  const corrections = session.corrections ?? [];
+  return {
+    challengesRaised: buildChallengeRows(session).length,
+    conceded: corrections.filter((c) => c.stance === "concedes").length,
+    revised: corrections.filter((c) => c.stance === "revises").length,
+    unresolved: (session.unresolved_disagreements ?? []).length,
+  };
+}
+
+export type DebateFailureDetail = {
+  modelId: string;
+  stage: "challenge" | "response";
+  rawError: string;
+};
+
+/** Every model/stage that actually failed, straight from the persisted
+ * status + error_message columns — never inferred from an absence of data. */
+export function debateFailureDetails(session: ApiDebateSession): DebateFailureDetail[] {
+  const details: DebateFailureDetail[] = [];
+  for (const c of session.challenges ?? []) {
+    if (c.status === "failed") {
+      details.push({
+        modelId: c.author_model_id,
+        stage: "challenge",
+        rawError: c.error_message ?? "",
+      });
+    }
+  }
+  for (const r of session.responses ?? []) {
+    if (r.status === "failed") {
+      details.push({
+        modelId: r.author_model_id,
+        stage: "response",
+        rawError: r.error_message ?? "",
+      });
+    }
+  }
+  return details;
+}
+
+/** A short, safe phrase for a raw provider/internal error string — never
+ * shown verbatim, since a raw message could in principle echo request
+ * details. Recognizes common failure shapes; anything else (or anything
+ * that looks like it might contain a credential/token/key) falls back to
+ * a generic phrase rather than risk leaking it. */
+export function safeFailureReason(rawError: string): string {
+  const trimmed = rawError.trim();
+  if (!trimmed) return "failed without returning a specific reason";
+  const lower = trimmed.toLowerCase();
+  if (/\b(key|token|secret|authorization|bearer)\b/.test(lower)) {
+    return "failed due to a configuration issue";
+  }
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return "took too long to respond";
+  }
+  if (lower.includes("503") || lower.includes("unavailable") || lower.includes("502")) {
+    return "the model provider was temporarily unavailable";
+  }
+  if (lower.includes("json") || lower.includes("parse") || lower.includes("valid")) {
+    return "returned a response that could not be understood";
+  }
+  if (lower.includes("unknown model")) {
+    return "could not be reached (unknown model)";
+  }
+  return "the request failed";
+}
+
+export type DebatePlainFindings = {
+  /** "What problems did the AIs identify?" */
+  problems: string[];
+  /** "What did the AIs change or acknowledge?" */
+  acknowledgements: string[];
+  /** "What should the user consider now?" */
+  considerations: string[];
+};
+
+/** Deterministic, data-only presentation — never an extra LLM call, and
+ * never a claim stronger than what was actually persisted. Phrased from
+ * the model's own stated issue/description text, not a generated summary. */
+export function debatePlainFindings(session: ApiDebateSession): DebatePlainFindings {
+  const rows = buildChallengeRows(session);
+  const problems = rows.map((r) => r.challenge.issue);
+  const acknowledgements = (session.corrections ?? []).map((c) => c.description);
+  const considerations = [
+    ...(session.unresolved_disagreements ?? []).map((d) => d.description),
+    ...(session.risks ?? []).map((r) => r.description),
+    ...(session.uncertainties ?? []).map((u) => u.description),
+  ];
+  return { problems, acknowledgements, considerations };
+}

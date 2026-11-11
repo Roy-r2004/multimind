@@ -217,6 +217,34 @@ def test_zero_challenge_debate_skips_round_3_entirely():
     assert sorted(result.findings.unchallenged_model_ids) == [MODEL_A, MODEL_B, MODEL_C]
 
 
+# --- Regression: a bare asyncio.TimeoutError() must never look like success -
+
+
+def test_bare_timeout_error_produces_a_non_empty_error_message():
+    """asyncio.wait_for raises a bare TimeoutError() whose str() is "" — a
+    real production debate hit this exact case (Claude Opus 4.1 timing out
+    in Round 2) and the empty string was later treated as falsy ("no error")
+    by debate_service.py's `if error:` persistence check, silently
+    recording a failed call as COMPLETED. The orchestrator must never hand
+    persistence an empty-but-non-None error string for this to be safe."""
+    participants = _participants(MODEL_A, MODEL_B, MODEL_C)
+    config = DebateRunConfig(user_message="Q?", participants=participants)
+    provider = ScriptedProvider(
+        round2_by_slug={
+            "openai/gpt-4.1": TimeoutError(),  # bare — no message, matches asyncio.wait_for's
+            "openai/gpt-4.1-mini": _challenge_response(MODEL_B, []),
+            "openai/gpt-5-nano": _challenge_response(MODEL_C, []),
+        }
+    )
+    result, _events = _run(config, provider)
+    by_model = {r.model_id: r for r in result.challenge_results}
+    assert not by_model[MODEL_A].outcome.succeeded
+    assert by_model[MODEL_A].outcome.error  # truthy: never "" for a real failure
+    assert by_model[MODEL_A].outcome.error is not None
+    assert result.all_calls_failed is False
+    assert any(not r.outcome.succeeded for r in result.challenge_results)
+
+
 # --- 5. One model fails during Round 2 --------------------------------------
 
 
