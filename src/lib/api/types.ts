@@ -227,6 +227,108 @@ export type ApiTurn = {
   simple_explanation_poll_timed_out?: boolean;
 };
 
+export type ApiDebateChallengeItem = {
+  challenge_id: string;
+  target_model_id: string;
+  issue: string;
+  reasoning: string;
+  severity: "low" | "medium" | "high";
+  uncertainty?: string | null;
+};
+
+export type ApiDebateResponseItem = {
+  challenge_id: string;
+  challenger_model_id: string;
+  stance: "defends" | "revises" | "concedes";
+  explanation: string;
+  updated_position?: string | null;
+};
+
+export type ApiDebateChallenge = {
+  id: string;
+  author_model_id: string;
+  status: string;
+  challenges: ApiDebateChallengeItem[] | null;
+  error_message?: string | null;
+  tokens_input?: number | null;
+  tokens_output?: number | null;
+  cost_usd?: number | null;
+  created_at: string;
+};
+
+export type ApiDebateResponse = {
+  id: string;
+  author_model_id: string;
+  status: string;
+  responses: ApiDebateResponseItem[] | null;
+  error_message?: string | null;
+  tokens_input?: number | null;
+  tokens_output?: number | null;
+  cost_usd?: number | null;
+  created_at: string;
+};
+
+export type ApiDebateUnresolvedDisagreement = {
+  description: string;
+  challenge_id: string;
+  challenger_model_id: string;
+  target_model_id: string;
+  severity: string;
+};
+
+export type ApiDebateCorrection = {
+  description: string;
+  model_id: string;
+  challenge_id: string;
+  stance: "revises" | "concedes";
+  previous_position?: string | null;
+  updated_position: string;
+};
+
+export type ApiDebateRisk = {
+  description: string;
+  severity: string;
+  raised_by_model_ids: string[];
+};
+
+export type ApiDebateUncertainty = {
+  description: string;
+  related_model_ids: string[];
+};
+
+export type ApiDebateUsage = {
+  total_tokens_input: number;
+  total_tokens_output: number;
+  total_cost_usd: number;
+  calls_with_unknown_usage: number;
+};
+
+export type ApiDebateSession = {
+  id: string;
+  turn_id: string;
+  status: string;
+  model_ids: string[];
+  agreements: unknown[] | null;
+  unchallenged_model_ids: string[] | null;
+  unresolved_disagreements: ApiDebateUnresolvedDisagreement[] | null;
+  corrections: ApiDebateCorrection[] | null;
+  risks: ApiDebateRisk[] | null;
+  uncertainties: ApiDebateUncertainty[] | null;
+  final_summary: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  challenges: ApiDebateChallenge[];
+  responses: ApiDebateResponse[];
+  usage: ApiDebateUsage;
+};
+
+export type ApiDebateStartResponse = {
+  session: ApiDebateSession;
+  freshly_started: boolean;
+};
+
 export type ApiTurnAttachment = {
   id: string;
   filename: string;

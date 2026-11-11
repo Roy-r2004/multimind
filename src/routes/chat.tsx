@@ -46,6 +46,7 @@ import { createTurnReferenceFields, shouldClearReferenceAfterSend } from "@/lib/
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
+import { DebateEligibilityButton, DebatePanel } from "@/components/chat/DebatePanel";
 import {
   SimpleExplanationBox,
   SimpleExplanationLoadingBox,
@@ -2205,6 +2206,7 @@ function AiTurn({
   const [layout] = useChatTurnLayout();
   const { isExpanded, toggle: toggleAnswerExpansion } = useTurnAnswerExpansion(layout);
   const [showDisagree, setShowDisagree] = useState(false);
+  const [showDebate, setShowDebate] = useState(false);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
   const verdictContentRef = useRef<HTMLDivElement>(null);
@@ -2508,6 +2510,13 @@ function AiTurn({
                   {bookmarkState.disabled ? "Saving" : bookmarkState.saved ? "Saved" : "Save"}
                 </button>
               )}
+              <DebateEligibilityButton
+                hasVerdict={hasVerdict}
+                completedAnswers={(turn.model_answers ?? []).filter(
+                  (a) => a.status === "completed",
+                )}
+                onClick={() => setShowDebate(true)}
+              />
               {turn.lesson_id && turn.lesson_status === "completed" ? (
                 <Link
                   to="/lessons/$id"
@@ -2571,6 +2580,14 @@ function AiTurn({
         userName={session?.user.full_name ?? "You"}
         onDiscussStart={(lessonId) => onLessonUpdate(lessonId, "discussing")}
         onLessonBuilt={(lessonId) => onLessonUpdate(lessonId, "completed")}
+      />
+
+      <DebatePanel
+        open={showDebate}
+        onClose={() => setShowDebate(false)}
+        turnId={turn.id}
+        modelAnswers={turn.model_answers ?? []}
+        modelById={modelById}
       />
     </div>
   );
