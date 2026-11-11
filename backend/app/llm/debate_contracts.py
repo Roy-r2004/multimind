@@ -137,9 +137,16 @@ class ResponseSet(BaseModel):
 
     @model_validator(mode="after")
     def _unique_challenge_coverage(self) -> "ResponseSet":
-        ids = [item.challenge_id for item in self.responses]
-        if len(ids) != len(set(ids)):
-            raise ValueError("challenge_id values must be unique within one response set")
+        # challenge_id alone may legitimately collide across different
+        # reviewing models (each author only has to keep IDs unique within
+        # its OWN Round-2 response — see ChallengeSet._unique_challenge_ids).
+        # The stable identity for one challenge is therefore the composite
+        # (challenger_model_id, challenge_id), never challenge_id alone.
+        keys = [(item.challenger_model_id, item.challenge_id) for item in self.responses]
+        if len(keys) != len(set(keys)):
+            raise ValueError(
+                "(challenger_model_id, challenge_id) pairs must be unique within one response set"
+            )
         return self
 
 
@@ -179,10 +186,16 @@ def parse_response_output(
     raw_text: str,
     *,
     expected_author_model_id: str,
-    known_challenge_ids: set[str],
+    known_challenge_keys: set[tuple[str, str]],
 ) -> ResponseSet:
     """Parse and validate a model's Round-3 JSON output against the exact
-    set of challenge IDs it was actually asked to respond to."""
+    set of challenges it was actually asked to respond to.
+
+    ``known_challenge_keys`` must be ``(challenger_model_id, challenge_id)``
+    pairs scoped to the single debate session this call belongs to — passing
+    a global or cross-session set would let a response accidentally
+    reference a challenge from a different debate session.
+    """
     parsed = LLMProvider.parse_json_object_lenient(raw_text)
     if parsed is None:
         raise DebateContractError("response was not valid or recoverable JSON")
@@ -195,7 +208,9 @@ def parse_response_output(
             f"author_model_id '{response_set.author_model_id}' does not match "
             f"the requesting model '{expected_author_model_id}'"
         )
-    unknown = {item.challenge_id for item in response_set.responses} - known_challenge_ids
+    unknown = {
+        (item.challenger_model_id, item.challenge_id) for item in response_set.responses
+    } - known_challenge_keys
     if unknown:
         raise DebateContractError(f"unknown challenge_id(s): {sorted(unknown)}")
     return response_set

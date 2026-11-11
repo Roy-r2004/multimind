@@ -252,7 +252,7 @@ def test_parse_response_output_valid_defends():
         }
     )
     result = parse_response_output(
-        raw, expected_author_model_id="model-b", known_challenge_ids={"c1"}
+        raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")}
     )
     assert result.responses[0].stance == "defends"
     assert result.responses[0].updated_position is None
@@ -274,7 +274,7 @@ def test_parse_response_output_revision_requires_updated_position(stance):
         }
     )
     with pytest.raises(DebateContractError):
-        parse_response_output(raw, expected_author_model_id="model-b", known_challenge_ids={"c1"})
+        parse_response_output(raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")})
 
 
 def test_parse_response_output_accepts_revision_with_updated_position():
@@ -293,7 +293,7 @@ def test_parse_response_output_accepts_revision_with_updated_position():
         }
     )
     result = parse_response_output(
-        raw, expected_author_model_id="model-b", known_challenge_ids={"c1"}
+        raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")}
     )
     assert result.responses[0].updated_position == "Budget should be the primary constraint."
 
@@ -313,7 +313,7 @@ def test_parse_response_output_rejects_invalid_stance():
         }
     )
     with pytest.raises(DebateContractError):
-        parse_response_output(raw, expected_author_model_id="model-b", known_challenge_ids={"c1"})
+        parse_response_output(raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")})
 
 
 def test_parse_response_output_rejects_unknown_challenge_id():
@@ -331,7 +331,7 @@ def test_parse_response_output_rejects_unknown_challenge_id():
         }
     )
     with pytest.raises(DebateContractError):
-        parse_response_output(raw, expected_author_model_id="model-b", known_challenge_ids={"c1"})
+        parse_response_output(raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")})
 
 
 def test_parse_response_output_rejects_mismatched_author():
@@ -349,7 +349,89 @@ def test_parse_response_output_rejects_mismatched_author():
         }
     )
     with pytest.raises(DebateContractError):
-        parse_response_output(raw, expected_author_model_id="model-b", known_challenge_ids={"c1"})
+        parse_response_output(raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")})
+
+
+def test_parse_response_output_accepts_colliding_challenge_ids_from_different_challengers():
+    """challenge_id alone may collide across different reviewing models — the
+    stable identity is the composite (challenger_model_id, challenge_id).
+    Phase 3 reconciliation: this must NOT be rejected as a duplicate."""
+    raw = json.dumps(
+        {
+            "author_model_id": "model-b",
+            "responses": [
+                {
+                    "challenge_id": "c1",
+                    "challenger_model_id": "model-a",
+                    "stance": "defends",
+                    "explanation": "x",
+                },
+                {
+                    "challenge_id": "c1",  # same literal id, different challenger
+                    "challenger_model_id": "model-c",
+                    "stance": "concedes",
+                    "explanation": "y",
+                    "updated_position": "z",
+                },
+            ],
+        }
+    )
+    result = parse_response_output(
+        raw,
+        expected_author_model_id="model-b",
+        known_challenge_keys={("model-a", "c1"), ("model-c", "c1")},
+    )
+    assert len(result.responses) == 2
+
+
+def test_parse_response_output_rejects_true_duplicate_same_challenger_and_id():
+    raw = json.dumps(
+        {
+            "author_model_id": "model-b",
+            "responses": [
+                {
+                    "challenge_id": "c1",
+                    "challenger_model_id": "model-a",
+                    "stance": "defends",
+                    "explanation": "x",
+                },
+                {
+                    "challenge_id": "c1",
+                    "challenger_model_id": "model-a",  # same challenger AND id -> true duplicate
+                    "stance": "concedes",
+                    "explanation": "y",
+                    "updated_position": "z",
+                },
+            ],
+        }
+    )
+    with pytest.raises(DebateContractError):
+        parse_response_output(
+            raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")}
+        )
+
+
+def test_parse_response_output_rejects_challenge_id_known_under_different_challenger():
+    """A response cannot reference challenge_id 'c1' under a challenger it was
+    not actually raised by — e.g. it must not cross-reference another
+    debate session's (challenger, challenge_id) pair."""
+    raw = json.dumps(
+        {
+            "author_model_id": "model-b",
+            "responses": [
+                {
+                    "challenge_id": "c1",
+                    "challenger_model_id": "model-x",  # not the real challenger for this session
+                    "stance": "defends",
+                    "explanation": "x",
+                }
+            ],
+        }
+    )
+    with pytest.raises(DebateContractError):
+        parse_response_output(
+            raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")}
+        )
 
 
 def test_parse_response_output_handles_truncated_json_via_lenient_recovery():
@@ -363,7 +445,7 @@ def test_parse_response_output_handles_truncated_json_via_lenient_recovery():
         '"explanation": "The budget was fine."}]'
     )
     result = parse_response_output(
-        raw, expected_author_model_id="model-b", known_challenge_ids={"c1"}
+        raw, expected_author_model_id="model-b", known_challenge_keys={("model-a", "c1")}
     )
     assert result.responses[0].challenge_id == "c1"
 

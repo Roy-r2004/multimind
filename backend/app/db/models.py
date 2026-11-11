@@ -2756,7 +2756,10 @@ class DebateChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     ``challenges`` holds a JSON list critiquing other models' Council answers in a
     single request per author (O(n) calls per session, never pairwise O(n^2)):
-    ``[{"target_model_id": ..., "issue": ..., "severity": ..., "evidence": ...}, ...]``.
+    ``[{"challenge_id": ..., "target_model_id": ..., "issue": ..., "reasoning": ...,
+    "severity": "low"|"medium"|"high", "uncertainty": ...}, ...]`` — the exact shape
+    of ``app.llm.debate_contracts.ChallengeItem`` (reconciled in Phase 3; this
+    replaces an earlier sketch that used ``evidence`` and no ``challenge_id``).
     """
 
     __tablename__ = "debate_challenges"
@@ -2795,9 +2798,14 @@ class DebateResponse(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """Round-3 structured rebuttal: one row per author model per session.
 
     ``responses`` holds a JSON list, one entry per challenge addressed by this
-    author: ``[{"challenge_author_model_id": ..., "stance": "defends|revises|
-    concedes", "explanation": ..., "updated_position": ...}, ...]``. Never
-    overwrites the original ``ModelAnswer`` rows for the Turn.
+    author: ``[{"challenge_id": ..., "challenger_model_id": ..., "stance":
+    "defends"|"revises"|"concedes", "explanation": ..., "updated_position": ...},
+    ...]`` — the exact shape of ``app.llm.debate_contracts.ResponseItem``
+    (reconciled in Phase 3; this replaces an earlier sketch that used
+    ``challenge_author_model_id``). The stable identity for one entry is the
+    composite ``(challenger_model_id, challenge_id)``, since ``challenge_id``
+    alone may collide across different reviewing models. Never overwrites the
+    original ``ModelAnswer`` rows for the Turn.
     """
 
     __tablename__ = "debate_responses"
