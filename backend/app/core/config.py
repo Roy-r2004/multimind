@@ -51,15 +51,30 @@ class Settings(BaseSettings):
     # When true (default in development), run scrapes inside the API process if Redis/worker is down
     scraping_inline_execution: bool | None = None
 
-    # Debate Mode execution dispatch — mirrors scraping_inline_execution. Debate jobs
-    # run on the existing scraping ARQ worker (see app/scraping/worker.py) rather than
-    # a dedicated worker/queue, since debate runs are short (~seconds-minutes) and
-    # reuse already-deployed infrastructure instead of adding a new container.
+    # Debate Mode execution dispatch — mirrors scraping_inline_execution, but Debate
+    # jobs run on their OWN dedicated ARQ worker/queue (see app/debate/worker.py),
+    # fully independent of the scraping worker. `None` auto-falls-back to inline
+    # asyncio execution if the dedicated queue/worker is unreachable (convenient for
+    # plain `pytest` or a Redis-less dev shell); set explicitly to `false` to require
+    # the dedicated worker and raise instead of silently falling back (e.g. for a
+    # Docker environment that must prove the worker is actually wired up).
     debate_inline_execution: bool | None = None
     # Stale RUNNING debate sessions older than this are presumed orphaned by a dead
     # worker/API restart and recovered to FAILED (not silently resurrected) — comfortably
     # above DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS (180s) plus queueing/startup slack.
     debate_execution_stale_seconds: int = 600
+
+    # Dedicated Debate ARQ worker (separate queue from scraping/maps/playbooks).
+    # Default concurrency of 2 is deliberately small: each debate run already
+    # fans out several concurrent LLM calls internally (DEBATE_DEFAULT_MAX_CONCURRENCY),
+    # so this bounds how many *debate sessions* run at once, not individual calls.
+    debate_worker_queue_name: str = "debate"
+    debate_worker_concurrency: int = 2
+    # Comfortably above DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS (180s) plus
+    # queueing/startup slack, but far below scraping's multi-hour timeout — a stuck
+    # debate job should be reclaimed quickly, not held for hours.
+    debate_worker_job_timeout_seconds: int = 240
+    debate_worker_keep_result_seconds: int = 3600
 
     # Dedicated Playbook ARQ worker (separate queue from scraping/maps).
     # Infrastructure defaults, not final extraction performance tuning.

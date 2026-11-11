@@ -22,6 +22,10 @@ x-ui-test-env: &ui-test-env
   LARGE_DOCUMENTS_ENABLED: "true"
   DOCUMENT_OCR_MODEL: ${DOCUMENT_OCR_MODEL:-google/gemini-3-flash-preview}
   LIBRARY_FILE_DIR: /data/library-files
+  # Require the dedicated debate-worker/queue (api service only uses this;
+  # harmless on the worker services, which already always run via ARQ).
+  DEBATE_INLINE_EXECUTION: "false"
+  DEBATE_WORKER_QUEUE_NAME: ${DEBATE_WORKER_QUEUE_NAME:-debate}
 
 services:
   postgres:
@@ -123,6 +127,20 @@ services:
     volumes:
       - chat_attachments:/data/chat-attachments
       - library_files:/data/library-files
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  debate-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.debate.worker.WorkerSettings"]
+    environment:
+      <<: *ui-test-env
     depends_on:
       postgres:
         condition: service_healthy

@@ -64,13 +64,12 @@ from app.services.debate_events import publish_debate_event
 
 logger = get_logger(__name__)
 
-# Debate execution reuses the existing scraping ARQ worker/queue (see
-# app/scraping/worker.py) rather than standing up a dedicated worker
-# container — debate runs are short (bounded by
-# DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS=180s) and the smallest reliable way
-# to get durable, restart-surviving execution is to register one more job
-# function on infrastructure that is already deployed everywhere, instead of
-# adding a new container/queue/compose service for it.
+# Debate execution runs on its OWN dedicated ARQ worker/queue (app/debate/worker.py,
+# settings.debate_worker_queue_name) — fully independent of the scraping worker's
+# queue, concurrency, timeouts, and recovery cadence. `run_debate_session_job` and
+# `recover_debate_sessions` are defined here (not in app/debate/worker.py) because
+# they need the same persistence helpers the request-scoped "start" path uses; that
+# module only wires them onto their own queue/schedule.
 DEBATE_ARQ_JOB_NAME = "run_debate_session_job"
 
 ACTIVE_DEBATE_SESSION_STATUSES = (DebateSessionStatus.PENDING, DebateSessionStatus.RUNNING)
@@ -656,15 +655,27 @@ async def run_debate_session_job(ctx: dict, session_id: str) -> None:
 async def enqueue_debate_execution(session_id: str) -> None:
     """Dispatch execution independently of the HTTP request that started it.
 
-    Mirrors ``app.services.scraping.execution_service.enqueue_execution``:
-    enqueue on the shared ARQ/Redis queue when available, falling back to an
-    inline ``asyncio.Task`` (same process) in development or if Redis is
-    unreachable. Either path calls the exact same ``execute_debate_session``
-    engine; ``_claim_execution_slot`` inside it is what actually prevents a
-    duplicate enqueue from running the session twice, not which path was
-    taken here.
+    Enqueues onto the dedicated Debate queue (``settings.debate_worker_queue_name``,
+    consumed only by ``app.debate.worker`` — never the scraping worker's queue)
+    when available, falling back to an inline ``asyncio.Task`` (same process) in
+    development or if Redis is unreachable. Either path calls the exact same
+    ``execute_debate_session`` engine; ``_claim_execution_slot`` inside it is what
+    actually prevents a duplicate enqueue from running the session twice, not
+    which path was taken here.
+
+    ``settings.debate_inline_execution`` has three states:
+
+    - ``None`` (default): auto-detect — inline in ``development``, else try the
+      dedicated queue and silently fall back to inline if that fails. Convenient
+      for plain ``pytest`` or a Redis-less dev shell.
+    - ``False`` (explicit): the dedicated worker is required. A failed enqueue is
+      NOT swallowed into a silent inline fallback — it's logged loudly and
+      re-raised, so a misconfigured deployment fails visibly instead of quietly
+      running debates without the durability a dedicated worker provides.
+    - ``True`` (explicit): always run inline, skipping the queue entirely.
     """
     settings = get_settings()
+    require_dedicated_worker = settings.debate_inline_execution is False
     inline = (
         settings.debate_inline_execution
         if settings.debate_inline_execution is not None
@@ -691,11 +702,20 @@ async def enqueue_debate_execution(session_id: str) -> None:
             await redis.enqueue_job(
                 DEBATE_ARQ_JOB_NAME,
                 session_id,
+                _queue_name=settings.debate_worker_queue_name,
                 _job_id=f"{DEBATE_ARQ_JOB_NAME}:{session_id}:{uuid4().hex[:12]}",
             )
             await redis.close()
             queued_on_redis = True
         except Exception:
+            if require_dedicated_worker:
+                logger.error(
+                    "debate_enqueue_failed_no_inline_fallback",
+                    session_id=session_id,
+                    queue=settings.debate_worker_queue_name,
+                    exc_info=True,
+                )
+                raise
             logger.warning("debate_enqueue_redis_failed", session_id=session_id, exc_info=True)
     if inline or not queued_on_redis:
         asyncio.create_task(_run_debate_session_standalone(session_id))

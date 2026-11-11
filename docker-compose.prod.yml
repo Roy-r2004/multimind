@@ -114,6 +114,11 @@ services:
       LIBRARY_FILE_DIR: ${LIBRARY_FILE_DIR:-/app/data/library_files}
       LARGE_DOCUMENTS_ENABLED: ${LARGE_DOCUMENTS_ENABLED:-false}
       DOCUMENT_OCR_MODEL: ${DOCUMENT_OCR_MODEL:-google/gemini-3-flash-preview}
+
+      # Require the dedicated debate-worker/queue — never silently fall back to
+      # running (paid) Debate LLM calls inline inside this API process.
+      DEBATE_INLINE_EXECUTION: ${DEBATE_INLINE_EXECUTION:-false}
+      DEBATE_WORKER_QUEUE_NAME: ${DEBATE_WORKER_QUEUE_NAME:-debate}
     volumes:
       - whisper_models:/models/whisper
       - chat_attachments:/app/data/chat_attachments
@@ -264,6 +269,40 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "arq", "app.documents.worker.WorkerSettings", "--check"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    restart: unless-stopped
+
+  # Dedicated AI Debate Mode worker — its own queue, concurrency, and timeout,
+  # fully independent of scraping-worker/playbook-worker/document-worker.
+  debate-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.debate.worker.WorkerSettings"]
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-multiai}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-multiai}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      DEBATE_WORKER_QUEUE_NAME: ${DEBATE_WORKER_QUEUE_NAME:-debate}
+      DEBATE_WORKER_CONCURRENCY: ${DEBATE_WORKER_CONCURRENCY:-2}
+      DEBATE_WORKER_JOB_TIMEOUT_SECONDS: ${DEBATE_WORKER_JOB_TIMEOUT_SECONDS:-240}
+      DEBATE_WORKER_KEEP_RESULT_SECONDS: ${DEBATE_WORKER_KEEP_RESULT_SECONDS:-3600}
+      DEBATE_EXECUTION_STALE_SECONDS: ${DEBATE_EXECUTION_STALE_SECONDS:-600}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_SITE_URL: ${PUBLIC_APP_URL:-https://multiverdict.tech}
+      OPENROUTER_APP_NAME: MultiAI
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "arq", "app.debate.worker.WorkerSettings", "--check"]
       interval: 15s
       timeout: 5s
       retries: 3
