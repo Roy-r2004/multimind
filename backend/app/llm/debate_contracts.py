@@ -325,16 +325,24 @@ class Uncertainty(BaseModel):
 class DebateFindings(BaseModel):
     """The complete structured output of a debate session.
 
-    Populated deterministically by the Phase 3 orchestrator from completed
+    Populated deterministically by the orchestrator from completed
     ``ChallengeSet``/``ResponseSet`` rows — no LLM call is required to build
-    this, and none happens in this module. Consensus across the panel
-    (``agreements``) is not evidence of correctness; it only reflects that
-    peer review did not surface a sustained objection.
+    this, and none happens in this module.
+
+    ``agreements`` is reserved for a future contract in which a model
+    explicitly states it agrees with another model's answer. Nothing in the
+    current Round 2/3 contracts asks a model to do that, so the reducer
+    never populates it today — it is always empty rather than inferring
+    agreement from an absence of challenge. An answer nobody challenged is
+    reported separately, in ``unchallenged_model_ids``, which carries no
+    claim about correctness or consensus — only that peer review did not
+    raise an objection to it.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     agreements: tuple[Agreement, ...] = ()
+    unchallenged_model_ids: tuple[str, ...] = ()
     unresolved_disagreements: tuple[UnresolvedDisagreement, ...] = ()
     corrections: tuple[Correction, ...] = ()
     risks: tuple[Risk, ...] = ()

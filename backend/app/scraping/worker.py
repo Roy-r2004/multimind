@@ -8,6 +8,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from app.core.config import get_settings
+from app.services.debate_service import recover_debate_sessions, run_debate_session_job
 from app.services.scraping.execution_orchestrator import (
     recover_scraping_executions,
     run_facility_ai_cleanup_job,
@@ -37,6 +38,10 @@ def _redis_settings() -> RedisSettings:
 async def startup(ctx: dict) -> None:
     print("scraping-worker: starting country-aware source discovery worker", flush=True)
     await recover_scraping_executions(ctx)
+    # Debate Mode execution is registered on this worker rather than a
+    # dedicated one (see app.services.debate_service.DEBATE_ARQ_JOB_NAME's
+    # docstring) — it piggybacks on this worker's own startup recovery too.
+    await recover_debate_sessions(ctx)
 
 
 async def shutdown(ctx: dict) -> None:
@@ -58,6 +63,8 @@ class WorkerSettings:
         run_maps_census_enrichment_job,
         run_maps_enrichment_batch_job,
         run_maps_keep_drop_job,
+        run_debate_session_job,
+        recover_debate_sessions,
     ]
     cron_jobs = [
         # Reclaim zombie "running" executions if the worker/job died mid-flight.
@@ -66,6 +73,9 @@ class WorkerSettings:
         # Backfill missing official websites on completed Maps census runs — fully
         # automatic, replaces needing to click "Find missing websites" manually.
         cron(auto_refresh_maps_census_websites, minute={0, 30}, run_at_startup=True),
+        # Debate runs are short (<=180s); a minute's cadence is ample to catch one
+        # stuck past debate_execution_stale_seconds without adding DB load.
+        cron(recover_debate_sessions, second={10, 40}, run_at_startup=False),
     ]
     on_startup = startup
     on_shutdown = shutdown

@@ -81,12 +81,19 @@ class DebateRunConfig:
 @dataclass
 class LLMCallOutcome:
     """Usage/error bookkeeping for one debate LLM call, independent of whether
-    the call's JSON output ultimately validated."""
+    the call's JSON output ultimately validated.
+
+    ``None`` means "unknown" — a call that failed before the provider ever
+    returned a response has no usage to report, which is not the same thing
+    as the provider reporting zero cost. Only a call that actually reached
+    the provider (even if its JSON output then failed validation) gets real
+    numbers here.
+    """
 
     model_id: str
-    tokens_input: int = 0
-    tokens_output: int = 0
-    cost_usd: float = 0.0
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    cost_usd: float | None = None
     error: str | None = None
 
     @property
@@ -312,6 +319,7 @@ class DebateOrchestrator:
         await emit("debate_round2_started", {"participant_count": len(config.participants)})
 
         async def challenge_call(author: DebateParticipant) -> ChallengeCallResult:
+            await emit("debate_challenge_started", {"model_id": author.model_id})
             others = [p for p in config.participants if p.model_id != author.model_id]
             call_result = await self._run_challenge_call(
                 author=author, others=others, config=config, semaphore=semaphore
@@ -378,6 +386,7 @@ class DebateOrchestrator:
         await emit("debate_round3_started", {"targeted_model_count": len(challenges_by_target)})
 
         async def response_call(model_id: str, challenges: list[ChallengeForResponse]) -> ResponseCallResult:
+            await emit("debate_response_started", {"model_id": model_id})
             call_result = await self._run_response_call(
                 target=participants_by_id[model_id], challenges=challenges, config=config, semaphore=semaphore
             )
@@ -431,7 +440,6 @@ def reduce_findings(result: DebateRunResult) -> DebateFindings:
     claim.
     """
     from app.llm.debate_contracts import (
-        Agreement,
         Correction,
         Risk,
         Uncertainty,
@@ -511,13 +519,15 @@ def reduce_findings(result: DebateRunResult) -> DebateFindings:
                     )
                 )
 
-    agreements = [
-        Agreement(description=f"No participating model raised a challenge against {model_id}'s answer", model_ids=(model_id,))
-        for model_id in sorted(all_model_ids - challenged_model_ids)
-    ]
+    # Nobody challenging a model's answer is not evidence the panel agreed with
+    # it — Round 2's contract never asks a model to state agreement, only to
+    # raise critiques. Report the absence of a challenge as its own category
+    # instead of synthesizing an "Agreement" that no model actually made.
+    unchallenged_model_ids = tuple(sorted(all_model_ids - challenged_model_ids))
 
     return DebateFindings(
-        agreements=tuple(agreements),
+        agreements=(),
+        unchallenged_model_ids=unchallenged_model_ids,
         unresolved_disagreements=tuple(unresolved),
         corrections=tuple(corrections),
         risks=tuple(risks),
@@ -527,10 +537,11 @@ def reduce_findings(result: DebateRunResult) -> DebateFindings:
 
 def build_final_summary(findings: DebateFindings) -> str:
     """A short, template-assembled summary — no LLM call. Counts only; never
-    states that agreement implies correctness or that a concession is an
-    independently established fact."""
+    states that an unchallenged answer was confirmed, agreed with, or that a
+    concession is an independently established fact."""
     parts = [
-        f"{len(findings.agreements)} point(s) drew no challenge from the panel.",
+        f"{len(findings.unchallenged_model_ids)} answer(s) drew no challenge from the panel "
+        "(not confirmation that they are correct).",
         f"{len(findings.unresolved_disagreements)} challenge(s) remain unresolved.",
         f"{len(findings.corrections)} model(s) revised or conceded a point.",
         f"{len(findings.risks)} high-severity concern(s) were raised.",

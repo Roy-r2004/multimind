@@ -45,6 +45,10 @@ MODEL_C = "gpt-5-nano"
 ROUND3_MARKER = "RESPONSE TO CHALLENGES (ROUND 3)"
 
 
+async def _noop_publish(*args, **kwargs) -> None:
+    return None
+
+
 def _session_factory_for(db_session: AsyncSession):
     bind = db_session.bind if db_session.bind is not None else db_session.get_bind()
     return async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
@@ -308,6 +312,13 @@ async def _run_execute_debate_session(db, monkeypatch, *, turn, participants, pr
     factory = _serialized_session_factory(db)
     monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
     monkeypatch.setattr(debate_service, "get_provider_registry", lambda: ScriptedRegistry(provider))
+    # No live Redis in the test environment; SSE publishing is Phase 4's
+    # concern and covered separately (test_debate_events.py / the API
+    # tests), not something this persistence-focused suite needs to send
+    # over a real socket (publish_debate_event already swallows a Redis
+    # outage on its own, but skipping the real connection attempt here
+    # keeps this suite fast and deterministic).
+    monkeypatch.setattr(debate_service, "publish_debate_event", _noop_publish)
     session, loaded_participants, _ = await debate_service.start_debate_session(db, auth=overrides.pop("auth"), turn_id=turn.id)
     await db.commit()
     await debate_service.execute_debate_session(
@@ -343,6 +354,7 @@ async def test_partial_completion_and_cost_accounting(db: AsyncSession, auth: Au
     assert claimed is True
     factory = _session_factory_for(db)
     monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(debate_service, "publish_debate_event", _noop_publish)
 
     await debate_service._persist_challenge_result(
         org_id=session.org_id,

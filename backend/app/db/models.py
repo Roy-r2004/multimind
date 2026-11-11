@@ -2704,6 +2704,7 @@ class DebateSession(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_debate_sessions_org_id", "org_id"),
         Index("ix_debate_sessions_turn_id", "turn_id"),
         Index("ix_debate_sessions_status", "status"),
+        Index("ix_debate_sessions_status_started_at", "status", "started_at"),
         Index(
             "uq_debate_sessions_active_turn",
             "turn_id",
@@ -2726,14 +2727,28 @@ class DebateSession(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     model_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     max_rounds: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    # Reserved for a future explicit "model X agrees with Y" contract. The Phase 3
+    # reducer populated this from unchallenged answers, which Phase 4 corrected —
+    # that is NOT evidence of agreement, only absence of a challenge. See
+    # unchallenged_model_ids below and app.llm.debate_contracts.DebateFindings.
     agreements: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     unresolved_disagreements: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     corrections: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     risks: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    uncertainties: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    # Model IDs that nobody on the panel challenged — explicitly distinct from
+    # "agreement": it only reflects that peer review did not surface an objection.
+    unchallenged_model_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     final_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Atomic single-execution claim: a job handler (ARQ delivery, inline task, or
+    # recovery cron) must successfully set this (UPDATE ... WHERE execution_claimed_at
+    # IS NULL) before running the engine, so duplicate job delivery can never execute
+    # the same session concurrently. Independent of `status` so a claim and a status
+    # transition are never conflated.
+    execution_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     organization: Mapped["Organization"] = relationship()
     turn: Mapped["Turn"] = relationship()
@@ -2787,9 +2802,11 @@ class DebateChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     challenges: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tokens_input: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    tokens_output: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # NULL means "unknown" (the call failed before the provider returned any usage
+    # data) — never conflate that with 0, which means the provider reported no cost.
+    tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     debate_session: Mapped["DebateSession"] = relationship(back_populates="challenges")
 
@@ -2833,9 +2850,10 @@ class DebateResponse(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     responses: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tokens_input: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    tokens_output: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # NULL means "unknown" — see the identical note on DebateChallenge above.
+    tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     debate_session: Mapped["DebateSession"] = relationship(back_populates="responses")
 

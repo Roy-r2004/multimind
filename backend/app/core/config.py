@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     # When true (default in development), run scrapes inside the API process if Redis/worker is down
     scraping_inline_execution: bool | None = None
 
+    # Debate Mode execution dispatch — mirrors scraping_inline_execution. Debate jobs
+    # run on the existing scraping ARQ worker (see app/scraping/worker.py) rather than
+    # a dedicated worker/queue, since debate runs are short (~seconds-minutes) and
+    # reuse already-deployed infrastructure instead of adding a new container.
+    debate_inline_execution: bool | None = None
+    # Stale RUNNING debate sessions older than this are presumed orphaned by a dead
+    # worker/API restart and recovered to FAILED (not silently resurrected) — comfortably
+    # above DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS (180s) plus queueing/startup slack.
+    debate_execution_stale_seconds: int = 600
+
     # Dedicated Playbook ARQ worker (separate queue from scraping/maps).
     # Infrastructure defaults, not final extraction performance tuning.
     playbook_worker_queue_name: str = "playbooks"

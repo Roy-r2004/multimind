@@ -210,7 +210,11 @@ def test_zero_challenge_debate_skips_round_3_entirely():
     result, events = _run(config, provider)
     assert result.response_results == []
     assert [e for e, _ in events].count("debate_response_completed") == 0
-    assert len(result.findings.agreements) == 3  # nobody challenged, all three are "agreements"
+    # Nobody challenged anyone, but that is explicitly NOT "agreement" — the
+    # current contracts have no way for a model to state agreement, so it
+    # must never be synthesized from an absence of challenge.
+    assert result.findings.agreements == ()
+    assert sorted(result.findings.unchallenged_model_ids) == [MODEL_A, MODEL_B, MODEL_C]
 
 
 # --- 5. One model fails during Round 2 --------------------------------------
@@ -407,15 +411,19 @@ def test_findings_distinguish_claim_criticism_concession_and_uncertainty():
     assert len(findings.risks) == 1  # severity == high, regardless of resolution
     assert len(findings.uncertainties) == 1
     assert findings.uncertainties[0].description == "not fully sure"
-    # Agreement means "nobody challenged THIS model's own answer" — A raised a
-    # challenge but was never challenged itself, so A also counts; only B was
-    # actually challenged, so B is the one model excluded.
-    assert sorted(a.model_ids for a in findings.agreements) == [(MODEL_A,), (MODEL_C,)]
+    # "Agreement" is never synthesized from an absence of challenge — the
+    # current contracts can't express it, so it's always empty. "Unchallenged"
+    # is the honest, separate category: A raised a challenge but was never
+    # challenged itself, and C was never challenged either, so both appear
+    # here; only B was actually challenged, so B is the one model excluded.
+    assert findings.agreements == ()
+    assert sorted(findings.unchallenged_model_ids) == [MODEL_A, MODEL_C]
 
 
 def test_reduce_findings_on_empty_result_is_empty():
     findings = reduce_findings(DebateRunResult())
     assert findings.agreements == ()
+    assert findings.unchallenged_model_ids == ()
     assert findings.unresolved_disagreements == ()
     assert findings.corrections == ()
     assert findings.risks == ()
