@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     # under this value at 2 × 75s = 150s, with a real margin rather than the
     # ~30s margin the old 45s/180s pair left.
     debate_overall_deadline_seconds: float = 240.0
+    # The optional one-call Debate Conclusion synthesis runs AFTER Round 2/3
+    # already finished (bounded by the deadline above) — it gets its own,
+    # separate, smaller timeout rather than competing with round calls for
+    # the same deadline. Worst case total wall-clock is therefore roughly
+    # 240s (rounds) + 60s (synthesis) = 300s — see
+    # debate_worker_job_timeout_seconds below, which stays above that.
+    debate_synthesis_timeout_seconds: float = 60.0
     # Stale RUNNING debate sessions older than this are presumed orphaned by a dead
     # worker/API restart and recovered to FAILED (not silently resurrected) — comfortably
     # above debate_worker_job_timeout_seconds below, so recovery never races a debate
@@ -90,10 +97,11 @@ class Settings(BaseSettings):
     # so this bounds how many *debate sessions* run at once, not individual calls.
     debate_worker_queue_name: str = "debate"
     debate_worker_concurrency: int = 2
-    # Comfortably above debate_overall_deadline_seconds (240s) plus queueing/
-    # startup slack, but far below scraping's multi-hour timeout — a stuck
-    # debate job should be reclaimed quickly, not held for hours.
-    debate_worker_job_timeout_seconds: int = 300
+    # Comfortably above debate_overall_deadline_seconds + debate_synthesis_timeout_seconds
+    # (240s + 60s = 300s) plus queueing/startup slack, but far below scraping's
+    # multi-hour timeout — a stuck debate job should be reclaimed quickly, not
+    # held for hours.
+    debate_worker_job_timeout_seconds: int = 360
     debate_worker_keep_result_seconds: int = 3600
 
     # Dedicated Playbook ARQ worker (separate queue from scraping/maps).

@@ -30,6 +30,12 @@ from app.llm.prompt_engine import get_prompt_engine
 # bounded, predictable prompt.
 DEFAULT_MAX_ANSWER_CHARS = 6_000
 DEFAULT_MAX_CHALLENGE_FIELD_CHARS = 2_000
+# The conclusion prompt packs every participant's answer PLUS every
+# challenge/response from the whole debate into one request — tighter caps
+# than Round 2/3's own, to keep that combined prompt bounded.
+DEFAULT_MAX_CONCLUSION_ANSWER_CHARS = 2_000
+DEFAULT_MAX_CONCLUSION_FIELD_CHARS = 800
+DEFAULT_MAX_VERDICT_REFERENCE_CHARS = 2_000
 _TRUNCATION_NOTE = "\n\n[...truncated for length; {omitted} characters omitted...]"
 
 
@@ -112,6 +118,85 @@ def build_challenge_prompt(
             }
             for answer in other_answers
         ],
+    )
+
+
+@dataclass(frozen=True)
+class ConclusionExchange:
+    """One challenge paired with its (possibly missing) response — the flat
+    shape the conclusion prompt actually needs, built by the orchestrator
+    from its own ``DebateRunResult`` after Round 2/3 complete."""
+
+    challenge_id: str
+    challenger_model_id: str
+    challenger_model_name: str
+    target_model_id: str
+    target_model_name: str
+    issue: str
+    reasoning: str
+    severity: str
+    uncertainty: str | None = None
+    response_stance: str | None = None  # "defends" | "revises" | "concedes" | None (unanswered)
+    response_explanation: str | None = None
+    response_updated_position: str | None = None
+
+
+def build_conclusion_prompt(
+    *,
+    user_message: str,
+    participants: list[PanelistAnswer],
+    exchanges: list[ConclusionExchange],
+    verdict_reference_text: str | None = None,
+    max_answer_chars: int = DEFAULT_MAX_CONCLUSION_ANSWER_CHARS,
+    max_field_chars: int = DEFAULT_MAX_CONCLUSION_FIELD_CHARS,
+    max_verdict_chars: int = DEFAULT_MAX_VERDICT_REFERENCE_CHARS,
+) -> str:
+    """Render the one-call Debate Conclusion synthesis prompt.
+
+    ``exchanges`` may be empty (a zero-challenge debate still gets a
+    conclusion — there is simply nothing to report under "what changed").
+    ``verdict_reference_text`` is optional, read-only reference context —
+    the template explicitly instructs the model never to treat it as
+    unquestionable truth, matching the isolation requirement that Debate
+    Mode must never defer to the original Verdict as automatically correct.
+    """
+    return get_prompt_engine().render(
+        "system/debate_conclusion.j2",
+        user_message=user_message,
+        participants=[
+            {
+                "model_id": p.model_id,
+                "model_name": p.model_name,
+                "text": _truncate(p.text, max_answer_chars),
+            }
+            for p in participants
+        ],
+        exchanges=[
+            {
+                "challenge_id": e.challenge_id,
+                "challenger_model_id": e.challenger_model_id,
+                "challenger_model_name": e.challenger_model_name,
+                "target_model_id": e.target_model_id,
+                "target_model_name": e.target_model_name,
+                "issue": _truncate(e.issue, max_field_chars),
+                "reasoning": _truncate(e.reasoning, max_field_chars),
+                "severity": e.severity,
+                "uncertainty": _truncate(e.uncertainty, max_field_chars) if e.uncertainty else None,
+                "response_stance": e.response_stance,
+                "response_explanation": (
+                    _truncate(e.response_explanation, max_field_chars) if e.response_explanation else None
+                ),
+                "response_updated_position": (
+                    _truncate(e.response_updated_position, max_field_chars)
+                    if e.response_updated_position
+                    else None
+                ),
+            }
+            for e in exchanges
+        ],
+        verdict_reference_text=(
+            _truncate(verdict_reference_text, max_verdict_chars) if verdict_reference_text else None
+        ),
     )
 
 

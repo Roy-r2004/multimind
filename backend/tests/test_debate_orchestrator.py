@@ -28,6 +28,7 @@ MODEL_C = "gpt-5-nano"
 
 ROUND2_MARKER = "PEER REVIEW (ROUND 2)"
 ROUND3_MARKER = "RESPONSE TO CHALLENGES (ROUND 3)"
+CONCLUSION_MARKER = "CONCLUSION SYNTHESIS"
 
 
 @dataclass
@@ -39,13 +40,20 @@ class ScriptedProvider:
 
     round2_by_slug: dict[str, object] = field(default_factory=dict)
     round3_by_slug: dict[str, object] = field(default_factory=dict)
+    conclusion_by_slug: dict[str, object] = field(default_factory=dict)
     calls: list[tuple[str, str]] = field(default_factory=list)  # (round, slug)
 
     async def complete(self, *, system, user, model, max_tokens):
-        is_round3 = ROUND3_MARKER in system
-        round_name = "round3" if is_round3 else "round2"
+        if CONCLUSION_MARKER in system:
+            round_name = "conclusion"
+            table = self.conclusion_by_slug
+        elif ROUND3_MARKER in system:
+            round_name = "round3"
+            table = self.round3_by_slug
+        else:
+            round_name = "round2"
+            table = self.round2_by_slug
         self.calls.append((round_name, model))
-        table = self.round3_by_slug if is_round3 else self.round2_by_slug
         outcome = table.get(model)
         if isinstance(outcome, Exception):
             raise outcome
@@ -75,6 +83,32 @@ def _response_response(author: str, responses: list[dict]) -> LLMResponse:
         tokens_input=8,
         tokens_output=4,
         cost_usd=0.0008,
+    )
+
+
+def _conclusion_response(
+    *,
+    recommended_approach: str = "Approach X",
+    why_this_approach: str = "It held up best under challenge.",
+    what_changed: str = "Model B conceded a point.",
+    remaining_risks: str = "None significant.",
+    next_steps: str = "Verify the data source independently.",
+    is_conditional: bool = False,
+) -> LLMResponse:
+    return LLMResponse(
+        text=json.dumps(
+            {
+                "recommended_approach": recommended_approach,
+                "why_this_approach": why_this_approach,
+                "what_changed": what_changed,
+                "remaining_risks": remaining_risks,
+                "next_steps": next_steps,
+                "is_conditional": is_conditional,
+            }
+        ),
+        tokens_input=20,
+        tokens_output=12,
+        cost_usd=0.003,
     )
 
 
@@ -515,3 +549,164 @@ def test_reduce_findings_on_empty_result_is_empty():
     assert findings.corrections == ()
     assert findings.risks == ()
     assert findings.uncertainties == ()
+
+
+# --- Debate Conclusion synthesis (one optional extra call) -------------------
+
+
+def test_synthesis_is_skipped_entirely_when_no_synthesis_model_configured():
+    """Default behavior (and every pre-existing test above): omitting
+    synthesis_model_id must not add any extra provider call."""
+    participants = _participants(MODEL_A, MODEL_B)
+    config = DebateRunConfig(user_message="Q?", participants=participants)
+    provider = ScriptedProvider(
+        round2_by_slug={
+            "openai/gpt-4.1": _challenge_response(MODEL_A, []),
+            "openai/gpt-4.1-mini": _challenge_response(MODEL_B, []),
+        }
+    )
+    result, events = _run(config, provider)
+    assert result.conclusion is None
+    assert result.conclusion_error is None
+    assert result.conclusion_skipped_reason is None
+    assert [c for c in provider.calls if c[0] == "conclusion"] == []
+    assert "debate_conclusion_started" not in [e for e, _ in events]
+
+
+def test_synthesis_runs_exactly_once_after_a_successful_debate():
+    participants = _participants(MODEL_A, MODEL_B, MODEL_C)
+    config = DebateRunConfig(
+        user_message="Q?", participants=participants, synthesis_model_id=MODEL_C
+    )
+    provider = ScriptedProvider(
+        round2_by_slug={
+            "openai/gpt-4.1": _challenge_response(
+                MODEL_A,
+                [{"challenge_id": "c1", "target_model_id": MODEL_B, "issue": "x", "reasoning": "y", "severity": "low"}],
+            ),
+            "openai/gpt-4.1-mini": _challenge_response(MODEL_B, []),
+            "openai/gpt-5-nano": _challenge_response(MODEL_C, []),
+        },
+        round3_by_slug={
+            "openai/gpt-4.1-mini": _response_response(
+                MODEL_B,
+                [{"challenge_id": "c1", "challenger_model_id": MODEL_A, "stance": "concedes", "explanation": "ok", "updated_position": "fixed"}],
+            ),
+        },
+        conclusion_by_slug={"openai/gpt-5-nano": _conclusion_response()},
+    )
+    result, events = _run(config, provider)
+    assert result.conclusion is not None
+    assert result.conclusion.recommended_approach == "Approach X"
+    assert result.conclusion_error is None
+    assert result.conclusion_outcome is not None
+    assert result.conclusion_outcome.tokens_input == 20
+    conclusion_calls = [c for c in provider.calls if c[0] == "conclusion"]
+    assert conclusion_calls == [("conclusion", "openai/gpt-5-nano")]  # exactly one
+    event_names = [e for e, _ in events]
+    assert "debate_conclusion_started" in event_names
+    assert "debate_conclusion_completed" in event_names
+    assert "debate_conclusion_failed" not in event_names
+
+
+def test_synthesis_is_skipped_not_failed_when_every_round_call_failed():
+    """Distinguishes 'nothing to synthesize from' (skipped) from an actual
+    synthesis call failing (failed) — see DebateConclusionStatus.SKIPPED."""
+    participants = _participants(MODEL_A, MODEL_B)
+    config = DebateRunConfig(
+        user_message="Q?", participants=participants, synthesis_model_id=MODEL_A
+    )
+    provider = ScriptedProvider(
+        round2_by_slug={
+            "openai/gpt-4.1": RuntimeError("provider down"),
+            "openai/gpt-4.1-mini": RuntimeError("provider down"),
+        }
+    )
+    result, _events = _run(config, provider)
+    assert result.all_calls_failed is True
+    assert result.conclusion is None
+    assert result.conclusion_error is None
+    assert result.conclusion_skipped_reason == "no successful debate output to synthesize from"
+    assert [c for c in provider.calls if c[0] == "conclusion"] == []
+
+
+def test_synthesis_failure_does_not_touch_challenge_or_response_results():
+    participants = _participants(MODEL_A, MODEL_B)
+    config = DebateRunConfig(
+        user_message="Q?", participants=participants, synthesis_model_id=MODEL_A
+    )
+    provider = ScriptedProvider(
+        round2_by_slug={
+            "openai/gpt-4.1": _challenge_response(MODEL_A, []),
+            "openai/gpt-4.1-mini": _challenge_response(MODEL_B, []),
+        },
+        conclusion_by_slug={"openai/gpt-4.1": LLMResponse(text="not json", tokens_input=5, tokens_output=5, cost_usd=0.0001)},
+    )
+    result, events = _run(config, provider)
+    assert result.conclusion is None
+    assert result.conclusion_error is not None
+    assert result.conclusion_skipped_reason is None
+    # Round 2/3 outcomes are completely untouched by the synthesis failure.
+    assert all(r.outcome.succeeded for r in result.challenge_results)
+    assert "debate_conclusion_failed" in [e for e, _ in events]
+
+
+def test_synthesis_still_runs_when_round3_was_skipped_by_the_deadline():
+    """Round 3 can be skipped entirely (deadline already expired after
+    Round 2) while Round 2's own data is still usable for synthesis."""
+    participants = _participants(MODEL_A, MODEL_B)
+    config = DebateRunConfig(
+        user_message="Q?",
+        participants=participants,
+        synthesis_model_id=MODEL_A,
+        overall_deadline_seconds=0.0,
+    )
+    provider = ScriptedProvider(
+        round2_by_slug={
+            "openai/gpt-4.1": _challenge_response(MODEL_A, []),
+            "openai/gpt-4.1-mini": _challenge_response(MODEL_B, []),
+        },
+        conclusion_by_slug={"openai/gpt-4.1": _conclusion_response()},
+    )
+    result, events = _run(config, provider)
+    assert result.response_results == []
+    assert "debate_round3_skipped" in [e for e, _ in events]
+    assert result.conclusion is not None
+
+
+def test_conclusion_prompt_faithfully_represents_concessions_and_conflicting_views():
+    """Contract-level check that the prompt the model actually receives
+    carries the real exchange content (not a lossy paraphrase) and
+    instructs the model to avoid forcing a consensus — judgment quality
+    itself needs a real model and is out of scope for a mocked test."""
+    from app.llm.debate_prompts import ConclusionExchange, PanelistAnswer, build_conclusion_prompt
+
+    prompt = build_conclusion_prompt(
+        user_message="Which approach is best?",
+        participants=[
+            PanelistAnswer(model_id=MODEL_A, model_name="Model A", text="Answer A"),
+            PanelistAnswer(model_id=MODEL_B, model_name="Model B", text="Answer B"),
+        ],
+        exchanges=[
+            ConclusionExchange(
+                challenge_id="c1",
+                challenger_model_id=MODEL_A,
+                challenger_model_name="Model A",
+                target_model_id=MODEL_B,
+                target_model_name="Model B",
+                issue="Model B overstated guarantee X",
+                reasoning="No evidence for X under failure Y",
+                severity="high",
+                response_stance="defends",
+                response_explanation="X still holds because Z",
+            )
+        ],
+        verdict_reference_text="Original verdict text",
+    )
+    assert "Model B overstated guarantee X" in prompt
+    assert "No evidence for X under failure Y" in prompt
+    assert "X still holds because Z" in prompt
+    assert "is_conditional" in prompt
+    assert "do not" in prompt.lower() or "not treat" in prompt.lower()
+    assert "Original verdict text" in prompt
+    assert "unquestionable truth" in prompt.lower()

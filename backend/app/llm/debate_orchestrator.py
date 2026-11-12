@@ -21,16 +21,20 @@ from app.core.logging import get_logger
 from app.llm.catalog import get_model
 from app.llm.debate_contracts import (
     ChallengeSet,
+    DebateConclusion,
     DebateContractError,
     DebateFindings,
     ResponseSet,
     parse_challenge_output,
+    parse_conclusion_output,
     parse_response_output,
 )
 from app.llm.debate_prompts import (
     ChallengeForResponse,
+    ConclusionExchange,
     PanelistAnswer,
     build_challenge_prompt,
+    build_conclusion_prompt,
     build_response_prompt,
 )
 from app.llm.providers import ProviderRegistry
@@ -43,15 +47,25 @@ logger = get_logger(__name__)
 # budgets never affects Debate Mode and vice versa.
 DEBATE_CHALLENGE_MAX_TOKENS = 3_000
 DEBATE_RESPONSE_MAX_TOKENS = 3_000
+# The conclusion is free-text prose (recommendation/why/what-changed/risks/
+# next-steps), not short structured fields like the two above, so it gets a
+# larger budget — still bounded, and still a fraction of Council/Verdict's
+# free-text budgets.
+DEBATE_CONCLUSION_MAX_TOKENS = 2_000
 DEBATE_DEFAULT_MAX_CONCURRENCY = 5
 # These mirror app.core.config.Settings.debate_per_call_timeout_seconds /
-# debate_overall_deadline_seconds — the service layer always passes the
-# configured values explicitly; these are this module's own fallback when
-# DebateRunConfig is built without an override (e.g. in tests). Raised from
-# 45s/180s after the first real debate (Claude Opus 4.1) hit the old 45s
-# per-call timeout on a Round-2 peer-review call.
+# debate_overall_deadline_seconds / debate_synthesis_timeout_seconds — the
+# service layer always passes the configured values explicitly; these are
+# this module's own fallback when DebateRunConfig is built without an
+# override (e.g. in tests). Per-call/overall raised from 45s/180s after the
+# first real debate (Claude Opus 4.1) hit the old 45s per-call timeout on a
+# Round-2 peer-review call.
 DEBATE_DEFAULT_PER_CALL_TIMEOUT_SECONDS = 75.0
 DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS = 240.0
+# The one-call conclusion synthesis runs AFTER the overall deadline above
+# already bounded Round 2/3 — it gets its own separate, smaller budget
+# rather than competing with round calls for the same deadline.
+DEBATE_DEFAULT_SYNTHESIS_TIMEOUT_SECONDS = 60.0
 
 # Round 2 is always exactly one call per participant reviewing every other
 # participant at once (O(n)); this module never issues a pairwise call.
@@ -75,6 +89,16 @@ class DebateRunConfig:
     max_concurrency: int = DEBATE_DEFAULT_MAX_CONCURRENCY
     per_call_timeout_seconds: float = DEBATE_DEFAULT_PER_CALL_TIMEOUT_SECONDS
     overall_deadline_seconds: float = DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS
+    # Conclusion synthesis is entirely optional — a config with no
+    # synthesis_model_id simply skips it (existing callers/tests that only
+    # exercise Round 2/3 need no changes). The service layer always passes
+    # the turn's own already-configured Verdict referee model here — no new
+    # "debate synthesis model" setting is introduced.
+    synthesis_model_id: str | None = None
+    synthesis_timeout_seconds: float = DEBATE_DEFAULT_SYNTHESIS_TIMEOUT_SECONDS
+    # Optional, read-only reference context — never treated as unquestionable
+    # truth by the conclusion prompt (see debate_conclusion.j2).
+    verdict_reference_text: str | None = None
 
     def __post_init__(self) -> None:
         if len(self.participants) < 2:
@@ -127,6 +151,16 @@ class DebateRunResult:
     response_results: list[ResponseCallResult] = field(default_factory=list)
     findings: DebateFindings = field(default_factory=DebateFindings)
     timed_out: bool = False
+    # Conclusion synthesis outcome — entirely independent of the session's
+    # overall COMPLETED/PARTIAL/FAILED status above, which reflects only
+    # Round 2/3 outcomes. Exactly one of the three is set once run() returns
+    # (when synthesis was attempted at all): `conclusion` on success,
+    # `conclusion_error` if the synthesis call itself failed, or
+    # `conclusion_skipped_reason` if there was nothing to synthesize from.
+    conclusion: DebateConclusion | None = None
+    conclusion_outcome: LLMCallOutcome | None = None
+    conclusion_error: str | None = None
+    conclusion_skipped_reason: str | None = None
 
     @property
     def any_challenge_succeeded(self) -> bool:
@@ -375,11 +409,16 @@ class DebateOrchestrator:
             result.timed_out = True
         await emit("debate_round2_completed", {})
 
+        participants_by_id = {p.model_id: p for p in config.participants}
+
         if deadline.expired():
             result.timed_out = True
             await emit("debate_round3_skipped", {"reason": "deadline exceeded before round 3"})
             result.findings = reduce_findings(result)
             await emit("debate_findings_ready", {})
+            await self._run_synthesis(
+                config=config, result=result, participants_by_id=participants_by_id, emit=emit
+            )
             return result
 
         # --- Round 3: group valid challenges by TARGET model. Identity is
@@ -401,7 +440,6 @@ class DebateOrchestrator:
                     )
                 )
 
-        participants_by_id = {p.model_id: p for p in config.participants}
         await emit("debate_round3_started", {"targeted_model_count": len(challenges_by_target)})
 
         async def response_call(model_id: str, challenges: list[ChallengeForResponse]) -> ResponseCallResult:
@@ -446,7 +484,106 @@ class DebateOrchestrator:
 
         result.findings = reduce_findings(result)
         await emit("debate_findings_ready", {})
+        await self._run_synthesis(
+            config=config, result=result, participants_by_id=participants_by_id, emit=emit
+        )
         return result
+
+    async def _run_synthesis(
+        self,
+        *,
+        config: DebateRunConfig,
+        result: DebateRunResult,
+        participants_by_id: dict[str, DebateParticipant],
+        emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        """One optional extra call, after Round 2/3 are fully done: ask the
+        turn's own already-configured Verdict referee model to synthesize a
+        plain-language conclusion from the actual debate record. Never
+        retried, never counted toward the session's COMPLETED/PARTIAL/
+        FAILED status (that is Round 2/3's own, set by the caller — this
+        function only ever touches ``result.conclusion*`` fields)."""
+        if config.synthesis_model_id is None:
+            return  # caller never asked for synthesis (e.g. most existing tests)
+        if result.all_calls_failed:
+            result.conclusion_skipped_reason = "no successful debate output to synthesize from"
+            return
+
+        responses_by_key: dict[tuple[str, str], Any] = {}
+        for call_result in result.response_results:
+            if call_result.response_set is None:
+                continue
+            for item in call_result.response_set.responses:
+                responses_by_key[(item.challenger_model_id, item.challenge_id)] = item
+
+        exchanges: list[ConclusionExchange] = []
+        for call_result in result.challenge_results:
+            if call_result.challenge_set is None:
+                continue
+            challenger = participants_by_id.get(call_result.model_id)
+            for item in call_result.challenge_set.challenges:
+                target = participants_by_id.get(item.target_model_id)
+                response_item = responses_by_key.get((call_result.model_id, item.challenge_id))
+                exchanges.append(
+                    ConclusionExchange(
+                        challenge_id=item.challenge_id,
+                        challenger_model_id=call_result.model_id,
+                        challenger_model_name=challenger.model_name if challenger else call_result.model_id,
+                        target_model_id=item.target_model_id,
+                        target_model_name=target.model_name if target else item.target_model_id,
+                        issue=item.issue,
+                        reasoning=item.reasoning,
+                        severity=item.severity,
+                        uncertainty=item.uncertainty,
+                        response_stance=response_item.stance if response_item else None,
+                        response_explanation=response_item.explanation if response_item else None,
+                        response_updated_position=(
+                            response_item.updated_position if response_item else None
+                        ),
+                    )
+                )
+
+        prompt = build_conclusion_prompt(
+            user_message=config.user_message,
+            participants=[
+                PanelistAnswer(model_id=p.model_id, model_name=p.model_name, text=p.answer_text)
+                for p in config.participants
+            ],
+            exchanges=exchanges,
+            verdict_reference_text=config.verdict_reference_text,
+        )
+
+        await emit("debate_conclusion_started", {})
+        # A dedicated semaphore of 1: this is always exactly one call, never
+        # competing with Round 2/3's own concurrency-bounded semaphore.
+        raw_text, outcome = await self._call_model_json(
+            model_id=config.synthesis_model_id,
+            system_prompt=prompt,
+            max_tokens=DEBATE_CONCLUSION_MAX_TOKENS,
+            semaphore=asyncio.Semaphore(1),
+            per_call_timeout=config.synthesis_timeout_seconds,
+        )
+        result.conclusion_outcome = outcome
+        if raw_text is None:
+            result.conclusion_error = outcome.error
+            await emit("debate_conclusion_failed", {"error": outcome.error})
+            return
+        try:
+            result.conclusion = parse_conclusion_output(raw_text)
+        except DebateContractError as exc:
+            logger.warning("debate_conclusion_output_invalid", error=str(exc))
+            result.conclusion_error = str(exc)
+            await emit("debate_conclusion_failed", {"error": str(exc)})
+            return
+        await emit(
+            "debate_conclusion_completed",
+            {
+                "conclusion": result.conclusion.model_dump(),
+                "tokens_input": outcome.tokens_input,
+                "tokens_output": outcome.tokens_output,
+                "cost_usd": outcome.cost_usd,
+            },
+        )
 
 
 def reduce_findings(result: DebateRunResult) -> DebateFindings:
@@ -562,7 +699,10 @@ def build_final_summary(findings: DebateFindings) -> str:
         f"{len(findings.unchallenged_model_ids)} answer(s) drew no challenge from the panel "
         "(not confirmation that they are correct).",
         f"{len(findings.unresolved_disagreements)} challenge(s) remain unresolved.",
-        f"{len(findings.corrections)} model(s) revised or conceded a point.",
+        # Count challenges that resulted in a revision/concession, not models —
+        # one model can concede multiple distinct challenges, so "N models"
+        # overstates how many participants actually changed position.
+        f"{len(findings.corrections)} challenge(s) resulted in a revision or concession.",
         f"{len(findings.risks)} high-severity concern(s) were raised.",
         f"{len(findings.uncertainties)} point(s) were flagged by a reviewer as uncertain.",
     ]

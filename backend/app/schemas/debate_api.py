@@ -40,6 +40,26 @@ class DebateResponseResponse(BaseModel):
     created_at: datetime
 
 
+class DebateConclusionResponse(BaseModel):
+    """AI-synthesized reading of the full debate (one extra LLM call) —
+    explicitly distinct from the deterministic findings above. ``None``
+    when conclusion_status is not "completed" (not attempted, failed, or
+    skipped — see conclusion_status/conclusion_error_message on the
+    session itself for why)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    recommended_approach: str
+    why_this_approach: str
+    what_changed: str
+    remaining_risks: str
+    next_steps: str
+    is_conditional: bool
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    cost_usd: float | None = None
+
+
 class DebateUsageSummary(BaseModel):
     """Aggregated across every challenge/response call in this session. A
     call that failed before the provider ever responded contributes nothing
@@ -72,6 +92,9 @@ class DebateSessionResponse(BaseModel):
     uncertainties: list[dict[str, Any]] | None
     final_summary: str | None
     error_message: str | None
+    conclusion: DebateConclusionResponse | None
+    conclusion_status: str | None
+    conclusion_error_message: str | None
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime

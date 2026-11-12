@@ -322,6 +322,53 @@ class Uncertainty(BaseModel):
         return _require_non_blank(value, "description")
 
 
+class DebateConclusion(BaseModel):
+    """An AI-synthesized reading of the full debate — a recommendation, not
+    a verified fact. Unlike every other contract in this module, a model
+    produces this one directly (``app.llm.debate_orchestrator``'s one extra
+    synthesis call); it is explicitly NOT the deterministic
+    ``DebateFindings`` reducer, and must never be presented to the user as
+    more certain than it is.
+
+    ``is_conditional`` lets the model say "it depends" instead of forcing a
+    single pick when the debate's evidence was insufficient or genuinely
+    conflicting — in that case ``recommended_approach`` states the
+    condition(s) under which each option would be the right one, rather
+    than silently picking a side.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    recommended_approach: str
+    why_this_approach: str
+    what_changed: str
+    remaining_risks: str
+    next_steps: str
+    is_conditional: bool = False
+
+    @field_validator(
+        "recommended_approach", "why_this_approach", "what_changed", "remaining_risks", "next_steps"
+    )
+    @classmethod
+    def _not_blank(cls, value: str, info) -> str:
+        return _require_non_blank(value, info.field_name)
+
+
+def parse_conclusion_output(raw_text: str) -> DebateConclusion:
+    """Parse and validate the one-call Debate Conclusion synthesis output.
+
+    Tolerant of prose/code-fence wrapping via the same best-effort recovery
+    used for every other Debate contract; strict about the resulting shape.
+    """
+    parsed = LLMProvider.parse_json_object_lenient(raw_text)
+    if parsed is None:
+        raise DebateContractError("response was not valid or recoverable JSON")
+    try:
+        return DebateConclusion.model_validate(parsed)
+    except Exception as exc:  # pydantic.ValidationError or our own ValueError
+        raise DebateContractError(str(exc)) from exc
+
+
 class DebateFindings(BaseModel):
     """The complete structured output of a debate session.
 

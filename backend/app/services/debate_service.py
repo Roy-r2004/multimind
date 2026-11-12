@@ -39,6 +39,7 @@ from app.db.models import (
     CostRecord,
     DebateChallenge,
     DebateChallengeStatus,
+    DebateConclusionStatus,
     DebateResponse,
     DebateResponseStatus,
     DebateSession,
@@ -458,7 +459,22 @@ _TERMINAL_EVENT_BY_STATUS = {
 }
 
 
-async def _finalize_session(session_id: str, result: DebateRunResult) -> None:
+async def _finalize_session(
+    session_id: str,
+    result: DebateRunResult,
+    *,
+    org_id: str | None = None,
+    turn_id: str | None = None,
+    chat_id: str | None = None,
+) -> None:
+    """Persists both the deterministic findings AND the optional Debate
+    Conclusion synthesis in one place and one transaction — exactly like
+    findings, the conclusion is never written from a live event, only here,
+    once, when the whole run is done. Conclusion success/failure/skip never
+    affects ``final_status`` below, which reflects Round 2/3 outcomes only —
+    an otherwise-successful debate is never marked FAILED solely because its
+    optional conclusion failed.
+    """
     async with AsyncSessionLocal() as db:
         if not await _session_is_running(db, session_id):
             return
@@ -471,6 +487,33 @@ async def _finalize_session(session_id: str, result: DebateRunResult) -> None:
             final_status = DebateSessionStatus.PARTIAL
         else:
             final_status = DebateSessionStatus.COMPLETED
+
+        conclusion_values: dict[str, Any] = {}
+        if result.conclusion is not None:
+            conclusion_payload = result.conclusion.model_dump()
+            outcome = result.conclusion_outcome
+            conclusion_payload["tokens_input"] = outcome.tokens_input if outcome else None
+            conclusion_payload["tokens_output"] = outcome.tokens_output if outcome else None
+            conclusion_payload["cost_usd"] = outcome.cost_usd if outcome else None
+            conclusion_values = {
+                "conclusion": conclusion_payload,
+                "conclusion_status": DebateConclusionStatus.COMPLETED,
+                "conclusion_error_message": None,
+            }
+        elif result.conclusion_error is not None:
+            conclusion_values = {
+                "conclusion_status": DebateConclusionStatus.FAILED,
+                "conclusion_error_message": result.conclusion_error,
+            }
+        elif result.conclusion_skipped_reason is not None:
+            conclusion_values = {
+                "conclusion_status": DebateConclusionStatus.SKIPPED,
+                "conclusion_error_message": result.conclusion_skipped_reason,
+            }
+        # else: synthesis was never attempted (synthesis_model_id was None) —
+        # leave every conclusion_* column untouched (NULL), same as any
+        # debate run from before this feature existed.
+
         result_proxy = await db.execute(
             update(DebateSession)
             .where(DebateSession.id == session_id, DebateSession.status == DebateSessionStatus.RUNNING)
@@ -484,10 +527,32 @@ async def _finalize_session(session_id: str, result: DebateRunResult) -> None:
                 uncertainties=[item.model_dump() for item in findings.uncertainties],
                 final_summary=build_final_summary(findings),
                 completed_at=datetime.now(UTC),
+                **conclusion_values,
             )
             .returning(DebateSession.id)
         )
         finalized = result_proxy.scalar_one_or_none()
+        if (
+            finalized is not None
+            and result.conclusion is not None
+            and org_id is not None
+            and turn_id is not None
+            and result.conclusion_outcome is not None
+        ):
+            outcome = result.conclusion_outcome
+            if outcome.tokens_input or outcome.tokens_output or outcome.cost_usd:
+                db.add(
+                    CostRecord(
+                        org_id=org_id,
+                        chat_id=chat_id,
+                        turn_id=turn_id,
+                        model_id=outcome.model_id,
+                        kind=UsageKind.DEBATE,
+                        tokens_input=outcome.tokens_input or 0,
+                        tokens_output=outcome.tokens_output or 0,
+                        cost_usd=outcome.cost_usd or 0.0,
+                    )
+                )
         await db.commit()
     if finalized is not None:
         await publish_debate_event(session_id, _TERMINAL_EVENT_BY_STATUS[final_status], {})
@@ -522,6 +587,9 @@ async def execute_debate_session(
     max_concurrency: int | None = None,
     per_call_timeout_seconds: float | None = None,
     overall_deadline_seconds: float | None = None,
+    synthesis_model_id: str | None = None,
+    synthesis_timeout_seconds: float | None = None,
+    verdict_reference_text: str | None = None,
 ) -> None:
     """Run the engine and persist results incrementally. Standalone: opens its
     own DB sessions throughout and never shares one across concurrent writes
@@ -534,6 +602,12 @@ async def execute_debate_session(
     anything else: if another caller (a duplicate ARQ delivery, a racing
     inline task, or the recovery cron) already claimed it, this call returns
     immediately without touching the database again or calling any provider.
+
+    ``synthesis_model_id`` is optional: omitting it (the default) skips the
+    one-call Debate Conclusion synthesis entirely — existing callers and
+    tests that only exercise Round 2/3 need no changes. The real dispatch
+    path (``_run_debate_session_standalone``) always passes the turn's own
+    already-configured Verdict referee model here.
     """
     if not await _claim_execution_slot(session_id):
         logger.info("debate_execution_already_claimed", session_id=session_id)
@@ -548,11 +622,29 @@ async def execute_debate_session(
         config_kwargs["per_call_timeout_seconds"] = per_call_timeout_seconds
     if overall_deadline_seconds is not None:
         config_kwargs["overall_deadline_seconds"] = overall_deadline_seconds
-    config = DebateRunConfig(user_message=user_message, participants=participants, **config_kwargs)
+    if synthesis_timeout_seconds is not None:
+        config_kwargs["synthesis_timeout_seconds"] = synthesis_timeout_seconds
+    config = DebateRunConfig(
+        user_message=user_message,
+        participants=participants,
+        synthesis_model_id=synthesis_model_id,
+        verdict_reference_text=verdict_reference_text,
+        **config_kwargs,
+    )
     orchestrator = DebateOrchestrator(get_provider_registry())
 
     async def on_event(event: str, data: dict[str, Any]) -> None:
-        if event == "debate_challenge_started" or event == "debate_response_started":
+        if event in (
+            "debate_challenge_started",
+            "debate_response_started",
+            "debate_conclusion_started",
+            "debate_conclusion_completed",
+            "debate_conclusion_failed",
+        ):
+            # Conclusion persistence happens once, atomically, in
+            # _finalize_session (from result.conclusion*) — exactly like
+            # findings — never from this live event; it's forwarded to SSE
+            # only, for the frontend's loading/error state.
             await publish_debate_event(session_id, event, data)
             return
         if event == "debate_challenge_completed" or event == "debate_challenge_failed":
@@ -584,7 +676,7 @@ async def execute_debate_session(
         logger.error("debate_execution_crashed", session_id=session_id, error=str(exc))
         await _mark_session_failed(session_id, str(exc))
         return
-    await _finalize_session(session_id, result)
+    await _finalize_session(session_id, result, org_id=org_id, turn_id=turn_id, chat_id=chat_id)
 
 
 # --- Dispatch and durable execution (Phase 4) --------------------------------
@@ -592,13 +684,18 @@ async def execute_debate_session(
 
 async def _load_session_for_execution(
     session_id: str,
-) -> tuple[DebateSession, str, str | None, list[DebateParticipant]] | None:
+) -> tuple[DebateSession, str, str | None, list[DebateParticipant], str | None, str | None] | None:
     """Reload everything ``execute_debate_session`` needs from just a
     ``session_id`` — the only argument an ARQ job or the recovery cron can be
     handed, since job payloads cross a Redis queue rather than sharing
     memory with the request that enqueued them. Returns ``None`` if the
     session (or its Turn) no longer qualifies, e.g. a Turn deleted after the
-    session was claimed."""
+    session was claimed.
+
+    The returned Verdict model id/text are read-only reference context for
+    the optional Conclusion synthesis — the Verdict row itself is never
+    written here or anywhere else in this module.
+    """
     async with AsyncSessionLocal() as db:
         session = await db.get(DebateSession, session_id)
         if session is None:
@@ -630,7 +727,11 @@ async def _load_session_for_execution(
         if len(participants) < 2:
             return None
         user_message = turn.user_message or ""
-        return session, user_message, turn.chat_id, participants
+        verdict_result = await db.execute(select(Verdict).where(Verdict.turn_id == session.turn_id))
+        verdict = verdict_result.scalar_one_or_none()
+        verdict_model_id = verdict.model_id if verdict else None
+        verdict_text = verdict.text if verdict else None
+        return session, user_message, turn.chat_id, participants, verdict_model_id, verdict_text
 
 
 async def _run_debate_session_standalone(session_id: str) -> None:
@@ -640,7 +741,7 @@ async def _run_debate_session_standalone(session_id: str) -> None:
             session_id, "debate session or its underlying turn/answers were no longer available"
         )
         return
-    session, user_message, chat_id, participants = loaded
+    session, user_message, chat_id, participants, verdict_model_id, verdict_text = loaded
     settings = get_settings()
     await execute_debate_session(
         org_id=session.org_id,
@@ -651,6 +752,9 @@ async def _run_debate_session_standalone(session_id: str) -> None:
         participants=participants,
         per_call_timeout_seconds=settings.debate_per_call_timeout_seconds,
         overall_deadline_seconds=settings.debate_overall_deadline_seconds,
+        synthesis_model_id=verdict_model_id,
+        synthesis_timeout_seconds=settings.debate_synthesis_timeout_seconds,
+        verdict_reference_text=verdict_text,
     )
 
 

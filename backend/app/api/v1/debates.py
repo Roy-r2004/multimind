@@ -18,6 +18,7 @@ from app.core.dependencies import AuthContext, get_auth_context, get_streaming_a
 from app.db.models import DebateSession
 from app.db.session import get_db
 from app.schemas.debate_api import (
+    DebateConclusionResponse,
     DebateSessionResponse,
     DebateStartResponse,
     DebateUsageSummary,
@@ -40,12 +41,26 @@ def _usage_summary(session: DebateSession) -> DebateUsageSummary:
         total_tokens_input += row.tokens_input or 0
         total_tokens_output += row.tokens_output or 0
         total_cost_usd += row.cost_usd or 0.0
+    # The one-call Conclusion synthesis is tracked under the same
+    # UsageKind.DEBATE ledger but lives inside the `conclusion` JSON blob,
+    # not a DebateChallenge/DebateResponse row — fold it in here so the
+    # usage total a user sees actually covers every Debate LLM call.
+    if session.conclusion:
+        total_tokens_input += session.conclusion.get("tokens_input") or 0
+        total_tokens_output += session.conclusion.get("tokens_output") or 0
+        total_cost_usd += session.conclusion.get("cost_usd") or 0.0
     return DebateUsageSummary(
         total_tokens_input=total_tokens_input,
         total_tokens_output=total_tokens_output,
         total_cost_usd=total_cost_usd,
         calls_with_unknown_usage=unknown,
     )
+
+
+def _conclusion_response(session: DebateSession) -> DebateConclusionResponse | None:
+    if not session.conclusion:
+        return None
+    return DebateConclusionResponse(**session.conclusion)
 
 
 def _to_response(session: DebateSession) -> DebateSessionResponse:
@@ -62,6 +77,9 @@ def _to_response(session: DebateSession) -> DebateSessionResponse:
         uncertainties=session.uncertainties,
         final_summary=session.final_summary,
         error_message=session.error_message,
+        conclusion=_conclusion_response(session),
+        conclusion_status=session.conclusion_status.value if session.conclusion_status else None,
+        conclusion_error_message=session.conclusion_error_message,
         started_at=session.started_at,
         completed_at=session.completed_at,
         created_at=session.created_at,

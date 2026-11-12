@@ -2675,6 +2675,20 @@ class DebateSessionStatus(str, enum.Enum):
 ACTIVE_DEBATE_SESSION_STATUSES = (DebateSessionStatus.PENDING, DebateSessionStatus.RUNNING)
 
 
+class DebateConclusionStatus(str, enum.Enum):
+    """Independent of DebateSession.status (which reflects only Round 2/3
+    peer-review and rebuttal outcomes): the AI-synthesized conclusion is an
+    optional add-on, so its own failure never flips an otherwise-successful
+    debate's status to FAILED."""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    # No successful challenge/response output existed to synthesize from
+    # (e.g. every Round 2/3 call failed) — distinct from a synthesis call
+    # that was attempted and failed.
+    SKIPPED = "skipped"
+
+
 class DebateChallengeStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -2740,6 +2754,22 @@ class DebateSession(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # "agreement": it only reflects that peer review did not surface an objection.
     unchallenged_model_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     final_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI-synthesized reading of the full debate (recommended approach, why,
+    # what changed, remaining risks, next steps — see
+    # app.llm.debate_contracts.DebateConclusion) plus its own token/cost
+    # usage, all in one JSON blob rather than new dedicated columns for each
+    # field. NULL for every debate run before this feature existed, and for
+    # any run whose conclusion_status is not COMPLETED.
+    conclusion: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    conclusion_status: Mapped[DebateConclusionStatus | None] = mapped_column(
+        Enum(
+            DebateConclusionStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        nullable=True,
+    )
+    conclusion_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

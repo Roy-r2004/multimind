@@ -14,12 +14,14 @@ from app.llm.debate_contracts import (
     Agreement,
     ChallengeSet,
     Correction,
+    DebateConclusion,
     DebateContractError,
     DebateFindings,
     Risk,
     Uncertainty,
     UnresolvedDisagreement,
     parse_challenge_output,
+    parse_conclusion_output,
     parse_response_output,
 )
 
@@ -507,3 +509,75 @@ def test_correction_rejects_defends_stance():
             stance="defends",  # type: ignore[arg-type]
             updated_position="y",
         )
+
+
+# --- Debate Conclusion synthesis output parsing ------------------------------
+
+
+def _conclusion_json(**overrides) -> str:
+    payload = {
+        "recommended_approach": "Use approach A.",
+        "why_this_approach": "It survived every challenge.",
+        "what_changed": "Model B conceded its throughput claim.",
+        "remaining_risks": "None significant.",
+        "next_steps": "Verify with a load test.",
+        "is_conditional": False,
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+def test_parse_conclusion_output_valid():
+    conclusion = parse_conclusion_output(_conclusion_json())
+    assert isinstance(conclusion, DebateConclusion)
+    assert conclusion.recommended_approach == "Use approach A."
+    assert conclusion.is_conditional is False
+
+
+def test_parse_conclusion_output_is_conditional_true():
+    conclusion = parse_conclusion_output(
+        _conclusion_json(
+            recommended_approach="Depends on expected traffic volume.",
+            is_conditional=True,
+        )
+    )
+    assert conclusion.is_conditional is True
+
+
+def test_parse_conclusion_output_tolerant_of_code_fence_wrapping():
+    raw = f"```json\n{_conclusion_json()}\n```"
+    conclusion = parse_conclusion_output(raw)
+    assert conclusion.recommended_approach == "Use approach A."
+
+
+def test_parse_conclusion_output_rejects_non_json():
+    with pytest.raises(DebateContractError):
+        parse_conclusion_output("not json at all")
+
+
+def test_parse_conclusion_output_rejects_blank_field():
+    with pytest.raises(DebateContractError):
+        parse_conclusion_output(_conclusion_json(next_steps="   "))
+
+
+def test_debate_conclusion_rejects_unknown_field():
+    with pytest.raises(Exception):
+        DebateConclusion(
+            recommended_approach="a",
+            why_this_approach="b",
+            what_changed="c",
+            remaining_risks="d",
+            next_steps="e",
+            unexpected_field="f",  # type: ignore[call-arg]
+        )
+
+
+def test_debate_conclusion_is_conditional_defaults_false():
+    conclusion = DebateConclusion(
+        recommended_approach="a",
+        why_this_approach="b",
+        what_changed="c",
+        remaining_risks="d",
+        next_steps="e",
+    )
+    assert conclusion.is_conditional is False

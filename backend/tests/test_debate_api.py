@@ -302,5 +302,73 @@ async def test_to_response_exposes_unchallenged_model_ids_not_agreements(db: Asy
     assert response.unchallenged_model_ids == [MODEL_A, MODEL_B]
 
 
+async def test_to_response_exposes_a_completed_conclusion(db: AsyncSession, auth: AuthContext):
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    session.status = DebateSessionStatus.COMPLETED
+    session.conclusion = {
+        "recommended_approach": "Approach A",
+        "why_this_approach": "It held up under challenge.",
+        "what_changed": "Nothing.",
+        "remaining_risks": "None.",
+        "next_steps": "Verify independently.",
+        "is_conditional": False,
+        "tokens_input": 20,
+        "tokens_output": 12,
+        "cost_usd": 0.003,
+    }
+    from app.db.models import DebateConclusionStatus
+
+    session.conclusion_status = DebateConclusionStatus.COMPLETED
+    await db.commit()
+
+    full = await debate_service.get_debate_session_by_id(db, auth, session.id)
+    response = _to_response(full)
+    assert response.conclusion is not None
+    assert response.conclusion.recommended_approach == "Approach A"
+    assert response.conclusion_status == "completed"
+    assert response.conclusion_error_message is None
+    usage = _usage_summary(full)
+    assert usage.total_tokens_input == 20
+    assert usage.total_cost_usd == pytest.approx(0.003)
+
+
+async def test_to_response_leaves_conclusion_none_when_not_attempted(db: AsyncSession, auth: AuthContext):
+    """An older debate session predating this feature (or any run that
+    never attempted synthesis) must remain readable with no conclusion."""
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    session.status = DebateSessionStatus.COMPLETED
+    await db.commit()
+
+    full = await debate_service.get_debate_session_by_id(db, auth, session.id)
+    response = _to_response(full)
+    assert response.conclusion is None
+    assert response.conclusion_status is None
+    assert response.conclusion_error_message is None
+
+
+async def test_to_response_exposes_a_failed_conclusion_without_a_conclusion_body(
+    db: AsyncSession, auth: AuthContext
+):
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    session.status = DebateSessionStatus.COMPLETED
+    from app.db.models import DebateConclusionStatus
+
+    session.conclusion_status = DebateConclusionStatus.FAILED
+    session.conclusion_error_message = "model returned invalid JSON"
+    await db.commit()
+
+    full = await debate_service.get_debate_session_by_id(db, auth, session.id)
+    response = _to_response(full)
+    assert response.conclusion is None
+    assert response.conclusion_status == "failed"
+    assert response.conclusion_error_message == "model returned invalid JSON"
+
+
 async def _noop(*args, **kwargs) -> None:
     return None

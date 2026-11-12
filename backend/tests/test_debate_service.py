@@ -554,6 +554,176 @@ async def test_run_debate_session_standalone_passes_configured_timeouts_through(
     assert captured["overall_deadline_seconds"] == 99.0
 
 
+async def test_run_debate_session_standalone_passes_the_turns_own_verdict_model_as_synthesizer(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    """The Debate Conclusion synthesis call must use the turn's own
+    already-configured Verdict referee model — no new 'synthesis model'
+    setting is introduced — and the Verdict text as read-only reference."""
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])  # Verdict model_id=MODEL_A, text="V"
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    factory = _session_factory_for(db)
+    monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+
+    captured: dict = {}
+
+    async def fake_execute(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(debate_service, "execute_debate_session", fake_execute)
+
+    await debate_service._run_debate_session_standalone(session.id)
+
+    assert captured["synthesis_model_id"] == MODEL_A
+    assert captured["verdict_reference_text"] == "V"
+    assert captured["synthesis_timeout_seconds"] == debate_service.get_settings().debate_synthesis_timeout_seconds
+
+
+# --- Debate Conclusion persistence -------------------------------------------
+
+
+async def test_finalize_session_persists_a_successful_conclusion_and_its_cost(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    from app.llm.debate_contracts import DebateConclusion
+    from app.llm.debate_orchestrator import ChallengeCallResult, DebateRunResult, LLMCallOutcome
+
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    factory = _session_factory_for(db)
+    monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(debate_service, "publish_debate_event", _noop_publish)
+
+    conclusion = DebateConclusion(
+        recommended_approach="Approach A",
+        why_this_approach="It held up under challenge.",
+        what_changed="Model B conceded a point.",
+        remaining_risks="None.",
+        next_steps="Verify independently.",
+    )
+    run_result = DebateRunResult(
+        challenge_results=[
+            ChallengeCallResult(model_id=MODEL_A, challenge_set=None, outcome=LLMCallOutcome(model_id=MODEL_A, tokens_input=1, tokens_output=1, cost_usd=0.0)),
+        ],
+        conclusion=conclusion,
+        conclusion_outcome=LLMCallOutcome(model_id=MODEL_A, tokens_input=20, tokens_output=12, cost_usd=0.003),
+    )
+    await debate_service._finalize_session(
+        session.id, run_result, org_id=session.org_id, turn_id=turn.id, chat_id=turn.chat_id
+    )
+
+    reloaded = (
+        await db.execute(select(DebateSession).where(DebateSession.id == session.id).execution_options(populate_existing=True))
+    ).scalar_one()
+    assert reloaded.conclusion_status.value == "completed"
+    assert reloaded.conclusion["recommended_approach"] == "Approach A"
+    assert reloaded.conclusion["tokens_input"] == 20
+    assert reloaded.conclusion["cost_usd"] == pytest.approx(0.003)
+    assert reloaded.conclusion_error_message is None
+
+    cost_records = (
+        await db.execute(select(CostRecord).where(CostRecord.turn_id == turn.id, CostRecord.kind == UsageKind.DEBATE))
+    ).scalars().all()
+    assert any(c.cost_usd == pytest.approx(0.003) for c in cost_records)
+
+
+async def test_a_failed_conclusion_never_flips_an_otherwise_successful_session_to_failed(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    """The exact requirement: an otherwise-successful debate must not be
+    marked FAILED (or PARTIAL) solely because its optional conclusion
+    failed — session status reflects Round 2/3 outcomes only."""
+    from app.llm.debate_orchestrator import ChallengeCallResult, DebateRunResult, LLMCallOutcome
+
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    factory = _session_factory_for(db)
+    monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(debate_service, "publish_debate_event", _noop_publish)
+
+    run_result = DebateRunResult(
+        challenge_results=[
+            ChallengeCallResult(model_id=MODEL_A, challenge_set=None, outcome=LLMCallOutcome(model_id=MODEL_A, tokens_input=1, tokens_output=1, cost_usd=0.0)),
+            ChallengeCallResult(model_id=MODEL_B, challenge_set=None, outcome=LLMCallOutcome(model_id=MODEL_B, tokens_input=1, tokens_output=1, cost_usd=0.0)),
+        ],
+        conclusion=None,
+        conclusion_error="model returned invalid JSON",
+    )
+    await debate_service._finalize_session(session.id, run_result)
+
+    reloaded = (
+        await db.execute(select(DebateSession).where(DebateSession.id == session.id).execution_options(populate_existing=True))
+    ).scalar_one()
+    assert reloaded.status == DebateSessionStatus.COMPLETED  # both challenge calls succeeded
+    assert reloaded.conclusion_status.value == "failed"
+    assert reloaded.conclusion_error_message == "model returned invalid JSON"
+    assert reloaded.conclusion is None
+
+
+async def test_finalize_session_persists_skipped_conclusion_distinctly_from_failed(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    from app.llm.debate_orchestrator import ChallengeCallResult, DebateRunResult, LLMCallOutcome
+
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    factory = _session_factory_for(db)
+    monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(debate_service, "publish_debate_event", _noop_publish)
+
+    run_result = DebateRunResult(
+        challenge_results=[
+            ChallengeCallResult(model_id=MODEL_A, challenge_set=None, outcome=LLMCallOutcome(model_id=MODEL_A, error="down")),
+            ChallengeCallResult(model_id=MODEL_B, challenge_set=None, outcome=LLMCallOutcome(model_id=MODEL_B, error="down")),
+        ],
+        conclusion_skipped_reason="no successful debate output to synthesize from",
+    )
+    await debate_service._finalize_session(session.id, run_result)
+
+    reloaded = (
+        await db.execute(select(DebateSession).where(DebateSession.id == session.id).execution_options(populate_existing=True))
+    ).scalar_one()
+    assert reloaded.status == DebateSessionStatus.FAILED  # all round calls failed
+    assert reloaded.conclusion_status.value == "skipped"
+    assert reloaded.conclusion_error_message == "no successful debate output to synthesize from"
+
+
+async def test_finalize_session_leaves_conclusion_columns_null_when_never_attempted(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    """Existing debates from before this feature (and any run where
+    synthesis_model_id was never configured) must remain readable with
+    conclusion_status simply NULL, not some default/empty value."""
+    from app.llm.debate_orchestrator import ChallengeCallResult, DebateRunResult, LLMCallOutcome
+
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    factory = _session_factory_for(db)
+    monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(debate_service, "publish_debate_event", _noop_publish)
+
+    run_result = DebateRunResult(
+        challenge_results=[
+            ChallengeCallResult(model_id=MODEL_A, challenge_set=None, outcome=LLMCallOutcome(model_id=MODEL_A, tokens_input=1, tokens_output=1, cost_usd=0.0)),
+            ChallengeCallResult(model_id=MODEL_B, challenge_set=None, outcome=LLMCallOutcome(model_id=MODEL_B, tokens_input=1, tokens_output=1, cost_usd=0.0)),
+        ],
+    )
+    await debate_service._finalize_session(session.id, run_result)
+
+    reloaded = (
+        await db.execute(select(DebateSession).where(DebateSession.id == session.id).execution_options(populate_existing=True))
+    ).scalar_one()
+    assert reloaded.status == DebateSessionStatus.COMPLETED
+    assert reloaded.conclusion_status is None
+    assert reloaded.conclusion is None
+    assert reloaded.conclusion_error_message is None
+
+
 # --- 16/17. No mutation of original Council responses or Verdict -----------
 
 
