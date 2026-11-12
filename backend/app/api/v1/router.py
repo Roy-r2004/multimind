@@ -10,6 +10,7 @@ from app.api.v1 import (
     chats,
     content_labels,
     costs,
+    debates,
     health,
     lessons,
     library,
@@ -49,6 +50,7 @@ api_router.include_router(templates.router, prefix="/templates", tags=["template
 api_router.include_router(prompt_builder.router, prefix="/prompt-builder", tags=["prompt-builder"])
 api_router.include_router(costs.router, prefix="/costs", tags=["costs"])
 api_router.include_router(lessons.router, prefix="/lessons", tags=["lessons"])
+api_router.include_router(debates.router, tags=["debates"])
 api_router.include_router(brain.router, prefix="/brain", tags=["brain"])
 api_router.include_router(playbooks.router, prefix="/playbooks", tags=["playbooks"])
 api_router.include_router(scraping.router, prefix="/scraping", tags=["scraping"])

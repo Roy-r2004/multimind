@@ -113,6 +113,7 @@ class UsageKind(str, enum.Enum):
     CHAT_MEMORY = "chat_memory"
     VERDICT_EXPLAIN = "verdict_explain"
     DOCUMENT_PROCESSING = "document_processing"
+    DEBATE = "debate"
 
 
 class VerdictSimpleExplanationStatus(str, enum.Enum):
@@ -2660,6 +2661,231 @@ class ShareLink(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     chat: Mapped["Chat"] = relationship(back_populates="share_links")
+
+
+class DebateSessionStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+ACTIVE_DEBATE_SESSION_STATUSES = (DebateSessionStatus.PENDING, DebateSessionStatus.RUNNING)
+
+
+class DebateConclusionStatus(str, enum.Enum):
+    """Independent of DebateSession.status (which reflects only Round 2/3
+    peer-review and rebuttal outcomes): the AI-synthesized conclusion is an
+    optional add-on, so its own failure never flips an otherwise-successful
+    debate's status to FAILED."""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    # No successful challenge/response output existed to synthesize from
+    # (e.g. every Round 2/3 call failed) — distinct from a synthesis call
+    # that was attempted and failed.
+    SKIPPED = "skipped"
+
+
+class DebateChallengeStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class DebateResponseStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class DebateSession(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Optional AI Debate (peer-review) session for an already-completed Council Turn.
+
+    Fully separate from Turn/ModelAnswer/Verdict — a DebateSession never writes to
+    those tables. It intentionally has no relationship declared *on* Turn/Chat/
+    Organization so those existing classes stay untouched; this side holds the FK.
+    Multiple historical rows per turn_id are allowed (retries after failure/cancel);
+    only one PENDING/RUNNING row per turn_id is allowed at a time (see __table_args__).
+    """
+
+    __tablename__ = "debate_sessions"
+    __table_args__ = (
+        Index("ix_debate_sessions_org_id", "org_id"),
+        Index("ix_debate_sessions_turn_id", "turn_id"),
+        Index("ix_debate_sessions_status", "status"),
+        Index("ix_debate_sessions_status_started_at", "status", "started_at"),
+        Index(
+            "uq_debate_sessions_active_turn",
+            "turn_id",
+            unique=True,
+            postgresql_where=text("status in ('pending', 'running')"),
+            sqlite_where=text("status in ('pending', 'running')"),
+        ),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    turn_id: Mapped[str] = UuidFK("turns")
+    status: Mapped[DebateSessionStatus] = mapped_column(
+        Enum(
+            DebateSessionStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=DebateSessionStatus.PENDING,
+        nullable=False,
+    )
+    model_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    max_rounds: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    # Reserved for a future explicit "model X agrees with Y" contract. The Phase 3
+    # reducer populated this from unchallenged answers, which Phase 4 corrected —
+    # that is NOT evidence of agreement, only absence of a challenge. See
+    # unchallenged_model_ids below and app.llm.debate_contracts.DebateFindings.
+    agreements: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    unresolved_disagreements: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    corrections: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    risks: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    uncertainties: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    # Model IDs that nobody on the panel challenged — explicitly distinct from
+    # "agreement": it only reflects that peer review did not surface an objection.
+    unchallenged_model_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    final_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI-synthesized reading of the full debate (recommended approach, why,
+    # what changed, remaining risks, next steps — see
+    # app.llm.debate_contracts.DebateConclusion) plus its own token/cost
+    # usage, all in one JSON blob rather than new dedicated columns for each
+    # field. NULL for every debate run before this feature existed, and for
+    # any run whose conclusion_status is not COMPLETED.
+    conclusion: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    conclusion_status: Mapped[DebateConclusionStatus | None] = mapped_column(
+        Enum(
+            DebateConclusionStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        nullable=True,
+    )
+    conclusion_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Atomic single-execution claim: a job handler (ARQ delivery, inline task, or
+    # recovery cron) must successfully set this (UPDATE ... WHERE execution_claimed_at
+    # IS NULL) before running the engine, so duplicate job delivery can never execute
+    # the same session concurrently. Independent of `status` so a claim and a status
+    # transition are never conflated.
+    execution_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    organization: Mapped["Organization"] = relationship()
+    turn: Mapped["Turn"] = relationship()
+    challenges: Mapped[list["DebateChallenge"]] = relationship(
+        back_populates="debate_session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="DebateChallenge.created_at",
+    )
+    responses: Mapped[list["DebateResponse"]] = relationship(
+        back_populates="debate_session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="DebateResponse.created_at",
+    )
+
+
+class DebateChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Round-2 structured peer-review critique: one row per author model per session.
+
+    ``challenges`` holds a JSON list critiquing other models' Council answers in a
+    single request per author (O(n) calls per session, never pairwise O(n^2)):
+    ``[{"challenge_id": ..., "target_model_id": ..., "issue": ..., "reasoning": ...,
+    "severity": "low"|"medium"|"high", "uncertainty": ...}, ...]`` — the exact shape
+    of ``app.llm.debate_contracts.ChallengeItem`` (reconciled in Phase 3; this
+    replaces an earlier sketch that used ``evidence`` and no ``challenge_id``).
+    """
+
+    __tablename__ = "debate_challenges"
+    __table_args__ = (
+        UniqueConstraint(
+            "debate_session_id", "author_model_id", name="uq_debate_challenge_session_author"
+        ),
+        Index("ix_debate_challenges_org_id", "org_id"),
+        Index("ix_debate_challenges_session_id", "debate_session_id"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    debate_session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("debate_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    author_model_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[DebateChallengeStatus] = mapped_column(
+        Enum(
+            DebateChallengeStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=DebateChallengeStatus.PENDING,
+        nullable=False,
+    )
+    challenges: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # NULL means "unknown" (the call failed before the provider returned any usage
+    # data) — never conflate that with 0, which means the provider reported no cost.
+    tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    debate_session: Mapped["DebateSession"] = relationship(back_populates="challenges")
+
+
+class DebateResponse(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Round-3 structured rebuttal: one row per author model per session.
+
+    ``responses`` holds a JSON list, one entry per challenge addressed by this
+    author: ``[{"challenge_id": ..., "challenger_model_id": ..., "stance":
+    "defends"|"revises"|"concedes", "explanation": ..., "updated_position": ...},
+    ...]`` — the exact shape of ``app.llm.debate_contracts.ResponseItem``
+    (reconciled in Phase 3; this replaces an earlier sketch that used
+    ``challenge_author_model_id``). The stable identity for one entry is the
+    composite ``(challenger_model_id, challenge_id)``, since ``challenge_id``
+    alone may collide across different reviewing models. Never overwrites the
+    original ``ModelAnswer`` rows for the Turn.
+    """
+
+    __tablename__ = "debate_responses"
+    __table_args__ = (
+        UniqueConstraint(
+            "debate_session_id", "author_model_id", name="uq_debate_response_session_author"
+        ),
+        Index("ix_debate_responses_org_id", "org_id"),
+        Index("ix_debate_responses_session_id", "debate_session_id"),
+    )
+
+    org_id: Mapped[str] = UuidFK("organizations")
+    debate_session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("debate_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    author_model_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[DebateResponseStatus] = mapped_column(
+        Enum(
+            DebateResponseStatus,
+            values_callable=lambda enum: [item.value for item in enum],
+            native_enum=False,
+        ),
+        default=DebateResponseStatus.PENDING,
+        nullable=False,
+    )
+    responses: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # NULL means "unknown" — see the identical note on DebateChallenge above.
+    tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    debate_session: Mapped["DebateSession"] = relationship(back_populates="responses")
 
 
 class AuditSeverity(str, enum.Enum):

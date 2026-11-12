@@ -36,6 +36,8 @@ import type {
   ApiAdminUserSummary,
   ApiBrain,
   ApiContentLabel,
+  ApiDebateSession,
+  ApiDebateStartResponse,
   ApiDiscussResponse,
   ApiLibraryFolder,
   ApiLibraryItem,
@@ -1114,6 +1116,38 @@ export const api = {
 
     rerun: (auth: Auth) =>
       apiRequest<ApiPlaybookRun>(PLAYBOOK_RERUN_PATH, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+  },
+
+  debate: {
+    /** Starts (or returns the already-active) debate session for a turn.
+     * Repeated calls while a debate is active resolve with the same
+     * session and `freshly_started: false` — never a duplicate job. */
+    start: (auth: Auth, turnId: string) =>
+      apiRequest<ApiDebateStartResponse>(`/chats/turns/${turnId}/debate`, {
+        method: "POST",
+        token: auth.token,
+        orgId: auth.orgId,
+        timeoutMs: 30_000,
+      }),
+
+    getLatestForTurn: (auth: Auth, turnId: string) =>
+      apiRequest<ApiDebateSession>(`/chats/turns/${turnId}/debate`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    getById: (auth: Auth, sessionId: string) =>
+      apiRequest<ApiDebateSession>(`/debate-sessions/${sessionId}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
+
+    cancel: (auth: Auth, sessionId: string) =>
+      apiRequest<ApiDebateSession>(`/debate-sessions/${sessionId}/cancel`, {
         method: "POST",
         token: auth.token,
         orgId: auth.orgId,

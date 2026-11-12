@@ -51,6 +51,59 @@ class Settings(BaseSettings):
     # When true (default in development), run scrapes inside the API process if Redis/worker is down
     scraping_inline_execution: bool | None = None
 
+    # Debate Mode execution dispatch — mirrors scraping_inline_execution, but Debate
+    # jobs run on their OWN dedicated ARQ worker/queue (see app/debate/worker.py),
+    # fully independent of the scraping worker. `None` auto-falls-back to inline
+    # asyncio execution if the dedicated queue/worker is unreachable (convenient for
+    # plain `pytest` or a Redis-less dev shell); set explicitly to `false` to require
+    # the dedicated worker and raise instead of silently falling back (e.g. for a
+    # Docker environment that must prove the worker is actually wired up).
+    debate_inline_execution: bool | None = None
+
+    # How long one LLM provider call (one Round-2 peer review, or one Round-3
+    # rebuttal) may take before it's treated as a per-model failure (never
+    # retried — see enqueue_debate_execution/ARQ max_tries=1 for the no-paid-
+    # retry guarantee). Raised from the original 45s default after the first
+    # real debate (Claude Opus 4.1) showed 45s is tight for a slower model's
+    # Round-2 peer-review call, which reviews every other participant's full
+    # answer at once. 75s leaves headroom without materially lengthening a
+    # debate that completes normally — the overall deadline below, not this
+    # value, is what actually bounds a slow debate's wall-clock time.
+    debate_per_call_timeout_seconds: float = 75.0
+    # Wall-clock budget shared across BOTH rounds of one debate. Must stay
+    # coherent with debate_per_call_timeout_seconds above: Round 2 and Round 3
+    # each run their calls concurrently (bounded by DEBATE_DEFAULT_MAX_CONCURRENCY,
+    # not serially), so the worst case is roughly two per-call timeouts back to
+    # back (one slow call per round) plus bookkeeping overhead — comfortably
+    # under this value at 2 × 75s = 150s, with a real margin rather than the
+    # ~30s margin the old 45s/180s pair left.
+    debate_overall_deadline_seconds: float = 240.0
+    # The optional one-call Debate Conclusion synthesis runs AFTER Round 2/3
+    # already finished (bounded by the deadline above) — it gets its own,
+    # separate, smaller timeout rather than competing with round calls for
+    # the same deadline. Worst case total wall-clock is therefore roughly
+    # 240s (rounds) + 60s (synthesis) = 300s — see
+    # debate_worker_job_timeout_seconds below, which stays above that.
+    debate_synthesis_timeout_seconds: float = 60.0
+    # Stale RUNNING debate sessions older than this are presumed orphaned by a dead
+    # worker/API restart and recovered to FAILED (not silently resurrected) — comfortably
+    # above debate_worker_job_timeout_seconds below, so recovery never races a debate
+    # that is still legitimately running.
+    debate_execution_stale_seconds: int = 600
+
+    # Dedicated Debate ARQ worker (separate queue from scraping/maps/playbooks).
+    # Default concurrency of 2 is deliberately small: each debate run already
+    # fans out several concurrent LLM calls internally (DEBATE_DEFAULT_MAX_CONCURRENCY),
+    # so this bounds how many *debate sessions* run at once, not individual calls.
+    debate_worker_queue_name: str = "debate"
+    debate_worker_concurrency: int = 2
+    # Comfortably above debate_overall_deadline_seconds + debate_synthesis_timeout_seconds
+    # (240s + 60s = 300s) plus queueing/startup slack, but far below scraping's
+    # multi-hour timeout — a stuck debate job should be reclaimed quickly, not
+    # held for hours.
+    debate_worker_job_timeout_seconds: int = 360
+    debate_worker_keep_result_seconds: int = 3600
+
     # Dedicated Playbook ARQ worker (separate queue from scraping/maps).
     # Infrastructure defaults, not final extraction performance tuning.
     playbook_worker_queue_name: str = "playbooks"

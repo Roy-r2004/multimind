@@ -46,6 +46,7 @@ import { createTurnReferenceFields, shouldClearReferenceAfterSend } from "@/lib/
 import { ExcelPreviewModal } from "@/components/chat/ExcelPreviewModal";
 import { CouncilPickerModal } from "@/components/chat/CouncilPickerModal";
 import { VerdictDisagreeChat } from "@/components/chat/VerdictDisagreeChat";
+import { DebateEligibilityButton, DebatePanel } from "@/components/chat/DebatePanel";
 import {
   SimpleExplanationBox,
   SimpleExplanationLoadingBox,
@@ -1093,6 +1094,22 @@ export function ChatPage() {
     }
   }
 
+  /** "Use as Next Question" from a Debate's suggested follow-up. Inserts into
+   * the existing composer and stops — it never sends, never starts another
+   * debate, and never touches attachments or the selected model set. A
+   * non-empty existing draft is never silently overwritten. */
+  function handleUseDebateQuestionInComposer(question: string) {
+    const existingDraft = composerRef.current?.getValue().trim() ?? "";
+    if (existingDraft) {
+      const replace = window.confirm(
+        "Your composer already has a draft. Replace it with the debate's suggested question?",
+      );
+      if (!replace) return;
+    }
+    composerRef.current?.setValue(question);
+    composerRef.current?.focus();
+  }
+
   async function stopGenerating() {
     const auth = authHeaders();
     if (!auth || !activeChatId || !activeTurnId || stoppingTurnId === activeTurnId) return;
@@ -1577,6 +1594,7 @@ export function ChatPage() {
                           ),
                         );
                       }}
+                      onUseAsNextQuestion={handleUseDebateQuestionInComposer}
                     />
                   </div>
                 );
@@ -2187,6 +2205,7 @@ function AiTurn({
   onPinAnswerSelection,
   onToggleSavedVerdict,
   onLessonUpdate,
+  onUseAsNextQuestion,
 }: {
   set: ModelSet;
   turn: ApiTurn;
@@ -2200,11 +2219,13 @@ function AiTurn({
   onToggleAnswerPin: (answerId: string, currentlyPinned: boolean) => void;
   onToggleSavedVerdict: (verdictId: string, saved: boolean) => void;
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
+  onUseAsNextQuestion: (question: string) => void;
 }) {
   const { session } = useAuth();
   const [layout] = useChatTurnLayout();
   const { isExpanded, toggle: toggleAnswerExpansion } = useTurnAnswerExpansion(layout);
   const [showDisagree, setShowDisagree] = useState(false);
+  const [showDebate, setShowDebate] = useState(false);
   const [answersCollapsed, setAnswersCollapsed] = useState(false);
   const verdictRef = useRef<HTMLDivElement>(null);
   const verdictContentRef = useRef<HTMLDivElement>(null);
@@ -2508,6 +2529,13 @@ function AiTurn({
                   {bookmarkState.disabled ? "Saving" : bookmarkState.saved ? "Saved" : "Save"}
                 </button>
               )}
+              <DebateEligibilityButton
+                hasVerdict={hasVerdict}
+                completedAnswers={(turn.model_answers ?? []).filter(
+                  (a) => a.status === "completed",
+                )}
+                onClick={() => setShowDebate(true)}
+              />
               {turn.lesson_id && turn.lesson_status === "completed" ? (
                 <Link
                   to="/lessons/$id"
@@ -2571,6 +2599,18 @@ function AiTurn({
         userName={session?.user.full_name ?? "You"}
         onDiscussStart={(lessonId) => onLessonUpdate(lessonId, "discussing")}
         onLessonBuilt={(lessonId) => onLessonUpdate(lessonId, "completed")}
+      />
+
+      <DebatePanel
+        open={showDebate}
+        onClose={() => setShowDebate(false)}
+        turnId={turn.id}
+        modelAnswers={turn.model_answers ?? []}
+        modelById={modelById}
+        onUseAsNextQuestion={(question) => {
+          onUseAsNextQuestion(question);
+          setShowDebate(false);
+        }}
       />
     </div>
   );
