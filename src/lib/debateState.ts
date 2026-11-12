@@ -195,6 +195,16 @@ export function applyDebateEvent(
     return { ...session, responses: [...withoutModel, next] };
   }
 
+  if (event === "debate_conclusion_started") {
+    return { ...session, conclusion_generating: true };
+  }
+  if (event === "debate_conclusion_completed" || event === "debate_conclusion_failed") {
+    // The actual persisted conclusion/error lands via the terminal
+    // debate_* event's snapshot refetch (see debateRunner.ts) — this only
+    // clears the transient "generating" indicator promptly.
+    return { ...session, conclusion_generating: false };
+  }
+
   if (
     event === "debate_completed" ||
     event === "debate_partial" ||
@@ -202,7 +212,7 @@ export function applyDebateEvent(
     event === "debate_cancelled"
   ) {
     const status = event.replace("debate_", "");
-    return { ...session, status };
+    return { ...session, status, conclusion_generating: false };
   }
 
   return session;

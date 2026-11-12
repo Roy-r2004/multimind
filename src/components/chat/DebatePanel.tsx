@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Ban,
+  CircleAlert,
+  Compass,
   Loader2,
   MessagesSquare,
   ShieldAlert,
+  Sparkles,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -292,6 +295,86 @@ function WhatWentWrongSection({
   );
 }
 
+/** PART 2/5/6 — the AI-synthesized Conclusion, shown first in Debate
+ * Findings. Handles its own loading/error/skipped states so the rest of
+ * the tab never has to know about them. */
+function ConclusionSection({ session }: { session: ApiDebateSession }) {
+  if (session.conclusion_generating) {
+    return (
+      <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-4 text-sm text-primary">
+        <Loader2 className="size-4 shrink-0 animate-spin" />
+        Generating the debate conclusion…
+      </div>
+    );
+  }
+
+  if (session.conclusion_status === "failed") {
+    return (
+      <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        <CircleAlert className="mt-0.5 size-4 shrink-0" />
+        <div>
+          <p className="font-medium">The AI conclusion could not be generated.</p>
+          <p className="mt-0.5 text-destructive/80">
+            {session.conclusion_error_message
+              ? safeFailureReason(session.conclusion_error_message)
+              : "The synthesis request failed without a specific reason."}{" "}
+            Every completed challenge and response below is still fully usable.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (session.conclusion_status === "skipped" || !session.conclusion) {
+    // "skipped" (nothing to synthesize from) and "not attempted" (an older
+    // debate from before this feature, or still running) look the same to
+    // the user — just no conclusion card; the rest of the tab stands alone.
+    return null;
+  }
+
+  const conclusion = session.conclusion;
+  const sections: Array<{ label: string; text: string; icon: React.ReactNode }> = [
+    {
+      label: "Recommended approach",
+      text: conclusion.recommended_approach,
+      icon: <Compass className="size-3.5" />,
+    },
+    { label: "Why this approach?", text: conclusion.why_this_approach, icon: null },
+    { label: "What changed after the debate?", text: conclusion.what_changed, icon: null },
+    { label: "Remaining risks or disagreements", text: conclusion.remaining_risks, icon: null },
+    { label: "What should you do next?", text: conclusion.next_steps, icon: null },
+  ];
+
+  return (
+    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-primary">
+          <Sparkles className="size-4" /> AI Debate Conclusion
+        </p>
+        {conclusion.is_conditional ? (
+          <Badge variant="outline" className="text-[10px] text-amber-800">
+            Conditional
+          </Badge>
+        ) : null}
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground">
+        This is the synthesizing model's own reading of the full debate — an informed
+        recommendation, not an independently verified fact.
+      </p>
+      <div className="space-y-2.5">
+        {sections.map((s) => (
+          <div key={s.label}>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-primary/80">
+              {s.label}
+            </p>
+            <p className="text-sm text-foreground/90">{s.text}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FindingsSection({
   session,
   modelById,
@@ -311,17 +394,24 @@ function FindingsSection({
   const plain = debatePlainFindings(session);
   const failures = debateFailureDetails(session);
   const isIncomplete = session.status === "partial" || session.status === "failed";
+  const hasConclusion = session.conclusion_status === "completed" && !!session.conclusion;
 
   if (stillRunning) {
     return (
-      <div className="rounded-xl border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
-        Findings are built once the debate finishes — check back after the panel's review completes.
+      <div className="space-y-4">
+        <ConclusionSection session={session} />
+        <div className="rounded-xl border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
+          The rest of the findings are built once the debate finishes — check back after the panel's
+          review completes.
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
+      <ConclusionSection session={session} />
+
       {isIncomplete && failures.length > 0 ? (
         <>
           <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-900">
@@ -344,8 +434,15 @@ function FindingsSection({
           review found nothing to contest — it does not by itself confirm the answers are correct.
         </div>
       ) : (
+        <SummaryCountsBar counts={counts} />
+      )}
+
+      {/* The plain-language groups below restate, in deterministic form,
+         what the AI Conclusion above already synthesizes — shown directly
+         only when there is no conclusion to read instead, so the primary
+         view never repeats itself. */}
+      {!zeroChallenge && !hasConclusion ? (
         <>
-          <SummaryCountsBar counts={counts} />
           <PlainFindingsGroup
             title="What problems did the AIs identify?"
             items={plain.problems}
@@ -354,7 +451,7 @@ function FindingsSection({
           <PlainFindingsGroup
             title="What did the AIs change or acknowledge?"
             items={plain.acknowledgements}
-            emptyText="No model revised or conceded a point."
+            emptyText="No challenge resulted in a revision or concession."
           />
           <PlainFindingsGroup
             title="What should you consider now?"
@@ -362,12 +459,6 @@ function FindingsSection({
             emptyText="Nothing unresolved to flag."
           />
         </>
-      )}
-
-      {session.final_summary ? (
-        <p className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">
-          {session.final_summary}
-        </p>
       ) : null}
 
       <Accordion type="single" collapsible>
@@ -376,6 +467,30 @@ function FindingsSection({
             Technical details
           </AccordionTrigger>
           <AccordionContent className="space-y-3 pt-2">
+            {hasConclusion && !zeroChallenge ? (
+              <>
+                <PlainFindingsGroup
+                  title="What problems did the AIs identify?"
+                  items={plain.problems}
+                  emptyText="No specific problems were raised."
+                />
+                <PlainFindingsGroup
+                  title="What did the AIs change or acknowledge?"
+                  items={plain.acknowledgements}
+                  emptyText="No challenge resulted in a revision or concession."
+                />
+                <PlainFindingsGroup
+                  title="What should you consider now?"
+                  items={plain.considerations}
+                  emptyText="Nothing unresolved to flag."
+                />
+              </>
+            ) : null}
+            {session.final_summary ? (
+              <p className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                {session.final_summary}
+              </p>
+            ) : null}
             {agreements.length > 0 ? (
               <FindingsGroup title="Explicit agreements" tone="emerald">
                 <p className="text-xs text-muted-foreground">

@@ -303,6 +303,18 @@ export type ApiDebateUsage = {
   calls_with_unknown_usage: number;
 };
 
+export type ApiDebateConclusion = {
+  recommended_approach: string;
+  why_this_approach: string;
+  what_changed: string;
+  remaining_risks: string;
+  next_steps: string;
+  is_conditional: boolean;
+  tokens_input?: number | null;
+  tokens_output?: number | null;
+  cost_usd?: number | null;
+};
+
 export type ApiDebateSession = {
   id: string;
   turn_id: string;
@@ -316,12 +328,19 @@ export type ApiDebateSession = {
   uncertainties: ApiDebateUncertainty[] | null;
   final_summary: string | null;
   error_message: string | null;
+  conclusion: ApiDebateConclusion | null;
+  conclusion_status: "completed" | "failed" | "skipped" | null;
+  conclusion_error_message: string | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
   challenges: ApiDebateChallenge[];
   responses: ApiDebateResponse[];
   usage: ApiDebateUsage;
+  /** Client-only: true from the "debate_conclusion_started" SSE event until
+   * a terminal/conclusion event lands — the finished conclusion itself
+   * (above) only exists once the backend has actually persisted it. */
+  conclusion_generating?: boolean;
 };
 
 export type ApiDebateStartResponse = {

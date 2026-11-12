@@ -277,6 +277,33 @@ test("debate_cancelled moves the session to a terminal, non-active status", () =
   assert.equal(isDebateStatusTerminal(s.status), true);
 });
 
+// --- Debate Conclusion: transient "generating" UI flag --------------------------
+
+test("debate_conclusion_started sets the transient generating flag", () => {
+  const s = applyDebateEvent(session({ status: "running" }), "debate_conclusion_started", {});
+  assert.equal(s.conclusion_generating, true);
+});
+
+test("debate_conclusion_completed clears the generating flag", () => {
+  let s = session({ status: "running", conclusion_generating: true });
+  s = applyDebateEvent(s, "debate_conclusion_completed", {});
+  assert.equal(s.conclusion_generating, false);
+});
+
+test("debate_conclusion_failed clears the generating flag without touching session status", () => {
+  let s = session({ status: "running", conclusion_generating: true });
+  s = applyDebateEvent(s, "debate_conclusion_failed", { error: "bad json" });
+  assert.equal(s.conclusion_generating, false);
+  assert.equal(s.status, "running");
+});
+
+test("a terminal debate_* event always clears any lingering generating flag", () => {
+  let s = session({ status: "running", conclusion_generating: true });
+  s = applyDebateEvent(s, "debate_completed", {});
+  assert.equal(s.conclusion_generating, false);
+  assert.equal(s.status, "completed");
+});
+
 // --- 14. Retry / attempt limit ---------------------------------------------------
 
 test("retry is allowed below the attempt cap and blocked at or above it", () => {
