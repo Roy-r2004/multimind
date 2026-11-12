@@ -49,9 +49,13 @@ DEBATE_CHALLENGE_MAX_TOKENS = 3_000
 DEBATE_RESPONSE_MAX_TOKENS = 3_000
 # The conclusion is free-text prose (recommendation/why/what-changed/risks/
 # next-steps), not short structured fields like the two above, so it gets a
-# larger budget — still bounded, and still a fraction of Council/Verdict's
-# free-text budgets.
-DEBATE_CONCLUSION_MAX_TOKENS = 2_000
+# larger budget than those — but the prompt now explicitly targets ~200-300
+# words combined (a real debate's first output was accurate but needlessly
+# long and repetitive), so this ceiling is tightened to comfortably allow
+# 2-3x that for a genuinely complex question without leaving enough room
+# for the model to ramble back to the old length. Still a fraction of
+# Council/Verdict's free-text budgets.
+DEBATE_CONCLUSION_MAX_TOKENS = 1_200
 DEBATE_DEFAULT_MAX_CONCURRENCY = 5
 # These mirror app.core.config.Settings.debate_per_call_timeout_seconds /
 # debate_overall_deadline_seconds / debate_synthesis_timeout_seconds — the

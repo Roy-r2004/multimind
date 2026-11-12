@@ -710,3 +710,75 @@ def test_conclusion_prompt_faithfully_represents_concessions_and_conflicting_vie
     assert "do not" in prompt.lower() or "not treat" in prompt.lower()
     assert "Original verdict text" in prompt
     assert "unquestionable truth" in prompt.lower()
+
+
+# --- Conclusion prompt conciseness polish ------------------------------------
+
+
+def test_conclusion_prompt_carries_the_word_budget_and_anti_repetition_instructions():
+    """A real debate's first conclusion was accurate but needlessly long and
+    repetitive. This locks in the fix at the prompt-template level — the
+    model actually receives a concrete word target and an explicit
+    instruction not to restate the same point across fields."""
+    from app.llm.debate_prompts import PanelistAnswer, build_conclusion_prompt
+
+    prompt = build_conclusion_prompt(
+        user_message="Q?",
+        participants=[PanelistAnswer(model_id=MODEL_A, model_name="Model A", text="Answer A")],
+        exchanges=[],
+    )
+    lower = prompt.lower()
+    assert "200" in prompt and "300" in prompt  # the concrete word target
+    assert "words" in lower
+    assert "restate" in lower or "repeat" in lower
+    assert "different ground" in lower or "not list every challenge" in lower or "minor" in lower
+    assert "sacrifice" in lower  # explicit: never drop something important just to stay short
+
+
+def test_conclusion_max_tokens_was_tightened_from_the_original_generous_ceiling():
+    from app.llm.debate_orchestrator import DEBATE_CONCLUSION_MAX_TOKENS
+
+    # Loose enough for 2-3x the ~300-word target on a genuinely complex
+    # question, tight enough to not leave room for the old rambling length.
+    assert 800 <= DEBATE_CONCLUSION_MAX_TOKENS <= 1500
+
+
+def test_parse_conclusion_output_accepts_a_concise_representative_response():
+    """A short, non-repetitive, representative conclusion must still parse
+    cleanly against the unchanged JSON contract — conciseness is a prompting
+    change, not a contract change."""
+    from app.llm.debate_contracts import parse_conclusion_output
+
+    raw = json.dumps(
+        {
+            "recommended_approach": "Use the hybrid architecture with an outbox relay.",
+            "why_this_approach": "It held up after Model A's challenge forced a safer design.",
+            "what_changed": "Model B conceded its dual-write example was unsafe and revised it.",
+            "remaining_risks": "None significant remain unresolved.",
+            "next_steps": "Load-test the outbox relay before shipping.",
+            "is_conditional": False,
+        }
+    )
+    conclusion = parse_conclusion_output(raw)
+    assert conclusion.is_conditional is False
+    assert len(conclusion.recommended_approach.split()) < 15
+
+
+def test_parse_conclusion_output_preserves_a_conditional_recommendation_concisely():
+    """Genuinely conflicting evidence must still produce is_conditional=true
+    with the real options stated, even in a short response."""
+    from app.llm.debate_contracts import parse_conclusion_output
+
+    raw = json.dumps(
+        {
+            "recommended_approach": "Depends on expected write volume: PostgreSQL-only below ~500 writes/sec, hybrid above it.",
+            "why_this_approach": "Both sides defended their position; neither challenge was conceded.",
+            "what_changed": "Nothing meaningful changed.",
+            "remaining_risks": "The actual write volume this system will see was never established.",
+            "next_steps": "Measure real traffic, then pick the matching approach above.",
+            "is_conditional": True,
+        }
+    )
+    conclusion = parse_conclusion_output(raw)
+    assert conclusion.is_conditional is True
+    assert "depends" in conclusion.recommended_approach.lower()
