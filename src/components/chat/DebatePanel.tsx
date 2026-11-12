@@ -27,6 +27,8 @@ import { ApiClientError } from "@/lib/api/types";
 import {
   buildChallengeRows,
   debateFailureDetails,
+  debateFollowUp,
+  debateHiddenIssue,
   debatePlainFindings,
   debateSummaryCounts,
   debateUsageDisplay,
@@ -295,10 +297,12 @@ function WhatWentWrongSection({
   );
 }
 
-/** PART 2/5/6 — the AI-synthesized Conclusion, shown first in Debate
- * Findings. Handles its own loading/error/skipped states so the rest of
- * the tab never has to know about them. */
-function ConclusionSection({ session }: { session: ApiDebateSession }) {
+/** Surfaces the AI Conclusion synthesis's own loading/error state. "Skipped"
+ * (nothing to synthesize from) and "not attempted" (an older debate from
+ * before this feature, or still running) render nothing here — the four
+ * sections below handle an absent conclusion with their own honest
+ * fallback copy instead of hiding themselves. */
+function ConclusionStatusBanner({ session }: { session: ApiDebateSession }) {
   if (session.conclusion_generating) {
     return (
       <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-4 text-sm text-primary">
@@ -325,31 +329,93 @@ function ConclusionSection({ session }: { session: ApiDebateSession }) {
     );
   }
 
-  if (session.conclusion_status === "skipped" || !session.conclusion) {
-    // "skipped" (nothing to synthesize from) and "not attempted" (an older
-    // debate from before this feature, or still running) look the same to
-    // the user — just no conclusion card; the rest of the tab stands alone.
-    return null;
-  }
+  return null;
+}
 
-  const conclusion = session.conclusion;
-  const sections: Array<{ label: string; text: string; icon: React.ReactNode }> = [
-    {
-      label: "Recommended approach",
-      text: conclusion.recommended_approach,
-      icon: <Compass className="size-3.5" />,
-    },
-    { label: "Why this approach?", text: conclusion.why_this_approach, icon: null },
-    { label: "What changed after the debate?", text: conclusion.what_changed, icon: null },
-    { label: "Remaining risks or disagreements", text: conclusion.remaining_risks, icon: null },
-    { label: "What should you do next?", text: conclusion.next_steps, icon: null },
-  ];
-
+/** Section A — "What the debate discovered." Leads with the single most
+ * important hidden issue, not a wall of minor criticisms. Null is the
+ * common, honest outcome and is presented as such, never as a failure. */
+function HiddenIssueSection({ session }: { session: ApiDebateSession }) {
+  const hidden = debateHiddenIssue(session);
   return (
     <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="flex items-center gap-1.5 text-sm font-semibold text-primary">
-          <Sparkles className="size-4" /> AI Debate Conclusion
+      <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-primary">
+        <Sparkles className="size-4" /> What the debate discovered
+      </p>
+      {hidden ? (
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium text-foreground">{hidden.issue}</p>
+          <p className="text-sm text-muted-foreground">
+            <span className="font-medium text-foreground/80">Why it matters: </span>
+            {hidden.whyItMatters}
+          </p>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          No significant hidden issue or overlooked assumption was identified in this debate.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Section B — "What changed after the debate." Plain counts plus the
+ * synthesis's own read of what changed, captioned so the numbers are never
+ * read as confirmation that the surviving positions are correct. */
+function WhatChangedSection({
+  session,
+  counts,
+  zeroChallenge,
+}: {
+  session: ApiDebateSession;
+  counts: ReturnType<typeof debateSummaryCounts>;
+  zeroChallenge: boolean;
+}) {
+  const whatChanged = session.conclusion?.what_changed;
+  return (
+    <div className="rounded-xl border border-border/70 bg-card/60 p-4">
+      <p className="mb-2 text-sm font-semibold text-foreground/90">What changed after the debate</p>
+      {zeroChallenge ? (
+        <p className="text-sm text-muted-foreground">
+          No model raised a challenge against any other answer — peer review found nothing to
+          contest. That does not by itself confirm the answers are correct.
+        </p>
+      ) : (
+        <>
+          <SummaryCountsBar counts={counts} />
+          <p className="mt-2 text-xs text-muted-foreground">
+            These counts describe what happened during the debate, not whether the surviving
+            positions are correct.
+          </p>
+        </>
+      )}
+      {whatChanged ? <p className="mt-3 text-sm text-foreground/90">{whatChanged}</p> : null}
+    </div>
+  );
+}
+
+/** Section C — "Recommended approach." The recommendation and its most
+ * important remaining risks up front; secondary reasoning tucked into an
+ * expandable details block so this section stays scannable. */
+function RecommendedApproachSection({ session }: { session: ApiDebateSession }) {
+  const conclusion = session.conclusion;
+  if (!conclusion) {
+    return (
+      <div className="rounded-xl border border-border/70 bg-card/60 p-4">
+        <p className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-foreground/90">
+          <Compass className="size-3.5" /> Recommended approach
+        </p>
+        <p className="text-sm text-muted-foreground">
+          No AI-synthesized recommendation is available for this debate.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-border/70 bg-card/60 p-4">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-foreground/90">
+          <Compass className="size-3.5" /> Recommended approach
         </p>
         {conclusion.is_conditional ? (
           <Badge variant="outline" className="text-[10px] text-amber-800">
@@ -357,20 +423,75 @@ function ConclusionSection({ session }: { session: ApiDebateSession }) {
           </Badge>
         ) : null}
       </div>
-      <p className="mb-3 text-xs text-muted-foreground">
-        This is the synthesizing model's own reading of the full debate — an informed
-        recommendation, not an independently verified fact.
+      <p className="text-sm text-foreground/90">{conclusion.recommended_approach}</p>
+      <p className="mt-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground/80">Remaining risks: </span>
+        {conclusion.remaining_risks}
       </p>
-      <div className="space-y-2.5">
-        {sections.map((s) => (
-          <div key={s.label}>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-primary/80">
-              {s.label}
+      <Accordion type="single" collapsible className="mt-2">
+        <AccordionItem value="reasoning" className="border-border/60">
+          <AccordionTrigger className="text-xs font-semibold text-muted-foreground hover:no-underline">
+            Why this approach, and what's next
+          </AccordionTrigger>
+          <AccordionContent className="space-y-2 pt-1 text-xs text-muted-foreground">
+            <p>
+              <span className="font-medium text-foreground/80">Why: </span>
+              {conclusion.why_this_approach}
             </p>
-            <p className="text-sm text-foreground/90">{s.text}</p>
-          </div>
-        ))}
-      </div>
+            <p>
+              <span className="font-medium text-foreground/80">Next steps: </span>
+              {conclusion.next_steps}
+            </p>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+      <p className="mt-2 text-[11px] text-muted-foreground/80">
+        This is the synthesizing model's own reading of the debate — an informed recommendation, not
+        an independently verified fact.
+      </p>
+    </div>
+  );
+}
+
+/** Section D — "What should you investigate next?" The one suggested
+ * follow-up question, grounded in this debate, with a single prominent
+ * action to carry it into the existing Chat Council composer. A null
+ * follow-up is the honest outcome when nothing cleared the bar — it is
+ * never invented to fill the section. */
+function NextQuestionSection({
+  session,
+  onUseAsNextQuestion,
+}: {
+  session: ApiDebateSession;
+  onUseAsNextQuestion?: (question: string) => void;
+}) {
+  const followUp = debateFollowUp(session);
+  return (
+    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+      <p className="mb-2 text-sm font-semibold text-primary">What should you investigate next?</p>
+      {followUp ? (
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-foreground">{followUp.question}</p>
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium text-foreground/80">Why ask this? </span>
+            {followUp.reason}
+          </p>
+          {onUseAsNextQuestion ? (
+            <button
+              type="button"
+              onClick={() => onUseAsNextQuestion(followUp.question)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
+            >
+              <MessagesSquare className="size-3.5" /> Use as Next Question
+            </button>
+          ) : null}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          No specific follow-up question was identified — nothing in this debate cleared the bar for
+          a genuinely useful next question.
+        </p>
+      )}
     </div>
   );
 }
@@ -378,9 +499,11 @@ function ConclusionSection({ session }: { session: ApiDebateSession }) {
 function FindingsSection({
   session,
   modelById,
+  onUseAsNextQuestion,
 }: {
   session: ApiDebateSession;
   modelById: ModelLookup;
+  onUseAsNextQuestion?: (question: string) => void;
 }) {
   const unchallenged = session.unchallenged_model_ids ?? [];
   const agreements = session.agreements ?? [];
@@ -394,12 +517,11 @@ function FindingsSection({
   const plain = debatePlainFindings(session);
   const failures = debateFailureDetails(session);
   const isIncomplete = session.status === "partial" || session.status === "failed";
-  const hasConclusion = session.conclusion_status === "completed" && !!session.conclusion;
 
   if (stillRunning) {
     return (
       <div className="space-y-4">
-        <ConclusionSection session={session} />
+        <ConclusionStatusBanner session={session} />
         <div className="rounded-xl border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
           The rest of the findings are built once the debate finishes — check back after the panel's
           review completes.
@@ -410,7 +532,7 @@ function FindingsSection({
 
   return (
     <div className="space-y-4">
-      <ConclusionSection session={session} />
+      <ConclusionStatusBanner session={session} />
 
       {isIncomplete && failures.length > 0 ? (
         <>
@@ -428,38 +550,10 @@ function FindingsSection({
         </>
       ) : null}
 
-      {zeroChallenge ? (
-        <div className="rounded-xl border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
-          No model raised a challenge against any other answer in this debate. That means peer
-          review found nothing to contest — it does not by itself confirm the answers are correct.
-        </div>
-      ) : (
-        <SummaryCountsBar counts={counts} />
-      )}
-
-      {/* The plain-language groups below restate, in deterministic form,
-         what the AI Conclusion above already synthesizes — shown directly
-         only when there is no conclusion to read instead, so the primary
-         view never repeats itself. */}
-      {!zeroChallenge && !hasConclusion ? (
-        <>
-          <PlainFindingsGroup
-            title="What problems did the AIs identify?"
-            items={plain.problems}
-            emptyText="No specific problems were raised."
-          />
-          <PlainFindingsGroup
-            title="What did the AIs change or acknowledge?"
-            items={plain.acknowledgements}
-            emptyText="No challenge resulted in a revision or concession."
-          />
-          <PlainFindingsGroup
-            title="What should you consider now?"
-            items={plain.considerations}
-            emptyText="Nothing unresolved to flag."
-          />
-        </>
-      ) : null}
+      <HiddenIssueSection session={session} />
+      <WhatChangedSection session={session} counts={counts} zeroChallenge={zeroChallenge} />
+      <RecommendedApproachSection session={session} />
+      <NextQuestionSection session={session} onUseAsNextQuestion={onUseAsNextQuestion} />
 
       <Accordion type="single" collapsible>
         <AccordionItem value="technical-details" className="border-border/70">
@@ -467,7 +561,7 @@ function FindingsSection({
             Technical details
           </AccordionTrigger>
           <AccordionContent className="space-y-3 pt-2">
-            {hasConclusion && !zeroChallenge ? (
+            {!zeroChallenge ? (
               <>
                 <PlainFindingsGroup
                   title="What problems did the AIs identify?"
@@ -686,12 +780,14 @@ export function DebatePanel({
   turnId,
   modelAnswers,
   modelById,
+  onUseAsNextQuestion,
 }: {
   open: boolean;
   onClose: () => void;
   turnId: string;
   modelAnswers: ApiModelAnswer[];
   modelById: ModelLookup;
+  onUseAsNextQuestion?: (question: string) => void;
 }) {
   const { authHeaders } = useAuth();
   const [session, setSession] = useState<ApiDebateSession | null>(null);
@@ -910,7 +1006,11 @@ export function DebatePanel({
               </TabsContent>
 
               <TabsContent value="findings" className="space-y-4">
-                <FindingsSection session={session} modelById={modelById} />
+                <FindingsSection
+                  session={session}
+                  modelById={modelById}
+                  onUseAsNextQuestion={onUseAsNextQuestion}
+                />
                 <UsageSummary session={session} />
               </TabsContent>
             </Tabs>

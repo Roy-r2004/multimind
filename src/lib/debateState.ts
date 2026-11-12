@@ -351,3 +351,28 @@ export function debatePlainFindings(session: ApiDebateSession): DebatePlainFindi
   ];
   return { problems, acknowledgements, considerations };
 }
+
+// --- Debate's actual purpose: a hidden issue and one grounded next question ----
+
+export type DebateHiddenIssue = { issue: string; whyItMatters: string };
+
+/** Null whenever the debate genuinely found nothing meaningfully hidden —
+ * that is the expected, honest outcome for most debates, never an error.
+ * Also guards defensively against a half-filled pair reaching the client
+ * (the backend contract already rejects that, but the UI must never crash
+ * on it either). */
+export function debateHiddenIssue(session: ApiDebateSession): DebateHiddenIssue | null {
+  const c = session.conclusion;
+  if (!c || !c.hidden_issue || !c.why_it_matters) return null;
+  return { issue: c.hidden_issue, whyItMatters: c.why_it_matters };
+}
+
+export type DebateFollowUp = { question: string; reason: string };
+
+/** Null whenever no follow-up clears the bar for being genuinely worth
+ * asking — never a placeholder question invented just to fill the section. */
+export function debateFollowUp(session: ApiDebateSession): DebateFollowUp | null {
+  const c = session.conclusion;
+  if (!c || !c.suggested_follow_up_question || !c.follow_up_reason) return null;
+  return { question: c.suggested_follow_up_question, reason: c.follow_up_reason };
+}

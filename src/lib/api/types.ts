@@ -310,6 +310,16 @@ export type ApiDebateConclusion = {
   remaining_risks: string;
   next_steps: string;
   is_conditional: boolean;
+  /** Debate's actual purpose: a problem the user might not know to look
+   * for. Both of this pair are either genuinely present or both null —
+   * never fabricated, and missing entirely on an older conclusion is also
+   * just null. */
+  hidden_issue?: string | null;
+  why_it_matters?: string | null;
+  /** At most one suggested next question; both null when none clears the
+   * bar for being genuinely worth asking. */
+  suggested_follow_up_question?: string | null;
+  follow_up_reason?: string | null;
   tokens_input?: number | null;
   tokens_output?: number | null;
   cost_usd?: number | null;

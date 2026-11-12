@@ -8,6 +8,8 @@ import {
   challengeRowKey,
   debateEligibility,
   debateFailureDetails,
+  debateFollowUp,
+  debateHiddenIssue,
   debatePlainFindings,
   debateSummaryCounts,
   debateUsageDisplay,
@@ -636,4 +638,80 @@ test("plain findings never fabricate a problem that wasn't actually raised (zero
   const s = session({ challenges: [challengeRow("gpt-4.1", []), challengeRow("gemini", [])] });
   const findings = debatePlainFindings(s);
   assert.deepEqual(findings, { problems: [], acknowledgements: [], considerations: [] });
+});
+
+// --- Debate's actual purpose: hidden issue + one grounded follow-up question ----
+
+function conclusion(overrides: Record<string, unknown> = {}) {
+  return {
+    recommended_approach: "a",
+    why_this_approach: "b",
+    what_changed: "c",
+    remaining_risks: "d",
+    next_steps: "e",
+    is_conditional: false,
+    ...overrides,
+  };
+}
+
+test("debateHiddenIssue is null for the common, honest case of nothing hidden", () => {
+  const s = session({ conclusion: conclusion() });
+  assert.equal(debateHiddenIssue(s), null);
+});
+
+test("debateHiddenIssue returns the pair when both fields are genuinely present", () => {
+  const s = session({
+    conclusion: conclusion({
+      hidden_issue: "Nobody checked the write-volume assumption.",
+      why_it_matters: "If exceeded, the design silently drops jobs.",
+    }),
+  });
+  assert.deepEqual(debateHiddenIssue(s), {
+    issue: "Nobody checked the write-volume assumption.",
+    whyItMatters: "If exceeded, the design silently drops jobs.",
+  });
+});
+
+test("debateHiddenIssue is null when there is no conclusion at all", () => {
+  assert.equal(debateHiddenIssue(session({ conclusion: null })), null);
+});
+
+test("debateHiddenIssue defensively returns null for a half-filled pair rather than crashing", () => {
+  const s = session({ conclusion: conclusion({ hidden_issue: "Something." }) });
+  assert.equal(debateHiddenIssue(s), null);
+});
+
+test("debateFollowUp is null when no follow-up clears the bar", () => {
+  const s = session({ conclusion: conclusion() });
+  assert.equal(debateFollowUp(s), null);
+});
+
+test("debateFollowUp returns the question and reason when both are present", () => {
+  const s = session({
+    conclusion: conclusion({
+      suggested_follow_up_question: "What write throughput does this need to support?",
+      follow_up_reason: "It determines whether the design is safe to ship.",
+    }),
+  });
+  assert.deepEqual(debateFollowUp(s), {
+    question: "What write throughput does this need to support?",
+    reason: "It determines whether the design is safe to ship.",
+  });
+});
+
+test("debateFollowUp handles a conclusion predating these fields without crashing", () => {
+  // No hidden_issue/follow_up keys in the object at all — the shape an
+  // older, already-persisted conclusion has.
+  const s = session({
+    conclusion: {
+      recommended_approach: "a",
+      why_this_approach: "b",
+      what_changed: "c",
+      remaining_risks: "d",
+      next_steps: "e",
+      is_conditional: false,
+    },
+  });
+  assert.equal(debateFollowUp(s), null);
+  assert.equal(debateHiddenIssue(s), null);
 });

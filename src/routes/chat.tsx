@@ -1094,6 +1094,22 @@ export function ChatPage() {
     }
   }
 
+  /** "Use as Next Question" from a Debate's suggested follow-up. Inserts into
+   * the existing composer and stops — it never sends, never starts another
+   * debate, and never touches attachments or the selected model set. A
+   * non-empty existing draft is never silently overwritten. */
+  function handleUseDebateQuestionInComposer(question: string) {
+    const existingDraft = composerRef.current?.getValue().trim() ?? "";
+    if (existingDraft) {
+      const replace = window.confirm(
+        "Your composer already has a draft. Replace it with the debate's suggested question?",
+      );
+      if (!replace) return;
+    }
+    composerRef.current?.setValue(question);
+    composerRef.current?.focus();
+  }
+
   async function stopGenerating() {
     const auth = authHeaders();
     if (!auth || !activeChatId || !activeTurnId || stoppingTurnId === activeTurnId) return;
@@ -1578,6 +1594,7 @@ export function ChatPage() {
                           ),
                         );
                       }}
+                      onUseAsNextQuestion={handleUseDebateQuestionInComposer}
                     />
                   </div>
                 );
@@ -2188,6 +2205,7 @@ function AiTurn({
   onPinAnswerSelection,
   onToggleSavedVerdict,
   onLessonUpdate,
+  onUseAsNextQuestion,
 }: {
   set: ModelSet;
   turn: ApiTurn;
@@ -2201,6 +2219,7 @@ function AiTurn({
   onToggleAnswerPin: (answerId: string, currentlyPinned: boolean) => void;
   onToggleSavedVerdict: (verdictId: string, saved: boolean) => void;
   onLessonUpdate: (lessonId: string, lessonStatus: string) => void;
+  onUseAsNextQuestion: (question: string) => void;
 }) {
   const { session } = useAuth();
   const [layout] = useChatTurnLayout();
@@ -2588,6 +2607,10 @@ function AiTurn({
         turnId={turn.id}
         modelAnswers={turn.model_answers ?? []}
         modelById={modelById}
+        onUseAsNextQuestion={(question) => {
+          onUseAsNextQuestion(question);
+          setShowDebate(false);
+        }}
       />
     </div>
   );
