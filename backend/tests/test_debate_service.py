@@ -520,6 +520,40 @@ async def test_execution_deadline_marks_session_partial(db: AsyncSession, auth: 
     assert reloaded.status == DebateSessionStatus.PARTIAL
 
 
+# --- Debate timeout reliability: the configured values actually get used ----
+
+
+async def test_run_debate_session_standalone_passes_configured_timeouts_through(
+    db: AsyncSession, auth: AuthContext, monkeypatch
+):
+    """`_run_debate_session_standalone` (the dedicated worker's own code
+    path, reached by `run_debate_session_job`) must use
+    `settings.debate_per_call_timeout_seconds` / `debate_overall_deadline_seconds`
+    — not silently fall back to the orchestrator's own module defaults —
+    so the configured values from app.core.config actually take effect."""
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    factory = _session_factory_for(db)
+    monkeypatch.setattr(debate_service, "AsyncSessionLocal", factory)
+
+    settings = debate_service.get_settings()
+    monkeypatch.setattr(settings, "debate_per_call_timeout_seconds", 12.5)
+    monkeypatch.setattr(settings, "debate_overall_deadline_seconds", 99.0)
+
+    captured: dict = {}
+
+    async def fake_execute(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(debate_service, "execute_debate_session", fake_execute)
+
+    await debate_service._run_debate_session_standalone(session.id)
+
+    assert captured["per_call_timeout_seconds"] == 12.5
+    assert captured["overall_deadline_seconds"] == 99.0
+
+
 # --- 16/17. No mutation of original Council responses or Verdict -----------
 
 

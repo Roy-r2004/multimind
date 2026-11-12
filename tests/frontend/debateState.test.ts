@@ -550,6 +550,9 @@ test("safeFailureReason never echoes a raw message that looks credential-shaped"
 test("safeFailureReason recognizes common failure shapes without inventing detail", () => {
   assert.equal(safeFailureReason(""), "failed without returning a specific reason");
   assert.equal(safeFailureReason("TimeoutError (no further detail)"), "took too long to respond");
+  // The backend's actual message format for a per-call timeout since the
+  // reliability fix (states the real bound hit, no bare "TimeoutError").
+  assert.equal(safeFailureReason("model did not respond within 75s"), "took too long to respond");
   assert.equal(
     safeFailureReason("OpenRouter error (503): Unavailable"),
     "the model provider was temporarily unavailable",

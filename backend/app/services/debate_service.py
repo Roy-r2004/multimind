@@ -641,6 +641,7 @@ async def _run_debate_session_standalone(session_id: str) -> None:
         )
         return
     session, user_message, chat_id, participants = loaded
+    settings = get_settings()
     await execute_debate_session(
         org_id=session.org_id,
         turn_id=session.turn_id,
@@ -648,13 +649,15 @@ async def _run_debate_session_standalone(session_id: str) -> None:
         session_id=session.id,
         user_message=user_message,
         participants=participants,
+        per_call_timeout_seconds=settings.debate_per_call_timeout_seconds,
+        overall_deadline_seconds=settings.debate_overall_deadline_seconds,
     )
 
 
 async def run_debate_session_job(ctx: dict, session_id: str) -> None:
-    """ARQ job entrypoint. Registered on the existing scraping worker's
-    ``WorkerSettings.functions`` (see app/scraping/worker.py) rather than a
-    dedicated Debate worker container."""
+    """ARQ job entrypoint, registered on the dedicated Debate worker's
+    ``WorkerSettings.functions`` (see app/debate/worker.py) — never on the
+    scraping worker."""
     del ctx  # ARQ passes worker context; unused here.
     await _run_debate_session_standalone(session_id)
 

@@ -44,8 +44,14 @@ logger = get_logger(__name__)
 DEBATE_CHALLENGE_MAX_TOKENS = 3_000
 DEBATE_RESPONSE_MAX_TOKENS = 3_000
 DEBATE_DEFAULT_MAX_CONCURRENCY = 5
-DEBATE_DEFAULT_PER_CALL_TIMEOUT_SECONDS = 45.0
-DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS = 180.0
+# These mirror app.core.config.Settings.debate_per_call_timeout_seconds /
+# debate_overall_deadline_seconds — the service layer always passes the
+# configured values explicitly; these are this module's own fallback when
+# DebateRunConfig is built without an override (e.g. in tests). Raised from
+# 45s/180s after the first real debate (Claude Opus 4.1) hit the old 45s
+# per-call timeout on a Round-2 peer-review call.
+DEBATE_DEFAULT_PER_CALL_TIMEOUT_SECONDS = 75.0
+DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS = 240.0
 
 # Round 2 is always exactly one call per participant reviewing every other
 # participant at once (O(n)); this module never issues a pairwise call.
@@ -214,12 +220,19 @@ class DebateOrchestrator:
                 logger.warning(
                     "debate_llm_call_failed", model_id=model_id, error_type=type(exc).__name__
                 )
-                # asyncio.wait_for raises a bare TimeoutError() with an empty
-                # str() — never persist that as an empty-but-truthy-looking
-                # "" error; a caller doing `if error:` (as debate_service.py's
-                # persistence layer does) would silently treat "" as "no
-                # error" and misclassify a real failure as completed.
-                error_message = str(exc) or f"{type(exc).__name__} (no further detail)"
+                if isinstance(exc, TimeoutError):
+                    # asyncio.wait_for raises a bare TimeoutError() with no
+                    # message of its own — state the actual bound that was
+                    # hit rather than a generic "TimeoutError (no further
+                    # detail)", so the persisted error is both accurate and
+                    # readable without needing the logs.
+                    error_message = f"model did not respond within {per_call_timeout:.0f}s"
+                else:
+                    # Never persist an empty-but-non-None "" error: a caller
+                    # doing `if error:` (as debate_service.py's persistence
+                    # layer once did) would silently treat "" as "no error"
+                    # and misclassify a real failure as completed.
+                    error_message = str(exc) or f"{type(exc).__name__} (no further detail)"
                 return None, LLMCallOutcome(model_id=model_id, error=error_message)
 
         cost = response.cost_usd

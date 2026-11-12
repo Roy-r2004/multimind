@@ -299,7 +299,11 @@ export function safeFailureReason(rawError: string): string {
   if (/\b(key|token|secret|authorization|bearer)\b/.test(lower)) {
     return "failed due to a configuration issue";
   }
-  if (lower.includes("timeout") || lower.includes("timed out")) {
+  if (
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("did not respond")
+  ) {
     return "took too long to respond";
   }
   if (lower.includes("503") || lower.includes("unavailable") || lower.includes("502")) {

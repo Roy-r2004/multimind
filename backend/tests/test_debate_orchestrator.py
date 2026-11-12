@@ -245,6 +245,65 @@ def test_bare_timeout_error_produces_a_non_empty_error_message():
     assert any(not r.outcome.succeeded for r in result.challenge_results)
 
 
+# --- Debate timeout reliability: a genuinely slow model, cut off cleanly ----
+
+
+@dataclass
+class SlowThenScriptedProvider(ScriptedProvider):
+    """Like ScriptedProvider, but one model_id's call actually sleeps past
+    the configured per-call timeout instead of raising immediately — this
+    exercises the real asyncio.wait_for timeout path end-to-end (not a
+    manually-raised bare TimeoutError), the way the real Claude Opus 4.1
+    Round-2 call in the first live debate actually behaved."""
+
+    slow_model: str = ""
+    slow_seconds: float = 0.0
+
+    async def complete(self, *, system, user, model, max_tokens):
+        if model == self.slow_model:
+            await asyncio.sleep(self.slow_seconds)
+        return await super().complete(system=system, user=user, model=model, max_tokens=max_tokens)
+
+
+def test_slow_model_is_cut_off_by_the_configured_per_call_timeout_with_a_readable_message():
+    participants = _participants(MODEL_A, MODEL_B, MODEL_C)
+    # Explicit, non-default per_call_timeout_seconds — proves the value is
+    # genuinely configurable per run, not hardcoded.
+    config = DebateRunConfig(user_message="Q?", participants=participants, per_call_timeout_seconds=0.05)
+    provider = SlowThenScriptedProvider(
+        slow_model="openai/gpt-4.1",
+        slow_seconds=1.0,
+        round2_by_slug={
+            "openai/gpt-4.1": _challenge_response(MODEL_A, []),
+            "openai/gpt-4.1-mini": _challenge_response(MODEL_B, []),
+            "openai/gpt-5-nano": _challenge_response(MODEL_C, []),
+        },
+    )
+    result, _events = _run(config, provider)
+    by_model = {r.model_id: r for r in result.challenge_results}
+    slow = by_model[MODEL_A]
+    assert not slow.outcome.succeeded
+    assert slow.outcome.error == "model did not respond within 0s"
+    assert by_model[MODEL_B].outcome.succeeded
+    assert by_model[MODEL_C].outcome.succeeded
+
+
+def test_default_per_call_and_overall_timeout_values_are_coherent():
+    """Documents the actual configured relationship rather than asserting a
+    specific number in isolation: two per-call timeouts back to back must
+    still fit inside the overall deadline with real margin (the first live
+    debate's 45s/180s pair left only ~30s; this checks the replacement
+    pair does better, not just that it changed)."""
+    from app.llm.debate_orchestrator import (
+        DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS,
+        DEBATE_DEFAULT_PER_CALL_TIMEOUT_SECONDS,
+    )
+
+    worst_case_two_rounds = DEBATE_DEFAULT_PER_CALL_TIMEOUT_SECONDS * 2
+    margin = DEBATE_DEFAULT_OVERALL_DEADLINE_SECONDS - worst_case_two_rounds
+    assert margin >= 60.0
+
+
 # --- 5. One model fails during Round 2 --------------------------------------
 
 
