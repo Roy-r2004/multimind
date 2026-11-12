@@ -55,6 +55,15 @@ class DebateConclusionResponse(BaseModel):
     remaining_risks: str
     next_steps: str
     is_conditional: bool
+    # Debate's actual purpose: surface a problem the user might not know to
+    # look for, and point them at the single most valuable next question.
+    # Both of these are all-or-nothing pairs — either genuinely present, or
+    # both null, never fabricated to avoid an empty-looking section. Missing
+    # entirely (an older conclusion predating this field) is also just null.
+    hidden_issue: str | None = None
+    why_it_matters: str | None = None
+    suggested_follow_up_question: str | None = None
+    follow_up_reason: str | None = None
     tokens_input: int | None = None
     tokens_output: int | None = None
     cost_usd: float | None = None

@@ -335,6 +335,14 @@ class DebateConclusion(BaseModel):
     conflicting — in that case ``recommended_approach`` states the
     condition(s) under which each option would be the right one, rather
     than silently picking a side.
+
+    ``hidden_issue``/``why_it_matters`` and ``suggested_follow_up_question``/
+    ``follow_up_reason`` are the only optional fields here. Debate's purpose
+    is to surface a problem or gap the user might not know to look for, and
+    to point them at the single most valuable next question — not to
+    manufacture one when the debate genuinely found nothing worth flagging.
+    Both pairs are either fully present or fully absent (``null``); never a
+    half-filled pair, and never more than one suggested question.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -345,6 +353,10 @@ class DebateConclusion(BaseModel):
     remaining_risks: str
     next_steps: str
     is_conditional: bool = False
+    hidden_issue: str | None = None
+    why_it_matters: str | None = None
+    suggested_follow_up_question: str | None = None
+    follow_up_reason: str | None = None
 
     @field_validator(
         "recommended_approach", "why_this_approach", "what_changed", "remaining_risks", "next_steps"
@@ -352,6 +364,30 @@ class DebateConclusion(BaseModel):
     @classmethod
     def _not_blank(cls, value: str, info) -> str:
         return _require_non_blank(value, info.field_name)
+
+    @field_validator(
+        "hidden_issue", "why_it_matters", "suggested_follow_up_question", "follow_up_reason"
+    )
+    @classmethod
+    def _optional_blank_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def _paired_fields_are_fully_present_or_fully_absent(self) -> "DebateConclusion":
+        if bool(self.hidden_issue) != bool(self.why_it_matters):
+            raise ValueError(
+                "hidden_issue and why_it_matters must both be set or both be null — "
+                "never a half-filled pair"
+            )
+        if bool(self.suggested_follow_up_question) != bool(self.follow_up_reason):
+            raise ValueError(
+                "suggested_follow_up_question and follow_up_reason must both be set "
+                "or both be null — never a half-filled pair"
+            )
+        return self
 
 
 def parse_conclusion_output(raw_text: str) -> DebateConclusion:

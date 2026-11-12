@@ -581,3 +581,117 @@ def test_debate_conclusion_is_conditional_defaults_false():
         next_steps="e",
     )
     assert conclusion.is_conditional is False
+
+
+# --- Hidden issue / follow-up question (Debate's actual purpose) ------------
+
+
+def _base_conclusion_kwargs(**overrides) -> dict:
+    kwargs = {
+        "recommended_approach": "a",
+        "why_this_approach": "b",
+        "what_changed": "c",
+        "remaining_risks": "d",
+        "next_steps": "e",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_hidden_issue_and_follow_up_default_to_null():
+    """The common, honest case: a debate that found nothing hidden and
+    warrants no follow-up — both pairs default to None without being set."""
+    conclusion = DebateConclusion(**_base_conclusion_kwargs())
+    assert conclusion.hidden_issue is None
+    assert conclusion.why_it_matters is None
+    assert conclusion.suggested_follow_up_question is None
+    assert conclusion.follow_up_reason is None
+
+
+def test_hidden_issue_pair_can_both_be_set():
+    conclusion = DebateConclusion(
+        **_base_conclusion_kwargs(
+            hidden_issue="Nobody checked the write-volume assumption.",
+            why_it_matters="If volume is high, the recommended design silently loses jobs.",
+        )
+    )
+    assert conclusion.hidden_issue is not None
+    assert conclusion.why_it_matters is not None
+
+
+def test_hidden_issue_half_filled_pair_is_rejected():
+    with pytest.raises(Exception):
+        DebateConclusion(**_base_conclusion_kwargs(hidden_issue="Something was found."))
+    with pytest.raises(Exception):
+        DebateConclusion(**_base_conclusion_kwargs(why_it_matters="It matters because X."))
+
+
+def test_follow_up_question_pair_can_both_be_set():
+    conclusion = DebateConclusion(
+        **_base_conclusion_kwargs(
+            suggested_follow_up_question="What write throughput does this system actually need to support?",
+            follow_up_reason="The debate never established this, and it decides which architecture is safe.",
+        )
+    )
+    assert conclusion.suggested_follow_up_question is not None
+    assert conclusion.follow_up_reason is not None
+
+
+def test_follow_up_question_half_filled_pair_is_rejected():
+    with pytest.raises(Exception):
+        DebateConclusion(**_base_conclusion_kwargs(suggested_follow_up_question="A question?"))
+    with pytest.raises(Exception):
+        DebateConclusion(**_base_conclusion_kwargs(follow_up_reason="Because it matters."))
+
+
+def test_hidden_issue_blank_string_normalizes_to_none_not_a_half_filled_pair():
+    """A model returning "" instead of null for an unused field must not be
+    treated as a filled value that then trips the pairing validator."""
+    conclusion = DebateConclusion(
+        **_base_conclusion_kwargs(hidden_issue="   ", why_it_matters="")
+    )
+    assert conclusion.hidden_issue is None
+    assert conclusion.why_it_matters is None
+
+
+def test_parse_conclusion_output_with_no_hidden_issue_or_follow_up():
+    raw = _conclusion_json(
+        hidden_issue=None,
+        why_it_matters=None,
+        suggested_follow_up_question=None,
+        follow_up_reason=None,
+    )
+    conclusion = parse_conclusion_output(raw)
+    assert conclusion.hidden_issue is None
+    assert conclusion.suggested_follow_up_question is None
+
+
+def test_parse_conclusion_output_with_a_genuine_hidden_issue_and_follow_up():
+    raw = _conclusion_json(
+        hidden_issue="The hybrid design assumes Redis never loses an enqueued job.",
+        why_it_matters="If Redis restarts mid-write, a job can silently vanish with no retry.",
+        suggested_follow_up_question="What happens to an enqueued job if Redis restarts before it's persisted to PostgreSQL?",
+        follow_up_reason="This directly determines whether the hybrid design is actually safe to ship.",
+    )
+    conclusion = parse_conclusion_output(raw)
+    assert conclusion.hidden_issue is not None
+    assert "Redis" in conclusion.suggested_follow_up_question
+
+
+def test_parse_conclusion_output_backward_compatible_with_pre_follow_up_shape():
+    """A conclusion generated under the previous prompt version (before
+    these fields existed) has no hidden_issue/follow_up keys at all — must
+    still parse cleanly, defaulting to None, not error."""
+    raw = json.dumps(
+        {
+            "recommended_approach": "Use approach A.",
+            "why_this_approach": "It survived every challenge.",
+            "what_changed": "Model B conceded its throughput claim.",
+            "remaining_risks": "None significant.",
+            "next_steps": "Verify with a load test.",
+            "is_conditional": False,
+        }
+    )
+    conclusion = parse_conclusion_output(raw)
+    assert conclusion.hidden_issue is None
+    assert conclusion.suggested_follow_up_question is None

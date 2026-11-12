@@ -94,6 +94,10 @@ def _conclusion_response(
     remaining_risks: str = "None significant.",
     next_steps: str = "Verify the data source independently.",
     is_conditional: bool = False,
+    hidden_issue: str | None = None,
+    why_it_matters: str | None = None,
+    suggested_follow_up_question: str | None = None,
+    follow_up_reason: str | None = None,
 ) -> LLMResponse:
     return LLMResponse(
         text=json.dumps(
@@ -104,6 +108,10 @@ def _conclusion_response(
                 "remaining_risks": remaining_risks,
                 "next_steps": next_steps,
                 "is_conditional": is_conditional,
+                "hidden_issue": hidden_issue,
+                "why_it_matters": why_it_matters,
+                "suggested_follow_up_question": suggested_follow_up_question,
+                "follow_up_reason": follow_up_reason,
             }
         ),
         tokens_input=20,
@@ -609,6 +617,60 @@ def test_synthesis_runs_exactly_once_after_a_successful_debate():
     assert "debate_conclusion_failed" not in event_names
 
 
+def test_synthesis_with_a_genuine_hidden_issue_and_follow_up_still_takes_exactly_one_call():
+    """Debate's actual purpose: a hidden issue and a grounded follow-up
+    question flow through the same single synthesis call — never a second
+    LLM request, and never a second debate round."""
+    participants = _participants(MODEL_A, MODEL_B, MODEL_C)
+    config = DebateRunConfig(
+        user_message="Q?", participants=participants, synthesis_model_id=MODEL_C
+    )
+    provider = ScriptedProvider(
+        round2_by_slug={
+            "openai/gpt-4.1": _challenge_response(MODEL_A, []),
+            "openai/gpt-4.1-mini": _challenge_response(MODEL_B, []),
+            "openai/gpt-5-nano": _challenge_response(MODEL_C, []),
+        },
+        conclusion_by_slug={
+            "openai/gpt-5-nano": _conclusion_response(
+                hidden_issue="Nobody checked the assumed write-volume ceiling.",
+                why_it_matters="If exceeded, the recommended design silently drops jobs.",
+                suggested_follow_up_question="What write throughput does this system actually need to support?",
+                follow_up_reason="This determines whether the recommended design is safe to ship.",
+            )
+        },
+    )
+    result, _events = _run(config, provider)
+    assert result.conclusion is not None
+    assert result.conclusion.hidden_issue is not None
+    assert "write-volume" in result.conclusion.hidden_issue
+    assert result.conclusion.suggested_follow_up_question is not None
+    conclusion_calls = [c for c in provider.calls if c[0] == "conclusion"]
+    assert len(conclusion_calls) == 1  # exactly one call, no matter how rich the output
+
+
+def test_synthesis_with_no_hidden_issue_or_follow_up_still_completes_normally():
+    """The honest, common case — a debate with nothing meaningfully hidden
+    and no warranted follow-up must not be treated as a failure or as
+    missing data; both pairs are simply null."""
+    participants = _participants(MODEL_A, MODEL_B)
+    config = DebateRunConfig(
+        user_message="Q?", participants=participants, synthesis_model_id=MODEL_A
+    )
+    provider = ScriptedProvider(
+        round2_by_slug={
+            "openai/gpt-4.1": _challenge_response(MODEL_A, []),
+            "openai/gpt-4.1-mini": _challenge_response(MODEL_B, []),
+        },
+        conclusion_by_slug={"openai/gpt-4.1": _conclusion_response()},
+    )
+    result, _events = _run(config, provider)
+    assert result.conclusion is not None
+    assert result.conclusion.hidden_issue is None
+    assert result.conclusion.suggested_follow_up_question is None
+    assert result.conclusion_error is None
+
+
 def test_synthesis_is_skipped_not_failed_when_every_round_call_failed():
     """Distinguishes 'nothing to synthesize from' (skipped) from an actual
     synthesis call failing (failed) — see DebateConclusionStatus.SKIPPED."""
@@ -733,6 +795,28 @@ def test_conclusion_prompt_carries_the_word_budget_and_anti_repetition_instructi
     assert "restate" in lower or "repeat" in lower
     assert "different ground" in lower or "not list every challenge" in lower or "minor" in lower
     assert "sacrifice" in lower  # explicit: never drop something important just to stay short
+
+
+def test_conclusion_prompt_carries_the_hidden_issue_and_follow_up_instructions():
+    """Debate's actual purpose, locked in at the prompt-template level: find
+    a hidden problem (never a stylistic nitpick), explain its practical
+    consequence, and suggest at most one grounded, specific follow-up —
+    or null for both when the debate genuinely found nothing to flag."""
+    from app.llm.debate_prompts import PanelistAnswer, build_conclusion_prompt
+
+    prompt = build_conclusion_prompt(
+        user_message="Q?",
+        participants=[PanelistAnswer(model_id=MODEL_A, model_name="Model A", text="Answer A")],
+        exchanges=[],
+    )
+    lower = prompt.lower()
+    assert "hidden_issue" in prompt and "why_it_matters" in prompt
+    assert "suggested_follow_up_question" in prompt and "follow_up_reason" in prompt
+    assert "null" in lower
+    assert "exactly one" in lower or "never suggest more than one" in lower
+    assert "never simply repeat the original user question" in lower
+    assert "already answered" in lower or "already answered the" in lower
+    assert "manufacture" in lower or "fabricat" in lower  # don't invent a problem to look useful
 
 
 def test_conclusion_max_tokens_was_tightened_from_the_original_generous_ceiling():

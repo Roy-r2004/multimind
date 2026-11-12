@@ -350,6 +350,67 @@ async def test_to_response_leaves_conclusion_none_when_not_attempted(db: AsyncSe
     assert response.conclusion_error_message is None
 
 
+async def test_to_response_exposes_a_hidden_issue_and_follow_up_question(
+    db: AsyncSession, auth: AuthContext
+):
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    session.status = DebateSessionStatus.COMPLETED
+    session.conclusion = {
+        "recommended_approach": "Approach A",
+        "why_this_approach": "It held up under challenge.",
+        "what_changed": "Nothing.",
+        "remaining_risks": "None.",
+        "next_steps": "Verify independently.",
+        "is_conditional": False,
+        "hidden_issue": "Nobody checked the write-volume assumption.",
+        "why_it_matters": "If exceeded, the design silently drops jobs.",
+        "suggested_follow_up_question": "What write throughput does this need to support?",
+        "follow_up_reason": "It determines whether the design is safe to ship.",
+    }
+    from app.db.models import DebateConclusionStatus
+
+    session.conclusion_status = DebateConclusionStatus.COMPLETED
+    await db.commit()
+
+    full = await debate_service.get_debate_session_by_id(db, auth, session.id)
+    response = _to_response(full)
+    assert response.conclusion is not None
+    assert response.conclusion.hidden_issue == "Nobody checked the write-volume assumption."
+    assert response.conclusion.suggested_follow_up_question is not None
+
+
+async def test_to_response_handles_a_conclusion_predating_the_follow_up_fields(
+    db: AsyncSession, auth: AuthContext
+):
+    """A conclusion persisted under the previous prompt version has no
+    hidden_issue/follow_up keys in its stored JSON at all — must still
+    build a valid response with those fields defaulting to None."""
+    turn = await _make_turn(db, auth, model_ids=[MODEL_A, MODEL_B])
+    session, _, _ = await debate_service.start_debate_session(db, auth, turn.id)
+    await db.commit()
+    session.status = DebateSessionStatus.COMPLETED
+    session.conclusion = {
+        "recommended_approach": "Approach A",
+        "why_this_approach": "It held up under challenge.",
+        "what_changed": "Nothing.",
+        "remaining_risks": "None.",
+        "next_steps": "Verify independently.",
+        "is_conditional": False,
+    }
+    from app.db.models import DebateConclusionStatus
+
+    session.conclusion_status = DebateConclusionStatus.COMPLETED
+    await db.commit()
+
+    full = await debate_service.get_debate_session_by_id(db, auth, session.id)
+    response = _to_response(full)
+    assert response.conclusion is not None
+    assert response.conclusion.hidden_issue is None
+    assert response.conclusion.suggested_follow_up_question is None
+
+
 async def test_to_response_exposes_a_failed_conclusion_without_a_conclusion_body(
     db: AsyncSession, auth: AuthContext
 ):
