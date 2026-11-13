@@ -33,7 +33,7 @@ import {
   promptBuilderStorageKey,
   type PromptBuilderSession,
 } from "@/lib/promptBuilderSession";
-import { shouldSubmitOnEnter } from "@/lib/composerSubmit";
+import { clampComposerHeight, isWithinClickThreshold } from "@/lib/composerResize";
 import { cn } from "@/lib/utils";
 
 const CONTEXT_LIMIT_MESSAGE =
@@ -43,6 +43,11 @@ const GENERATE_WITHOUT_ANSWERING_TEXT =
   "Please generate the best prompt you can without further clarification.";
 
 type MobileTab = "conversation" | "final";
+
+const COMPOSER_DEFAULT_HEIGHT_PX = 72;
+const COMPOSER_EXPANDED_HEIGHT_PX = 448;
+const COMPOSER_MIN_HEIGHT_PX = 64;
+const COMPOSER_MAX_HEIGHT_PX = 640;
 
 function sessionStateLabel(session: PromptBuilderSession, loading: boolean): string {
   if (loading) return "Generating…";
@@ -81,10 +86,13 @@ export function PromptBuilderModal({
   const [mobileTab, setMobileTab] = useState<MobileTab>("conversation");
   const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
   const [showSave, setShowSave] = useState(false);
-  const [composerExpanded, setComposerExpanded] = useState(false);
-  const [isComposing, setIsComposing] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(COMPOSER_DEFAULT_HEIGHT_PX);
+  const composerExpanded = composerHeight > COMPOSER_DEFAULT_HEIGHT_PX + 1;
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sendInFlightRef = useRef(false);
+  const composerDragRef = useRef<{ startY: number; startHeight: number; moved: boolean } | null>(
+    null,
+  );
   const { authHeaders } = useAuth();
   const auth = authHeaders();
   const authToken = auth?.token;
@@ -132,8 +140,7 @@ export function PromptBuilderModal({
     setMobileTab("conversation");
     setShowNewSessionConfirm(false);
     setShowSave(false);
-    setComposerExpanded(false);
-    setIsComposing(false);
+    setComposerHeight(COMPOSER_DEFAULT_HEIGHT_PX);
   }, [open, storageKey]);
 
   useEffect(() => {
@@ -507,47 +514,65 @@ export function PromptBuilderModal({
                     }));
                     setError(null);
                   }}
-                  onCompositionStart={() => setIsComposing(true)}
-                  onCompositionEnd={() => setIsComposing(false)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter" || event.shiftKey) return;
-                    event.preventDefault();
-                    if (
-                      !shouldSubmitOnEnter({
-                        key: event.key,
-                        shiftKey: event.shiftKey,
-                        isComposing: isComposing || event.nativeEvent.isComposing,
-                        loading,
-                        text: session.draft,
-                      })
-                    )
-                      return;
-                    void send();
-                  }}
-                  rows={composerExpanded ? 10 : 3}
+                  rows={3}
                   disabled={loading}
                   placeholder={
                     hasGenerated
                       ? "Ask for changes, or add more detail..."
                       : "Describe what you want a prompt for..."
                   }
-                  className={cn(
-                    "w-full resize-none rounded-xl border border-border bg-background px-3 py-3 pr-9 text-sm outline-none focus:border-primary/50 disabled:opacity-60",
-                    composerExpanded
-                      ? "h-[min(50vh,28rem)] max-h-[min(50vh,28rem)] overflow-y-auto"
-                      : "min-h-[4.5rem]",
-                  )}
+                  style={{ height: composerHeight, maxHeight: composerHeight }}
+                  className="w-full resize-none overflow-y-auto rounded-xl border border-border bg-background px-3 py-3 pr-9 text-sm outline-none focus:border-primary/50 disabled:opacity-60"
                 />
                 <button
                   type="button"
                   onClick={() => {
-                    setComposerExpanded((value) => !value);
+                    if (composerDragRef.current?.moved) {
+                      composerDragRef.current = null;
+                      return;
+                    }
+                    setComposerHeight((value) =>
+                      value > COMPOSER_DEFAULT_HEIGHT_PX + 1
+                        ? COMPOSER_DEFAULT_HEIGHT_PX
+                        : COMPOSER_EXPANDED_HEIGHT_PX,
+                    );
                     window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
+                  }}
+                  onPointerDown={(event) => {
+                    if (event.pointerType === "mouse" && event.button !== 0) return;
+                    composerDragRef.current = {
+                      startY: event.clientY,
+                      startHeight: composerHeight,
+                      moved: false,
+                    };
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  }}
+                  onPointerMove={(event) => {
+                    const drag = composerDragRef.current;
+                    if (!drag) return;
+                    const deltaY = event.clientY - drag.startY;
+                    if (!isWithinClickThreshold(Math.abs(deltaY))) {
+                      drag.moved = true;
+                    }
+                    setComposerHeight(
+                      clampComposerHeight(
+                        drag.startHeight + deltaY,
+                        COMPOSER_MIN_HEIGHT_PX,
+                        COMPOSER_MAX_HEIGHT_PX,
+                      ),
+                    );
+                  }}
+                  onPointerUp={(event) => {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
                   }}
                   aria-label={composerExpanded ? "Collapse composer" : "Expand composer"}
                   aria-expanded={composerExpanded}
-                  title={composerExpanded ? "Collapse composer" : "Expand composer"}
-                  className="absolute top-2 right-2 rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  title={
+                    composerExpanded
+                      ? "Collapse composer (drag to resize)"
+                      : "Expand composer (drag to resize)"
+                  }
+                  className="absolute top-2 right-2 cursor-ns-resize touch-none rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   {composerExpanded ? (
                     <Minimize2 className="size-3.5" />
@@ -556,9 +581,6 @@ export function PromptBuilderModal({
                   )}
                 </button>
               </div>
-              <p className="shrink-0 text-[11px] text-muted-foreground">
-                Enter to send · Shift+Enter for a new line
-              </p>
               <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
                 <VoiceRecorderButton
                   auth={auth}
