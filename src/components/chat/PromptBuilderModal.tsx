@@ -1,5 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, HelpCircle, Loader2, Save, Send, Sparkles, User, Wand2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  HelpCircle,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  Save,
+  Send,
+  Sparkles,
+  User,
+  Wand2,
+} from "lucide-react";
 import { Modal } from "@/components/Modal";
 import { SavePromptDialog } from "@/components/chat/SavePromptDialog";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
@@ -21,6 +33,7 @@ import {
   promptBuilderStorageKey,
   type PromptBuilderSession,
 } from "@/lib/promptBuilderSession";
+import { shouldSubmitOnEnter } from "@/lib/composerSubmit";
 import { cn } from "@/lib/utils";
 
 const CONTEXT_LIMIT_MESSAGE =
@@ -68,6 +81,10 @@ export function PromptBuilderModal({
   const [mobileTab, setMobileTab] = useState<MobileTab>("conversation");
   const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
   const [showSave, setShowSave] = useState(false);
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [isComposing, setIsComposing] = useState(false);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const sendInFlightRef = useRef(false);
   const { authHeaders } = useAuth();
   const auth = authHeaders();
   const authToken = auth?.token;
@@ -115,6 +132,8 @@ export function PromptBuilderModal({
     setMobileTab("conversation");
     setShowNewSessionConfirm(false);
     setShowSave(false);
+    setComposerExpanded(false);
+    setIsComposing(false);
   }, [open, storageKey]);
 
   useEffect(() => {
@@ -188,12 +207,14 @@ export function PromptBuilderModal({
   }
 
   async function send(overrideText?: string) {
+    if (sendInFlightRef.current || loading) return;
     const text = overrideText ?? session.draft;
     if (!auth || !session.modelSetId || !text.trim()) return;
     if (contextUsage && contextUsage.remaining_tokens < 0) {
       setError(CONTEXT_LIMIT_MESSAGE);
       return;
     }
+    sendInFlightRef.current = true;
     const next = beginPromptBuilderSend(session, text);
     const requestStorageKey = storageKey;
     const requestGeneration = generationRef.current;
@@ -236,6 +257,7 @@ export function PromptBuilderModal({
             : "Could not improve prompt. Please try again.";
       setError(message);
     } finally {
+      sendInFlightRef.current = false;
       if (loadedKey.current === requestStorageKey && generationRef.current === requestGeneration) {
         setLoading(false);
       }
@@ -473,31 +495,70 @@ export function PromptBuilderModal({
                   {error}
                 </div>
               )}
-              <textarea
-                value={session.draft}
-                onChange={(event) => {
-                  setSession((current) => ({
-                    ...current,
-                    draft: event.target.value,
-                    updatedAt: new Date().toISOString(),
-                  }));
-                  setError(null);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
+              <div className="relative shrink-0">
+                <textarea
+                  ref={composerTextareaRef}
+                  value={session.draft}
+                  onChange={(event) => {
+                    setSession((current) => ({
+                      ...current,
+                      draft: event.target.value,
+                      updatedAt: new Date().toISOString(),
+                    }));
+                    setError(null);
+                  }}
+                  onCompositionStart={() => setIsComposing(true)}
+                  onCompositionEnd={() => setIsComposing(false)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.shiftKey) return;
                     event.preventDefault();
-                    if (!loading) void send();
+                    if (
+                      !shouldSubmitOnEnter({
+                        key: event.key,
+                        shiftKey: event.shiftKey,
+                        isComposing: isComposing || event.nativeEvent.isComposing,
+                        loading,
+                        text: session.draft,
+                      })
+                    )
+                      return;
+                    void send();
+                  }}
+                  rows={composerExpanded ? 10 : 3}
+                  disabled={loading}
+                  placeholder={
+                    hasGenerated
+                      ? "Ask for changes, or add more detail..."
+                      : "Describe what you want a prompt for..."
                   }
-                }}
-                rows={3}
-                disabled={loading}
-                placeholder={
-                  hasGenerated
-                    ? "Ask for changes, or add more detail..."
-                    : "Describe what you want a prompt for..."
-                }
-                className="min-h-[4.5rem] w-full shrink-0 rounded-xl border border-border bg-background px-3 py-3 text-sm outline-none focus:border-primary/50 disabled:opacity-60"
-              />
+                  className={cn(
+                    "w-full resize-none rounded-xl border border-border bg-background px-3 py-3 pr-9 text-sm outline-none focus:border-primary/50 disabled:opacity-60",
+                    composerExpanded
+                      ? "h-[min(50vh,28rem)] max-h-[min(50vh,28rem)] overflow-y-auto"
+                      : "min-h-[4.5rem]",
+                  )}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setComposerExpanded((value) => !value);
+                    window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
+                  }}
+                  aria-label={composerExpanded ? "Collapse composer" : "Expand composer"}
+                  aria-expanded={composerExpanded}
+                  title={composerExpanded ? "Collapse composer" : "Expand composer"}
+                  className="absolute top-2 right-2 rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  {composerExpanded ? (
+                    <Minimize2 className="size-3.5" />
+                  ) : (
+                    <Maximize2 className="size-3.5" />
+                  )}
+                </button>
+              </div>
+              <p className="shrink-0 text-[11px] text-muted-foreground">
+                Enter to send · Shift+Enter for a new line
+              </p>
               <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
                 <VoiceRecorderButton
                   auth={auth}
