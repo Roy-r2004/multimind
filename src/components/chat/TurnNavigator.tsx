@@ -6,7 +6,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { chatTurnElementId, scrollThreadToElement } from "@/lib/chatScroll";
+import { chatTurnElementId, scrollThreadToTurn } from "@/lib/chatScroll";
 import {
   buildTurnNavigatorItems,
   clampTurnNavigatorIndex,
@@ -25,8 +25,12 @@ type Props = {
   className?: string;
 };
 
-/** How long to ignore scroll-driven active-turn updates after a programmatic jump. */
-const SCROLL_SUPPRESS_MS = 700;
+/**
+ * How long to ignore scroll-driven active-turn updates after a programmatic
+ * jump. Generous enough to cover a smooth scroll to a turn's Verdict, which
+ * can sit much further down than the turn's top.
+ */
+const SCROLL_SUPPRESS_MS = 1000;
 
 /**
  * Compact "Question X of Y" control for jumping between a chat's prior
@@ -90,14 +94,17 @@ export function TurnNavigator({ turns, threadRef, className }: Props) {
       activeTurnIdRef.current = item.turnId;
       setActiveTurnId(item.turnId);
       suppressObserverUntilRef.current = Date.now() + SCROLL_SUPPRESS_MS;
-      const thread = threadRef.current;
-      const target = document.getElementById(chatTurnElementId(item.turnId));
-      if (!target) return;
-      if (thread) {
-        scrollThreadToElement(thread, target, "smooth");
-      } else {
-        target.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+      // Defer past the current paint (e.g. the dropdown's closing animation)
+      // so the scroll measures settled layout, even for very long turns.
+      requestAnimationFrame(() => {
+        const thread = threadRef.current;
+        if (thread) {
+          scrollThreadToTurn(thread, item.turnId, "smooth");
+          return;
+        }
+        const target = document.getElementById(chatTurnElementId(item.turnId));
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     },
     [items, threadRef],
   );

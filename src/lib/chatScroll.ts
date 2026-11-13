@@ -284,6 +284,45 @@ export function findPinnedContentElement(
   return findVerdictSynthesisElement(pin.verdictId, pin.turnId);
 }
 
+/**
+ * Resolve the scroll destination for a turn: its Verdict heading when one
+ * has rendered, else the turn's own top. Shared by every navigation entry
+ * point (Previous/Next arrows and the jump dropdown) so they never disagree.
+ */
+export function findTurnScrollTarget(turnId: string): HTMLElement | null {
+  return findVerdictSynthesisElement(null, turnId);
+}
+
+/**
+ * Scroll so `target`'s top lands just below any sticky header, using the
+ * same `scroll-margin-top` CSS already applied to turn/verdict anchors
+ * (e.g. `scroll-mt-28`) instead of a hardcoded offset.
+ */
+export function scrollThreadToTop(
+  thread: HTMLElement,
+  target: HTMLElement,
+  behavior: ScrollBehavior = "smooth",
+): void {
+  const threadRect = thread.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const scrollMarginTop = parseFloat(getComputedStyle(target).scrollMarginTop || "0") || 0;
+  const offset = targetRect.top - threadRect.top - scrollMarginTop;
+  const nextTop = Math.max(0, thread.scrollTop + offset);
+  thread.scrollTo({ top: nextTop, behavior });
+}
+
+/** Scroll a thread to a turn's Verdict (or its top, if no Verdict yet). */
+export function scrollThreadToTurn(
+  thread: HTMLElement,
+  turnId: string,
+  behavior: ScrollBehavior = "smooth",
+): HTMLElement | null {
+  const target = findTurnScrollTarget(turnId);
+  if (!target) return null;
+  scrollThreadToTop(thread, target, behavior);
+  return target;
+}
+
 export function findVerdictSynthesisElement(
   verdictId: string | null | undefined,
   turnId: string | null | undefined,
