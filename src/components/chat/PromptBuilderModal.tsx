@@ -33,7 +33,11 @@ import {
   promptBuilderStorageKey,
   type PromptBuilderSession,
 } from "@/lib/promptBuilderSession";
-import { clampComposerHeight, isWithinClickThreshold } from "@/lib/composerResize";
+import {
+  COMPOSER_KEYBOARD_RESIZE_STEP_PX,
+  resizeHeightFromDrag,
+  stepComposerHeight,
+} from "@/lib/composerResize";
 import { cn } from "@/lib/utils";
 
 const CONTEXT_LIMIT_MESSAGE =
@@ -45,7 +49,6 @@ const GENERATE_WITHOUT_ANSWERING_TEXT =
 type MobileTab = "conversation" | "final";
 
 const COMPOSER_DEFAULT_HEIGHT_PX = 72;
-const COMPOSER_EXPANDED_HEIGHT_PX = 448;
 const COMPOSER_MIN_HEIGHT_PX = 64;
 const COMPOSER_MAX_HEIGHT_PX = 640;
 
@@ -90,9 +93,7 @@ export function PromptBuilderModal({
   const composerExpanded = composerHeight > COMPOSER_DEFAULT_HEIGHT_PX + 1;
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sendInFlightRef = useRef(false);
-  const composerDragRef = useRef<{ startY: number; startHeight: number; moved: boolean } | null>(
-    null,
-  );
+  const composerDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const { authHeaders } = useAuth();
   const auth = authHeaders();
   const authToken = auth?.token;
@@ -526,52 +527,46 @@ export function PromptBuilderModal({
                 />
                 <button
                   type="button"
-                  onClick={() => {
-                    if (composerDragRef.current?.moved) {
-                      composerDragRef.current = null;
-                      return;
-                    }
-                    setComposerHeight((value) =>
-                      value > COMPOSER_DEFAULT_HEIGHT_PX + 1
-                        ? COMPOSER_DEFAULT_HEIGHT_PX
-                        : COMPOSER_EXPANDED_HEIGHT_PX,
-                    );
-                    window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
-                  }}
                   onPointerDown={(event) => {
                     if (event.pointerType === "mouse" && event.button !== 0) return;
                     composerDragRef.current = {
                       startY: event.clientY,
                       startHeight: composerHeight,
-                      moved: false,
                     };
                     event.currentTarget.setPointerCapture(event.pointerId);
                   }}
                   onPointerMove={(event) => {
                     const drag = composerDragRef.current;
                     if (!drag) return;
-                    const deltaY = event.clientY - drag.startY;
-                    if (!isWithinClickThreshold(Math.abs(deltaY))) {
-                      drag.moved = true;
-                    }
                     setComposerHeight(
-                      clampComposerHeight(
-                        drag.startHeight + deltaY,
+                      resizeHeightFromDrag(
+                        drag.startHeight,
+                        drag.startY,
+                        event.clientY,
                         COMPOSER_MIN_HEIGHT_PX,
                         COMPOSER_MAX_HEIGHT_PX,
                       ),
                     );
                   }}
                   onPointerUp={(event) => {
+                    composerDragRef.current = null;
                     event.currentTarget.releasePointerCapture(event.pointerId);
                   }}
-                  aria-label={composerExpanded ? "Collapse composer" : "Expand composer"}
-                  aria-expanded={composerExpanded}
-                  title={
-                    composerExpanded
-                      ? "Collapse composer (drag to resize)"
-                      : "Expand composer (drag to resize)"
-                  }
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                    event.preventDefault();
+                    setComposerHeight((value) =>
+                      stepComposerHeight(
+                        value,
+                        event.key === "ArrowUp" ? 1 : -1,
+                        COMPOSER_KEYBOARD_RESIZE_STEP_PX,
+                        COMPOSER_MIN_HEIGHT_PX,
+                        COMPOSER_MAX_HEIGHT_PX,
+                      ),
+                    );
+                  }}
+                  aria-label="Resize composer height"
+                  title="Drag to resize. Use Arrow Up/Down when focused."
                   className="absolute top-2 right-2 cursor-ns-resize touch-none rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   {composerExpanded ? (
