@@ -1,5 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, HelpCircle, Loader2, Save, Send, Sparkles, User, Wand2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  HelpCircle,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  Save,
+  Send,
+  Sparkles,
+  User,
+  Wand2,
+} from "lucide-react";
 import { Modal } from "@/components/Modal";
 import { SavePromptDialog } from "@/components/chat/SavePromptDialog";
 import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
@@ -21,6 +33,11 @@ import {
   promptBuilderStorageKey,
   type PromptBuilderSession,
 } from "@/lib/promptBuilderSession";
+import {
+  COMPOSER_KEYBOARD_RESIZE_STEP_PX,
+  resizeHeightFromDrag,
+  stepComposerHeight,
+} from "@/lib/composerResize";
 import { cn } from "@/lib/utils";
 
 const CONTEXT_LIMIT_MESSAGE =
@@ -30,6 +47,10 @@ const GENERATE_WITHOUT_ANSWERING_TEXT =
   "Please generate the best prompt you can without further clarification.";
 
 type MobileTab = "conversation" | "final";
+
+const COMPOSER_DEFAULT_HEIGHT_PX = 72;
+const COMPOSER_MIN_HEIGHT_PX = 64;
+const COMPOSER_MAX_HEIGHT_PX = 640;
 
 function sessionStateLabel(session: PromptBuilderSession, loading: boolean): string {
   if (loading) return "Generating…";
@@ -68,6 +89,11 @@ export function PromptBuilderModal({
   const [mobileTab, setMobileTab] = useState<MobileTab>("conversation");
   const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
   const [showSave, setShowSave] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(COMPOSER_DEFAULT_HEIGHT_PX);
+  const composerExpanded = composerHeight > COMPOSER_DEFAULT_HEIGHT_PX + 1;
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const sendInFlightRef = useRef(false);
+  const composerDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const { authHeaders } = useAuth();
   const auth = authHeaders();
   const authToken = auth?.token;
@@ -115,6 +141,7 @@ export function PromptBuilderModal({
     setMobileTab("conversation");
     setShowNewSessionConfirm(false);
     setShowSave(false);
+    setComposerHeight(COMPOSER_DEFAULT_HEIGHT_PX);
   }, [open, storageKey]);
 
   useEffect(() => {
@@ -188,12 +215,14 @@ export function PromptBuilderModal({
   }
 
   async function send(overrideText?: string) {
+    if (sendInFlightRef.current || loading) return;
     const text = overrideText ?? session.draft;
     if (!auth || !session.modelSetId || !text.trim()) return;
     if (contextUsage && contextUsage.remaining_tokens < 0) {
       setError(CONTEXT_LIMIT_MESSAGE);
       return;
     }
+    sendInFlightRef.current = true;
     const next = beginPromptBuilderSend(session, text);
     const requestStorageKey = storageKey;
     const requestGeneration = generationRef.current;
@@ -236,6 +265,7 @@ export function PromptBuilderModal({
             : "Could not improve prompt. Please try again.";
       setError(message);
     } finally {
+      sendInFlightRef.current = false;
       if (loadedKey.current === requestStorageKey && generationRef.current === requestGeneration) {
         setLoading(false);
       }
@@ -473,31 +503,79 @@ export function PromptBuilderModal({
                   {error}
                 </div>
               )}
-              <textarea
-                value={session.draft}
-                onChange={(event) => {
-                  setSession((current) => ({
-                    ...current,
-                    draft: event.target.value,
-                    updatedAt: new Date().toISOString(),
-                  }));
-                  setError(null);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    if (!loading) void send();
+              <div className="relative shrink-0">
+                <textarea
+                  ref={composerTextareaRef}
+                  value={session.draft}
+                  onChange={(event) => {
+                    setSession((current) => ({
+                      ...current,
+                      draft: event.target.value,
+                      updatedAt: new Date().toISOString(),
+                    }));
+                    setError(null);
+                  }}
+                  rows={3}
+                  disabled={loading}
+                  placeholder={
+                    hasGenerated
+                      ? "Ask for changes, or add more detail..."
+                      : "Describe what you want a prompt for..."
                   }
-                }}
-                rows={3}
-                disabled={loading}
-                placeholder={
-                  hasGenerated
-                    ? "Ask for changes, or add more detail..."
-                    : "Describe what you want a prompt for..."
-                }
-                className="min-h-[4.5rem] w-full shrink-0 rounded-xl border border-border bg-background px-3 py-3 text-sm outline-none focus:border-primary/50 disabled:opacity-60"
-              />
+                  style={{ height: composerHeight, maxHeight: composerHeight }}
+                  className="w-full resize-none overflow-y-auto rounded-xl border border-border bg-background px-3 py-3 pr-9 text-sm outline-none focus:border-primary/50 disabled:opacity-60"
+                />
+                <button
+                  type="button"
+                  onPointerDown={(event) => {
+                    if (event.pointerType === "mouse" && event.button !== 0) return;
+                    composerDragRef.current = {
+                      startY: event.clientY,
+                      startHeight: composerHeight,
+                    };
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  }}
+                  onPointerMove={(event) => {
+                    const drag = composerDragRef.current;
+                    if (!drag) return;
+                    setComposerHeight(
+                      resizeHeightFromDrag(
+                        drag.startHeight,
+                        drag.startY,
+                        event.clientY,
+                        COMPOSER_MIN_HEIGHT_PX,
+                        COMPOSER_MAX_HEIGHT_PX,
+                      ),
+                    );
+                  }}
+                  onPointerUp={(event) => {
+                    composerDragRef.current = null;
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                    event.preventDefault();
+                    setComposerHeight((value) =>
+                      stepComposerHeight(
+                        value,
+                        event.key === "ArrowUp" ? 1 : -1,
+                        COMPOSER_KEYBOARD_RESIZE_STEP_PX,
+                        COMPOSER_MIN_HEIGHT_PX,
+                        COMPOSER_MAX_HEIGHT_PX,
+                      ),
+                    );
+                  }}
+                  aria-label="Resize composer height"
+                  title="Drag to resize. Use Arrow Up/Down when focused."
+                  className="absolute top-2 right-2 cursor-ns-resize touch-none rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  {composerExpanded ? (
+                    <Minimize2 className="size-3.5" />
+                  ) : (
+                    <Maximize2 className="size-3.5" />
+                  )}
+                </button>
+              </div>
               <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
                 <VoiceRecorderButton
                   auth={auth}

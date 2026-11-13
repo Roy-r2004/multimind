@@ -70,6 +70,7 @@ import { VoiceRecorderButton } from "@/components/chat/VoiceRecorderButton";
 import { SaveTurnDialog } from "@/components/chat/SaveTurnDialog";
 import { SavePromptDialog } from "@/components/chat/SavePromptDialog";
 import { ChatTurnLayoutToggle } from "@/components/chat/ChatTurnLayoutToggle";
+import { TurnNavigator } from "@/components/chat/TurnNavigator";
 import { useChatStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import { useModels } from "@/lib/models";
@@ -1425,6 +1426,12 @@ export function ChatPage() {
             </button>
           </div>
         </div>
+
+        {apiTurns.length > 0 && (
+          <div className="flex items-center justify-center border-b border-border bg-background px-4 py-1.5 md:px-6">
+            <TurnNavigator turns={apiTurns} threadRef={threadRef} className="max-w-full" />
+          </div>
+        )}
 
         {/* Thread */}
         <div ref={threadRef} className="flex-1 overflow-y-auto px-4 pt-6 pb-16 md:px-6 xl:px-8">
