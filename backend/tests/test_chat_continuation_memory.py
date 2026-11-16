@@ -49,11 +49,69 @@ from app.services.chat_memory_service import (
     select_recent_history_under_budget,
     truncate_text_under_token_budget,
 )
+from app.services import chat_service as chat_service_module
 from app.services.chat_service import (
     CHALLENGE_TURN_MARKER,
     _run_chat_memory_update_best_effort,
     chat_service,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_real_chat_memory_rebuild_enqueue(monkeypatch):
+    """Never let a test enqueue a real ARQ/Redis job.
+
+    Production (delete/restore/regenerate) now enqueues a durable job that a
+    separate worker (app.chat_memory.worker) consumes asynchronously — with
+    no Redis reachable in this unit-test environment, the real
+    ``enqueue_chat_memory_rebuild`` would retry a connection for several
+    seconds (arq's own ``RedisSettings.conn_retries``) on every delete/
+    restore/regenerate call, which is both slow and not what these tests are
+    about. Applied everywhere (including sync, non-``memory_env`` tests in
+    this file) as a safe universal no-op.
+
+    Tests that need the rebuild to actually run — simulating the worker
+    picking up the queued job — explicitly call
+    ``drain_chat_memory_rebuild(memory_env)`` (defined below) themselves
+    instead of relying on a real enqueue.
+    """
+
+    async def noop_enqueue(*, chat_id: str, org_id: str, project_id: str | None) -> None:
+        return None
+
+    monkeypatch.setattr(chat_service_module, "enqueue_chat_memory_rebuild", noop_enqueue)
+    monkeypatch.setattr(chat_memory_module, "enqueue_chat_memory_rebuild", noop_enqueue)
+
+
+async def drain_chat_memory_rebuild(
+    memory_env, *, chat_id: str | None = None, org_id: str | None = None, project_id=None
+) -> int:
+    """Test helper: run the real rebuild job against ``memory_env``'s own
+    engine until the chat is fully caught up, simulating the dedicated
+    worker consuming the queued job (which the autouse fixture above
+    prevents from really happening via Redis). Exercises the actual
+    claim/bounded-merge/release/re-enqueue logic end to end — this is not a
+    shortcut mock of the rebuild itself, only of its Redis transport.
+    Returns the number of job passes it took to fully catch up.
+    """
+    chat_id = chat_id or memory_env.chat_id
+    org_id = org_id or memory_env.org_id
+    ctx = {"session_factory": memory_env.Session}
+    passes = 0
+    for _ in range(100):  # hard safety bound against an unexpected infinite loop
+        passes += 1
+        result = await chat_memory_module.process_chat_memory_rebuild_job(
+            ctx, chat_id, org_id, project_id
+        )
+        if not result.get("still_pending") or result.get("merged", 0) == 0:
+            # Either fully caught up, or no progress this pass (recovery
+            # exhausted, or nothing claimed) — a real worker would stop here
+            # too and rely on a later external trigger (new turn, next
+            # sweep) rather than looping on its own.
+            break
+        if not result.get("still_pending"):
+            break
+    return passes
 
 
 @pytest.fixture
@@ -1001,6 +1059,9 @@ async def test_delete_and_restore_rebuild_from_surviving_history(memory_env, mon
         assert chat.rolling_memory_through_turn_id is None
 
         await chat_service.restore_turn(db, memory_env.auth, memory_env.chat_id, turns[0].id)
+
+    await drain_chat_memory_rebuild(memory_env)
+    async with memory_env.Session() as db:
         chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
 
     assert chat.rolling_memory == "restored compact fact"
@@ -1476,6 +1537,9 @@ async def test_delete_summarized_turn_before_watermark_rebuilds_surviving_prefix
         assert before.rolling_memory_through_turn_id == turns[3].id
 
         await chat_service.delete_turn(db, memory_env.auth, memory_env.chat_id, turns[1].id)
+
+    await drain_chat_memory_rebuild(memory_env)
+    async with memory_env.Session() as db:
         after = await db.get(Chat, memory_env.chat_id, populate_existing=True)
 
     assert after.rolling_memory_through_turn_id == turns[3].id
@@ -1509,6 +1573,9 @@ async def test_multi_turn_restore_rebuild_is_idempotent_and_not_double_billed(
         )
         await chat_service.delete_turn(db, memory_env.auth, memory_env.chat_id, turns[1].id)
         await chat_service.restore_turn(db, memory_env.auth, memory_env.chat_id, turns[1].id)
+
+    await drain_chat_memory_rebuild(memory_env)
+    async with memory_env.Session() as db:
         chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
         memory_before = chat.rolling_memory
         watermark_before = chat.rolling_memory_through_turn_id
@@ -1575,6 +1642,9 @@ async def test_restore_rebuild_failure_leaves_all_uncovered_history_raw(memory_e
         restored = await chat_service.restore_turn(
             db, memory_env.auth, memory_env.chat_id, turns[1].id
         )
+
+    await drain_chat_memory_rebuild(memory_env)
+    async with memory_env.Session() as db:
         chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
         context = await chat_memory_service.build_recent_conversation_context(
             db, memory_env.chat_id, turns[-1].id, turns[-1].created_at
@@ -1610,6 +1680,12 @@ async def test_partial_restore_rebuild_resumes_at_first_uncovered_turn(memory_en
         provider.remaining_successes = 2
         provider.merged_questions.clear()
         await chat_service.restore_turn(db, memory_env.auth, memory_env.chat_id, turns[1].id)
+
+    # Restore's queued rebuild only manages 2 successful merges before the
+    # fake provider runs dry (remaining_successes=2) — the worker job
+    # correctly stops there rather than looping forever on empty output.
+    await drain_chat_memory_rebuild(memory_env)
+    async with memory_env.Session() as db:
         partial = await db.get(Chat, memory_env.chat_id, populate_existing=True)
         assert partial.rolling_memory_through_turn_id == turns[1].id
         context = await chat_memory_service.build_recent_conversation_context(

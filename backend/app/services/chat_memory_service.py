@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models import (
     Chat,
@@ -19,6 +20,7 @@ from app.db.models import (
     TurnStatus,
     UsageKind,
 )
+from app.db.session import AsyncSessionLocal
 from app.llm.catalog import estimate_tokens, get_model, resolve_llm_cost
 from app.llm.prompt_engine import get_prompt_engine
 from app.llm.providers import get_provider_registry
@@ -652,11 +654,25 @@ class ChatMemoryService:
         chat_id: str,
         org_id: str,
         project_id: str | None = None,
+        max_merges: int | None = None,
     ) -> int:
-        """Merge newly expired turns into rolling memory. Returns merges performed."""
+        """Merge newly expired turns into rolling memory. Returns merges performed.
+
+        ``max_merges`` bounds LLM work for this one call: once that many
+        turns have been successfully merged, this returns immediately even
+        if more compactable turns remain, so a durable worker job can process
+        a very long backlog as many small bounded calls (re-enqueuing a
+        continuation) instead of one unbounded run inside a single process
+        invocation. ``None`` (the default) preserves the exact prior
+        behavior — the ordinary per-new-turn incremental path only ever has
+        at most one newly-compactable turn anyway, so it is never affected by
+        this bound in practice.
+        """
         merged = 0
         stale_retries = 0
         while stale_retries < CHAT_MEMORY_MAX_CAS_RETRIES:
+            if max_merges is not None and merged >= max_merges:
+                return merged
             await db.rollback()
             chat = await db.get(Chat, chat_id, populate_existing=True)
             if chat is None:
@@ -687,7 +703,17 @@ class ChatMemoryService:
         return merged
 
     async def invalidate_memory(self, db: AsyncSession, *, chat_id: str) -> bool:
-        """Make stale memory unavailable and advance its compare-and-swap stamp."""
+        """Make stale memory unavailable and advance its compare-and-swap stamp.
+
+        Also stamps ``rolling_memory_rebuild_requested_at`` — the durable
+        signal that a rebuild is owed, distinct from an ordinary new chat
+        that has simply never needed one (both otherwise look identical:
+        watermark/memory both NULL). A periodic recovery sweep
+        (``recover_pending_chat_memory_rebuilds``) and the worker job it
+        re-enqueues rely on this column alone to find dormant chats that
+        still need rebuilding, independent of any new user activity in that
+        chat — see app.chat_memory.worker.
+        """
         result = await db.execute(
             update(Chat)
             .where(Chat.id == chat_id)
@@ -695,9 +721,73 @@ class ChatMemoryService:
                 rolling_memory=None,
                 rolling_memory_through_turn_id=None,
                 rolling_memory_updated_at=datetime.now(UTC),
+                rolling_memory_rebuild_requested_at=datetime.now(UTC),
             )
         )
         return result.rowcount == 1
+
+    async def claim_chat_for_rebuild(
+        self, db: AsyncSession, *, chat_id: str, stale_before: datetime
+    ) -> bool:
+        """Atomic single-execution claim for one rebuild-worker job.
+
+        Mirrors ``DebateSession.execution_claimed_at`` in
+        ``app.services.debate_service``: only the caller that wins this
+        conditional UPDATE may run a merge pass for this chat. A claim older
+        than ``stale_before`` is treated as orphaned (worker crashed/killed
+        mid-job) and is reclaimable, so a dead worker can never strand a
+        chat's pending rebuild forever.
+        """
+        result = await db.execute(
+            update(Chat)
+            .where(
+                Chat.id == chat_id,
+                Chat.rolling_memory_rebuild_requested_at.is_not(None),
+                (Chat.rolling_memory_rebuild_claimed_at.is_(None))
+                | (Chat.rolling_memory_rebuild_claimed_at < stale_before),
+            )
+            .values(rolling_memory_rebuild_claimed_at=datetime.now(UTC))
+        )
+        return result.rowcount == 1
+
+    async def release_chat_rebuild_claim(
+        self, db: AsyncSession, *, chat_id: str, still_pending: bool
+    ) -> None:
+        """Release a rebuild claim after one bounded job pass.
+
+        ``still_pending=True`` clears only the claim, keeping
+        ``rolling_memory_rebuild_requested_at`` set so the next job (or the
+        periodic sweep, if re-enqueuing itself failed) resumes exactly where
+        this pass left off via the normal watermark. ``still_pending=False``
+        clears both columns: no more compactable turns remain, so no further
+        rebuild work is owed for this chat.
+        """
+        values: dict = {"rolling_memory_rebuild_claimed_at": None}
+        if not still_pending:
+            values["rolling_memory_rebuild_requested_at"] = None
+        await db.execute(update(Chat).where(Chat.id == chat_id).values(**values))
+
+    async def list_chats_pending_rebuild(
+        self, db: AsyncSession, *, stale_before: datetime, limit: int = 200
+    ) -> list[tuple[str, str, str | None]]:
+        """Chats with a durable rebuild request not currently (non-stale) claimed.
+
+        Returns ``(chat_id, org_id, project_id)`` tuples, oldest request
+        first, for the periodic recovery sweep to re-enqueue — this is the
+        only way a chat's pending rebuild is ever resumed without that exact
+        chat receiving new user activity.
+        """
+        result = await db.execute(
+            select(Chat.id, Chat.org_id, Chat.project_id)
+            .where(
+                Chat.rolling_memory_rebuild_requested_at.is_not(None),
+                (Chat.rolling_memory_rebuild_claimed_at.is_(None))
+                | (Chat.rolling_memory_rebuild_claimed_at < stale_before),
+            )
+            .order_by(Chat.rolling_memory_rebuild_requested_at.asc())
+            .limit(limit)
+        )
+        return [(row.id, row.org_id, row.project_id) for row in result.all()]
 
     async def rebuild_memory_best_effort(
         self,
@@ -731,12 +821,33 @@ class ChatMemoryService:
 
         Called exactly once per response object, right after it is obtained
         (never again later), so no response is ever counted twice. Commits
-        through a separate session bound to the same engine as ``db`` so this
-        record survives regardless of what happens afterwards in the
-        caller's own transaction — a later ``db.rollback()`` on a CAS
+        through a separate session bound to the same engine as ``db`` (not
+        the global ``AsyncSessionLocal``, since this module runs against
+        whatever engine the caller — production or a test fixture — actually
+        uses) so this record survives regardless of what happens afterwards
+        in the caller's own transaction — a later ``db.rollback()`` on a CAS
         conflict, or the merge being abandoned after exhausting recovery.
         Provider usage that was actually incurred must never be silently
         dropped just because the memory update it was for didn't land.
+
+        An independent production-safety audit confirmed this engine-wrap
+        correctly shares ``db``'s connection pool (no duplicate pool, no
+        leak from never calling ``.dispose()`` on the wrapper — closing the
+        short-lived session only returns its connection, it does not dispose
+        the shared pool) but does mean this and the caller's own `db` session
+        can briefly hold two simultaneous connections while `db` is still
+        mid-transaction when this runs. An attempt to fix that by having
+        `_merge_one_turn` release `db`'s connection (via an extra
+        ``db.rollback()``) before reaching here was tried and reverted: it
+        expired every object in `db`'s identity map, not just the ones this
+        module was done with, which broke a caller holding other ORM objects
+        from the same session across the call (confirmed by a real
+        ``MissingGreenlet`` test failure). Swapping this call alone to a
+        shared sessionmaker would not fix the two-connections point either —
+        see the accompanying report's "Finding 2" for why this remains an
+        accepted, documented trade-off rather than a fix: correctness for
+        the caller's session takes priority over this connection-pool
+        optimization.
         """
         try:
             cost_usd = resolve_llm_cost(
@@ -981,6 +1092,7 @@ class ChatMemoryService:
             return False
 
         chat_id = chat.id
+        turn_id = turn.id
         expected_memory = chat.rolling_memory
         expected_through = chat.rolling_memory_through_turn_id
         expected_updated_at = chat.rolling_memory_updated_at
@@ -1002,6 +1114,21 @@ class ChatMemoryService:
         model = get_model(DEFAULT_CHAT_MEMORY_MODEL)
         provider = get_provider_registry().get_provider(model.provider)
 
+        # NOTE: an earlier version of this fix called `await db.rollback()`
+        # here to release this session's connection during the slow
+        # summarizer calls below (motivated by the independent audit's
+        # connection-pool analysis). That was reverted: `db` is a session
+        # the *caller* owns and may hold other ORM objects from (e.g. a
+        # `turns` list spanning multiple merge calls in the same session) —
+        # `rollback()` expires every object in the session's identity map,
+        # not just the ones this method is done with, and a later plain
+        # attribute access on one of those objects outside an `await` can
+        # raise `MissingGreenlet` (confirmed by a real test failure during
+        # implementation: test_failed_background_merge_later_resumes_and_removes_raw_overlap).
+        # Correctness for a caller's unrelated session state takes priority
+        # over this connection-pool optimization — see the final report's
+        # "Finding 2" section for the accepted trade-off this leaves in place.
+
         response, updated = await self._summarize_with_bounded_recovery(
             db,
             provider=provider,
@@ -1010,7 +1137,7 @@ class ChatMemoryService:
             org_id=org_id,
             project_id=project_id,
             chat_id=chat_id,
-            turn_id=turn.id,
+            turn_id=turn_id,
         )
         if response is None or updated is None:
             # Every attempt failed (provider error, empty output, or — after
@@ -1039,7 +1166,7 @@ class ChatMemoryService:
         claimed = await db.execute(
             statement.values(
                 rolling_memory=updated,
-                rolling_memory_through_turn_id=turn.id,
+                rolling_memory_through_turn_id=turn_id,
                 rolling_memory_updated_at=now,
             )
         )
@@ -1054,7 +1181,7 @@ class ChatMemoryService:
         logger.info(
             "chat_rolling_memory_updated",
             chat_id=chat_id,
-            through_turn_id=turn.id,
+            through_turn_id=turn_id,
             rolling_memory_chars=len(updated),
         )
         return True
@@ -1206,3 +1333,154 @@ class ChatMemoryService:
 
 
 chat_memory_service = ChatMemoryService()
+
+
+CHAT_MEMORY_ARQ_JOB_NAME = "process_chat_memory_rebuild_job"
+
+
+async def enqueue_chat_memory_rebuild(
+    *, chat_id: str, org_id: str, project_id: str | None
+) -> None:
+    """Queue one durable rebuild job for this chat. Never raises.
+
+    Called right after ``invalidate_memory`` commits (delete/restore/
+    regenerate — see app.services.chat_service), replacing the old
+    synchronous inline rebuild. A Redis failure here leaves
+    ``rolling_memory_rebuild_requested_at`` set on the chat row, which the
+    periodic ``recover_pending_chat_memory_rebuilds`` sweep will pick up on
+    its next run — so losing this one enqueue attempt is never the only path
+    to recovery (mirrors app.services.document_processing.enqueue_processing's
+    "Redis failures leave the row processing" durability contract).
+    """
+    settings = get_settings()
+    try:
+        from urllib.parse import urlparse
+
+        from arq import create_pool
+        from arq.connections import RedisSettings
+
+        parsed = urlparse(settings.redis_url)
+        redis = RedisSettings(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 6379,
+            database=int((parsed.path or "/0").lstrip("/") or "0"),
+            password=parsed.password,
+        )
+        pool = await create_pool(redis, default_queue_name=settings.chat_memory_worker_queue_name)
+        try:
+            await pool.enqueue_job(
+                CHAT_MEMORY_ARQ_JOB_NAME,
+                chat_id,
+                org_id,
+                project_id,
+                _queue_name=settings.chat_memory_worker_queue_name,
+            )
+        finally:
+            await pool.close()
+    except Exception as exc:  # noqa: BLE001 - enqueue must never break the caller's request
+        logger.warning(
+            "chat_memory_rebuild_enqueue_failed",
+            chat_id=chat_id,
+            error=str(exc),
+        )
+
+
+async def process_chat_memory_rebuild_job(
+    ctx: dict, chat_id: str, org_id: str, project_id: str | None
+) -> dict:
+    """ARQ job entrypoint — registered only on the dedicated chat-memory
+    worker's ``WorkerSettings.functions`` (see app/chat_memory/worker.py).
+
+    Claims the chat (no-op if another delivery already holds a live claim),
+    runs one bounded merge pass, then re-enqueues a continuation if more
+    compactable turns remain, or clears the rebuild request if the chat is
+    fully caught up. The claim is always released in a ``finally`` — even a
+    crash mid-pass leaves ``rolling_memory_rebuild_requested_at`` set (never
+    silently cleared) so the periodic sweep or a later claim resumes the
+    rebuild from the watermark's last successfully committed position.
+
+    ``ctx["session_factory"]`` overrides the session factory (defaults to
+    the production ``AsyncSessionLocal``) — set by the worker's own
+    ``startup()`` in production, and by tests that need this job to run
+    against their own isolated engine instead (same convention as
+    ``app.documents.worker.process_document_job``).
+    """
+    session_factory = ctx.get("session_factory") or AsyncSessionLocal
+    settings = get_settings()
+    stale_before = datetime.now(UTC) - timedelta(
+        seconds=settings.chat_memory_rebuild_claim_stale_seconds
+    )
+    async with session_factory() as claim_db:
+        claimed = await chat_memory_service.claim_chat_for_rebuild(
+            claim_db, chat_id=chat_id, stale_before=stale_before
+        )
+        await claim_db.commit()
+    if not claimed:
+        logger.info("chat_memory_rebuild_already_claimed", chat_id=chat_id)
+        return {"status": "already_claimed", "chat_id": chat_id}
+
+    merged = 0
+    still_pending = True
+    try:
+        async with session_factory() as db:
+            merged = await chat_memory_service.merge_expired_turns(
+                db,
+                chat_id=chat_id,
+                org_id=org_id,
+                project_id=project_id,
+                max_merges=settings.chat_memory_rebuild_max_merges_per_job,
+            )
+            chat = await db.get(Chat, chat_id, populate_existing=True)
+            if chat is None:
+                still_pending = False
+            else:
+                eligible = await chat_memory_service.list_eligible_turns_oldest_first(db, chat_id)
+                remaining = chat_memory_service.newly_expired_turns(
+                    eligible, through_turn_id=chat.rolling_memory_through_turn_id
+                )
+                still_pending = bool(remaining)
+    finally:
+        async with session_factory() as release_db:
+            await chat_memory_service.release_chat_rebuild_claim(
+                release_db, chat_id=chat_id, still_pending=still_pending
+            )
+            await release_db.commit()
+
+    if still_pending:
+        await enqueue_chat_memory_rebuild(chat_id=chat_id, org_id=org_id, project_id=project_id)
+    logger.info(
+        "chat_memory_rebuild_job_pass_complete",
+        chat_id=chat_id,
+        merged=merged,
+        still_pending=still_pending,
+    )
+    return {"status": "ok", "chat_id": chat_id, "merged": merged, "still_pending": still_pending}
+
+
+async def recover_pending_chat_memory_rebuilds(ctx: dict) -> int:
+    """Startup + periodic cron: re-enqueue any chat whose rebuild request is
+    not currently (non-stale) claimed.
+
+    This is the only recovery path that does not depend on new user activity
+    in the affected chat — a dormant chat whose rebuild job crashed, or whose
+    original enqueue attempt failed outright, is still found and resumed here
+    (mirrors app.services.debate_service.recover_debate_sessions /
+    app.documents.worker.recover_stale_documents).
+
+    ``ctx["session_factory"]`` overrides the session factory, same
+    convention as ``process_chat_memory_rebuild_job`` above.
+    """
+    session_factory = ctx.get("session_factory") or AsyncSessionLocal
+    settings = get_settings()
+    stale_before = datetime.now(UTC) - timedelta(
+        seconds=settings.chat_memory_rebuild_claim_stale_seconds
+    )
+    async with session_factory() as db:
+        pending = await chat_memory_service.list_chats_pending_rebuild(
+            db, stale_before=stale_before
+        )
+    for chat_id, org_id, project_id in pending:
+        await enqueue_chat_memory_rebuild(chat_id=chat_id, org_id=org_id, project_id=project_id)
+    if pending:
+        logger.info("chat_memory_rebuild_recovery_swept", count=len(pending))
+    return len(pending)

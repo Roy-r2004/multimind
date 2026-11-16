@@ -401,6 +401,17 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     rolling_memory_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Durable rebuild tracking for the background worker (app.chat_memory.worker):
+    # requested_at is the "a rebuild is owed" signal (distinct from an ordinary
+    # new chat that has simply never needed one); claimed_at is the
+    # single-execution claim that stops two worker deliveries for the same
+    # chat from running overlapping merge passes.
+    rolling_memory_rebuild_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rolling_memory_rebuild_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     organization: Mapped["Organization"] = relationship(back_populates="chats")
     project: Mapped["Project | None"] = relationship(back_populates="chats")

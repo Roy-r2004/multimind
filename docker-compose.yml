@@ -349,6 +349,44 @@ services:
       retries: 3
       start_period: 60s
 
+  # Dedicated chat-memory-rebuild worker — its own queue, fully independent
+  # of scraping-worker/playbook-worker/document-worker/debate-worker. Only
+  # handles the delete/restore/regenerate "rebuild memory from scratch" path
+  # (app.services.chat_memory_service.process_chat_memory_rebuild_job); the
+  # ordinary per-new-turn incremental memory merge still runs inline in the
+  # API process as an in-process background task, unchanged.
+  chat-memory-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["arq", "app.chat_memory.worker.WorkerSettings"]
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://multiai:multiai@postgres:5432/multiai
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+      CHAT_MEMORY_WORKER_QUEUE_NAME: ${CHAT_MEMORY_WORKER_QUEUE_NAME:-chat_memory}
+      CHAT_MEMORY_WORKER_CONCURRENCY: ${CHAT_MEMORY_WORKER_CONCURRENCY:-2}
+      CHAT_MEMORY_WORKER_JOB_TIMEOUT_SECONDS: ${CHAT_MEMORY_WORKER_JOB_TIMEOUT_SECONDS:-300}
+      CHAT_MEMORY_WORKER_KEEP_RESULT_SECONDS: ${CHAT_MEMORY_WORKER_KEEP_RESULT_SECONDS:-3600}
+      CHAT_MEMORY_REBUILD_MAX_MERGES_PER_JOB: ${CHAT_MEMORY_REBUILD_MAX_MERGES_PER_JOB:-25}
+      CHAT_MEMORY_REBUILD_CLAIM_STALE_SECONDS: ${CHAT_MEMORY_REBUILD_CLAIM_STALE_SECONDS:-600}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_SITE_URL: http://localhost:3080
+      OPENROUTER_APP_NAME: MultiAI
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "arq", "app.chat_memory.worker.WorkerSettings", "--check"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
   web:
     build:
       context: .
