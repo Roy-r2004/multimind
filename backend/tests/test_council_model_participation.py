@@ -111,8 +111,12 @@ class CouncilProvider:
                     {
                         "text": "COUNCIL_VERDICT",
                         "reason": "All Council answers.",
+                        # The Verdict prompt is blind to model identity: every
+                        # test in this module places MODEL_IDS after
+                        # ["gpt-4.1", "claude"], so their anonymous labels are
+                        # Response C/D/E (see orchestrator._response_label).
                         "evaluations": [
-                            {"model_name": get_model(model_id).name, "score": 80 + i}
+                            {"model_name": f"Response {chr(ord('C') + i)}", "score": 80 + i}
                             for i, model_id in enumerate(MODEL_IDS)
                         ],
                     }
