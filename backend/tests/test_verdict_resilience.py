@@ -344,14 +344,15 @@ def _row(answer_id, model_id="gpt-4.1", status=ModelAnswerStatus.COMPLETED):
 
 def test_referee_score_validation_accepts_integer_boundaries_and_partial_results():
     rows = [_row("a", "gpt-4.1"), _row("b", "claude"), _row("failed", status=ModelAnswerStatus.FAILED)]
+    label_by_model_id = {"gpt-4.1": "Response A", "claude": "Response B"}
     parsed = {
         "evaluations": [
-            {"model_name": "GPT-4.1", "score": 0},
-            {"model_name": "Claude Sonnet 4", "score": 100},
+            {"model_name": "Response A", "score": 0},
+            {"model_name": "Response B", "score": 100},
         ]
     }
 
-    assert _validated_answer_scores(parsed, rows) == [
+    assert _validated_answer_scores(parsed, rows, label_by_model_id) == [
         {"answer_id": "a", "model_id": "gpt-4.1", "score": 0},
         {"answer_id": "b", "model_id": "claude", "score": 100},
     ]
@@ -359,32 +360,38 @@ def test_referee_score_validation_accepts_integer_boundaries_and_partial_results
 
 def test_referee_score_validation_rejects_invalid_duplicate_and_unknown_entries():
     rows = [_row("a"), _row("b", "claude")]
+    label_by_model_id = {"gpt-4.1": "Response A", "claude": "Response B"}
     parsed = {
         "evaluations": [
-            {"model_name": "GPT-4.1", "score": 90},
-            {"model_name": "GPT-4.1", "score": 80},
-            {"model_name": "Claude Sonnet 4", "score": 50.5},
-            {"model_name": "Claude Sonnet 4", "score": -1},
-            {"model_name": "Unknown", "score": 75},
+            {"model_name": "Response A", "score": 90},
+            {"model_name": "Response A", "score": 80},
+            {"model_name": "Response B", "score": 50.5},
+            {"model_name": "Response B", "score": -1},
+            {"model_name": "Response Z", "score": 75},
             {"answer_id": "missing-score"},
             "malformed",
         ]
     }
 
-    assert _validated_answer_scores(parsed, rows) == []
+    assert _validated_answer_scores(parsed, rows, label_by_model_id) == []
 
 
 def test_referee_score_validation_rejects_boolean_and_out_of_range_scores():
     rows = [_row("a"), _row("b", "claude"), _row("c", "gemini")]
+    label_by_model_id = {
+        "gpt-4.1": "Response A",
+        "claude": "Response B",
+        "gemini": "Response C",
+    }
     parsed = {
         "evaluations": [
-            {"model_name": "GPT-4.1", "score": True},
-            {"model_name": "Claude Sonnet 4", "score": 101},
-            {"model_name": "Gemini 2.5 Pro", "score": -10},
+            {"model_name": "Response A", "score": True},
+            {"model_name": "Response B", "score": 101},
+            {"model_name": "Response C", "score": -10},
         ]
     }
 
-    assert _validated_answer_scores(parsed, rows) == []
+    assert _validated_answer_scores(parsed, rows, label_by_model_id) == []
 
 
 # --- orchestrator verdict path -------------------------------------------
@@ -408,8 +415,12 @@ async def test_referee_scores_overwrite_null_confidence_and_stream_live_updates(
     Session, ids, auth = env
 
     def scored_verdict(system: str) -> str:
-        assert "Model: GPT-4.1" in system
-        assert "Model: Claude Sonnet 4" in system
+        # Blind evaluation: the Verdict prompt carries anonymous Response
+        # labels, never real model names, for the Council answers it judges.
+        assert "Model: Response A" in system
+        assert "Model: Response B" in system
+        assert "GPT-4.1" not in system
+        assert "Claude Sonnet 4" not in system
         assert "**Answer ID**" not in system
         assert not re.search(r"[0-9a-f]{8}-[0-9a-f-]{27}", system, re.IGNORECASE)
         assert "**Confidence**" not in system
@@ -418,8 +429,8 @@ async def test_referee_scores_overwrite_null_confidence_and_stream_live_updates(
                 "text": "Ship it in stages.",
                 "reason": "Combined both answers.",
                 "evaluations": [
-                    {"model_name": "GPT-4.1", "score": 98},
-                    {"model_name": "Claude Sonnet 4", "score": 100},
+                    {"model_name": "Response A", "score": 98},
+                    {"model_name": "Response B", "score": 100},
                 ],
             }
         )
@@ -457,7 +468,7 @@ async def test_valid_verdict_with_bad_or_missing_scores_keeps_confidence_null(en
                 "text": "Usable verdict",
                 "reason": "Scores were malformed.",
                 "evaluations": [
-                    {"model_name": "GPT-4.1", "score": 90.5},
+                    {"model_name": "Response A", "score": 90.5},
                     {"model_name": "Not From This Turn", "score": 85},
                 ],
             }
@@ -501,8 +512,8 @@ async def test_score_database_failure_rolls_back_savepoint_and_preserves_verdict
                 "text": "Verdict survives optional score failure.",
                 "reason": "The score write is isolated.",
                 "evaluations": [
-                    {"model_name": "GPT-4.1", "score": 0},
-                    {"model_name": "Claude Sonnet 4", "score": 100},
+                    {"model_name": "Response A", "score": 0},
+                    {"model_name": "Response B", "score": 100},
                 ],
             }
         )

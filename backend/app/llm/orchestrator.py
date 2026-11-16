@@ -1,6 +1,8 @@
 """Multi-model turn orchestrator — parallel answers and verdict."""
 
 import asyncio
+import re
+import string
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
@@ -129,6 +131,38 @@ def format_llm_error(exc: Exception) -> str:
     return str(exc)
 
 
+def _response_label(index: int) -> str:
+    """Stable anonymous label for a Council answer's position (Response A, B, ...).
+
+    Used only in the Verdict-facing prompt so the Verdict model cannot infer
+    which provider produced which answer from its display name.
+    """
+    letters = string.ascii_uppercase
+    if index < len(letters):
+        return f"Response {letters[index]}"
+    first, second = divmod(index - len(letters), len(letters))
+    return f"Response {letters[first]}{letters[second]}"
+
+
+def _restore_model_attribution(text: str, name_by_label: dict[str, str]) -> str:
+    """Swap anonymous Response labels back to real model names in user-facing text.
+
+    A single regex pass over the original text (not sequential str.replace calls)
+    so a restored model name can never itself be re-scanned and mistaken for
+    another label, and \b boundaries keep "Response A" from matching inside
+    unrelated text such as "Response Answer" or "Response AA".
+    """
+    if not text or not name_by_label:
+        return text
+    pattern = re.compile(
+        "|".join(
+            rf"\b{re.escape(label)}\b"
+            for label in sorted(name_by_label, key=len, reverse=True)
+        )
+    )
+    return pattern.sub(lambda match: name_by_label[match.group(0)], text)
+
+
 def _verdict_fields(provider: Any, raw_text: str) -> tuple[str, str, dict[str, Any] | None]:
     """Extract verdict fields while preserving its structured evaluation payload.
 
@@ -158,52 +192,59 @@ def _verdict_fields(provider: Any, raw_text: str) -> tuple[str, str, dict[str, A
 def _validated_answer_scores(
     parsed: dict[str, Any] | None,
     answer_rows: list[ModelAnswer],
+    label_by_model_id: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """Map Referee scores from display names back to persisted answer IDs."""
+    """Map Verdict scores from anonymous Response labels back to persisted answer IDs.
+
+    The Verdict prompt never sees real model names (see `_response_label`), so its
+    `evaluations[].model_name` field actually carries the anonymous label it was shown.
+    """
     if not parsed:
         return []
     evaluations = parsed.get("evaluations")
     if not isinstance(evaluations, list):
         return []
 
-    completed_by_name: dict[str, ModelAnswer] = {}
-    duplicate_names: set[str] = set()
+    completed_by_label: dict[str, ModelAnswer] = {}
+    duplicate_labels: set[str] = set()
     for row in answer_rows:
         if row.status != ModelAnswerStatus.COMPLETED:
             continue
-        model_name = get_model(row.model_id).name
-        if model_name in completed_by_name:
-            duplicate_names.add(model_name)
-        completed_by_name[model_name] = row
+        label = label_by_model_id.get(row.model_id)
+        if label is None:
+            continue
+        if label in completed_by_label:
+            duplicate_labels.add(label)
+        completed_by_label[label] = row
     identifier_counts: dict[str, int] = {}
     for item in evaluations:
         if isinstance(item, dict) and isinstance(item.get("model_name"), str):
-            model_name = item["model_name"].strip()
-            if model_name:
-                identifier_counts[model_name] = identifier_counts.get(model_name, 0) + 1
+            label = item["model_name"].strip()
+            if label:
+                identifier_counts[label] = identifier_counts.get(label, 0) + 1
 
     valid: list[dict[str, Any]] = []
     for item in evaluations:
         if not isinstance(item, dict):
             logger.warning("verdict_evaluation_malformed")
             continue
-        raw_model_name = item.get("model_name")
-        model_name = raw_model_name.strip() if isinstance(raw_model_name, str) else ""
-        if not model_name:
+        raw_label = item.get("model_name")
+        label = raw_label.strip() if isinstance(raw_label, str) else ""
+        if not label:
             logger.warning("verdict_evaluation_missing_model_name")
             continue
-        if identifier_counts.get(model_name, 0) != 1 or model_name in duplicate_names:
-            logger.warning("verdict_evaluation_duplicate_model_name", model_name=model_name)
+        if identifier_counts.get(label, 0) != 1 or label in duplicate_labels:
+            logger.warning("verdict_evaluation_duplicate_model_name", model_name=label)
             continue
-        row = completed_by_name.get(model_name)
+        row = completed_by_label.get(label)
         if row is None:
-            logger.warning("verdict_evaluation_unknown_or_ineligible_model", model_name=model_name)
+            logger.warning("verdict_evaluation_unknown_or_ineligible_model", model_name=label)
             continue
         score = item.get("score")
         if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= 100:
             logger.warning(
                 "verdict_evaluation_invalid_score",
-                model_name=model_name,
+                model_name=label,
                 score=score,
             )
             continue
@@ -1131,10 +1172,27 @@ class TurnOrchestrator:
 
             await emit("verdict_started", {"model_id": ctx.verdict_model_id})
 
+            # Blind evaluation: the Verdict prompt gets positional "Response A/B/..."
+            # labels instead of real model names, so it cannot infer or favor any
+            # Council member (including itself) by identity. The mapping stays
+            # local to this turn and is used only to restore real names afterward.
+            label_by_model_id: dict[str, str] = {}
+            name_by_label: dict[str, str] = {}
+            for index, item in enumerate(answer_context):
+                label = _response_label(index)
+                label_by_model_id[item["model_id"]] = label
+                name_by_label[label] = item["model_name"]
+            anon_answer_context = [
+                {**item, "model_name": label_by_model_id[item["model_id"]]}
+                for item in answer_context
+            ]
+
             verdict_model = get_model(ctx.verdict_model_id)
             provider = self._providers.get_provider(verdict_model.provider)
             try:
-                verdict_system, verdict_max_tokens = self._build_verdict_request(ctx, answer_context)
+                verdict_system, verdict_max_tokens = self._build_verdict_request(
+                    ctx, anon_answer_context
+                )
             except DocumentContextOverflow as exc:
                 verdict_system = None
                 verdict_max_tokens = 0
@@ -1196,10 +1254,13 @@ class TurnOrchestrator:
                 if not verdict_text:
                     raise ValueError("Verdict model returned an empty response")
                 verdict_text = strip_document_cursors(verdict_text)
+                verdict_text = _restore_model_attribution(verdict_text, name_by_label)
+                verdict_reason = _restore_model_attribution(verdict_reason, name_by_label)
 
                 answer_scores = _validated_answer_scores(
                     parsed_verdict,
                     list(answer_rows.values()),
+                    label_by_model_id,
                 )
 
                 final_status = TurnStatus.PARTIAL if failed_count else TurnStatus.COMPLETED

@@ -40,7 +40,11 @@ PROTECTED_FILE_HASHES = {
     "app/prompts/system/disagree_discuss.j2": "989826ea5f38999d874a4337f6fe63bb98e60310a561f766663dd371952265d1",
     "app/prompts/system/disagree_finalize.j2": "5da5f5b79f4c2732b59bbca7afc56c0a097cbf7d7b0284e0ebfc187bd5661605",
     "app/llm/prompt_engine.py": "d8ebacf584ab4fd3d33994cdf5148673af43ef7ecde320ab7d8fb4503d5fb090",
-    "app/llm/orchestrator.py": "9db7f833d3fbae13d4f03e057f310798bff46db28ae448a1c1a42632c5b0aaa9",
+    # Updated deliberately: blind Verdict evaluation (anonymous Response
+    # labels in the Verdict-facing prompt) added to orchestrator.py. This is
+    # an intentional, reviewed change to the Council -> Verdict pipeline, not
+    # a stray edit during unrelated work — see orchestrator._response_label.
+    "app/llm/orchestrator.py": "ce6d97639d0aedd5a221caa641907472a38760d0c894190a6e892218d90ff1d5",
     "app/services/lesson_service.py": "8014fca6fd51716d8f190a0b443c88f6ef29889b8bcf274017be10e9a0cc662b",
     "app/api/v1/lessons.py": "c50ca9d964145c9e946e43bfb15bcc0e88c4e3635bcafad73bdd0daa252d5d3f",
 }
