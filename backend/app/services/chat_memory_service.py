@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import NamedTuple
 
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
@@ -37,6 +37,17 @@ CHAT_MEMORY_REASON_MAX_TOKENS = 2_000
 CHAT_MEMORY_STORED_MAX_TOKENS = 2_048
 CHAT_MEMORY_MAX_CAS_RETRIES = 4
 
+# Bounded recovery for the summarizer call itself (oversized output, empty
+# output, or a provider/network error). Independent from CAS retries above,
+# which handle concurrent writers rather than a bad or failing model response.
+CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS = 3
+CHAT_MEMORY_RETRY_MAX_TOKENS: tuple[int, ...] = (2048, 1536, 1024)
+# One extra, last-resort attempt that explicitly asks the model to compact its
+# own oversized draft while preserving named categories (facts, decisions,
+# instructions, newest-turn content) rather than a blind character cut.
+CHAT_MEMORY_RECOMPACTION_MAX_TOKENS = 1024
+CHAT_MEMORY_RECOMPACTION_INPUT_MAX_TOKENS = 6_000
+
 # One-time cross-chat continuation handoff (Chat A → first turn of Chat B).
 CONTINUATION_HANDOFF_MAX_CHARS = 500_000
 CONTINUATION_HANDOFF_MAX_RECENT_TURNS = 10
@@ -55,6 +66,44 @@ _ATTACHMENT_TRUNCATION_MARKER = "\n[Attachment context truncated]"
 TURN_SEPARATOR = "\n\n---\n\n"
 TRUNCATION_MARKER = "\n[...truncated...]"
 CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
+
+_MEMORY_UPDATE_USER_PROMPT = "Update the rolling chat memory text now."
+_MEMORY_UPDATE_RETRY_USER_PROMPT = (
+    "Update the rolling chat memory text now. "
+    "Your previous attempt was too long for the stored-memory budget — "
+    "be substantially more concise while keeping the most important facts."
+)
+_MEMORY_RECOMPACTION_USER_PROMPT = "Compact the draft memory now, following the instructions above."
+
+
+def _build_recompaction_system_prompt(base_system: str, oversized_draft: str) -> str:
+    """Plain-text (non-template) addendum asking for targeted compaction.
+
+    Deliberately does not touch any .j2 template: it reuses the already
+    rendered merge prompt (which names what to preserve) and appends an
+    explicit instruction to compact the model's own oversized draft instead
+    of re-merging from scratch, so it can be judged against the same
+    "Current Rolling Memory" / "Newly Expired Turn" sources already in
+    ``base_system``.
+    """
+    bounded_draft = truncate_text_under_token_budget(
+        oversized_draft, CHAT_MEMORY_RECOMPACTION_INPUT_MAX_TOKENS
+    )
+    return (
+        f"{base_system}\n\n"
+        "---\n"
+        "## Compaction Required\n"
+        f"Your previous merged draft below exceeded the stored-memory budget "
+        f"({CHAT_MEMORY_STORED_MAX_TOKENS} estimated tokens). Rewrite it to fit "
+        "within that budget. You must preserve every distinct fact, decision, "
+        "requirement, and instruction already present in the 'Current Rolling "
+        "Memory' and 'Newly Expired Turn' sections above, and you must retain "
+        "the key outcome of the newest turn. Cut redundancy, filler, and less "
+        "essential phrasing — never drop a unique fact, decision, or "
+        "instruction entirely if it can instead be stated more briefly.\n\n"
+        "Previous oversized draft:\n"
+        f"{bounded_draft}"
+    )
 
 
 class TurnHistoryEntry(NamedTuple):
@@ -668,6 +717,255 @@ class ChatMemoryService:
             logger.warning("chat_rolling_memory_rebuild_failed", chat_id=chat_id, error=str(exc))
             return 0
 
+    async def _record_billable_usage(
+        self,
+        db: AsyncSession,
+        *,
+        org_id: str,
+        chat_id: str,
+        project_id: str | None,
+        turn_id: str,
+        response,
+    ) -> None:
+        """Bill one real provider response immediately, independent of the merge.
+
+        Called exactly once per response object, right after it is obtained
+        (never again later), so no response is ever counted twice. Commits
+        through a separate session bound to the same engine as ``db`` so this
+        record survives regardless of what happens afterwards in the
+        caller's own transaction — a later ``db.rollback()`` on a CAS
+        conflict, or the merge being abandoned after exhausting recovery.
+        Provider usage that was actually incurred must never be silently
+        dropped just because the memory update it was for didn't land.
+        """
+        try:
+            cost_usd = resolve_llm_cost(
+                DEFAULT_CHAT_MEMORY_MODEL,
+                response.tokens_input,
+                response.tokens_output,
+                response.cost_usd,
+            )
+            bind = db.get_bind()
+            engine = bind if isinstance(bind, AsyncEngine) else AsyncEngine(bind)
+            async with AsyncSession(bind=engine) as cost_db:
+                cost_db.add(
+                    CostRecord(
+                        org_id=org_id,
+                        chat_id=chat_id,
+                        project_id=project_id,
+                        turn_id=turn_id,
+                        model_id=DEFAULT_CHAT_MEMORY_MODEL,
+                        kind=UsageKind.CHAT_MEMORY,
+                        tokens_input=response.tokens_input,
+                        tokens_output=response.tokens_output,
+                        cost_usd=cost_usd,
+                    )
+                )
+                await cost_db.commit()
+        except Exception as exc:  # noqa: BLE001 - cost bookkeeping must never break memory recovery
+            logger.warning(
+                "chat_rolling_memory_cost_record_failed",
+                chat_id=chat_id,
+                turn_id=turn_id,
+                error=str(exc),
+            )
+
+    async def _summarize_with_bounded_recovery(
+        self,
+        db: AsyncSession,
+        *,
+        provider,
+        model,
+        system: str,
+        org_id: str,
+        project_id: str | None,
+        chat_id: str,
+        turn_id: str,
+    ) -> tuple[object | None, str | None]:
+        """Call the memory summarizer with bounded retries and safe recovery.
+
+        Handles three failure modes without ever looping unboundedly: a
+        provider/network error, an empty response, and output that exceeds
+        ``CHAT_MEMORY_STORED_MAX_TOKENS``. Oversized output is retried with a
+        stricter target and an explicit conciseness hint (plain text, not a
+        template change). If every retry is still oversized, exactly one
+        additional semantic-recompaction call is made: it is shown the
+        model's own oversized draft plus the original sources and is asked to
+        compact it while explicitly preserving facts, decisions, requirements,
+        and the newest turn's content — never a blind character cut.
+
+        Every response actually returned by the provider (any successful
+        round-trip, regardless of whether its text was usable) is billed via
+        ``_record_billable_usage`` immediately, independent of whether this
+        attempt's output ends up persisted — so a retry superseded by a later
+        attempt, or a merge that ultimately fails, still records the real
+        provider usage it incurred.
+
+        A fixed 2,048-token memory budget cannot guarantee perfect
+        preservation of an arbitrarily long turn; when recompaction also
+        fails to fit the budget (or errors, or comes back empty), nothing is
+        persisted. Returns ``(None, None)`` in that case — callers must leave
+        the existing memory and watermark untouched and rely on a later retry
+        (triggered by a subsequent turn) rather than silently losing
+        information via truncation.
+        """
+        last_response = None
+        last_oversized_text: str | None = None
+
+        for attempt in range(1, CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS + 1):
+            max_tokens = CHAT_MEMORY_RETRY_MAX_TOKENS[
+                min(attempt - 1, len(CHAT_MEMORY_RETRY_MAX_TOKENS) - 1)
+            ]
+            user_prompt = (
+                _MEMORY_UPDATE_USER_PROMPT
+                if attempt == 1
+                else _MEMORY_UPDATE_RETRY_USER_PROMPT
+            )
+            try:
+                response = await provider.complete(
+                    system=system,
+                    user=user_prompt,
+                    model=model.provider_model,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:  # noqa: BLE001 - provider/network errors must not stall memory
+                logger.warning(
+                    "chat_rolling_memory_summarizer_error",
+                    chat_id=chat_id,
+                    turn_id=turn_id,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                continue
+
+            await self._record_billable_usage(
+                db,
+                org_id=org_id,
+                chat_id=chat_id,
+                project_id=project_id,
+                turn_id=turn_id,
+                response=response,
+            )
+            text = (response.text or "").strip()
+            if not text:
+                logger.warning(
+                    "chat_rolling_memory_empty_output",
+                    chat_id=chat_id,
+                    turn_id=turn_id,
+                    attempt=attempt,
+                )
+                continue
+
+            estimated = estimate_tokens(text)
+            if estimated <= CHAT_MEMORY_STORED_MAX_TOKENS:
+                return response, text
+
+            logger.warning(
+                "chat_rolling_memory_oversized_output",
+                chat_id=chat_id,
+                turn_id=turn_id,
+                attempt=attempt,
+                estimated_tokens=estimated,
+            )
+            last_response = response
+            last_oversized_text = text
+
+        if last_response is not None and last_oversized_text:
+            recompacted = await self._attempt_semantic_recompaction(
+                db,
+                provider=provider,
+                model=model,
+                base_system=system,
+                oversized_draft=last_oversized_text,
+                org_id=org_id,
+                project_id=project_id,
+                chat_id=chat_id,
+                turn_id=turn_id,
+            )
+            if recompacted is not None:
+                return recompacted
+
+        logger.error(
+            "chat_rolling_memory_summarizer_exhausted",
+            chat_id=chat_id,
+            turn_id=turn_id,
+            attempts=CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS,
+        )
+        return None, None
+
+    async def _attempt_semantic_recompaction(
+        self,
+        db: AsyncSession,
+        *,
+        provider,
+        model,
+        base_system: str,
+        oversized_draft: str,
+        org_id: str,
+        project_id: str | None,
+        chat_id: str,
+        turn_id: str,
+    ) -> tuple[object, str] | None:
+        """One bounded, targeted attempt to compact an oversized draft in place.
+
+        Returns ``(response, text)`` only when the recompacted text fits
+        ``CHAT_MEMORY_STORED_MAX_TOKENS``. Any failure (error, empty output,
+        still oversized) returns ``None`` — this is the last recovery step,
+        never retried further within this call. A successful round-trip is
+        billed immediately regardless of outcome, same as every other attempt.
+        """
+        recompaction_system = _build_recompaction_system_prompt(base_system, oversized_draft)
+        try:
+            response = await provider.complete(
+                system=recompaction_system,
+                user=_MEMORY_RECOMPACTION_USER_PROMPT,
+                model=model.provider_model,
+                max_tokens=CHAT_MEMORY_RECOMPACTION_MAX_TOKENS,
+            )
+        except Exception as exc:  # noqa: BLE001 - last-resort step must not raise
+            logger.warning(
+                "chat_rolling_memory_recompaction_error",
+                chat_id=chat_id,
+                turn_id=turn_id,
+                error=str(exc),
+            )
+            return None
+
+        await self._record_billable_usage(
+            db,
+            org_id=org_id,
+            chat_id=chat_id,
+            project_id=project_id,
+            turn_id=turn_id,
+            response=response,
+        )
+        text = (response.text or "").strip()
+        if not text:
+            logger.warning(
+                "chat_rolling_memory_recompaction_empty_output",
+                chat_id=chat_id,
+                turn_id=turn_id,
+            )
+            return None
+
+        estimated = estimate_tokens(text)
+        if estimated > CHAT_MEMORY_STORED_MAX_TOKENS:
+            logger.warning(
+                "chat_rolling_memory_recompaction_still_oversized",
+                chat_id=chat_id,
+                turn_id=turn_id,
+                estimated_tokens=estimated,
+            )
+            return None
+
+        logger.info(
+            "chat_rolling_memory_recompaction_used",
+            chat_id=chat_id,
+            turn_id=turn_id,
+            estimated_tokens=estimated,
+        )
+        return response, text
+
     async def _merge_one_turn(
         self,
         db: AsyncSession,
@@ -703,23 +1001,26 @@ class ChatMemoryService:
         )
         model = get_model(DEFAULT_CHAT_MEMORY_MODEL)
         provider = get_provider_registry().get_provider(model.provider)
-        response = await provider.complete(
+
+        response, updated = await self._summarize_with_bounded_recovery(
+            db,
+            provider=provider,
+            model=model,
             system=system,
-            user="Update the rolling chat memory text now.",
-            model=model.provider_model,
-            max_tokens=2048,
+            org_id=org_id,
+            project_id=project_id,
+            chat_id=chat_id,
+            turn_id=turn.id,
         )
-        updated = (response.text or "").strip()
-        if not updated:
-            logger.warning("chat_rolling_memory_empty_output", chat_id=chat_id, turn_id=turn.id)
-            return False
-        if estimate_tokens(updated) > CHAT_MEMORY_STORED_MAX_TOKENS:
-            logger.warning(
-                "chat_rolling_memory_oversized_output",
-                chat_id=chat_id,
-                turn_id=turn.id,
-                estimated_tokens=estimate_tokens(updated),
-            )
+        if response is None or updated is None:
+            # Every attempt failed (provider error, empty output, or — after
+            # retries plus one semantic-recompaction attempt — still
+            # oversized with nothing safe to persist). Transient: leave the
+            # existing memory and watermark untouched; the next background
+            # merge (triggered by a later turn) retries this same turn.
+            # Real provider usage from each attempt was already billed as it
+            # occurred (see _record_billable_usage) — a failed merge does not
+            # erase costs that were actually incurred.
             return False
 
         now = datetime.now(UTC)
@@ -745,28 +1046,11 @@ class ChatMemoryService:
         if claimed.rowcount != 1:
             await db.rollback()
             logger.info("chat_rolling_memory_stale_candidate_discarded", chat_id=chat_id)
+            # The discarded (stale) candidate's own provider usage was
+            # already billed as it occurred, independent of this rollback —
+            # a CAS conflict must not erase costs that were actually incurred.
             return None
 
-        cost_usd = resolve_llm_cost(
-            DEFAULT_CHAT_MEMORY_MODEL,
-            response.tokens_input,
-            response.tokens_output,
-            response.cost_usd,
-        )
-        db.add(
-            CostRecord(
-                org_id=org_id,
-                chat_id=chat_id,
-                project_id=project_id,
-                turn_id=turn.id,
-                model_id=DEFAULT_CHAT_MEMORY_MODEL,
-                kind=UsageKind.CHAT_MEMORY,
-                tokens_input=response.tokens_input,
-                tokens_output=response.tokens_output,
-                cost_usd=cost_usd,
-            )
-        )
-        await db.flush()
         logger.info(
             "chat_rolling_memory_updated",
             chat_id=chat_id,

@@ -880,9 +880,13 @@ async def test_empty_memory_output_does_not_advance_watermark(memory_env, monkey
 
 
 @pytest.mark.asyncio
-async def test_concurrent_same_watermark_discards_stale_candidate_and_bills_once(
+async def test_concurrent_same_watermark_discards_stale_candidate_but_bills_both_calls(
     memory_env, monkeypatch
 ):
+    """Only the winning candidate's text is persisted, but both racing calls
+    made a real provider round-trip and both must be billed — a losing race
+    is a concurrency outcome, not a reason to drop a cost that was incurred.
+    """
     base = datetime(2026, 11, 1, tzinfo=UTC)
     first_started = asyncio.Event()
     release_first = asyncio.Event()
@@ -950,7 +954,10 @@ async def test_concurrent_same_watermark_discards_stale_candidate_and_bills_once
 
     assert sorted([first_result, second_result]) == [0, 1]
     assert chat.rolling_memory == "memory-from-call-2"
-    assert len(costs) == 1
+    # Both the winning (persisted) call and the losing (CAS-discarded) call
+    # consumed real provider usage, so both are billed.
+    assert len(costs) == 2
+    assert sorted(c.cost_usd for c in costs) == [0.0, 0.0]
 
 
 @pytest.mark.asyncio
@@ -1150,11 +1157,25 @@ async def test_partial_rebuild_omits_only_successfully_persisted_prefix(memory_e
 
 
 @pytest.mark.asyncio
-async def test_oversized_generated_summary_does_not_advance_or_bill(memory_env, monkeypatch):
+async def test_repeated_oversized_summary_preserves_memory_instead_of_truncating(
+    memory_env, monkeypatch
+):
+    """A summarizer that is oversized on every attempt — including the
+    semantic-recompaction attempt — must NOT blindly truncate and persist.
+
+    Per the hardening pass: truncation risks silently cutting either the
+    newly merged turn's content or important existing facts, so when safe
+    recovery cannot be achieved the existing memory and watermark must be
+    preserved, the failure logged, and the turn left for a later retry
+    instead of losing information via a character cut.
+    """
     base = datetime(2027, 4, 1, tzinfo=UTC)
+    call_count = 0
 
     class OversizedProvider:
         async def complete(self, **_kwargs):
+            nonlocal call_count
+            call_count += 1
             return SimpleNamespace(
                 text="x" * 20_000, tokens_input=2, tokens_output=5000, cost_usd=1
             )
@@ -1183,9 +1204,145 @@ async def test_oversized_generated_summary_does_not_advance_or_bill(memory_env, 
             .all()
         )
 
+    # Bounded: CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS retries + exactly one
+    # semantic-recompaction attempt — never unbounded, never truncation.
+    assert call_count == chat_memory_module.CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS + 1
+    # Nothing persisted: no watermark advance, no corrupted/truncated memory.
     assert chat.rolling_memory_through_turn_id is None
     assert chat.rolling_memory is None
-    assert costs == []
+    # But every real provider call is still billed — a failed/exhausted merge
+    # does not erase costs that were actually incurred.
+    assert len(costs) == call_count
+    assert all(c.tokens_output == 5000 for c in costs)
+
+
+@pytest.mark.asyncio
+async def test_oversized_summary_recovers_on_retry_without_recompaction(memory_env, monkeypatch):
+    """If a later retry fits the budget, that attempt is used as-is (no recompaction needed)."""
+    base = datetime(2027, 4, 2, tzinfo=UTC)
+    responses = iter(
+        [
+            SimpleNamespace(text="x" * 20_000, tokens_input=2, tokens_output=5000, cost_usd=1),
+            SimpleNamespace(
+                text="Concise recovered summary.", tokens_input=2, tokens_output=10, cost_usd=0
+            ),
+        ]
+    )
+    calls = 0
+
+    class RecoveringProvider:
+        async def complete(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return next(responses)
+
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(get_provider=lambda _provider: RecoveringProvider()),
+    )
+    async with memory_env.Session() as db:
+        turns = [
+            await _add_completed_turn(
+                db, chat_id=memory_env.chat_id, index=i, created_at=base + timedelta(minutes=i)
+            )
+            for i in range(11)
+        ]
+        await db.commit()
+        assert (
+            await chat_memory_service.merge_expired_turns(
+                db, chat_id=memory_env.chat_id, org_id=memory_env.org_id
+            )
+            == 1
+        )
+        chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
+        costs = (
+            (await db.execute(select(CostRecord).where(CostRecord.kind == UsageKind.CHAT_MEMORY)))
+            .scalars()
+            .all()
+        )
+
+    assert chat.rolling_memory == "Concise recovered summary."
+    assert chat.rolling_memory_through_turn_id == turns[0].id
+    assert TRUNCATION_MARKER.strip() not in chat.rolling_memory
+    # Both the discarded oversized attempt and the attempt actually used are
+    # billed — no provider usage is silently lost.
+    assert calls == 2
+    assert len(costs) == 2
+    billed_tokens_output = sorted(c.tokens_output for c in costs)
+    assert billed_tokens_output == [10, 5000]
+
+
+@pytest.mark.asyncio
+async def test_semantic_recompaction_preserves_existing_facts_and_new_turn_reference(
+    memory_env, monkeypatch
+):
+    """When every retry is oversized, a successful recompaction call is used
+    verbatim (never silently truncated) and the recompaction prompt is shown
+    both the existing memory facts and the newest turn, not just the model's
+    own oversized draft.
+    """
+    base = datetime(2027, 4, 3, tzinfo=UTC)
+    seen_systems: list[str] = []
+    call_count = 0
+
+    class OversizedThenRecompactedProvider:
+        async def complete(self, *, system, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            seen_systems.append(system)
+            if call_count <= chat_memory_module.CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS:
+                return SimpleNamespace(
+                    text="x" * 20_000, tokens_input=2, tokens_output=5000, cost_usd=1
+                )
+            return SimpleNamespace(
+                text="Compacted memory retaining key facts and the newest turn.",
+                tokens_input=2,
+                tokens_output=12,
+                cost_usd=0,
+            )
+
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(
+            get_provider=lambda _provider: OversizedThenRecompactedProvider()
+        ),
+    )
+    async with memory_env.Session() as db:
+        turns = [
+            await _add_completed_turn(
+                db, chat_id=memory_env.chat_id, index=i, created_at=base + timedelta(minutes=i)
+            )
+            for i in range(11)
+        ]
+        await db.commit()
+        assert (
+            await chat_memory_service.merge_expired_turns(
+                db, chat_id=memory_env.chat_id, org_id=memory_env.org_id
+            )
+            == 1
+        )
+        chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
+        costs = (
+            (await db.execute(select(CostRecord).where(CostRecord.kind == UsageKind.CHAT_MEMORY)))
+            .scalars()
+            .all()
+        )
+
+    assert chat.rolling_memory == "Compacted memory retaining key facts and the newest turn."
+    assert chat.rolling_memory_through_turn_id == turns[0].id
+    assert TRUNCATION_MARKER.strip() not in chat.rolling_memory
+    # Every attempt (3 retries + 1 recompaction) is billed on this successful merge.
+    assert call_count == chat_memory_module.CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS + 1
+    assert len(costs) == call_count
+    # The final (recompaction) call must reference both the newly expired
+    # turn and the model's own oversized draft so it can retain real facts
+    # rather than inventing a shorter summary from nothing.
+    recompaction_system = seen_systems[-1]
+    assert "Newly Expired Turn" in recompaction_system
+    assert "Compaction Required" in recompaction_system
+    assert "Prompt 0" in recompaction_system
 
 
 @pytest.mark.asyncio
@@ -1213,9 +1370,14 @@ async def test_continuous_cas_conflicts_stop_at_bounded_retry(memory_env, monkey
 
 
 @pytest.mark.asyncio
-async def test_invalidation_during_memory_llm_call_rejects_stale_write_and_bill(
+async def test_invalidation_during_memory_llm_call_rejects_stale_write_but_still_bills(
     memory_env, monkeypatch
 ):
+    """A CAS-rejected (stale) write must not persist memory, but the real
+    provider call that produced the discarded candidate was still made and
+    must still be billed — a concurrency conflict is not a reason to erase a
+    cost that was actually incurred.
+    """
     base = datetime(2027, 6, 1, tzinfo=UTC)
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1281,7 +1443,8 @@ async def test_invalidation_during_memory_llm_call_rejects_stale_write_and_bill(
 
     assert chat.rolling_memory is None
     assert chat.rolling_memory_through_turn_id is None
-    assert costs == []
+    assert len(costs) == 1
+    assert costs[0].tokens_output == 2
 
 
 @pytest.mark.asyncio
@@ -1556,9 +1719,13 @@ async def test_failed_background_merge_later_resumes_and_removes_raw_overlap(
 
 
 @pytest.mark.asyncio
-async def test_non_null_cas_conflict_applies_and_bills_only_one_new_candidate(
+async def test_non_null_cas_conflict_applies_and_bills_both_new_candidates(
     memory_env, monkeypatch
 ):
+    """Same as the null-watermark race, but starting from a non-null CAS
+    expectation: only the winning candidate is applied, but both racing
+    calls' real provider usage is billed.
+    """
     base = datetime(2028, 3, 1, tzinfo=UTC)
     provider = AccumulatingMemoryProvider()
     monkeypatch.setattr(
@@ -1634,4 +1801,335 @@ async def test_non_null_cas_conflict_applies_and_bills_only_one_new_candidate(
 
     assert sorted([first_result, second_result]) == [0, 1]
     assert chat.rolling_memory_through_turn_id == turns[2].id
-    assert len(costs) == 3
+    # 2 earlier successful merges + both racing calls (winner and loser),
+    # since every real provider round-trip is billed regardless of outcome.
+    assert len(costs) == 4
+
+
+@pytest.mark.asyncio
+async def test_summarizer_error_then_success_within_same_merge_call(memory_env, monkeypatch):
+    """A transient provider error on early attempts recovers within one merge call."""
+    base = datetime(2028, 4, 1, tzinfo=UTC)
+    call_count = 0
+
+    class FlakyProvider:
+        async def complete(self, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise RuntimeError("upstream timeout")
+            return SimpleNamespace(
+                text="Recovered after transient errors.",
+                tokens_input=2,
+                tokens_output=4,
+                cost_usd=0,
+            )
+
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(get_provider=lambda _provider: FlakyProvider()),
+    )
+    async with memory_env.Session() as db:
+        turns = [
+            await _add_completed_turn(
+                db, chat_id=memory_env.chat_id, index=i, created_at=base + timedelta(minutes=i)
+            )
+            for i in range(11)
+        ]
+        await db.commit()
+        assert (
+            await chat_memory_service.merge_expired_turns(
+                db, chat_id=memory_env.chat_id, org_id=memory_env.org_id
+            )
+            == 1
+        )
+        chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
+        costs = (
+            (await db.execute(select(CostRecord).where(CostRecord.kind == UsageKind.CHAT_MEMORY)))
+            .scalars()
+            .all()
+        )
+
+    assert call_count == 3
+    assert chat.rolling_memory == "Recovered after transient errors."
+    assert chat.rolling_memory_through_turn_id == turns[0].id
+    # The 2 raised exceptions produced no response object and are not billed;
+    # only the 3rd (successful) attempt is — exactly once, never twice.
+    assert len(costs) == 1
+    assert costs[0].tokens_output == 4
+
+
+@pytest.mark.asyncio
+async def test_persistent_summarizer_errors_preserve_existing_memory(memory_env, monkeypatch):
+    """When every attempt errors, prior memory and watermark must stay untouched."""
+    base = datetime(2028, 4, 2, tzinfo=UTC)
+
+    class SucceedThenFailProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    text="Established fact from turn 0.",
+                    tokens_input=2,
+                    tokens_output=4,
+                    cost_usd=0,
+                )
+            raise RuntimeError("provider outage")
+
+    provider = SucceedThenFailProvider()
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(get_provider=lambda _provider: provider),
+    )
+    async with memory_env.Session() as db:
+        for i in range(11):
+            await _add_completed_turn(
+                db, chat_id=memory_env.chat_id, index=i, created_at=base + timedelta(minutes=i)
+            )
+        await db.commit()
+
+        # First call merges turn 0 successfully, establishing baseline memory.
+        # With exactly 11 eligible turns only turn 0 is compactable, so this
+        # call makes exactly one provider call and returns cleanly.
+        assert (
+            await chat_memory_service.merge_expired_turns(
+                db, chat_id=memory_env.chat_id, org_id=memory_env.org_id
+            )
+            == 1
+        )
+        chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
+        memory_before = chat.rolling_memory
+        watermark_before = chat.rolling_memory_through_turn_id
+        assert memory_before == "Established fact from turn 0."
+
+        # A new turn makes turn 1 newly compactable; every attempt on it now
+        # errors (outage) for all bounded retry attempts.
+        await _add_completed_turn(
+            db, chat_id=memory_env.chat_id, index=11, created_at=base + timedelta(minutes=11)
+        )
+        await db.commit()
+        merged = await chat_memory_service.merge_expired_turns(
+            db, chat_id=memory_env.chat_id, org_id=memory_env.org_id
+        )
+        chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
+        costs = (
+            (
+                await db.execute(
+                    select(CostRecord).where(
+                        CostRecord.chat_id == memory_env.chat_id,
+                        CostRecord.kind == UsageKind.CHAT_MEMORY,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert merged == 0
+    assert chat.rolling_memory == memory_before
+    assert chat.rolling_memory_through_turn_id == watermark_before
+    # One call for the earlier success, plus CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS
+    # bounded retries for the failing turn — never unbounded.
+    assert provider.calls == 1 + chat_memory_module.CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS
+    assert len(costs) == 1
+
+
+@pytest.mark.asyncio
+async def test_cas_conflict_during_recompaction_recovery_does_not_overwrite_newer_memory(
+    memory_env, monkeypatch
+):
+    """A recompaction-recovered write must still respect optimistic concurrency.
+
+    The first CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS calls return oversized output
+    immediately (driving the candidate into the semantic-recompaction path);
+    the recompaction call itself blocks so a concurrent writer can invalidate
+    memory mid-flight, then returns a within-budget result. The resulting
+    write must still be rejected by CAS — recovered output is not exempt from
+    concurrency protection — but every one of those real provider calls (the
+    3 oversized retries plus the recompaction call) must still be billed,
+    since the CAS rejection doesn't change that the provider usage happened.
+    """
+    base = datetime(2028, 4, 3, tzinfo=UTC)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    call_count = 0
+
+    class SlowRecompactionProvider:
+        async def complete(self, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= chat_memory_module.CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS:
+                return SimpleNamespace(
+                    text="y" * 20_000, tokens_input=2, tokens_output=5000, cost_usd=1
+                )
+            started.set()
+            await release.wait()
+            return SimpleNamespace(
+                text="Recompacted stale candidate", tokens_input=2, tokens_output=8, cost_usd=0
+            )
+
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(get_provider=lambda _provider: SlowRecompactionProvider()),
+    )
+    async with memory_env.Session() as db:
+        for i in range(11):
+            await _add_completed_turn(
+                db, chat_id=memory_env.chat_id, index=i, created_at=base + timedelta(minutes=i)
+            )
+        await db.commit()
+        chat = await db.get(Chat, memory_env.chat_id)
+        eligible = await chat_memory_service.list_eligible_turns_oldest_first(
+            db, memory_env.chat_id
+        )
+        turn, assistant_result = eligible[0]
+
+    async def run_candidate():
+        async with memory_env.Session() as inner_db:
+            inner_chat = await inner_db.get(Chat, memory_env.chat_id)
+            return await chat_memory_service._merge_one_turn(
+                inner_db,
+                chat=inner_chat,
+                turn=turn,
+                assistant_result=assistant_result,
+                org_id=memory_env.org_id,
+                project_id=None,
+            )
+
+    task = asyncio.create_task(run_candidate())
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    # A concurrent writer invalidates memory while the recompaction call is
+    # mid-flight.
+    async with memory_env.Session() as db:
+        await chat_memory_service.invalidate_memory(db, chat_id=memory_env.chat_id)
+        await db.commit()
+    release.set()
+
+    result = await asyncio.wait_for(task, timeout=5)
+    assert result is None  # stale CAS candidate discarded, not persisted
+
+    async with memory_env.Session() as db:
+        chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
+        costs = (
+            (
+                await db.execute(
+                    select(CostRecord).where(
+                        CostRecord.chat_id == memory_env.chat_id,
+                        CostRecord.kind == UsageKind.CHAT_MEMORY,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    # Invalidation (None/None) must win; the stale recompaction-recovered
+    # candidate must not overwrite it — but all 4 real provider calls that
+    # happened during this discarded attempt (3 oversized retries + 1
+    # recompaction) are still billed.
+    assert chat.rolling_memory is None
+    assert chat.rolling_memory_through_turn_id is None
+    assert len(costs) == call_count == chat_memory_module.CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS + 1
+
+
+@pytest.mark.asyncio
+async def test_bounded_recovery_applies_identically_to_single_ai_chats(memory_env, monkeypatch):
+    """Single-AI turns (no Verdict, one ModelAnswer) go through the same recovery path."""
+    base = datetime(2028, 4, 4, tzinfo=UTC)
+    call_count = 0
+
+    class OversizedThenOkProvider:
+        async def complete(self, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SimpleNamespace(
+                    text="z" * 20_000, tokens_input=2, tokens_output=5000, cost_usd=1
+                )
+            return SimpleNamespace(
+                text="Single-AI chat compact memory.",
+                tokens_input=2,
+                tokens_output=4,
+                cost_usd=0,
+            )
+
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(get_provider=lambda _provider: OversizedThenOkProvider()),
+    )
+    async with memory_env.Session() as db:
+        turns = [
+            await _add_completed_turn(
+                db,
+                chat_id=memory_env.chat_id,
+                index=i,
+                created_at=base + timedelta(minutes=i),
+                with_verdict=False,  # single-AI turn: one ModelAnswer, no Verdict row
+            )
+            for i in range(11)
+        ]
+        await db.commit()
+        assert (
+            await chat_memory_service.merge_expired_turns(
+                db, chat_id=memory_env.chat_id, org_id=memory_env.org_id
+            )
+            == 1
+        )
+        chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
+
+    assert chat.rolling_memory == "Single-AI chat compact memory."
+    assert chat.rolling_memory_through_turn_id == turns[0].id
+
+
+@pytest.mark.asyncio
+async def test_council_turns_unaffected_by_bounded_recovery_changes(memory_env, monkeypatch):
+    """Council (Verdict-based) turns merge normally when output fits on the first try."""
+    base = datetime(2028, 4, 5, tzinfo=UTC)
+    call_count = 0
+
+    class NormalProvider:
+        async def complete(self, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(
+                text="Council chat compact memory.", tokens_input=2, tokens_output=4, cost_usd=0
+            )
+
+    monkeypatch.setattr(
+        chat_memory_module,
+        "get_provider_registry",
+        lambda: SimpleNamespace(get_provider=lambda _provider: NormalProvider()),
+    )
+    async with memory_env.Session() as db:
+        turns = [
+            await _add_completed_turn(
+                db,
+                chat_id=memory_env.chat_id,
+                index=i,
+                created_at=base + timedelta(minutes=i),
+                with_verdict=True,
+            )
+            for i in range(11)
+        ]
+        await db.commit()
+        assert (
+            await chat_memory_service.merge_expired_turns(
+                db, chat_id=memory_env.chat_id, org_id=memory_env.org_id
+            )
+            == 1
+        )
+        chat = await db.get(Chat, memory_env.chat_id, populate_existing=True)
+
+    # Exactly one call: normal-sized output succeeds on the first attempt,
+    # no retries consumed.
+    assert call_count == 1
+    assert chat.rolling_memory == "Council chat compact memory."
+    assert chat.rolling_memory_through_turn_id == turns[0].id
