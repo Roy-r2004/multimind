@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  dedupeAppendChats,
   RECENT_CHAT_LIMIT,
   chatFromTurnActivity,
   filterChatsByTitle,
   mapApiChat,
+  reconcileHistoryWithStore,
   recentChats,
   shouldShowSeeAll,
   upsertChatToTop,
@@ -98,6 +100,58 @@ test("filterChatsByTitle is case-insensitive and trims", () => {
     ["2"],
   );
   assert.equal(filterChatsByTitle(list, "   ").length, 3);
+});
+
+test("dedupeAppendChats drops incoming rows already present (pagination overlap)", () => {
+  const existing = [chat("a"), chat("b")];
+  const incoming = [chat("b", "B-renamed"), chat("c")];
+  const next = dedupeAppendChats(existing, incoming);
+  assert.deepEqual(
+    next.map((item) => item.id),
+    ["a", "b", "c"],
+  );
+  // The existing row for "b" wins; dedupe does not overwrite it.
+  assert.equal(next.find((item) => item.id === "b")?.title, "b");
+});
+
+test("dedupeAppendChats appends everything when there is no overlap", () => {
+  const next = dedupeAppendChats([chat("a")], [chat("b"), chat("c")]);
+  assert.deepEqual(
+    next.map((item) => item.id),
+    ["a", "b", "c"],
+  );
+});
+
+test("reconcileHistoryWithStore patches metadata from the authoritative store", () => {
+  const items = [chat("a", "Old title"), chat("b", "B")];
+  const storeChats = [chat("a", "Renamed"), chat("b", "B")];
+  const next = reconcileHistoryWithStore(items, storeChats, true);
+  assert.deepEqual(
+    next.map((item) => [item.id, item.title]),
+    [
+      ["a", "Renamed"],
+      ["b", "B"],
+    ],
+  );
+});
+
+test("reconcileHistoryWithStore drops rows the store confirms were deleted", () => {
+  const items = [chat("a"), chat("b"), chat("c")];
+  const storeChats = [chat("a"), chat("c")];
+  const next = reconcileHistoryWithStore(items, storeChats, true);
+  assert.deepEqual(
+    next.map((item) => item.id),
+    ["a", "c"],
+  );
+});
+
+test("reconcileHistoryWithStore is a no-op while the store itself is not ready", () => {
+  const items = [chat("a"), chat("b")];
+  const next = reconcileHistoryWithStore(items, [], false);
+  assert.deepEqual(
+    next.map((item) => item.id),
+    ["a", "b"],
+  );
 });
 
 test("chatFromTurnActivity prefers authoritative title and preserves project", () => {

@@ -3,6 +3,8 @@ import uuid
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -25,6 +27,7 @@ from app.schemas.api import (
     AttachmentResponse,
     AttachmentTranscriptionRequest,
     ChatCreateRequest,
+    ChatHistoryPageResponse,
     ChatResponse,
     ChatUpdateRequest,
     MessageResponse,
@@ -110,6 +113,34 @@ async def create_chat(
     db: AsyncSession = Depends(get_db),
 ):
     return await chat_service.create_chat(db, auth, data)
+
+
+@router.get("/history", response_model=ChatHistoryPageResponse)
+async def list_chats_page(
+    limit: int = Query(20, ge=1, le=100),
+    cursor_updated_at: datetime | None = Query(
+        None, description="Pair with cursor_id: the updated_at of the last item of the previous page."
+    ),
+    cursor_id: str | None = Query(
+        None, description="Pair with cursor_updated_at: the id of the last item of the previous page."
+    ),
+    q: str | None = Query(None, max_length=200, description="Case-insensitive title search."),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Keyset-paginated chat history for the sidebar's "See all" page.
+
+    Independent of GET /chats, which keeps returning the full, unpaginated
+    list for existing callers (global chat store, title sync, etc.).
+    """
+    return await chat_service.list_chats_page(
+        db,
+        auth,
+        limit=limit,
+        cursor_updated_at=cursor_updated_at,
+        cursor_id=cursor_id,
+        q=q,
+    )
 
 
 @router.get("/events/stream")

@@ -3,6 +3,12 @@ import type { ApiChat } from "@/lib/api/types";
 
 export const RECENT_CHAT_LIMIT = 20;
 
+/** Page size for the paginated "See all" chat-history fetch (GET /chats/history). */
+export const HISTORY_PAGE_SIZE = 30;
+
+/** Debounce delay before a "See all" search keystroke triggers a server search. */
+export const HISTORY_SEARCH_DEBOUNCE_MS = 300;
+
 /** Upsert by id and move the chat to the front. Never duplicates an id. */
 export function upsertChatToTop(chats: Chat[], next: Chat): Chat[] {
   const without = chats.filter((item) => item.id !== next.id);
@@ -21,6 +27,41 @@ export function filterChatsByTitle(chats: Chat[], query: string): Chat[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return chats;
   return chats.filter((chat) => chat.title.toLowerCase().includes(needle));
+}
+
+/**
+ * Append a newly-fetched history page to what's already loaded, dropping any
+ * incoming row whose id is already present. Pagination is keyset-based on
+ * (updated_at, id), so a chat that gets a new turn between page fetches can
+ * jump to the front of a later page's results — this keeps that from
+ * producing a duplicate row instead of silently losing one.
+ */
+export function dedupeAppendChats(existing: Chat[], incoming: Chat[]): Chat[] {
+  const seen = new Set(existing.map((item) => item.id));
+  const deduped = incoming.filter((item) => !seen.has(item.id));
+  return [...existing, ...deduped];
+}
+
+/**
+ * Reconcile a separately-paginated chat-history page against the global chat
+ * store: patch in authoritative metadata (title/pins/timestamps — kept live
+ * by rename and the chat-title SSE stream) and drop rows the store confirms
+ * were deleted. Guarded by `storeReady` so a store that hasn't finished its
+ * own load yet never wipes out already-loaded history rows.
+ */
+export function reconcileHistoryWithStore(
+  items: Chat[],
+  storeChats: Chat[],
+  storeReady: boolean,
+): Chat[] {
+  if (!storeReady) return items;
+  const byId = new Map(storeChats.map((chat) => [chat.id, chat]));
+  const next: Chat[] = [];
+  for (const item of items) {
+    const authoritative = byId.get(item.id);
+    if (authoritative) next.push(authoritative);
+  }
+  return next;
 }
 
 export function formatRelativeTime(iso: string): string {

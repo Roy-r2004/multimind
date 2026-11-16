@@ -127,6 +127,18 @@ export type ApiChat = {
   updated_at: string;
 };
 
+/** Keyset cursor for GET /chats/history: the (updated_at, id) of the last loaded row. */
+export type ApiChatCursor = {
+  updated_at: string;
+  id: string;
+};
+
+export type ApiChatHistoryPage = {
+  items: ApiChat[];
+  next_cursor: ApiChatCursor | null;
+  has_more: boolean;
+};
+
 export type ApiModelAnswer = {
   id?: string | null;
   model_id: string;
