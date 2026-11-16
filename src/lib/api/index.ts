@@ -18,6 +18,8 @@ import {
 } from "@/lib/playbooks";
 import type {
   ApiChat,
+  ApiChatCursor,
+  ApiChatHistoryPage,
   ApiCostSummary,
   ApiAdminAuditLogList,
   ApiAdminAuditStats,
@@ -197,6 +199,24 @@ export const api = {
 
   chats: {
     list: (auth: Auth) => apiRequest<ApiChat[]>("/chats", { token: auth.token, orgId: auth.orgId }),
+
+    /** Keyset-paginated chat history for the "See all" page — never touches the global chat list. */
+    listPage: (
+      auth: Auth,
+      params?: { limit?: number; cursor?: ApiChatCursor | null; q?: string },
+    ) => {
+      const search = new URLSearchParams();
+      search.set("limit", String(params?.limit ?? 20));
+      if (params?.cursor) {
+        search.set("cursor_updated_at", params.cursor.updated_at);
+        search.set("cursor_id", params.cursor.id);
+      }
+      if (params?.q?.trim()) search.set("q", params.q.trim());
+      return apiRequest<ApiChatHistoryPage>(`/chats/history?${search.toString()}`, {
+        token: auth.token,
+        orgId: auth.orgId,
+      });
+    },
 
     create: (
       auth: Auth,

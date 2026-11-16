@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -51,6 +51,8 @@ from app.llm.orchestrator import (
 from app.llm.prompt_engine import resolve_effective_referee_prompt
 from app.schemas.api import (
     ChatCreateRequest,
+    ChatCursor,
+    ChatHistoryPageResponse,
     ChatReferenceResponse,
     ChatResponse,
     ChatUpdateRequest,
@@ -441,13 +443,10 @@ async def _recover_unowned_claimed_turn(db: AsyncSession, turn_id: str) -> None:
 
 
 class ChatService:
-    async def list_chats(self, db: AsyncSession, auth: AuthContext) -> list[ChatResponse]:
-        result = await db.execute(
-            select(Chat)
-            .where(Chat.org_id == auth.org_id)
-            .order_by(Chat.updated_at.desc())
-        )
-        chats = list(result.scalars().all())
+    async def _responses_for_chats(
+        self, db: AsyncSession, auth: AuthContext, chats: list[Chat]
+    ) -> list[ChatResponse]:
+        """Batch-load references/pins for a chat page and build their responses."""
         reference_ids = {c.active_referenced_chat_id for c in chats if c.active_referenced_chat_id}
         reference_by_id: dict[str, Chat] = {}
         if reference_ids:
@@ -477,6 +476,61 @@ class ChatService:
             )
             for c in chats
         ]
+
+    async def list_chats(self, db: AsyncSession, auth: AuthContext) -> list[ChatResponse]:
+        result = await db.execute(
+            select(Chat)
+            .where(Chat.org_id == auth.org_id)
+            .order_by(Chat.updated_at.desc())
+        )
+        chats = list(result.scalars().all())
+        return await self._responses_for_chats(db, auth, chats)
+
+    async def list_chats_page(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        *,
+        limit: int = 20,
+        cursor_updated_at: datetime | None = None,
+        cursor_id: str | None = None,
+        q: str | None = None,
+    ) -> ChatHistoryPageResponse:
+        """Keyset-paginated, newest-first chat listing for the "See all" view.
+
+        Ordered by (updated_at desc, id desc) so rows with identical
+        updated_at timestamps still get a stable, gapless cursor.
+        """
+        conditions = [Chat.org_id == auth.org_id]
+        if q and q.strip():
+            conditions.append(Chat.title.ilike(f"%{q.strip()}%"))
+        if cursor_updated_at is not None and cursor_id is not None:
+            conditions.append(
+                or_(
+                    Chat.updated_at < cursor_updated_at,
+                    and_(
+                        Chat.updated_at == cursor_updated_at,
+                        Chat.id < cursor_id,
+                    ),
+                )
+            )
+
+        result = await db.execute(
+            select(Chat)
+            .where(*conditions)
+            .order_by(Chat.updated_at.desc(), Chat.id.desc())
+            .limit(limit + 1)
+        )
+        rows = list(result.scalars().all())
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        items = await self._responses_for_chats(db, auth, page)
+        next_cursor = (
+            ChatCursor(updated_at=page[-1].updated_at, id=page[-1].id)
+            if has_more and page
+            else None
+        )
+        return ChatHistoryPageResponse(items=items, next_cursor=next_cursor, has_more=has_more)
 
     async def create_chat(
         self, db: AsyncSession, auth: AuthContext, data: ChatCreateRequest

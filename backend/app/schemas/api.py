@@ -1351,6 +1351,19 @@ class ChatResponse(BaseModel):
     updated_at: datetime
 
 
+class ChatCursor(BaseModel):
+    """Keyset pagination cursor: the (updated_at, id) of the last row of a page."""
+
+    updated_at: datetime
+    id: str
+
+
+class ChatHistoryPageResponse(BaseModel):
+    items: list[ChatResponse] = Field(default_factory=list)
+    next_cursor: ChatCursor | None = None
+    has_more: bool = False
+
+
 class ProjectDetailResponse(BaseModel):
     id: str
     name: str
