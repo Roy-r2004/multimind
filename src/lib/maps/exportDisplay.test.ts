@@ -29,6 +29,7 @@ const basePlace: MapsPlaceItem = {
   languages_spoken: [],
   treatment_price: null,
   bed_count: null,
+  max_beds: null,
   verification_verdict: null,
   verification_reason: null,
   verification_source_url: null,
@@ -47,6 +48,7 @@ describe("placeToExportRow", () => {
     expect(row.cells["Phone Number"]).toBe("+358 123");
     expect(row.cells["Treatment Price"]).toBe("Contact for pricing");
     expect(row.cells["Bed Count"]).toBe("Not Specified");
+    expect(row.cells["max_beds"]).toBe("Not Specified");
   });
 
   it("fills every export column when enrichment fields are missing", () => {
@@ -76,6 +78,7 @@ describe("placeToExportRow", () => {
       "Phone Number",
       "Treatment Price",
       "Bed Count",
+      "max_beds",
     ] as const) {
       expect(row.cells[column].length).toBeGreaterThan(0);
     }
@@ -88,5 +91,10 @@ describe("placeToExportRow", () => {
   it("formats bed count when present", () => {
     const row = placeToExportRow({ ...basePlace, bed_count: 25 });
     expect(row.cells["Bed Count"]).toBe("25");
+  });
+
+  it("renders a saved max_beds value", () => {
+    const row = placeToExportRow({ ...basePlace, max_beds: 25 });
+    expect(row.cells["max_beds"]).toBe("25");
   });
 });

@@ -719,6 +719,7 @@ export function MapsCampaignAdminPage({ runId }: { runId: string }) {
                   { key: "website", label: "Website" },
                   { key: "enrichment", label: "Enrichment" },
                   { key: "bedCount", label: "Beds" },
+                  { key: "maxBeds", label: "max_beds" },
                   { key: "actions", label: "" },
                 ]}
                 rows={places.map((place) => ({
@@ -761,6 +762,11 @@ export function MapsCampaignAdminPage({ runId }: { runId: string }) {
                     ),
                     bedCount: place.bed_count ? (
                       <span className="text-center text-xs font-medium">{place.bed_count}</span>
+                    ) : (
+                      <span className="text-center text-xs text-muted-foreground">—</span>
+                    ),
+                    maxBeds: place.max_beds ? (
+                      <span className="text-center text-xs font-medium">{place.max_beds}</span>
                     ) : (
                       <span className="text-center text-xs text-muted-foreground">—</span>
                     ),
