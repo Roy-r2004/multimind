@@ -864,6 +864,7 @@ class MapsPlaceItem(BaseModel):
     languages_spoken: list[str] = Field(default_factory=list)
     treatment_price: str | None = None
     bed_count: int | None = None
+    max_beds: int | None = None
     verification_verdict: str | None = None
     verification_reason: str | None = None
     verification_source_url: str | None = None
@@ -885,6 +886,7 @@ class MapsPlaceUpdate(BaseModel):
     international_phone_number: str | None = Field(default=None, max_length=64)
     treatment_price: str | None = Field(default=None, max_length=512)
     bed_count: int | None = Field(default=None, ge=0, le=100_000)
+    max_beds: int | None = Field(default=None, ge=0, le=100_000)
 
 
 class MapsPlaceReviewActionItem(BaseModel):

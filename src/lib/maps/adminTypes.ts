@@ -160,6 +160,7 @@ export type MapsPlaceItem = {
   languages_spoken: string[];
   treatment_price: string | null;
   bed_count: number | null;
+  max_beds: number | null;
   verification_verdict: string | null;
   verification_reason: string | null;
   verification_source_url: string | null;

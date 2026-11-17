@@ -201,6 +201,35 @@ async def test_export_xlsx_exports_persisted_bed_count_as_integer(db, auth):
 
 
 @pytest.mark.asyncio
+async def test_export_xlsx_exports_persisted_max_beds_as_integer(db, auth):
+    run = await _create_run(db, auth)
+    db.add(_eligible_place(run, max_beds=20))
+    await db.commit()
+
+    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
+    sheet = _workbook(content)[ELIGIBLE_CENTERS_SHEET]
+    header = [cell.value for cell in sheet[1]]
+    max_beds_col = header.index("max_beds") + 1
+    cell = sheet.cell(row=2, column=max_beds_col)
+    assert cell.value == 20
+    assert isinstance(cell.value, int)
+
+
+@pytest.mark.asyncio
+async def test_export_xlsx_max_beds_defaults_to_not_specified(db, auth):
+    run = await _create_run(db, auth)
+    db.add(_eligible_place(run, max_beds=None))
+    await db.commit()
+
+    content, _ = await maps_export_service.build_workbook(db, auth, run.id)
+    sheet = _workbook(content)[ELIGIBLE_CENTERS_SHEET]
+    header = [cell.value for cell in sheet[1]]
+    max_beds_col = header.index("max_beds") + 1
+    cell = sheet.cell(row=2, column=max_beds_col)
+    assert cell.value == "Not Specified"
+
+
+@pytest.mark.asyncio
 async def test_export_xlsx_has_frozen_header_and_autofilter(db, auth):
     run = await _create_run(db, auth)
     db.add(_eligible_place(run))

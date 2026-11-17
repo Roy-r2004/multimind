@@ -3323,6 +3323,8 @@ class MapsPlace(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     languages_spoken: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     treatment_price: Mapped[str | None] = mapped_column(String(512), nullable=True)
     bed_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Manual-only field: never set or touched by the scraper/enrichment pipeline.
+    max_beds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Export-field names a user has manually edited. Enrichment must skip these
     # columns (and only these) so a later AI pass cannot overwrite corrections.
     manual_field_overrides: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)

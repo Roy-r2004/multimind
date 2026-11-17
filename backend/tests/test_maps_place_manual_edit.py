@@ -166,6 +166,108 @@ async def test_patch_rejects_negative_bed_count(db: AsyncSession, auth: AuthCont
 
 
 @pytest.mark.asyncio
+async def test_max_beds_defaults_to_null(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    place = _place(run.id)
+    db.add(place)
+    await db.commit()
+    await db.refresh(place)
+
+    assert place.max_beds is None
+
+
+@pytest.mark.asyncio
+async def test_patch_max_beds_null_to_twenty(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    place = _place(run.id, max_beds=None)
+    db.add(place)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            f"/api/v1/maps/runs/{run.id}/places/{place.id}",
+            json={"max_beds": 20},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["max_beds"] == 20
+    refreshed = await db.get(MapsPlace, place.id)
+    assert refreshed is not None
+    assert refreshed.max_beds == 20
+    assert refreshed.manual_field_overrides == ["max_beds"]
+
+
+@pytest.mark.asyncio
+async def test_patch_max_beds_to_null_clears_value(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    place = _place(run.id, max_beds=20, manual_field_overrides=["max_beds"])
+    db.add(place)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            f"/api/v1/maps/runs/{run.id}/places/{place.id}",
+            json={"max_beds": None},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["max_beds"] is None
+    refreshed = await db.get(MapsPlace, place.id)
+    assert refreshed is not None
+    assert refreshed.max_beds is None
+    assert refreshed.manual_field_overrides == ["max_beds"]
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_negative_max_beds(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    place = _place(run.id)
+    db.add(place)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            f"/api/v1/maps/runs/{run.id}/places/{place.id}",
+            json={"max_beds": -1},
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_max_beds_independent_of_bed_count(db: AsyncSession, auth: AuthContext):
+    run = await _create_run(db, auth)
+    place = _place(run.id, bed_count=None, max_beds=None)
+    db.add(place)
+    await db.commit()
+
+    app = _client_app(db, auth)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            f"/api/v1/maps/runs/{run.id}/places/{place.id}",
+            json={"max_beds": 20},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["max_beds"] == 20
+    assert body["bed_count"] is None
+    refreshed = await db.get(MapsPlace, place.id)
+    assert refreshed is not None
+    assert refreshed.max_beds == 20
+    assert refreshed.bed_count is None
+    assert refreshed.manual_field_overrides == ["max_beds"]
+
+
+@pytest.mark.asyncio
 async def test_patch_rejects_place_from_different_run(db: AsyncSession, auth: AuthContext):
     run_a = await _create_run(db, auth)
     run_b = MapsCensusRun(
@@ -244,4 +346,58 @@ async def test_detail_enrichment_skips_overridden_bed_count(db, auth, monkeypatc
         refreshed = await session.get(MapsPlace, place.id)
         assert refreshed is not None
         assert refreshed.bed_count == 8
+        assert refreshed.treatment_price == "$5000"
+
+
+@pytest.mark.asyncio
+async def test_detail_enrichment_never_writes_max_beds(db, auth, monkeypatch):
+    """max_beds is manual-only: a Phase 2 detail-enrichment rerun must leave it
+    untouched even though the AI result model has no max_beds field at all."""
+    run = await _create_run(db, auth)
+    place = _place(
+        run.id,
+        "manual-max-beds",
+        max_beds=20,
+        treatment_price=None,
+        official_website=None,
+        raw_website=None,
+        manual_field_overrides=["max_beds"],
+        enrichment_status=MapsPlaceEnrichmentStatus.PENDING.value,
+        is_relevant=True,
+    )
+    db.add(place)
+    await db.commit()
+
+    factory = async_sessionmaker(bind=db.bind, expire_on_commit=False)
+    fake_result = SimpleNamespace(
+        place_id=place.id,
+        addictions_treated=[],
+        languages_spoken=[],
+        treatment_price="$5000",
+        contact_email=None,
+        contact_phone=None,
+        bed_count=12,
+    )
+
+    async def fake_fetch_detail_batch(self, payloads, **kwargs):
+        return [fake_result]
+
+    monkeypatch.setattr(
+        MapsDetailEnrichmentService, "_fetch_detail_batch", fake_fetch_detail_batch
+    )
+
+    completed = await MapsDetailEnrichmentService()._enrich_batch(
+        factory,
+        places=[place],
+        country_code="FI",
+        country_name="Finland",
+        parse_stats=EnrichmentParseStats(),
+        tracker=MapsQuotaTracker(),
+    )
+    assert completed == 1
+
+    async with factory() as session:
+        refreshed = await session.get(MapsPlace, place.id)
+        assert refreshed is not None
+        assert refreshed.max_beds == 20
         assert refreshed.treatment_price == "$5000"

@@ -16,6 +16,7 @@ EDITABLE_EXPORT_FIELDS = frozenset(
         "international_phone_number",
         "treatment_price",
         "bed_count",
+        "max_beds",
     }
 )
 

@@ -641,6 +641,9 @@ class MapsCensusService:
             if field_name == "bed_count":
                 place.bed_count = value
                 continue
+            if field_name == "max_beds":
+                place.max_beds = value
+                continue
             if field_name in list_fields:
                 if value is None:
                     setattr(place, field_name, None)
@@ -4412,6 +4415,7 @@ def _place_item(place: MapsPlace) -> MapsPlaceItem:
         languages_spoken=list(place.languages_spoken or []),
         treatment_price=place.treatment_price,
         bed_count=place.bed_count,
+        max_beds=place.max_beds,
         verification_verdict=verification_verdict,
         verification_reason=place.verification_reason,
         verification_source_url=place.verification_source_url,

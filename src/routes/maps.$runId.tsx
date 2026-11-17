@@ -731,10 +731,14 @@ function draftKeyForColumn(column: string): keyof PlaceEditDraft | null {
       return "treatment_price";
     case "Bed Count":
       return "bed_count";
+    case "max_beds":
+      return "max_beds";
     default:
       return null;
   }
 }
+
+const NUMERIC_COLUMNS = new Set(["Bed Count", "max_beds"]);
 
 function ExportTableCell({
   column,
@@ -771,10 +775,10 @@ function ExportTableCell({
           />
         ) : (
           <input
-            type={column === "Bed Count" ? "number" : "text"}
-            min={column === "Bed Count" ? 0 : undefined}
-            step={column === "Bed Count" ? 1 : undefined}
-            inputMode={column === "Bed Count" ? "numeric" : undefined}
+            type={NUMERIC_COLUMNS.has(column) ? "number" : "text"}
+            min={NUMERIC_COLUMNS.has(column) ? 0 : undefined}
+            step={NUMERIC_COLUMNS.has(column) ? 1 : undefined}
+            inputMode={NUMERIC_COLUMNS.has(column) ? "numeric" : undefined}
             value={fieldValue}
             disabled={disabled}
             onChange={(event) =>

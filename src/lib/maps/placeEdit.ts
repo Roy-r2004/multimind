@@ -12,6 +12,7 @@ export type PlaceEditDraft = {
   international_phone_number: string;
   treatment_price: string;
   bed_count: string;
+  max_beds: string;
 };
 
 export type MapsPlaceUpdatePayload = MapsPlaceUpdateInput;
@@ -27,6 +28,7 @@ export function draftFromPlace(place: MapsPlaceItem): PlaceEditDraft {
     international_phone_number: place.international_phone_number ?? "",
     treatment_price: place.treatment_price ?? "",
     bed_count: place.bed_count != null ? String(place.bed_count) : "",
+    max_beds: place.max_beds != null ? String(place.max_beds) : "",
   };
 }
 
@@ -49,6 +51,15 @@ export function parseBedCountInput(raw: string): number | null {
   if (!trimmed) return null;
   if (!/^\d+$/.test(trimmed)) {
     throw new Error("Bed count must be a whole number of 0 or more");
+  }
+  return Number(trimmed);
+}
+
+export function parseMaxBedsInput(raw: string): number | null {
+  const trimmed = stripPlaceholder(raw.trim());
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error("MAX_beds must be a whole number of 0 or more");
   }
   return Number(trimmed);
 }
@@ -105,6 +116,11 @@ export function payloadFromDraft(
   const bedCount = parseBedCountInput(draft.bed_count);
   if (bedCount !== (original.bed_count ?? null)) {
     payload.bed_count = bedCount;
+  }
+
+  const maxBeds = parseMaxBedsInput(draft.max_beds);
+  if (maxBeds !== (original.max_beds ?? null)) {
+    payload.max_beds = maxBeds;
   }
 
   return payload;

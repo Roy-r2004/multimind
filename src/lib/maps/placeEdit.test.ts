@@ -3,6 +3,7 @@ import { placeToExportRow } from "@/lib/maps/exportDisplay";
 import {
   draftFromPlace,
   parseBedCountInput,
+  parseMaxBedsInput,
   parseCommaSeparated,
   payloadFromDraft,
 } from "@/lib/maps/placeEdit";
@@ -35,6 +36,7 @@ const basePlace: MapsPlaceItem = {
   languages_spoken: [],
   treatment_price: null,
   bed_count: null,
+  max_beds: null,
   verification_verdict: null,
   verification_reason: null,
   verification_source_url: null,
@@ -46,6 +48,7 @@ describe("place edit draft helpers", () => {
   it("uses raw MapsPlaceItem values instead of display placeholders", () => {
     const draft = draftFromPlace(basePlace);
     expect(draft.bed_count).toBe("");
+    expect(draft.max_beds).toBe("");
     expect(draft.treatment_price).toBe("");
     expect(draft.contact_email).toBe("");
     expect(draft.addictions_treated).toBe("Alcohol");
@@ -66,6 +69,13 @@ describe("place edit draft helpers", () => {
     expect(() => parseBedCountInput("-1")).toThrow();
   });
 
+  it("parses max_beds empty as null and rejects negatives", () => {
+    expect(parseMaxBedsInput("")).toBeNull();
+    expect(parseMaxBedsInput("20")).toBe(20);
+    expect(parseMaxBedsInput("Not Specified")).toBeNull();
+    expect(() => parseMaxBedsInput("-1")).toThrow();
+  });
+
   it("builds a PATCH payload of only changed fields", () => {
     const payload = payloadFromDraft(basePlace, {
       ...draftFromPlace(basePlace),
@@ -76,6 +86,21 @@ describe("place edit draft helpers", () => {
       bed_count: 8,
       contact_email: "desk@example.fi",
     });
+  });
+
+  it("sets and clears max_beds independently of bed_count", () => {
+    const withMaxBeds = payloadFromDraft(basePlace, {
+      ...draftFromPlace(basePlace),
+      max_beds: "20",
+    });
+    expect(withMaxBeds).toEqual({ max_beds: 20 });
+
+    const place = { ...basePlace, max_beds: 20, bed_count: 5 };
+    const cleared = payloadFromDraft(place, {
+      ...draftFromPlace(place),
+      max_beds: "",
+    });
+    expect(cleared).toEqual({ max_beds: null });
   });
 
   it("does not send display placeholders as stored values", () => {
@@ -102,5 +127,10 @@ describe("placeToExportRow display is unchanged", () => {
   it("shows a persisted bed count", () => {
     const row = placeToExportRow({ ...basePlace, bed_count: 8 });
     expect(row.cells["Bed Count"]).toBe("8");
+  });
+
+  it("shows a persisted max_beds value", () => {
+    const row = placeToExportRow({ ...basePlace, max_beds: 20 });
+    expect(row.cells["max_beds"]).toBe("20");
   });
 });
