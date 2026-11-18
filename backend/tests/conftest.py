@@ -17,6 +17,33 @@ def disable_facility_pipeline_by_default(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(settings, "facility_publication_enabled", False)
 
 
+@pytest.fixture(autouse=True)
+def no_real_chat_memory_rebuild_enqueue_globally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Project-wide: never let any test enqueue a real ARQ/Redis chat-memory
+    rebuild job.
+
+    ``chat_service.delete_turn``/``restore_turn``/``regenerate_turn`` queue a
+    durable rebuild job (app.chat_memory.worker) instead of rebuilding
+    inline. With no Redis reachable here, the real
+    ``enqueue_chat_memory_rebuild`` would retry a connection for several
+    seconds on every call (arq's own ``RedisSettings.conn_retries``), which
+    is slow and unrelated to what most tests are checking. A test that
+    specifically needs the rebuild to actually run calls
+    ``process_chat_memory_rebuild_job`` directly against its own session
+    (see the ``drain_chat_memory_rebuild`` helper in
+    tests/test_chat_continuation_memory.py) instead of relying on a real
+    enqueue.
+    """
+    from app.services import chat_memory_service as chat_memory_module
+    from app.services import chat_service as chat_service_module
+
+    async def noop_enqueue(*, chat_id: str, org_id: str, project_id: str | None) -> None:
+        return None
+
+    monkeypatch.setattr(chat_service_module, "enqueue_chat_memory_rebuild", noop_enqueue)
+    monkeypatch.setattr(chat_memory_module, "enqueue_chat_memory_rebuild", noop_enqueue)
+
+
 @pytest.fixture
 async def db() -> AsyncGenerator[AsyncSession, None]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", connect_args={"check_same_thread": False})

@@ -104,6 +104,40 @@ class Settings(BaseSettings):
     debate_worker_job_timeout_seconds: int = 360
     debate_worker_keep_result_seconds: int = 3600
 
+    # Dedicated chat-memory-rebuild ARQ worker (separate queue). Only used for
+    # the delete/restore/regenerate "rebuild everything from scratch" path —
+    # the ordinary per-new-turn incremental merge stays an in-process
+    # background task exactly as before (app.services.chat_service._run_chat_memory_update_best_effort),
+    # unbounded work was never inside an HTTP request handler on that path.
+    chat_memory_worker_queue_name: str = "chat_memory"
+    chat_memory_worker_concurrency: int = 2
+    chat_memory_worker_job_timeout_seconds: int = 300
+    chat_memory_worker_keep_result_seconds: int = 3600
+    # Bounds LLM calls per job execution: at most this many turns are merged
+    # before the job stops and re-enqueues a continuation, so one rebuild of a
+    # very long chat is many small bounded jobs, never one unbounded run.
+    chat_memory_rebuild_max_merges_per_job: int = 25
+    # A claim older than this is presumed orphaned by a dead/killed worker and
+    # is reclaimable by the next job delivery or the periodic recovery sweep —
+    # comfortably above chat_memory_worker_job_timeout_seconds so recovery
+    # never races a job that is still legitimately running.
+    chat_memory_rebuild_claim_stale_seconds: int = 600
+    # Model used for both the rolling-memory summarizer and the Phase 2
+    # critical-facts extraction riding alongside it (same call). A single
+    # config field so a future model switch (e.g. to GPT-5.1) is one value
+    # change here, not a code change — see app.services.chat_memory_service's
+    # DEFAULT_CHAT_MEMORY_MODEL, which reads this setting. Do not switch this
+    # without first comparing extraction accuracy, JSON reliability, final-
+    # answer recall, cost, and latency against the current model (gpt-4.1).
+    chat_memory_model: str = "gpt-4.1"
+    # Soft ceiling on how many estimated tokens of critical-facts context are
+    # surfaced into a single-AI/Council turn's prompt — separate from, and
+    # much smaller than, chat_memory_service.CHAT_MEMORY_STORED_MAX_TOKENS
+    # (the free-text rolling-summary budget). Facts beyond this budget are
+    # never deleted from chat_critical_facts — only left unsurfaced for that
+    # one request; see select_relevant_facts.
+    critical_facts_context_max_tokens: int = 500
+
     # Dedicated Playbook ARQ worker (separate queue from scraping/maps).
     # Infrastructure defaults, not final extraction performance tuning.
     playbook_worker_queue_name: str = "playbooks"

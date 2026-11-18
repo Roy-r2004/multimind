@@ -76,7 +76,7 @@ from app.services.chat_attachment_storage import (
     safe_delete_attachment_files,
 )
 from app.services.chat_attachment_text import extract_attachment_text_from_path
-from app.services.chat_memory_service import chat_memory_service
+from app.services.chat_memory_service import chat_memory_service, enqueue_chat_memory_rebuild
 from app.services.document_context import (
     assess_legacy_excerpt,
     excerpt_looks_truncated,
@@ -345,19 +345,31 @@ async def _run_chat_memory_update_best_effort(
 
 
 async def _rebuild_chat_memory_after_history_mutation(
-    db: AsyncSession,
     *,
     chat_id: str,
     org_id: str,
     project_id: str | None,
 ) -> None:
-    """Rebuild only from surviving history; invalidation was committed first."""
-    await chat_memory_service.rebuild_memory_best_effort(
-        db,
-        chat_id=chat_id,
-        org_id=org_id,
-        project_id=project_id,
-    )
+    """Queue a durable, resumable rebuild; invalidation was committed first.
+
+    This used to rebuild synchronously (``rebuild_memory_best_effort``)
+    inline in the request/response cycle, which meant deleting, restoring,
+    or regenerating a turn near the start of a long chat could perform an
+    unbounded number of sequential LLM calls inside the HTTP handler. Now it
+    only enqueues a durable job (see app.chat_memory.worker) and returns
+    immediately — the actual merge work happens off-request, in bounded
+    chunks (``settings.chat_memory_rebuild_max_merges_per_job`` turns per
+    job), resumable from the watermark after any crash/restart, and with
+    duplicate-worker protection via ``Chat.rolling_memory_rebuild_claimed_at``.
+
+    The chat is immediately usable with no rolling memory (or whatever
+    memory a prior turn merge already committed) until the job catches up —
+    this is safe, not a gap: ``load_recent_history_entries`` already falls
+    back to including any not-yet-watermarked compactable turn raw, so the
+    AI never loses information while a rebuild is in flight, it just
+    temporarily receives more raw history instead of a compact summary.
+    """
+    await enqueue_chat_memory_rebuild(chat_id=chat_id, org_id=org_id, project_id=project_id)
 
 
 async def _seed_continuation_memory_after_success(
@@ -820,7 +832,6 @@ class ChatService:
 
         await _cancel_orchestration_task_after_commit(turn_id, captured_task)
         await _rebuild_chat_memory_after_history_mutation(
-            db,
             chat_id=chat_id,
             org_id=auth.org_id,
             project_id=chat.project_id,
@@ -853,7 +864,6 @@ class ChatService:
         await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
         await db.commit()
         await _rebuild_chat_memory_after_history_mutation(
-            db,
             chat_id=chat_id,
             org_id=auth.org_id,
             project_id=chat.project_id,
@@ -1093,7 +1103,6 @@ class ChatService:
             await _cancel_orchestration_task_after_commit(tid, task)
 
         await _rebuild_chat_memory_after_history_mutation(
-            db,
             chat_id=chat_id,
             org_id=auth.org_id,
             project_id=chat.project_id,
