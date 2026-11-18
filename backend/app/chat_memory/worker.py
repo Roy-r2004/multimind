@@ -58,6 +58,8 @@ from app.core.logging import get_logger, setup_logging
 from app.db.session import AsyncSessionLocal
 from app.services.chat_memory_service import (
     process_chat_memory_rebuild_job,
+    process_fact_extraction_backfill_job,
+    recover_failed_fact_extractions,
     recover_pending_chat_memory_rebuilds,
 )
 
@@ -93,12 +95,14 @@ async def startup(ctx: dict) -> None:
     # takes its first job — exactly like the documents/debate workers' own
     # startup recovery calls, just scoped to this worker's own state.
     recovered = await recover_pending_chat_memory_rebuilds(ctx)
+    recovered_facts = await recover_failed_fact_extractions(ctx)
 
     logger.info(
         "chat_memory_worker_ready",
         queue=chat_memory_queue_name(),
         concurrency=get_settings().chat_memory_worker_concurrency,
         recovered_on_startup=recovered,
+        recovered_fact_extractions_on_startup=recovered_facts,
     )
 
 
@@ -111,6 +115,8 @@ class WorkerSettings:
     functions: ClassVar[list] = [
         func(process_chat_memory_rebuild_job, max_tries=3),
         func(recover_pending_chat_memory_rebuilds, max_tries=1),
+        func(process_fact_extraction_backfill_job, max_tries=3),
+        func(recover_failed_fact_extractions, max_tries=1),
     ]
     queue_name = get_settings().chat_memory_worker_queue_name
     cron_jobs: ClassVar[list] = [
@@ -120,6 +126,12 @@ class WorkerSettings:
         # dropped enqueue or a crashed worker's stale claim without adding
         # meaningful DB load.
         cron(recover_pending_chat_memory_rebuilds, minute=set(range(0, 60, 5))),
+        # Same cadence, same queue — fact-extraction backfill is a much
+        # rarer/smaller workload (expected failure rate is low; structured
+        # output is already a proven provider capability) but shares the
+        # same recovery philosophy: never depend solely on a chat receiving
+        # new user activity to notice and fix a failed extraction.
+        cron(recover_failed_fact_extractions, minute=set(range(2, 60, 5))),
     ]
     redis_settings = chat_memory_redis_settings()
     on_startup = startup

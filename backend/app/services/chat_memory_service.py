@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime, timedelta
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,6 +18,7 @@ from app.core.logging import get_logger
 from app.db.models import (
     Chat,
     ChatAttachment,
+    ChatCriticalFact,
     CostRecord,
     ModelAnswerStatus,
     Turn,
@@ -31,7 +36,16 @@ logger = get_logger(__name__)
 RECENT_HISTORY_MAX_TURNS = 10
 RECENT_HISTORY_MAX_CHARS = 30_000
 RECENT_HISTORY_MAX_TOKENS = 7_500
-DEFAULT_CHAT_MEMORY_MODEL = "gpt-4.1"
+
+
+def _default_chat_memory_model() -> str:
+    """Resolved from settings (not a hardcoded constant) so a future model
+    switch — e.g. to GPT-5.1, per Phase 2's explicit instruction not to
+    upgrade yet without measured comparison — is one config value, not a
+    code change. See ``settings.chat_memory_model``."""
+    return get_settings().chat_memory_model
+
+
 CHAT_MEMORY_EXISTING_MAX_TOKENS = 4_000
 CHAT_MEMORY_USER_MAX_TOKENS = 3_000
 CHAT_MEMORY_ASSISTANT_MAX_TOKENS = 9_000
@@ -68,6 +82,265 @@ _ATTACHMENT_TRUNCATION_MARKER = "\n[Attachment context truncated]"
 TURN_SEPARATOR = "\n\n---\n\n"
 TRUNCATION_MARKER = "\n[...truncated...]"
 CHALLENGE_TURN_MARKER = "__multimind_challenge_turn__"
+
+# --- Phase 2: protected critical-facts ledger ------------------------------
+#
+# Separate from, and never subject to, the lossy free-text rolling-memory
+# rewrite chain above. A real GPT-4.1 evaluation measured a planted,
+# unguessable fact being silently lost from rolling_memory 100% of the time
+# beyond 20 exchanges; this ledger exists specifically to give a small number
+# of explicitly-grounded facts a storage lifecycle where nothing is ever
+# silently dropped by a future re-summarization.
+#
+# Key design property: there is deliberately NO stored "superseded" status
+# or superseded-by pointer. "The current fact for a slot" is always a
+# read-time computation — see `current_facts_for_chat` — which is what makes
+# deleting/restoring a source turn correctly resurface or re-hide a fact
+# automatically, via the exact same `Turn.deleted_at` soft-delete pattern the
+# rest of chat memory already relies on.
+FACT_CATEGORIES = (
+    "fact",
+    "decision",
+    "requirement",
+    "preference",
+    "open_task",
+    "correction",
+    "cancellation",
+)
+# Categories that assert a current, binding value — these are the ones the
+# "assistant suggestions cannot become user-confirmed facts" rule applies
+# to: they may only be grounded in a *user*-authored source_span (either the
+# user stated it directly, or the user explicitly confirmed a prior
+# assistant suggestion — in which case the confirming turn's own text is the
+# source_span, never the assistant's original suggestion text).
+FACT_CATEGORIES_REQUIRING_USER_SPEAKER = ("decision", "requirement", "correction")
+FACT_SPEAKERS = ("user", "assistant")
+FACT_GROUNDINGS = ("explicit_user_statement", "explicit_confirmed_decision")
+FACT_STATUS_NORMAL = "normal"
+FACT_STATUS_RESOLVED = "resolved"
+FACT_STATUS_RETRACTED = "retracted"
+# Defense-in-depth heuristic (not a replacement for the prompt instructions):
+# a candidate whose verbatim source_span contains one of these is rejected,
+# since a hedge/hypothetical should never be stored as a current fact.
+_HEDGE_WORDS = ("maybe", "might", "could", "suppose", "hypothetically", "what if", "for example")
+# Standing categories always surfaced into context regardless of the current
+# question's topic (open tasks are relevant to almost every turn by nature).
+_STANDING_FACT_CATEGORIES = ("open_task",)
+_FACT_EXTRACTION_MAX_ATTEMPTS = 3  # bounded backfill retries per turn, mirrors CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+class FactCandidateSchema(BaseModel):
+    """Structured-output shape for one extraction candidate. Code-side
+    validation (see `_validate_fact_candidate`) never trusts this schema's
+    self-reported fields alone — it independently re-checks source_span
+    against the turn's actual stored text before anything is persisted.
+    """
+
+    fact_slot_id: str
+    category: Literal[
+        "fact", "decision", "requirement", "preference", "open_task", "correction", "cancellation"
+    ]
+    content: str
+    speaker: Literal["user", "assistant"]
+    source_span: str
+    grounding: Literal["explicit_user_statement", "explicit_confirmed_decision"]
+
+
+class MemoryUpdateResponseSchema(BaseModel):
+    updated_memory: str
+    fact_candidates: list[FactCandidateSchema] = []
+
+
+def _require_object_properties(node) -> None:
+    """Recursively enforce OpenAI's strict-JSON-schema requirement
+    (every object must list all its properties as required, and disallow
+    additional ones). Small, self-contained copy of the same helper already
+    used elsewhere in this codebase for structured provider output
+    (app.services.scraping.openrouter_facility_extraction_provider) — not
+    imported from there to avoid an unrelated cross-domain dependency.
+    """
+    if isinstance(node, dict):
+        if node.get("type") == "object" or "properties" in node:
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                node["additionalProperties"] = False
+                node["required"] = sorted(properties)
+        for value in node.values():
+            _require_object_properties(value)
+    elif isinstance(node, list):
+        for value in node:
+            _require_object_properties(value)
+
+
+def memory_update_response_format() -> dict:
+    """``response_format`` for the combined memory-update + fact-extraction
+    call — real structured output, verified against this codebase's own
+    proven usage elsewhere (e.g. app.services.playbook_extraction_service,
+    app.services.scraping.maps_structured_classification) before assuming it
+    would work here."""
+    schema = json.loads(json.dumps(MemoryUpdateResponseSchema.model_json_schema()))
+    _require_object_properties(schema)
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "chat_memory_update", "strict": True, "schema": schema},
+    }
+
+
+def parse_structured_memory_response(text: str) -> tuple[str, list[dict]]:
+    """Lenient parse: a real structured JSON response (starts with ``{``,
+    valid JSON, has a string ``updated_memory`` field) is used fully.
+    Anything else — including every one of Phase 1's existing plain-text
+    fake-provider responses in the test suite, and any malformed/legacy
+    response — is treated as the memory text verbatim, with zero fact
+    candidates. This is a deliberate design choice: it is what lets the
+    structured contract be introduced without rewriting every existing test
+    fixture, and what lets a real model's occasional malformed JSON degrade
+    to "no facts extracted this turn" rather than a hard failure of the
+    (far more important) rolling-memory update itself.
+    """
+    stripped = (text or "").strip()
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            return text, []
+        if isinstance(data, dict) and isinstance(data.get("updated_memory"), str):
+            raw_candidates = data.get("fact_candidates")
+            candidates = [c for c in raw_candidates if isinstance(c, dict)] if isinstance(raw_candidates, list) else []
+            return data["updated_memory"], candidates
+    return text, []
+
+
+def _validate_fact_candidate(raw: dict, *, user_message: str, assistant_text: str) -> dict | None:
+    """Independent, code-level verification — never trusts the model's
+    self-reported fields alone. Returns a clean candidate dict, or None if
+    rejected. Every rejection reason here maps directly to one of the
+    required safeguards: hallucination, incorrect attribution, hypothetical/
+    hedge language, and assistant suggestions being stored as confirmed facts.
+    """
+    try:
+        candidate = FactCandidateSchema.model_validate(raw)
+    except ValidationError:
+        return None
+
+    span = candidate.source_span.strip()
+    if not span:
+        return None
+    source_text = user_message if candidate.speaker == "user" else assistant_text
+    if span not in (source_text or ""):
+        # Hallucination guard, and incorrect-attribution guard: a span that
+        # isn't actually in the claimed speaker's text is rejected outright,
+        # regardless of what the model self-reported.
+        return None
+
+    if candidate.category in FACT_CATEGORIES_REQUIRING_USER_SPEAKER and candidate.speaker != "user":
+        # An assistant suggestion can never be stored as a decision/
+        # requirement/correction by itself — only a user's own statement, or
+        # a user's later confirmation (whose own turn text is the
+        # source_span), can be. This makes it structurally impossible for an
+        # unconfirmed suggestion to be promoted to a fact, not just
+        # discouraged by instruction.
+        return None
+
+    span_lower = span.lower()
+    if any(w in span_lower for w in _HEDGE_WORDS):
+        return None
+
+    return {
+        "fact_slot_id": candidate.fact_slot_id.strip()[:128] or "unspecified",
+        "category": candidate.category,
+        "content": candidate.content.strip(),
+        "speaker": candidate.speaker,
+        "source_span": span,
+        "grounding": candidate.grounding,
+    }
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(_WORD_RE.findall((text or "").lower()))
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalizes a timestamp for comparison/ordering across sources that
+    may hand back naive datetimes (e.g. SQLite's ``server_default`` on
+    ``TimestampMixin``) alongside aware ones (e.g. Postgres, or explicit
+    values set by callers). Naive values are treated as already-UTC, per
+    this app's existing convention (see ``app.services.document_processing``
+    for the same pattern) — they are never reinterpreted as local time.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def select_relevant_facts(
+    facts: list[ChatCriticalFact],
+    *,
+    user_message: str,
+    max_tokens: int,
+) -> list[ChatCriticalFact]:
+    """Deterministic, question-aware selection — no embeddings, no vector
+    database, no LLM call. ``facts`` must already be "current per slot"
+    (see `current_facts_for_chat`); this only decides what fits the budget.
+
+    Ranking: standing categories (open tasks) always come first; everything
+    else is ranked by plain keyword-overlap between the current user message
+    and the slot id + fact content, ties broken by recency, then by id for
+    full determinism. If nothing overlaps at all (a generic chit-chat turn),
+    this degrades gracefully to pure recency ordering — never an error.
+
+    Facts dropped for space are never deleted from storage — only left
+    unsurfaced for this one request; see module docstring.
+    """
+    if not facts:
+        return []
+    question_tokens = _tokenize(user_message)
+
+    def sort_key(fact: ChatCriticalFact) -> tuple:
+        is_standing = 0 if fact.category in _STANDING_FACT_CATEGORIES else 1
+        overlap = len(question_tokens & (_tokenize(fact.fact_slot_id) | _tokenize(fact.content)))
+        turn_created = fact.source_turn.created_at if fact.source_turn is not None else fact.created_at
+        return (is_standing, -overlap, -_as_utc(turn_created).timestamp(), fact.id)
+
+    ordered = sorted(facts, key=sort_key)
+    selected: list[ChatCriticalFact] = []
+    used_tokens = 0
+    for fact in ordered:
+        cost = estimate_tokens(_render_one_fact_line(fact))
+        if selected and used_tokens + cost > max_tokens:
+            continue
+        selected.append(fact)
+        used_tokens += cost
+    return selected
+
+
+def _render_one_fact_line(fact: ChatCriticalFact) -> str:
+    if fact.category == "cancellation":
+        return f"- [{fact.category}] (no current value for this topic — explicitly removed)"
+    return f"- [{fact.category}] {fact.content}"
+
+
+_PROTECTED_FACTS_HEADER = (
+    "## Protected Facts (independently verified from this chat's own messages — "
+    "these override anything that conflicts with them elsewhere in this prompt)"
+)
+
+
+def render_protected_facts_block(facts: list[ChatCriticalFact]) -> str:
+    """Renders the already-selected (budget-fitting) facts as a short text
+    block. Composed as plain Python text and passed into the existing,
+    unmodified ``rolling_chat_memory`` prompt parameter — this does not
+    require any change to model_answer.j2/verdict prompts: that slot already
+    means "older chat memory content shown to the model", and protected
+    facts are exactly that, just a separately-guaranteed subset of it.
+    """
+    if not facts:
+        return ""
+    lines = [_PROTECTED_FACTS_HEADER]
+    lines.extend(_render_one_fact_line(f) for f in facts)
+    return "\n".join(lines)
+
 
 _MEMORY_UPDATE_USER_PROMPT = "Update the rolling chat memory text now."
 _MEMORY_UPDATE_RETRY_USER_PROMPT = (
@@ -850,8 +1123,9 @@ class ChatMemoryService:
         optimization.
         """
         try:
+            model_id = _default_chat_memory_model()
             cost_usd = resolve_llm_cost(
-                DEFAULT_CHAT_MEMORY_MODEL,
+                model_id,
                 response.tokens_input,
                 response.tokens_output,
                 response.cost_usd,
@@ -865,7 +1139,7 @@ class ChatMemoryService:
                         chat_id=chat_id,
                         project_id=project_id,
                         turn_id=turn_id,
-                        model_id=DEFAULT_CHAT_MEMORY_MODEL,
+                        model_id=model_id,
                         kind=UsageKind.CHAT_MEMORY,
                         tokens_input=response.tokens_input,
                         tokens_output=response.tokens_output,
@@ -892,7 +1166,7 @@ class ChatMemoryService:
         project_id: str | None,
         chat_id: str,
         turn_id: str,
-    ) -> tuple[object | None, str | None]:
+    ) -> tuple[object | None, str | None, list[dict]]:
         """Call the memory summarizer with bounded retries and safe recovery.
 
         Handles three failure modes without ever looping unboundedly: a
@@ -912,16 +1186,25 @@ class ChatMemoryService:
         attempt, or a merge that ultimately fails, still records the real
         provider usage it incurred.
 
+        The response is parsed leniently (`parse_structured_memory_response`):
+        a real structured response yields real fact candidates; a plain-text
+        response (including every pre-existing fake-provider response in the
+        test suite) yields zero candidates with no error — the token-budget
+        check below always applies to the parsed memory text, never the raw
+        response (which may include JSON structure not meant to count against
+        the stored-memory budget).
+
         A fixed 2,048-token memory budget cannot guarantee perfect
         preservation of an arbitrarily long turn; when recompaction also
         fails to fit the budget (or errors, or comes back empty), nothing is
-        persisted. Returns ``(None, None)`` in that case — callers must leave
-        the existing memory and watermark untouched and rely on a later retry
-        (triggered by a subsequent turn) rather than silently losing
-        information via truncation.
+        persisted. Returns ``(None, None, [])`` in that case — callers must
+        leave the existing memory and watermark untouched and rely on a
+        later retry (triggered by a subsequent turn) rather than silently
+        losing information via truncation.
         """
         last_response = None
         last_oversized_text: str | None = None
+        last_candidates: list[dict] = []
 
         for attempt in range(1, CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS + 1):
             max_tokens = CHAT_MEMORY_RETRY_MAX_TOKENS[
@@ -938,6 +1221,7 @@ class ChatMemoryService:
                     user=user_prompt,
                     model=model.provider_model,
                     max_tokens=max_tokens,
+                    response_format=memory_update_response_format(),
                 )
             except Exception as exc:  # noqa: BLE001 - provider/network errors must not stall memory
                 logger.warning(
@@ -957,7 +1241,8 @@ class ChatMemoryService:
                 turn_id=turn_id,
                 response=response,
             )
-            text = (response.text or "").strip()
+            memory_text, candidates = parse_structured_memory_response(response.text or "")
+            text = memory_text.strip()
             if not text:
                 logger.warning(
                     "chat_rolling_memory_empty_output",
@@ -966,10 +1251,12 @@ class ChatMemoryService:
                     attempt=attempt,
                 )
                 continue
+            if candidates:
+                last_candidates = candidates
 
             estimated = estimate_tokens(text)
             if estimated <= CHAT_MEMORY_STORED_MAX_TOKENS:
-                return response, text
+                return response, text, (candidates or last_candidates)
 
             logger.warning(
                 "chat_rolling_memory_oversized_output",
@@ -994,7 +1281,8 @@ class ChatMemoryService:
                 turn_id=turn_id,
             )
             if recompacted is not None:
-                return recompacted
+                recompacted_response, recompacted_text = recompacted
+                return recompacted_response, recompacted_text, last_candidates
 
         logger.error(
             "chat_rolling_memory_summarizer_exhausted",
@@ -1002,7 +1290,7 @@ class ChatMemoryService:
             turn_id=turn_id,
             attempts=CHAT_MEMORY_MAX_SUMMARY_ATTEMPTS,
         )
-        return None, None
+        return None, None, []
 
     async def _attempt_semantic_recompaction(
         self,
@@ -1050,7 +1338,8 @@ class ChatMemoryService:
             turn_id=turn_id,
             response=response,
         )
-        text = (response.text or "").strip()
+        memory_text, _recompaction_candidates = parse_structured_memory_response(response.text or "")
+        text = memory_text.strip()
         if not text:
             logger.warning(
                 "chat_rolling_memory_recompaction_empty_output",
@@ -1077,6 +1366,261 @@ class ChatMemoryService:
         )
         return response, text
 
+    async def current_facts_for_chat(
+        self, db: AsyncSession, *, chat_id: str, org_id: str
+    ) -> list[ChatCriticalFact]:
+        """The "current" fact per ``fact_slot_id`` — computed at read time,
+        never stored. A fact is eligible only if its own ``status`` is not
+        ``retracted`` and its ``source_turn`` exists and is not
+        soft-deleted; among eligible facts in a slot, the one from the most
+        recent source turn wins. This single rule is what makes turn
+        deletion/restoration, explicit retraction, and cancellation all
+        behave correctly with no bespoke invalidation code — see the module
+        docstring above.
+
+        Grouping is done in Python (not a DB-dialect-specific DISTINCT ON)
+        for portability between the Postgres production database and the
+        SQLite test engine, and because per-chat fact counts are expected to
+        be small (tens, not thousands).
+        """
+        result = await db.execute(
+            select(ChatCriticalFact)
+            .join(Turn, Turn.id == ChatCriticalFact.source_turn_id)
+            .options(selectinload(ChatCriticalFact.source_turn))
+            .where(
+                ChatCriticalFact.chat_id == chat_id,
+                ChatCriticalFact.org_id == org_id,
+                ChatCriticalFact.status != FACT_STATUS_RETRACTED,
+                Turn.deleted_at.is_(None),
+            )
+        )
+        rows = list(result.scalars().all())
+        current_by_slot: dict[str, ChatCriticalFact] = {}
+        for fact in rows:
+            existing = current_by_slot.get(fact.fact_slot_id)
+            if existing is None:
+                current_by_slot[fact.fact_slot_id] = fact
+                continue
+            existing_turn_created = existing.source_turn.created_at if existing.source_turn else existing.created_at
+            fact_turn_created = fact.source_turn.created_at if fact.source_turn else fact.created_at
+            if (_as_utc(fact_turn_created), _as_utc(fact.created_at), fact.id) > (
+                _as_utc(existing_turn_created),
+                _as_utc(existing.created_at),
+                existing.id,
+            ):
+                current_by_slot[fact.fact_slot_id] = fact
+        return list(current_by_slot.values())
+
+    async def build_rolling_chat_memory_with_facts(
+        self,
+        db: AsyncSession,
+        *,
+        chat_id: str,
+        org_id: str,
+        user_message: str,
+        base_rolling_memory: str | None,
+    ) -> str | None:
+        """Composes the final ``rolling_chat_memory`` string passed into the
+        existing, unmodified model-answer/verdict prompts: a bounded,
+        question-aware "Protected Facts" block (see `select_relevant_facts`)
+        followed by the ordinary free-text rolling summary. No `.j2`
+        template is touched by this — ``rolling_chat_memory`` is already the
+        exact parameter those templates render generically as "older chat
+        memory"; this only changes what Python string is handed to it.
+        """
+        settings = get_settings()
+        current = await self.current_facts_for_chat(db, chat_id=chat_id, org_id=org_id)
+        selected = select_relevant_facts(
+            current,
+            user_message=user_message,
+            max_tokens=settings.critical_facts_context_max_tokens,
+        )
+        facts_block = render_protected_facts_block(selected)
+        memory_text = (base_rolling_memory or "").strip()
+        combined = "\n\n".join(part for part in (facts_block, memory_text) if part)
+        return combined or None
+
+    async def _persist_fact_candidates(
+        self,
+        db: AsyncSession,
+        *,
+        chat_id: str,
+        org_id: str,
+        turn_id: str,
+        candidates: list[dict],
+    ) -> None:
+        """Idempotent insert: relies on the ``(chat_id, fact_slot_id,
+        source_turn_id)`` unique constraint, via a per-candidate savepoint
+        so a duplicate (from a retried/backfilled extraction that partially
+        succeeded before) is silently skipped rather than aborting the
+        whole transaction — portable across Postgres and SQLite, since it
+        uses only ordinary nested transactions, no dialect-specific upsert.
+        """
+        for candidate in candidates:
+            try:
+                async with db.begin_nested():
+                    db.add(
+                        ChatCriticalFact(
+                            chat_id=chat_id,
+                            org_id=org_id,
+                            fact_slot_id=candidate["fact_slot_id"],
+                            category=candidate["category"],
+                            content=candidate["content"],
+                            speaker=candidate["speaker"],
+                            source_turn_id=turn_id,
+                            source_span=candidate["source_span"],
+                            grounding=candidate["grounding"],
+                            status=FACT_STATUS_NORMAL,
+                        )
+                    )
+            except IntegrityError:
+                logger.info(
+                    "chat_critical_fact_duplicate_skipped",
+                    chat_id=chat_id,
+                    turn_id=turn_id,
+                    fact_slot_id=candidate.get("fact_slot_id"),
+                )
+
+    async def extract_and_persist_facts(
+        self,
+        db: AsyncSession,
+        *,
+        chat_id: str,
+        org_id: str,
+        turn: Turn,
+        user_message: str,
+        assistant_text: str,
+        raw_candidates: list[dict],
+    ) -> None:
+        """Validates (`_validate_fact_candidate`) and persists candidates,
+        then marks the turn's extraction outcome. Called with
+        ``raw_candidates=[]`` (e.g. a legacy plain-text response, or a
+        structured response whose fact_candidates was malformed) still marks
+        the turn ``ok`` — zero facts found is a legitimate, not a failed,
+        outcome; only a genuine extraction *error* should mark ``failed``
+        (see the backfill job, which is the only caller that can observe a
+        real error here, since the inline path treats a parse failure the
+        same as "zero candidates", by design — see `parse_structured_memory_response`).
+        """
+        validated = [
+            cleaned
+            for raw in raw_candidates
+            if (cleaned := _validate_fact_candidate(raw, user_message=user_message, assistant_text=assistant_text))
+            is not None
+        ]
+        await self._persist_fact_candidates(
+            db, chat_id=chat_id, org_id=org_id, turn_id=turn.id, candidates=validated
+        )
+        turn.facts_extraction_status = "ok"
+        logger.info(
+            "chat_critical_fact_extraction_recorded",
+            chat_id=chat_id,
+            turn_id=turn.id,
+            candidates_received=len(raw_candidates),
+            candidates_persisted=len(validated),
+        )
+
+    async def backfill_fact_extraction_for_turn(
+        self, db: AsyncSession, *, chat_id: str, org_id: str, turn_id: str
+    ) -> bool:
+        """Re-attempts fact extraction for one turn whose inline extraction
+        previously failed (``Turn.facts_extraction_status == 'failed'``),
+        WITHOUT touching ``rolling_memory``/the watermark — which has
+        already moved past this turn, since inline extraction only ever
+        runs after that turn's memory merge already succeeded.
+
+        There is no separate extraction-only prompt yet (that would need
+        its own approval, beyond the single approved `chat_memory_update.j2`
+        change) — this reuses the same combined call and discards the
+        ``updated_memory`` portion of the response, keeping only
+        ``fact_candidates``. This is a real, acknowledged inefficiency
+        (billed for memory-text output tokens that are thrown away) rather
+        than a hidden one — see the final report.
+
+        Bounded to ``_FACT_EXTRACTION_MAX_ATTEMPTS``. Idempotent: relies on
+        `extract_and_persist_facts`'s unique-constraint-guarded insert, so a
+        retry after a partial prior success cannot duplicate facts.
+        """
+        turn_result = await db.execute(
+            select(Turn)
+            .options(selectinload(Turn.verdict), selectinload(Turn.model_answers))
+            .where(Turn.id == turn_id)
+        )
+        turn = turn_result.scalar_one_or_none()
+        if turn is None or turn.deleted_at is not None:
+            return True  # nothing to backfill for a vanished/deleted turn
+        chat = await db.get(Chat, chat_id)
+        if chat is None:
+            return True
+        assistant_result = self._assistant_result(turn)
+        if assistant_result is None:
+            return True  # not an eligible completed turn; nothing to extract
+
+        existing_facts = await self.current_facts_for_chat(db, chat_id=chat_id, org_id=org_id)
+        existing_fact_slots = [
+            {"fact_slot_id": f.fact_slot_id, "category": f.category, "content": f.content}
+            for f in existing_facts
+        ]
+        user_message = truncate_text_under_token_budget(turn.user_message, CHAT_MEMORY_USER_MAX_TOKENS)
+        assistant_text = truncate_text_under_token_budget(
+            assistant_result.text, CHAT_MEMORY_ASSISTANT_MAX_TOKENS
+        )
+        system = get_prompt_engine().chat_memory_update_prompt(
+            current_rolling_memory=truncate_text_under_token_budget(
+                (chat.rolling_memory or "").strip(), CHAT_MEMORY_EXISTING_MAX_TOKENS
+            ),
+            user_message=user_message,
+            verdict_text=assistant_text,
+            verdict_reason=truncate_text_under_token_budget(
+                assistant_result.reason or "", CHAT_MEMORY_REASON_MAX_TOKENS
+            ),
+            existing_fact_slots=existing_fact_slots,
+        )
+        model = get_model(_default_chat_memory_model())
+        provider = get_provider_registry().get_provider(model.provider)
+
+        for attempt in range(1, _FACT_EXTRACTION_MAX_ATTEMPTS + 1):
+            try:
+                response = await provider.complete(
+                    system=system,
+                    user=_MEMORY_UPDATE_USER_PROMPT,
+                    model=model.provider_model,
+                    max_tokens=CHAT_MEMORY_RETRY_MAX_TOKENS[0],
+                    response_format=memory_update_response_format(),
+                )
+            except Exception as exc:  # noqa: BLE001 - bounded, observable, never raises
+                logger.warning(
+                    "chat_critical_fact_backfill_error",
+                    chat_id=chat_id,
+                    turn_id=turn_id,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                continue
+            await self._record_billable_usage(
+                db, org_id=org_id, chat_id=chat_id, project_id=None, turn_id=turn_id, response=response
+            )
+            _discarded_memory_text, candidates = parse_structured_memory_response(response.text or "")
+            await self.extract_and_persist_facts(
+                db,
+                chat_id=chat_id,
+                org_id=org_id,
+                turn=turn,
+                user_message=user_message,
+                assistant_text=assistant_text,
+                raw_candidates=candidates,
+            )
+            return True
+
+        turn.facts_extraction_status = "failed"
+        logger.error(
+            "chat_critical_fact_backfill_exhausted",
+            chat_id=chat_id,
+            turn_id=turn_id,
+            attempts=_FACT_EXTRACTION_MAX_ATTEMPTS,
+        )
+        return False
+
     async def _merge_one_turn(
         self,
         db: AsyncSession,
@@ -1097,21 +1641,29 @@ class ChatMemoryService:
         expected_through = chat.rolling_memory_through_turn_id
         expected_updated_at = chat.rolling_memory_updated_at
 
+        existing_facts = await self.current_facts_for_chat(db, chat_id=chat_id, org_id=org_id)
+        existing_fact_slots = [
+            {"fact_slot_id": f.fact_slot_id, "category": f.category, "content": f.content}
+            for f in existing_facts
+        ]
+        truncated_user_message = truncate_text_under_token_budget(
+            turn.user_message, CHAT_MEMORY_USER_MAX_TOKENS
+        )
+        truncated_assistant_text = truncate_text_under_token_budget(
+            assistant_result.text, CHAT_MEMORY_ASSISTANT_MAX_TOKENS
+        )
         system = get_prompt_engine().chat_memory_update_prompt(
             current_rolling_memory=truncate_text_under_token_budget(
                 (expected_memory or "").strip(), CHAT_MEMORY_EXISTING_MAX_TOKENS
             ),
-            user_message=truncate_text_under_token_budget(
-                turn.user_message, CHAT_MEMORY_USER_MAX_TOKENS
-            ),
-            verdict_text=truncate_text_under_token_budget(
-                assistant_result.text, CHAT_MEMORY_ASSISTANT_MAX_TOKENS
-            ),
+            user_message=truncated_user_message,
+            verdict_text=truncated_assistant_text,
             verdict_reason=truncate_text_under_token_budget(
                 assistant_result.reason or "", CHAT_MEMORY_REASON_MAX_TOKENS
             ),
+            existing_fact_slots=existing_fact_slots,
         )
-        model = get_model(DEFAULT_CHAT_MEMORY_MODEL)
+        model = get_model(_default_chat_memory_model())
         provider = get_provider_registry().get_provider(model.provider)
 
         # NOTE: an earlier version of this fix called `await db.rollback()`
@@ -1129,7 +1681,7 @@ class ChatMemoryService:
         # over this connection-pool optimization — see the final report's
         # "Finding 2" section for the accepted trade-off this leaves in place.
 
-        response, updated = await self._summarize_with_bounded_recovery(
+        response, updated, fact_candidates = await self._summarize_with_bounded_recovery(
             db,
             provider=provider,
             model=model,
@@ -1184,6 +1736,38 @@ class ChatMemoryService:
             through_turn_id=turn_id,
             rolling_memory_chars=len(updated),
         )
+
+        # Fact extraction/persistence happens in this same (uncommitted)
+        # transaction as the CAS write above — the caller (merge_expired_turns)
+        # commits both together. A CAS conflict on a *later* candidate for
+        # this same turn can never happen (the watermark guard at the top of
+        # this method already prevents re-processing an already-merged
+        # turn), but if this whole transaction rolls back for any other
+        # reason, these fact writes roll back with it — never partially
+        # applied relative to the watermark advance. A failure here (bad
+        # JSON candidates, validation errors) is caught and recorded as
+        # 'failed' on the turn rather than undoing the already-successful
+        # rolling-memory update; the Phase 1 memory merge must never be
+        # blocked or reverted by a Phase 2 extraction problem.
+        try:
+            await self.extract_and_persist_facts(
+                db,
+                chat_id=chat_id,
+                org_id=org_id,
+                turn=turn,
+                user_message=truncated_user_message,
+                assistant_text=truncated_assistant_text,
+                raw_candidates=fact_candidates,
+            )
+        except Exception as exc:  # noqa: BLE001 - extraction failure must never undo a successful memory merge
+            turn.facts_extraction_status = "failed"
+            logger.warning(
+                "chat_critical_fact_extraction_failed",
+                chat_id=chat_id,
+                turn_id=turn_id,
+                error=str(exc),
+            )
+
         return True
 
     async def load_prior_document_attachments(
@@ -1484,3 +2068,89 @@ async def recover_pending_chat_memory_rebuilds(ctx: dict) -> int:
     if pending:
         logger.info("chat_memory_rebuild_recovery_swept", count=len(pending))
     return len(pending)
+
+
+FACT_EXTRACTION_BACKFILL_ARQ_JOB_NAME = "process_fact_extraction_backfill_job"
+
+
+async def enqueue_fact_extraction_backfill(*, chat_id: str, org_id: str, turn_id: str) -> None:
+    """Queue one durable fact-extraction retry for one turn. Never raises.
+
+    Mirrors ``enqueue_chat_memory_rebuild`` exactly (same queue, same Redis
+    settings) — a failed enqueue simply leaves ``Turn.facts_extraction_status``
+    as ``'failed'``, which the periodic ``recover_failed_fact_extractions``
+    sweep will find and re-enqueue on its next run, so one lost enqueue
+    attempt is never the only path to recovery.
+    """
+    settings = get_settings()
+    try:
+        from urllib.parse import urlparse
+
+        from arq import create_pool
+        from arq.connections import RedisSettings
+
+        parsed = urlparse(settings.redis_url)
+        redis = RedisSettings(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 6379,
+            database=int((parsed.path or "/0").lstrip("/") or "0"),
+            password=parsed.password,
+        )
+        pool = await create_pool(redis, default_queue_name=settings.chat_memory_worker_queue_name)
+        try:
+            await pool.enqueue_job(
+                FACT_EXTRACTION_BACKFILL_ARQ_JOB_NAME,
+                chat_id,
+                org_id,
+                turn_id,
+                _queue_name=settings.chat_memory_worker_queue_name,
+            )
+        finally:
+            await pool.close()
+    except Exception as exc:  # noqa: BLE001 - enqueue must never break the caller
+        logger.warning(
+            "chat_critical_fact_backfill_enqueue_failed",
+            chat_id=chat_id,
+            turn_id=turn_id,
+            error=str(exc),
+        )
+
+
+async def process_fact_extraction_backfill_job(
+    ctx: dict, chat_id: str, org_id: str, turn_id: str
+) -> dict:
+    """ARQ job entrypoint — registered on the same dedicated chat-memory
+    worker as ``process_chat_memory_rebuild_job`` (see
+    app/chat_memory/worker.py), sharing its queue rather than inventing a
+    new one. ``ctx["session_factory"]`` override follows the same
+    convention as the rebuild job.
+    """
+    session_factory = ctx.get("session_factory") or AsyncSessionLocal
+    async with session_factory() as db:
+        ok = await chat_memory_service.backfill_fact_extraction_for_turn(
+            db, chat_id=chat_id, org_id=org_id, turn_id=turn_id
+        )
+        await db.commit()
+    return {"status": "ok" if ok else "failed", "chat_id": chat_id, "turn_id": turn_id}
+
+
+async def recover_failed_fact_extractions(ctx: dict) -> int:
+    """Startup + periodic cron: re-enqueue backfill for any turn whose
+    extraction is recorded as ``'failed'``. Independent of, and never
+    touches, the rolling-memory watermark — this only ever resumes the
+    separate ``facts_extraction_status`` bookkeeping.
+    """
+    session_factory = ctx.get("session_factory") or AsyncSessionLocal
+    async with session_factory() as db:
+        result = await db.execute(
+            select(Turn.id, Turn.chat_id, Chat.org_id)
+            .join(Chat, Chat.id == Turn.chat_id)
+            .where(Turn.facts_extraction_status == "failed")
+            .limit(200)
+        )
+        rows = result.all()
+    for turn_id, chat_id, org_id in rows:
+        await enqueue_fact_extraction_backfill(chat_id=chat_id, org_id=org_id, turn_id=turn_id)
+    if rows:
+        logger.info("chat_critical_fact_backfill_swept", count=len(rows))
+    return len(rows)

@@ -122,6 +122,21 @@ class Settings(BaseSettings):
     # comfortably above chat_memory_worker_job_timeout_seconds so recovery
     # never races a job that is still legitimately running.
     chat_memory_rebuild_claim_stale_seconds: int = 600
+    # Model used for both the rolling-memory summarizer and the Phase 2
+    # critical-facts extraction riding alongside it (same call). A single
+    # config field so a future model switch (e.g. to GPT-5.1) is one value
+    # change here, not a code change — see app.services.chat_memory_service's
+    # DEFAULT_CHAT_MEMORY_MODEL, which reads this setting. Do not switch this
+    # without first comparing extraction accuracy, JSON reliability, final-
+    # answer recall, cost, and latency against the current model (gpt-4.1).
+    chat_memory_model: str = "gpt-4.1"
+    # Soft ceiling on how many estimated tokens of critical-facts context are
+    # surfaced into a single-AI/Council turn's prompt — separate from, and
+    # much smaller than, chat_memory_service.CHAT_MEMORY_STORED_MAX_TOKENS
+    # (the free-text rolling-summary budget). Facts beyond this budget are
+    # never deleted from chat_critical_facts — only left unsurfaced for that
+    # one request; see select_relevant_facts.
+    critical_facts_context_max_tokens: int = 500
 
     # Dedicated Playbook ARQ worker (separate queue from scraping/maps).
     # Infrastructure defaults, not final extraction performance tuning.
