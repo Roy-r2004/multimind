@@ -51,18 +51,5 @@ Example:
 {{ verdict_reason }}
 {% endif %}
 
-{% if existing_fact_slots %}
-## Existing Protected Fact Slots (for this chat)
-These are separately protected facts already on record, grouped by a stable slot id. If the newly expired turn above confirms, changes, resolves, or cancels one of these, reuse its exact slot id in your fact_candidates below instead of inventing a new one for the same topic.
-{% for slot in existing_fact_slots %}
-- slot_id="{{ slot.fact_slot_id }}" category={{ slot.category }}: {{ slot.content }}
-{% endfor %}
-{% endif %}
-
 ## Output
-Respond with a single JSON object (no markdown fences, no preamble) with exactly two fields:
-
-- `updated_memory`: the updated rolling memory, as plain text (same rules as before — keep it compact and factual; preserve superseded facts only through their current replacement, for example "Limit changed from 4K to 20K" when the change itself matters; never retain an obsolete fact as current; if nothing worth remembering was added, return the current memory unchanged, or a brief empty-safe note if there was no prior memory and nothing important).
-- `fact_candidates`: a (possibly empty) array of separately-protected critical facts found in the newly expired turn above. Each candidate must have: `fact_slot_id` (reuse an existing slot id above when this is about the same topic, otherwise a short new stable id), `category` (one of: fact, decision, requirement, preference, open_task, correction, cancellation), `content` (a short, self-contained statement of the fact), `speaker` (`user` or `assistant` — whoever is actually asserting this as true, not whoever it's about), `source_span` (an exact, verbatim quote copied from the user question or final verdict text above — never paraphrased, never invented), and `grounding` (`explicit_user_statement` if the user stated it directly, or `explicit_confirmed_decision` only if the user explicitly confirmed/agreed to something — never for a suggestion the user has not yet confirmed).
-
-Only include a fact_candidate when it is an explicit, concrete statement — never a hypothetical, a quoted/reported third-party claim, a hedge ("maybe", "might", "could", "what if"), or an assistant suggestion the user has not confirmed. Use category `cancellation` when the user explicitly removes a requirement with no replacement value (content should state that nothing is currently required, e.g. "No current limit — explicitly removed"). When in doubt, omit the candidate — `fact_candidates` is allowed, and expected, to be empty most of the time. Never include a candidate whose `source_span` is not an exact substring of the user question or final verdict text above.
+Respond with **only** the updated rolling memory as plain text (no JSON, no markdown fences, no preamble). Keep it compact and factual. Preserve superseded facts only through their current replacement (for example, "Limit changed from 4K to 20K" when the change itself matters); never retain an obsolete fact as current. If nothing worth remembering was added, return the current memory unchanged (or a brief empty-safe note if there was no prior memory and nothing important).
