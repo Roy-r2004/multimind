@@ -304,7 +304,6 @@ class PromptEngine:
         user_message: str,
         verdict_text: str,
         verdict_reason: str | None = None,
-        existing_fact_slots: list[dict] | None = None,
     ) -> str:
         return self.render(
             "system/chat_memory_update.j2",
@@ -312,7 +311,6 @@ class PromptEngine:
             user_message=user_message,
             verdict_text=verdict_text,
             verdict_reason=verdict_reason or "",
-            existing_fact_slots=existing_fact_slots or [],
         )
 
 

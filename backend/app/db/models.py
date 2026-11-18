@@ -401,17 +401,6 @@ class Chat(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     rolling_memory_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Durable rebuild tracking for the background worker (app.chat_memory.worker):
-    # requested_at is the "a rebuild is owed" signal (distinct from an ordinary
-    # new chat that has simply never needed one); claimed_at is the
-    # single-execution claim that stops two worker deliveries for the same
-    # chat from running overlapping merge passes.
-    rolling_memory_rebuild_requested_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    rolling_memory_rebuild_claimed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
 
     organization: Mapped["Organization"] = relationship(back_populates="chats")
     project: Mapped["Project | None"] = relationship(back_populates="chats")
@@ -2061,11 +2050,6 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     decision_insurance_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    # Independent of rolling_memory_through_turn_id: tracks only whether the
-    # Phase 2 critical-facts extraction step succeeded for this turn, never
-    # the rolling-memory merge itself. NULL = not yet attempted, 'ok' =
-    # succeeded (zero candidates is still 'ok'), 'failed' = needs backfill.
-    facts_extraction_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     chat: Mapped["Chat"] = relationship(
         back_populates="turns",
@@ -2077,57 +2061,6 @@ class Turn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cost_records: Mapped[list["CostRecord"]] = relationship(back_populates="turn")
     lesson: Mapped["VerdictLesson | None"] = relationship(back_populates="turn")
     attachments: Mapped[list["ChatAttachment"]] = relationship(back_populates="turn")
-
-
-class ChatCriticalFact(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """Phase 2: a single explicitly-grounded fact, protected from the lossy
-    free-text rolling-memory rewrite chain.
-
-    Deliberately has NO stored "superseded" status or superseded-by
-    pointer. "The current fact for a slot" (see
-    ``app.services.chat_memory_service.current_facts_for_chat``) is always a
-    read-time computation: the fact in ``fact_slot_id`` sourced from the
-    most recent non-soft-deleted ``Turn`` whose own ``status`` here is not
-    ``retracted``. This is what makes deleting/restoring a source turn
-    correctly resurface or re-hide a fact with no bespoke invalidation code
-    — it reuses the same ``Turn.deleted_at`` pattern the rest of chat memory
-    already relies on. See the Phase 2 architecture review for the full
-    reasoning on why this is safer than an eagerly-mutated pointer chain.
-    """
-
-    __tablename__ = "chat_critical_facts"
-
-    chat_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False
-    )
-    org_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
-    fact_slot_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    category: Mapped[str] = mapped_column(String(32), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    speaker: Mapped[str] = mapped_column(String(16), nullable=False)
-    # SET NULL only on a true hard-delete of the turn (never happens today —
-    # turns are soft-deleted via Turn.deleted_at). A fact whose
-    # source_turn_id is NULL has lost its provenance and must never be
-    # treated as current — see current_facts_for_chat's join filter.
-    source_turn_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
-    )
-    source_span: Mapped[str] = mapped_column(Text, nullable=False)
-    grounding: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    source_turn: Mapped["Turn | None"] = relationship(foreign_keys=[source_turn_id])
-
-    __table_args__ = (
-        UniqueConstraint(
-            "chat_id", "fact_slot_id", "source_turn_id", name="uq_chat_critical_facts_chat_slot_turn"
-        ),
-        Index("ix_chat_critical_facts_chat_slot_status", "chat_id", "fact_slot_id", "status"),
-        Index("ix_chat_critical_facts_source_turn", "source_turn_id"),
-    )
 
 
 class ChatAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -309,39 +309,6 @@ services:
       start_period: 90s
     restart: unless-stopped
 
-  chat-memory-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command: ["arq", "app.chat_memory.worker.WorkerSettings"]
-    environment:
-      ENVIRONMENT: production
-      DEBUG: "false"
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-multiai}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-multiai}
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-change-me}
-      CHAT_MEMORY_WORKER_QUEUE_NAME: ${CHAT_MEMORY_WORKER_QUEUE_NAME:-chat_memory}
-      CHAT_MEMORY_WORKER_CONCURRENCY: ${CHAT_MEMORY_WORKER_CONCURRENCY:-2}
-      CHAT_MEMORY_WORKER_JOB_TIMEOUT_SECONDS: ${CHAT_MEMORY_WORKER_JOB_TIMEOUT_SECONDS:-300}
-      CHAT_MEMORY_WORKER_KEEP_RESULT_SECONDS: ${CHAT_MEMORY_WORKER_KEEP_RESULT_SECONDS:-3600}
-      CHAT_MEMORY_REBUILD_MAX_MERGES_PER_JOB: ${CHAT_MEMORY_REBUILD_MAX_MERGES_PER_JOB:-25}
-      CHAT_MEMORY_REBUILD_CLAIM_STALE_SECONDS: ${CHAT_MEMORY_REBUILD_CLAIM_STALE_SECONDS:-600}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_SITE_URL: ${PUBLIC_APP_URL:-https://multiverdict.tech}
-      OPENROUTER_APP_NAME: MultiAI
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "arq", "app.chat_memory.worker.WorkerSettings", "--check"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 90s
-    restart: unless-stopped
-
   web:
     build:
       context: .
