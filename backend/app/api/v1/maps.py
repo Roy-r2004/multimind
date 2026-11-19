@@ -213,6 +213,18 @@ async def update_maps_census_place(
     return await maps_census_service.update_place(db, auth, run_id, place_id, data)
 
 
+@router.delete("/runs/{run_id}/places/{place_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_maps_census_place(
+    run_id: str,
+    place_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete one facility from an authorized Maps census run."""
+    await maps_census_service.delete_place(db, auth, run_id, place_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/runs/{run_id}/advance-to-phase-2", response_model=MapsCampaignActionResponse)
 async def advance_maps_census_to_phase_2(
     run_id: str,

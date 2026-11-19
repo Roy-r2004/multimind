@@ -42,6 +42,7 @@ from app.db.models import (
     MapsLifecycleStatus,
     MapsPlace,
     MapsPlaceEnrichmentStatus,
+    MapsPlaceReviewAction,
     MapsRegionSaturationStatus,
 )
 from app.llm.catalog import get_model
@@ -663,6 +664,47 @@ class MapsCensusService:
         await db.commit()
         await db.refresh(place)
         return _place_item(place)
+
+    async def delete_place(
+        self,
+        db: AsyncSession,
+        auth: AuthContext,
+        run_id: str,
+        place_id: str,
+    ) -> None:
+        """Permanently delete one facility and its dependent review records."""
+        run = await db.get(MapsCensusRun, run_id)
+        if run is None or run.organization_id != auth.org_id:
+            raise NotFoundError("Maps census run", run_id)
+
+        place = await db.get(MapsPlace, place_id)
+        if place is None or place.run_id != run_id:
+            raise NotFoundError("Maps place", place_id)
+
+        await db.execute(
+            delete(MapsPlaceReviewAction).where(MapsPlaceReviewAction.place_id == place_id)
+        )
+        await db.delete(place)
+        await db.flush()
+
+        relevant = (
+            await db.execute(
+                select(MapsPlace).where(
+                    MapsPlace.run_id == run_id,
+                    MapsPlace.is_relevant.is_(True),
+                )
+            )
+        ).scalars().all()
+        run.places_classified_relevant = len(relevant)
+        run.places_with_website = sum(
+            1 for row in relevant if (row.official_website or row.raw_website or "").strip()
+        )
+        run.places_enriched = sum(
+            1
+            for row in relevant
+            if row.enrichment_status == MapsPlaceEnrichmentStatus.COMPLETED.value
+        )
+        await db.commit()
 
     async def advance_to_phase_2(
         self, db: AsyncSession, auth: AuthContext, run_id: str

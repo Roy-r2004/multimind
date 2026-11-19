@@ -118,6 +118,14 @@ export function updateMapsCensusPlace(
   });
 }
 
+export function deleteMapsCensusPlace(auth: Auth, runId: string, placeId: string) {
+  return apiRequest<void>(`/maps/runs/${runId}/places/${placeId}`, {
+    method: "DELETE",
+    token: auth.token,
+    orgId: auth.orgId,
+  });
+}
+
 /** "Proceed to Phase 2" — triggers the strict keep/drop gate over the current
  * (post-manual-removal) Phase 1 set. */
 export function advanceMapsCensusToPhase2(auth: Auth, runId: string) {

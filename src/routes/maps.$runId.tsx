@@ -16,13 +16,24 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { DreamPageShell, DreamPanel } from "@/components/scraping/DreamPageShell";
 import { CountryOutline } from "@/components/maps/CountryOutline";
 import { MapsRunStatusBadge } from "@/components/maps/MapsRunStatusBadge";
 import { MapsAdminRecoveryCard } from "@/components/maps/admin/MapsAdminRecoveryCard";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { formatCost } from "@/lib/cost";
 import { countryFlagEmoji, getFlagColors } from "@/lib/maps/countryVisuals";
 import {
@@ -34,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import {
   downloadMapsCensusExport,
+  deleteMapsCensusPlace,
   enrichMapsCensusRun,
   excludeMapsCensusPlace,
   getMapsCensusRun,
@@ -115,6 +127,9 @@ function MapsRunDetailPage() {
   const [editingPlaceId, setEditingPlaceId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<PlaceEditDraft | null>(null);
   const [savingPlaceId, setSavingPlaceId] = useState<string | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<MapsPlaceItem | null>(null);
+  const [deletingPlaceId, setDeletingPlaceId] = useState<string | null>(null);
+  const deleteInFlightRef = useRef(false);
 
   useEffect(() => {
     const auth = authHeaders();
@@ -255,6 +270,35 @@ function MapsRunDetailPage() {
       setError(err instanceof Error ? err.message : "Failed to save facility");
     } finally {
       setSavingPlaceId(null);
+    }
+  }
+
+  async function handleDeletePlace() {
+    const auth = authHeaders();
+    if (!auth || !deleteCandidate || deleteInFlightRef.current) return;
+    const place = deleteCandidate;
+    deleteInFlightRef.current = true;
+    setDeletingPlaceId(place.id);
+    setError(null);
+    try {
+      await deleteMapsCensusPlace(auth, runId, place.id);
+      handleCancelEdit();
+      setDeleteCandidate(null);
+      if (phase1Places.length === 1) {
+        setPhase1Offset((offset) => Math.max(0, offset - PHASE_PAGE_SIZE));
+      }
+      if (phase2Places.length === 1) {
+        setPhase2Offset((offset) => Math.max(0, offset - PHASE_PAGE_SIZE));
+      }
+      setPollTick((tick) => tick + 1);
+      toast.success(`${place.canonical_name} was permanently deleted`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to delete facility";
+      setError(message);
+      toast.error(message);
+    } finally {
+      deleteInFlightRef.current = false;
+      setDeletingPlaceId(null);
     }
   }
 
@@ -468,6 +512,7 @@ function MapsRunDetailPage() {
                       editDraft={editDraft}
                       onDraftChange={setEditDraft}
                       savingPlaceId={savingPlaceId}
+                      onDelete={setDeleteCandidate}
                       headerExtra={
                         <button
                           type="button"
@@ -493,6 +538,35 @@ function MapsRunDetailPage() {
                 )}
               </TabsContent>
             </Tabs>
+            <AlertDialog
+              open={deleteCandidate !== null}
+              onOpenChange={(open) => {
+                if (!open && !deleteInFlightRef.current) setDeleteCandidate(null);
+              }}
+            >
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete {deleteCandidate?.canonical_name}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Are you sure you want to permanently delete this facility?
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={Boolean(deletingPlaceId)}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    disabled={Boolean(deletingPlaceId)}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      void handleDeletePlace();
+                    }}
+                    className="bg-rose-600 text-white hover:bg-rose-700"
+                  >
+                    {deletingPlaceId ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                    Delete Row
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </>
         )}
       </DreamPageShell>
@@ -557,6 +631,7 @@ function FacilitiesExportTable({
   editDraft,
   onDraftChange,
   savingPlaceId,
+  onDelete,
 }: {
   rows: ReturnType<typeof placeToExportRow>[];
   isRunning: boolean;
@@ -573,6 +648,7 @@ function FacilitiesExportTable({
   editDraft?: PlaceEditDraft | null;
   onDraftChange?: (draft: PlaceEditDraft) => void;
   savingPlaceId?: string | null;
+  onDelete?: (place: MapsPlaceItem) => void;
 }) {
   const hasRows = rows.length > 0;
   const showActions = Boolean(onRemove || onEdit);
@@ -658,6 +734,16 @@ function FacilitiesExportTable({
                                 <Check className="size-3.5" />
                               )}
                               Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onDelete?.(place)}
+                              disabled={isSaving}
+                              aria-label={`Delete ${place.canonical_name}`}
+                              className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-2 py-1 text-xs font-medium text-white transition hover:bg-rose-700 disabled:opacity-50"
+                            >
+                              <Trash2 className="size-3.5" />
+                              Delete Row
                             </button>
                             <button
                               type="button"
