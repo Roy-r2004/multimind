@@ -137,14 +137,14 @@ async def test_created_publish_waits_for_commit_and_stays_in_org(
 
 @pytest.mark.asyncio
 async def test_title_stream_delivers_one_org_and_closes_subscription():
-    payload = json.dumps({"chat_id": "chat-1", "title": "From the other window"})
+    payload = json.dumps({"chat_id": "chat-1", "title": "From the other window", "created_by": "user-a"})
     pubsub = _PubSub({"type": "message", "data": payload})
     redis = _Redis(pubsub)
     request = _Request(disconnect_after=1)
 
     frames = [
         frame
-        async for frame in iter_chat_title_sse("org-a", request, redis_client=redis)
+        async for frame in iter_chat_title_sse("org-a", request, user_id="user-a", redis_client=redis)
     ]
 
     assert pubsub.subscribed == [title_channel("org-a")]
@@ -163,6 +163,7 @@ async def test_title_stream_emits_chat_created_without_a_second_channel():
         {
             "type": "chat.created",
             "chat_id": "chat-9",
+            "created_by": "user-a",
             "title": "Fresh",
             "project_id": None,
             "model_set_id": None,
@@ -175,7 +176,7 @@ async def test_title_stream_emits_chat_created_without_a_second_channel():
 
     frames = [
         frame
-        async for frame in iter_chat_title_sse("org-a", request, redis_client=redis)
+        async for frame in iter_chat_title_sse("org-a", request, user_id="user-a", redis_client=redis)
     ]
 
     assert pubsub.subscribed == [title_channel("org-a")]
@@ -184,14 +185,14 @@ async def test_title_stream_emits_chat_created_without_a_second_channel():
 
 @pytest.mark.asyncio
 async def test_title_stream_decodes_binary_redis_payloads():
-    payload = json.dumps({"chat_id": "chat-1", "title": "Binary", "updated_at": "2026-10-12T08:00:00+00:00"})
+    payload = json.dumps({"chat_id": "chat-1", "title": "Binary", "created_by": "user-a", "updated_at": "2026-10-12T08:00:00+00:00"})
     pubsub = _PubSub({"type": "message", "data": payload.encode()})
     redis = _Redis(pubsub)
     request = _Request(disconnect_after=1)
 
     frames = [
         frame
-        async for frame in iter_chat_title_sse("org-a", request, redis_client=redis)
+        async for frame in iter_chat_title_sse("org-a", request, user_id="user-a", redis_client=redis)
     ]
 
     assert frames[1] == f"event: chat_title\ndata: {payload}\n\n"

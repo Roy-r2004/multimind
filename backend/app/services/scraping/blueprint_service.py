@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.core.dependencies import AuthContext
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.models import (
+    OrgRole,
     ScrapingBlueprint,
     ScrapingBlueprintStatus,
     ScrapingMission,
@@ -245,10 +246,16 @@ class ScrapingBlueprintService:
     async def get_blueprint_row(
         self, db: AsyncSession, auth: AuthContext, blueprint_id: str
     ) -> ScrapingBlueprint:
+        conditions = [
+            ScrapingBlueprint.id == blueprint_id,
+            ScrapingMission.org_id == auth.org_id,
+        ]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            conditions.append(ScrapingMission.created_by == auth.user.id)
         result = await db.execute(
             select(ScrapingBlueprint)
             .join(ScrapingMission, ScrapingMission.id == ScrapingBlueprint.mission_id)
-            .where(ScrapingBlueprint.id == blueprint_id, ScrapingMission.org_id == auth.org_id)
+            .where(*conditions)
             .options(selectinload(ScrapingBlueprint.mission))
         )
         blueprint = result.scalar_one_or_none()

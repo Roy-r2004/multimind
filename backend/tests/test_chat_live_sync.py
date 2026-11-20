@@ -79,7 +79,7 @@ class _Redis:
 
 
 async def _collect(org_id: str, request: _Request, frames: list[str], stop_at: int) -> None:
-    async for frame in chat_title_events.iter_chat_title_sse(org_id, request):
+    async for frame in chat_title_events.iter_chat_title_sse(org_id, request, user_id="user-a", is_admin=True):
         if frame.startswith("event:"):
             frames.append(frame)
             if len(frames) >= stop_at:

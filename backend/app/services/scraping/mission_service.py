@@ -11,7 +11,6 @@ from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.models import (
     ModelSet,
     OrgRole,
-    OrgRole,
     Project,
     ScrapingBlueprint,
     ScrapingMission,
@@ -102,8 +101,11 @@ class ScrapingMissionService:
         active_version = None
         if mission.active_blueprint_id:
             result = await db.execute(
-                select(ScrapingBlueprint.version).where(
-                    ScrapingBlueprint.id == mission.active_blueprint_id
+                select(ScrapingBlueprint.version)
+                .join(ScrapingMission, ScrapingMission.id == ScrapingBlueprint.mission_id)
+                .where(
+                    ScrapingBlueprint.id == mission.active_blueprint_id,
+                    ScrapingMission.id == mission.id,
                 )
             )
             active_version = result.scalar_one_or_none()

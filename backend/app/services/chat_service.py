@@ -582,7 +582,7 @@ class ChatService:
             model_set_id=chat.model_set_id,
             updated_at=chat.updated_at.isoformat() if chat.updated_at is not None else "",
         )
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def get_chat(self, db: AsyncSession, auth: AuthContext, chat_id: str) -> Chat:
         result = await db.execute(
@@ -642,7 +642,7 @@ class ChatService:
                 title=chat.title,
                 updated_at=chat.updated_at.isoformat() if chat.updated_at is not None else "",
             )
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def delete_chat(
         self,
@@ -868,7 +868,7 @@ class ChatService:
             db,
             chat_id=chat_id,
             org_id=auth.org_id,
-            project_id=authorized_chat.project_id,
+            project_id=chat.project_id,
         )
         return TurnDeleteResponse(turn_id=turn_id, deleted=True)
 
@@ -2056,7 +2056,7 @@ class ChatService:
                                  pin_type="selection", selected_text=selected_text,
                                  selected_html=selected_html, selection_locator=selection_locator))
             await db.flush()
-            return await self._chat_response_async(db, chat)
+            return await self._chat_response_async(db, chat, auth)
         # Serialize whole-pin creation for this chat, including concurrent requests.
         # A no-op UPDATE also acquires a write lock on SQLite.
         await db.execute(update(Chat).where(Chat.id == chat.id).values(updated_at=Chat.updated_at))
@@ -2093,7 +2093,7 @@ class ChatService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_pin_ingest_failed", error=str(exc))
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_verdict(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, verdict_id: str
@@ -2122,7 +2122,7 @@ class ChatService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_unpin_cleanup_failed", error=str(exc))
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_selection(self, db: AsyncSession, auth: AuthContext, chat_id: str, pin_id: str) -> ChatResponse:
         chat = await self.get_chat(db, auth, chat_id)
@@ -2131,7 +2131,7 @@ class ChatService:
             ChatVerdictPin.pin_type == "selection",
         ))
         await db.flush()
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def pin_answer(
         self,
@@ -2173,7 +2173,7 @@ class ChatService:
                 )
             )
             await db.flush()
-            return await self._chat_response_async(db, chat)
+            return await self._chat_response_async(db, chat, auth)
         if not answer.text or not answer.text.strip():
             raise ValidationError("Answer pins require answer text")
         await db.execute(update(Chat).where(Chat.id == chat.id).values(updated_at=Chat.updated_at))
@@ -2210,7 +2210,7 @@ class ChatService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_answer_pin_ingest_failed", error=str(exc))
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_answer(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, answer_id: str
@@ -2239,7 +2239,7 @@ class ChatService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_answer_unpin_cleanup_failed", error=str(exc))
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_answer_selection(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, pin_id: str
@@ -2253,7 +2253,7 @@ class ChatService:
             )
         )
         await db.flush()
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_legacy_verdict(
         self, db: AsyncSession, auth: AuthContext, chat_id: str
@@ -2267,7 +2267,7 @@ class ChatService:
         )
         verdict_id = result.scalar_one_or_none()
         if verdict_id is None:
-            return await self._chat_response_async(db, chat)
+            return await self._chat_response_async(db, chat, auth)
         return await self.unpin_verdict(db, auth, chat_id, verdict_id)
 
     def _chat_response(
@@ -2297,7 +2297,9 @@ class ChatService:
             updated_at=chat.updated_at,
         )
 
-    async def _chat_response_async(self, db: AsyncSession, chat: Chat) -> ChatResponse:
+    async def _chat_response_async(
+        self, db: AsyncSession, chat: Chat, auth: AuthContext
+    ) -> ChatResponse:
         result = await db.execute(
             select(ChatVerdictPin, Verdict.turn_id)
             .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)

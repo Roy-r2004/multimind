@@ -225,11 +225,6 @@ class ProjectService:
             .where(
                 Chat.project_id == project.id,
                 Chat.org_id == auth.org_id,
-                *(
-                    []
-                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
-                    else [Chat.created_by == auth.user.id]
-                ),
             )
             .values(project_id=None)
         )

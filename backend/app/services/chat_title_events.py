@@ -243,7 +243,7 @@ async def iter_chat_title_sse(
     org_id: str,
     request: Request,
     *,
-    user_id: str | None = None,
+    user_id: str,
     is_admin: bool = False,
     redis_client: Redis | None = None,
 ) -> AsyncIterator[str]:
@@ -279,7 +279,7 @@ async def iter_chat_title_sse(
                 data = data.decode()
             if not isinstance(data, str) or not data:
                 continue
-            if user_id is not None and not is_admin:
+            if not is_admin:
                 try:
                     payload = json.loads(data)
                 except json.JSONDecodeError:
