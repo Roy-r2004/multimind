@@ -74,7 +74,7 @@ async def create_model_set(
 
 
 async def create_project(db: AsyncSession, auth: AuthContext, *, name: str = "Project") -> Project:
-    project = Project(org_id=auth.org_id, name=name)
+    project = Project(org_id=auth.org_id, created_by=auth.user.id, name=name)
     db.add(project)
     await db.flush()
     return project

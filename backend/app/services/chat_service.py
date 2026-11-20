@@ -15,7 +15,6 @@ from app.core.config import get_settings
 from app.core.dependencies import AuthContext
 from app.core.exceptions import (
     ConflictError,
-    ForbiddenError,
     InvalidAttachmentError,
     NotFoundError,
     ValidationError,
@@ -373,10 +372,14 @@ async def _seed_continuation_memory_after_success(
     """
     if turn.status not in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):
         return False
+    org_id = await db.scalar(select(Chat.org_id).where(Chat.id == chat_id))
+    if org_id is None:
+        return False
     seeded = await chat_memory_service.seed_continuation_memory_if_empty(
         db,
         chat_id=chat_id,
         custom_instructions=turn.custom_instructions,
+        org_id=org_id,
     )
     if seeded:
         return True
@@ -384,6 +387,7 @@ async def _seed_continuation_memory_after_success(
         db,
         chat_id=chat_id,
         custom_instructions=turn.custom_instructions,
+        org_id=org_id,
     )
 
 
@@ -451,7 +455,15 @@ class ChatService:
         reference_by_id: dict[str, Chat] = {}
         if reference_ids:
             rows = await db.execute(
-                select(Chat).where(Chat.id.in_(reference_ids), Chat.org_id == auth.org_id)
+                select(Chat).where(
+                    Chat.id.in_(reference_ids),
+                    Chat.org_id == auth.org_id,
+                    *(
+                        []
+                        if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                        else [Chat.created_by == auth.user.id]
+                    ),
+                )
             )
             reference_by_id = {c.id: c for c in rows.scalars().all()}
         pins_by_chat: dict[str, list[PinnedVerdictResponse]] = {}
@@ -478,9 +490,12 @@ class ChatService:
         ]
 
     async def list_chats(self, db: AsyncSession, auth: AuthContext) -> list[ChatResponse]:
+        conditions = [Chat.org_id == auth.org_id]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            conditions.append(Chat.created_by == auth.user.id)
         result = await db.execute(
             select(Chat)
-            .where(Chat.org_id == auth.org_id)
+            .where(*conditions)
             .order_by(Chat.updated_at.desc())
         )
         chats = list(result.scalars().all())
@@ -502,6 +517,8 @@ class ChatService:
         updated_at timestamps still get a stable, gapless cursor.
         """
         conditions = [Chat.org_id == auth.org_id]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            conditions.append(Chat.created_by == auth.user.id)
         if q and q.strip():
             conditions.append(Chat.title.ilike(f"%{q.strip()}%"))
         if cursor_updated_at is not None and cursor_id is not None:
@@ -540,6 +557,10 @@ class ChatService:
             if data.model_set_id is not None
             else None
         )
+        if data.project_id is not None:
+            from app.services.domain_service import project_service
+
+            await project_service.get(db, auth, data.project_id)
         chat = Chat(
             org_id=auth.org_id,
             project_id=data.project_id,
@@ -554,13 +575,14 @@ class ChatService:
         schedule_chat_created_event(
             db,
             org_id=auth.org_id,
+            created_by=auth.user.id,
             chat_id=str(chat.id),
             title=chat.title,
             project_id=chat.project_id,
             model_set_id=chat.model_set_id,
             updated_at=chat.updated_at.isoformat() if chat.updated_at is not None else "",
         )
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def get_chat(self, db: AsyncSession, auth: AuthContext, chat_id: str) -> Chat:
         result = await db.execute(
@@ -569,14 +591,15 @@ class ChatService:
         chat = result.scalar_one_or_none()
         if chat is None:
             raise NotFoundError("Chat", str(chat_id))
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN) and chat.created_by != auth.user.id:
+            raise NotFoundError("Chat", str(chat_id))
         return chat
 
     def _authorize_turn_delete(self, chat: Chat, auth: AuthContext) -> None:
-        if auth.role in (OrgRole.OWNER, OrgRole.ADMIN):
-            return
-        if auth.role == OrgRole.MEMBER and chat.created_by == auth.user.id:
-            return
-        raise ForbiddenError(TURN_DELETE_FORBIDDEN_MESSAGE)
+        if auth.role == OrgRole.VIEWER:
+            from app.core.exceptions import ForbiddenError
+
+            raise ForbiddenError(TURN_DELETE_FORBIDDEN_MESSAGE)
 
     async def update_chat(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, data: ChatUpdateRequest
@@ -585,8 +608,14 @@ class ChatService:
         previous_title = chat.title
         if data.title is not None:
             chat.title = data.title.strip()
-        if data.project_id is not None:
-            chat.project_id = data.project_id
+        if "project_id" in data.model_fields_set:
+            if data.project_id is None:
+                chat.project_id = None
+            else:
+                from app.services.domain_service import project_service
+
+                await project_service.get(db, auth, data.project_id)
+                chat.project_id = data.project_id
         if "model_set_id" in data.model_fields_set:
             model_set_id = (data.model_set_id or "").strip() or None
             if model_set_id is None:
@@ -608,11 +637,12 @@ class ChatService:
             schedule_chat_title_event(
                 db,
                 org_id=auth.org_id,
+                created_by=chat.created_by,
                 chat_id=str(chat.id),
                 title=chat.title,
                 updated_at=chat.updated_at.isoformat() if chat.updated_at is not None else "",
             )
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def delete_chat(
         self,
@@ -622,7 +652,7 @@ class ChatService:
         *,
         only_if_unused: bool = False,
     ) -> None:
-        await self.get_chat(db, auth, chat_id)
+        authorized_chat = await self.get_chat(db, auth, chat_id)
         turn_rows = (
             await db.execute(select(Turn.id, Turn.status).where(Turn.chat_id == chat_id))
         ).all()
@@ -662,7 +692,15 @@ class ChatService:
             locked_chat = (
                 await db.execute(
                     select(Chat)
-                    .where(Chat.id == chat_id, Chat.org_id == auth.org_id)
+                    .where(
+                        Chat.id == chat_id,
+                        Chat.org_id == auth.org_id,
+                        *(
+                            []
+                            if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                            else [Chat.created_by == auth.user.id]
+                        ),
+                    )
                     .with_for_update()
                 )
             ).scalar_one_or_none()
@@ -727,7 +765,12 @@ class ChatService:
             await db.flush()
             from app.services.chat_title_events import schedule_chat_deleted_event
 
-            schedule_chat_deleted_event(db, org_id=auth.org_id, chat_id=str(chat_id))
+            schedule_chat_deleted_event(
+                db,
+                org_id=auth.org_id,
+                created_by=locked_chat.created_by,
+                chat_id=str(chat_id),
+            )
             await db.commit()
         except Exception:
             await db.rollback()
@@ -811,7 +854,9 @@ class ChatService:
                 .where(Turn.id == turn_id, Turn.chat_id == chat_id)
                 .values(deleted_at=datetime.now(UTC))
             )
-            await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
+            await chat_memory_service.invalidate_memory(
+                db, chat_id=chat_id, org_id=auth.org_id
+            )
             await db.flush()
             await db.commit()
         except Exception:
@@ -850,7 +895,9 @@ class ChatService:
             raise NotFoundError("Turn", str(turn_id))
 
         turn.deleted_at = None
-        await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
+        await chat_memory_service.invalidate_memory(
+            db, chat_id=chat_id, org_id=auth.org_id
+        )
         await db.commit()
         await _rebuild_chat_memory_after_history_mutation(
             db,
@@ -925,6 +972,13 @@ class ChatService:
                 await db.execute(
                     select(Chat)
                     .where(Chat.id == chat_id, Chat.org_id == auth.org_id)
+                    .where(
+                        *(
+                            []
+                            if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                            else [Chat.created_by == auth.user.id]
+                        )
+                    )
                     .with_for_update()
                 )
             ).scalar_one_or_none()
@@ -989,7 +1043,9 @@ class ChatService:
                 locked_chat.rolling_memory_through_turn_id is None
             )
             if not unwatermarked_seed:
-                await chat_memory_service.invalidate_memory(db, chat_id=chat_id)
+                await chat_memory_service.invalidate_memory(
+                    db, chat_id=chat_id, org_id=auth.org_id
+                )
 
             superseded_pinned_verdict_ids = list(
                 (
@@ -1113,7 +1169,17 @@ class ChatService:
         created = loaded.scalar_one()
         # Re-load chat for authoritative title/updated_at after commit.
         chat_row = (
-            await db.execute(select(Chat).where(Chat.id == chat_id, Chat.org_id == auth.org_id))
+            await db.execute(
+                select(Chat).where(
+                    Chat.id == chat_id,
+                    Chat.org_id == auth.org_id,
+                    *(
+                        []
+                        if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                        else [Chat.created_by == auth.user.id]
+                    ),
+                )
+            )
         ).scalar_one()
         return TurnRegenerateResponse(
             old_turn_id=turn_id,
@@ -1178,11 +1244,14 @@ class ChatService:
         )
         raw_reference_ids = explicit_reference_ids
         if not raw_reference_ids and chat.active_referenced_chat_id:
+            reference_conditions = [
+                Chat.id == chat.active_referenced_chat_id,
+                Chat.org_id == auth.org_id,
+            ]
+            if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+                reference_conditions.append(Chat.created_by == auth.user.id)
             persisted_row = await db.execute(
-                select(Chat.id).where(
-                    Chat.id == chat.active_referenced_chat_id,
-                    Chat.org_id == auth.org_id,
-                )
+                select(Chat.id).where(*reference_conditions)
             )
             if persisted_row.scalar_one_or_none() is None:
                 chat.active_referenced_chat_id = None
@@ -1235,6 +1304,7 @@ class ChatService:
             decision_insurance_enabled=False,
         )
         db.add(turn)
+        turn.chat = chat
 
         # Keep the next-message selection synchronized with this accepted normal turn.
         chat.model_set_id = model_set.slug
@@ -1250,6 +1320,7 @@ class ChatService:
             schedule_chat_title_event(
                 db,
                 org_id=auth.org_id,
+                created_by=chat.created_by,
                 chat_id=str(chat.id),
                 title=chat.title,
                 updated_at=chat.updated_at.isoformat(),
@@ -1352,8 +1423,9 @@ class ChatService:
         rows: list[ChatAttachment] = []
         seen: set[str] = set()
         for source_id in parse_reference_chat_ids(custom_instructions):
-            source = await db.get(Chat, source_id)
-            if source is None or source.org_id != auth.org_id:
+            try:
+                source = await self.get_chat(db, auth, source_id)
+            except NotFoundError:
                 continue
             loaded = await chat_memory_service.load_prior_document_attachments(
                 db,
@@ -1465,7 +1537,16 @@ class ChatService:
         result = await db.execute(
             select(Turn)
             .join(Chat, Chat.id == Turn.chat_id)
-            .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
+            .where(
+                Turn.id == turn_id,
+                Chat.org_id == auth.org_id,
+                Turn.deleted_at.is_(None),
+                *(
+                    []
+                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                    else [Chat.created_by == auth.user.id]
+                ),
+            )
             .options(
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
@@ -1602,7 +1683,16 @@ class ChatService:
             fresh_result = await db.execute(
                 select(Turn)
                 .join(Chat, Chat.id == Turn.chat_id)
-                .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
+                .where(
+                    Turn.id == turn_id,
+                    Chat.org_id == auth.org_id,
+                    Turn.deleted_at.is_(None),
+                    *(
+                        []
+                        if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                        else [Chat.created_by == auth.user.id]
+                    ),
+                )
                 .options(
                     selectinload(Turn.model_answers),
                     selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
@@ -1669,11 +1759,36 @@ class ChatService:
         async def orchestrate() -> None:
             try:
                 async with AsyncSessionLocal() as run_db:
+                    owned_turn = await run_db.scalar(
+                        select(Turn.id)
+                        .join(Chat, Chat.id == Turn.chat_id)
+                        .where(
+                            Turn.id == turn_id,
+                            Chat.org_id == auth.org_id,
+                            *(
+                                []
+                                if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                                else [Chat.created_by == auth.user.id]
+                            ),
+                        )
+                    )
+                    if owned_turn is None:
+                        await queue.put({"type": "turn_deleted", "data": {"turn_id": turn_id}})
+                        return
                     await get_orchestrator().run(run_db, ctx, on_event=on_event)
                     turn_row = (
                         await run_db.execute(
                             select(Turn)
-                            .where(Turn.id == turn_id)
+                            .join(Chat, Chat.id == Turn.chat_id)
+                            .where(
+                                Turn.id == turn_id,
+                                Chat.org_id == auth.org_id,
+                                *(
+                                    []
+                                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                                    else [Chat.created_by == auth.user.id]
+                                ),
+                            )
                             .options(
                                 selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
                                 selectinload(Turn.model_answers),
@@ -1849,7 +1964,16 @@ class ChatService:
         result = await db.execute(
             select(Turn)
             .join(Chat, Chat.id == Turn.chat_id)
-            .where(Turn.id == turn_id, Chat.org_id == auth.org_id, Turn.deleted_at.is_(None))
+            .where(
+                Turn.id == turn_id,
+                Chat.org_id == auth.org_id,
+                Turn.deleted_at.is_(None),
+                *(
+                    []
+                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                    else [Chat.created_by == auth.user.id]
+                ),
+            )
             .options(
                 selectinload(Turn.model_answers),
                 selectinload(Turn.verdict).selectinload(Verdict.simple_explanation),
@@ -1932,7 +2056,7 @@ class ChatService:
                                  pin_type="selection", selected_text=selected_text,
                                  selected_html=selected_html, selection_locator=selection_locator))
             await db.flush()
-            return await self._chat_response_async(db, chat)
+            return await self._chat_response_async(db, chat, auth)
         # Serialize whole-pin creation for this chat, including concurrent requests.
         # A no-op UPDATE also acquires a write lock on SQLite.
         await db.execute(update(Chat).where(Chat.id == chat.id).values(updated_at=Chat.updated_at))
@@ -1969,7 +2093,7 @@ class ChatService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_pin_ingest_failed", error=str(exc))
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_verdict(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, verdict_id: str
@@ -1998,7 +2122,7 @@ class ChatService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_unpin_cleanup_failed", error=str(exc))
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_selection(self, db: AsyncSession, auth: AuthContext, chat_id: str, pin_id: str) -> ChatResponse:
         chat = await self.get_chat(db, auth, chat_id)
@@ -2007,7 +2131,7 @@ class ChatService:
             ChatVerdictPin.pin_type == "selection",
         ))
         await db.flush()
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def pin_answer(
         self,
@@ -2049,7 +2173,7 @@ class ChatService:
                 )
             )
             await db.flush()
-            return await self._chat_response_async(db, chat)
+            return await self._chat_response_async(db, chat, auth)
         if not answer.text or not answer.text.strip():
             raise ValidationError("Answer pins require answer text")
         await db.execute(update(Chat).where(Chat.id == chat.id).values(updated_at=Chat.updated_at))
@@ -2086,7 +2210,7 @@ class ChatService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_answer_pin_ingest_failed", error=str(exc))
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_answer(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, answer_id: str
@@ -2115,7 +2239,7 @@ class ChatService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain_answer_unpin_cleanup_failed", error=str(exc))
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_answer_selection(
         self, db: AsyncSession, auth: AuthContext, chat_id: str, pin_id: str
@@ -2129,7 +2253,7 @@ class ChatService:
             )
         )
         await db.flush()
-        return await self._chat_response_async(db, chat)
+        return await self._chat_response_async(db, chat, auth)
 
     async def unpin_legacy_verdict(
         self, db: AsyncSession, auth: AuthContext, chat_id: str
@@ -2143,7 +2267,7 @@ class ChatService:
         )
         verdict_id = result.scalar_one_or_none()
         if verdict_id is None:
-            return await self._chat_response_async(db, chat)
+            return await self._chat_response_async(db, chat, auth)
         return await self.unpin_verdict(db, auth, chat_id, verdict_id)
 
     def _chat_response(
@@ -2173,7 +2297,9 @@ class ChatService:
             updated_at=chat.updated_at,
         )
 
-    async def _chat_response_async(self, db: AsyncSession, chat: Chat) -> ChatResponse:
+    async def _chat_response_async(
+        self, db: AsyncSession, chat: Chat, auth: AuthContext
+    ) -> ChatResponse:
         result = await db.execute(
             select(ChatVerdictPin, Verdict.turn_id)
             .join(Verdict, Verdict.id == ChatVerdictPin.verdict_id)
@@ -2191,6 +2317,11 @@ class ChatService:
                 select(Chat).where(
                     Chat.id == chat.active_referenced_chat_id,
                     Chat.org_id == chat.org_id,
+                    *(
+                        []
+                        if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                        else [Chat.created_by == auth.user.id]
+                    ),
                 )
             )
             active_reference = result.scalar_one_or_none()

@@ -19,7 +19,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.logging import get_logger
-from app.db.models import ChatAttachment, LibraryItem
+from app.db.models import ChatAttachment, LibraryItem, OrgRole
 from app.db.session import AsyncSessionLocal, get_db
 from app.schemas.api import (
     AttachLibraryItemRequest,
@@ -151,7 +151,12 @@ async def stream_chat_events(
     """Authenticated org channel for chat metadata. Separate from turn streams."""
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        async for frame in iter_chat_title_sse(auth.org_id, request):
+        async for frame in iter_chat_title_sse(
+            auth.org_id,
+            request,
+            user_id=auth.user.id,
+            is_admin=auth.role in (OrgRole.OWNER, OrgRole.ADMIN),
+        ):
             yield frame
 
     return StreamingResponse(

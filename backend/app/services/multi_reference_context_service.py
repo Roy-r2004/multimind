@@ -573,12 +573,21 @@ class MultiReferenceContextService:
             logger.warning("multi_reference_extraction_fallback", error=str(exc), error_type=type(exc).__name__)
             return render_context(sources, [], [], fallback=True)
 
-    async def seed_memory_if_empty(self, db: AsyncSession, *, chat_id: str, custom_instructions: str | None) -> bool:
+    async def seed_memory_if_empty(
+        self,
+        db: AsyncSession,
+        *,
+        chat_id: str,
+        custom_instructions: str | None,
+        org_id: str,
+    ) -> bool:
         context = extract_multi_reference_context(custom_instructions)
         if not context:
             return False
         chat = await db.get(Chat, chat_id)
         if chat is None or (chat.rolling_memory or "").strip():
+            return False
+        if chat.org_id != org_id:
             return False
         seeded = f"{MULTI_REFERENCE_SEED_PREFIX}\n\n{context}".strip()
         if len(seeded) > MULTI_REFERENCE_CONTEXT_MAX_CHARS:

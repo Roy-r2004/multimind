@@ -16,6 +16,7 @@ from app.db.models import (
     LessonStatus,
     ModelAnswer,
     ModelSet,
+    OrgRole,
     Strategy,
     Turn,
     TurnStatus,
@@ -383,7 +384,14 @@ class LessonService:
             raise NotFoundError("Turn", turn_key)
 
         chat = await db.get(Chat, turn.chat_id)
-        if chat is None or str(chat.org_id) != org_key:
+        if (
+            chat is None
+            or str(chat.org_id) != org_key
+            or (
+                auth.role not in (OrgRole.OWNER, OrgRole.ADMIN)
+                and chat.created_by != auth.user.id
+            )
+        ):
             raise NotFoundError("Turn", turn_key)
 
         if turn.status not in (TurnStatus.COMPLETED, TurnStatus.PARTIAL):

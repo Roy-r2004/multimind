@@ -46,6 +46,7 @@ from app.db.models import (
     DebateSessionStatus,
     ModelAnswer,
     ModelAnswerStatus,
+    OrgRole,
     Turn,
     TurnStatus,
     UsageKind,
@@ -94,7 +95,16 @@ async def _load_eligible_turn(db: AsyncSession, auth: AuthContext, turn_id: str)
     result = await db.execute(
         select(Turn)
         .join(Chat, Chat.id == Turn.chat_id)
-        .where(Turn.id == turn_id, Turn.deleted_at.is_(None), Chat.org_id == auth.org_id)
+        .where(
+            Turn.id == turn_id,
+            Turn.deleted_at.is_(None),
+            Chat.org_id == auth.org_id,
+            *(
+                []
+                if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                else [Chat.created_by == auth.user.id]
+            ),
+        )
     )
     turn = result.scalar_one_or_none()
     if turn is None:
@@ -280,7 +290,15 @@ async def get_latest_debate_session(
     """
     base = await _debate_session_query_base()
     result = await db.execute(
-        base.where(DebateSession.turn_id == turn_id, Chat.org_id == auth.org_id)
+        base.where(
+            DebateSession.turn_id == turn_id,
+            Chat.org_id == auth.org_id,
+            *(
+                []
+                if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                else [Chat.created_by == auth.user.id]
+            ),
+        )
         .order_by(DebateSession.started_at.desc(), DebateSession.created_at.desc())
         .limit(1)
     )
@@ -295,7 +313,15 @@ async def get_debate_session_by_id(
 ) -> DebateSession:
     base = await _debate_session_query_base()
     result = await db.execute(
-        base.where(DebateSession.id == session_id, Chat.org_id == auth.org_id)
+        base.where(
+            DebateSession.id == session_id,
+            Chat.org_id == auth.org_id,
+            *(
+                []
+                if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                else [Chat.created_by == auth.user.id]
+            ),
+        )
     )
     session = result.scalar_one_or_none()
     if session is None:

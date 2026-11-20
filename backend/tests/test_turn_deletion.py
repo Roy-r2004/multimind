@@ -25,6 +25,7 @@ from app.db.models import (
     Organization,
     OrgMembership,
     OrgRole,
+    Project,
     SavedVerdict,
     Strategy,
     Turn,
@@ -546,6 +547,34 @@ async def test_cross_org_and_mismatched_chat_deletion_are_rejected(db_setup):
             await chat_service.delete_turn(db, db_setup.other_auth, db_setup.chat_id, turn.id)
         with pytest.raises(NotFoundError):
             await chat_service.delete_turn(db, db_setup.auth, db_setup.other_chat_id, turn.id)
+
+
+@pytest.mark.asyncio
+async def test_delete_turn_rebuilds_memory_using_chat_project(db_setup, monkeypatch):
+    from app.services import chat_memory_service as memory_module
+
+    async with db_setup.Session() as db:
+        project = Project(org_id=db_setup.auth.org_id, created_by=db_setup.auth.user.id, name="Memory")
+        db.add(project)
+        await db.flush()
+        chat = await db.get(Chat, db_setup.chat_id)
+        chat.project_id = project.id
+        await db.commit()
+    turn = await create_turn(db_setup.Session, db_setup.auth, db_setup.chat_id)
+    observed = {}
+
+    async def capture_rebuild(db, *, chat_id, org_id, project_id):
+        observed.update(chat_id=chat_id, org_id=org_id, project_id=project_id)
+
+    monkeypatch.setattr(memory_module.chat_memory_service, "rebuild_memory_best_effort", capture_rebuild)
+    async with db_setup.Session() as db:
+        await chat_service.delete_turn(db, db_setup.auth, db_setup.chat_id, turn.id)
+
+    assert observed == {
+        "chat_id": db_setup.chat_id,
+        "org_id": db_setup.auth.org_id,
+        "project_id": project.id,
+    }
 
 
 @pytest.mark.asyncio
