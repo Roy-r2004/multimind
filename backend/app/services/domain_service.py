@@ -7,7 +7,7 @@ from re import sub as re_sub
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from app.db.models import (
     ChatVerdictPin,
     CostRecord,
     ModelSet,
+    OrgRole,
     Project,
     ScrapingMission,
     Strategy,
@@ -62,10 +63,16 @@ UPDATABLE_SYSTEM_SLUGS = frozenset({"set-7edaefc8"})
 
 class ProjectService:
     async def list(self, db: AsyncSession, auth: AuthContext) -> list[ProjectResponse]:
+        conditions = [Project.org_id == auth.org_id]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            conditions.append(Project.created_by == auth.user.id)
+        chat_owner_on = [Chat.project_id == Project.id]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            chat_owner_on.append(Chat.created_by == auth.user.id)
         result = await db.execute(
             select(Project, func.count(Chat.id))
-            .outerjoin(Chat, Chat.project_id == Project.id)
-            .where(Project.org_id == auth.org_id)
+            .outerjoin(Chat, and_(*chat_owner_on))
+            .where(*conditions)
             .group_by(Project.id)
             .order_by(Project.updated_at.desc())
         )
@@ -85,6 +92,7 @@ class ProjectService:
     ) -> ProjectResponse:
         project = Project(
             org_id=auth.org_id,
+            created_by=auth.user.id,
             name=data.name.strip(),
             description=data.description,
         )
@@ -105,6 +113,8 @@ class ProjectService:
         project = result.scalar_one_or_none()
         if project is None:
             raise NotFoundError("Project", project_id)
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN) and project.created_by != auth.user.id:
+            raise NotFoundError("Project", project_id)
         return project
 
     async def get_detail(
@@ -113,7 +123,15 @@ class ProjectService:
         project = await self.get(db, auth, project_id)
         result = await db.execute(
             select(Chat)
-            .where(Chat.project_id == project.id, Chat.org_id == auth.org_id)
+            .where(
+                Chat.project_id == project.id,
+                Chat.org_id == auth.org_id,
+                *(
+                    []
+                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                    else [Chat.created_by == auth.user.id]
+                ),
+            )
             .order_by(Chat.updated_at.desc())
         )
         chats = result.scalars().all()
@@ -132,9 +150,15 @@ class ProjectService:
                 pins_by_chat.setdefault(pin.chat_id, []).append(
                     PinnedVerdictResponse(id=pin.id, verdict_id=pin.verdict_id, turn_id=turn_id, pin_type=pin.pin_type, selected_text=pin.selected_text, selected_html=pin.selected_html, selection_locator=pin.selection_locator)
                 )
+        mission_conditions = [
+            ScrapingMission.project_id == project.id,
+            ScrapingMission.org_id == auth.org_id,
+        ]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            mission_conditions.append(ScrapingMission.created_by == auth.user.id)
         mission_result = await db.execute(
             select(ScrapingMission)
-            .where(ScrapingMission.project_id == project.id, ScrapingMission.org_id == auth.org_id)
+            .where(*mission_conditions)
             .order_by(ScrapingMission.updated_at.desc())
         )
         scraping_missions = mission_result.scalars().all()
@@ -186,9 +210,9 @@ class ProjectService:
         data: ProjectUpdateRequest,
     ) -> ProjectDetailResponse:
         project = await self.get(db, auth, project_id)
-        if data.name is not None:
+        if "name" in data.model_fields_set and data.name is not None:
             project.name = data.name.strip()
-        if "description" in data.__fields_set__:
+        if "description" in data.model_fields_set:
             project.description = (data.description.strip() or None  
                                    if data.description is not None else None)
         await db.flush()
@@ -198,12 +222,26 @@ class ProjectService:
         project = await self.get(db, auth, project_id)
         await db.execute(
             update(Chat)
-            .where(Chat.project_id == project.id, Chat.org_id == auth.org_id)
+            .where(
+                Chat.project_id == project.id,
+                Chat.org_id == auth.org_id,
+                *(
+                    []
+                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                    else [Chat.created_by == auth.user.id]
+                ),
+            )
             .values(project_id=None)
         )
+        mission_filters = [
+            ScrapingMission.project_id == project.id,
+            ScrapingMission.org_id == auth.org_id,
+        ]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            mission_filters.append(ScrapingMission.created_by == auth.user.id)
         await db.execute(
             update(ScrapingMission)
-            .where(ScrapingMission.project_id == project.id, ScrapingMission.org_id == auth.org_id)
+            .where(*mission_filters)
             .values(project_id=None)
         )
         await db.delete(project)

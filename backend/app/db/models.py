@@ -372,6 +372,7 @@ class Project(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "projects"
 
     org_id: Mapped[str] = UuidFK("organizations")
+    created_by: Mapped[str | None] = UuidFK("users", nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 

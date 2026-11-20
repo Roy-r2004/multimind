@@ -10,6 +10,8 @@ from app.core.dependencies import AuthContext
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.models import (
     ModelSet,
+    OrgRole,
+    OrgRole,
     Project,
     ScrapingBlueprint,
     ScrapingMission,
@@ -65,7 +67,14 @@ class ScrapingMissionService:
                 ScrapingBlueprint.id == ScrapingMission.active_blueprint_id,
             )
             .outerjoin(Project, Project.id == ScrapingMission.project_id)
-            .where(ScrapingMission.org_id == auth.org_id)
+            .where(
+                ScrapingMission.org_id == auth.org_id,
+                *(
+                    []
+                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                    else [ScrapingMission.created_by == auth.user.id]
+                ),
+            )
             .order_by(ScrapingMission.updated_at.desc())
         )
         return [
@@ -159,9 +168,12 @@ class ScrapingMissionService:
     async def get_mission_row(
         self, db: AsyncSession, auth: AuthContext, mission_id: str
     ) -> ScrapingMission:
+        conditions = [ScrapingMission.id == mission_id, ScrapingMission.org_id == auth.org_id]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            conditions.append(ScrapingMission.created_by == auth.user.id)
         result = await db.execute(
             select(ScrapingMission)
-            .where(ScrapingMission.id == mission_id, ScrapingMission.org_id == auth.org_id)
+            .where(*conditions)
             .options(selectinload(ScrapingMission.project))
         )
         mission = result.scalar_one_or_none()
@@ -201,9 +213,10 @@ class ScrapingMissionService:
     async def resolve_project(
         self, db: AsyncSession, auth: AuthContext, project_id: str
     ) -> Project:
-        result = await db.execute(
-            select(Project).where(Project.id == project_id, Project.org_id == auth.org_id)
-        )
+        conditions = [Project.id == project_id, Project.org_id == auth.org_id]
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            conditions.append(Project.created_by == auth.user.id)
+        result = await db.execute(select(Project).where(*conditions))
         project = result.scalar_one_or_none()
         if project is None:
             raise NotFoundError("Project", project_id)

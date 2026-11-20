@@ -49,6 +49,7 @@ def schedule_chat_title_event(
     db: AsyncSession,
     *,
     org_id: str,
+    created_by: str,
     chat_id: str,
     title: str,
     updated_at: str,
@@ -58,6 +59,7 @@ def schedule_chat_title_event(
         {
             "kind": "title",
             "org_id": org_id,
+            "created_by": created_by,
             "chat_id": chat_id,
             "title": title,
             "updated_at": updated_at,
@@ -65,14 +67,20 @@ def schedule_chat_title_event(
     )
 
 
-def schedule_chat_deleted_event(db: AsyncSession, *, org_id: str, chat_id: str) -> None:
-    _queue_event(db, {"kind": "deleted", "org_id": org_id, "chat_id": chat_id})
+def schedule_chat_deleted_event(
+    db: AsyncSession, *, org_id: str, created_by: str, chat_id: str
+) -> None:
+    _queue_event(
+        db,
+        {"kind": "deleted", "org_id": org_id, "created_by": created_by, "chat_id": chat_id},
+    )
 
 
 def schedule_chat_created_event(
     db: AsyncSession,
     *,
     org_id: str,
+    created_by: str,
     chat_id: str,
     title: str,
     project_id: str | None,
@@ -84,6 +92,7 @@ def schedule_chat_created_event(
         {
             "kind": "created",
             "org_id": org_id,
+            "created_by": created_by,
             "chat_id": chat_id,
             "title": title,
             "project_id": project_id,
@@ -113,6 +122,7 @@ def _publish_after_commit(session) -> None:
         if kind == "created":
             coro = publish_chat_created(
                 org_id=queued["org_id"],
+                created_by=queued["created_by"],
                 chat_id=queued["chat_id"],
                 title=queued["title"],
                 project_id=queued.get("project_id"),
@@ -120,10 +130,15 @@ def _publish_after_commit(session) -> None:
                 updated_at=queued.get("updated_at") or "",
             )
         elif kind == "deleted":
-            coro = publish_chat_deleted(org_id=queued["org_id"], chat_id=queued["chat_id"])
+            coro = publish_chat_deleted(
+                org_id=queued["org_id"],
+                created_by=queued["created_by"],
+                chat_id=queued["chat_id"],
+            )
         else:
             coro = publish_chat_title(
                 org_id=queued["org_id"],
+                created_by=queued["created_by"],
                 chat_id=queued["chat_id"],
                 title=queued["title"],
                 updated_at=queued.get("updated_at") or "",
@@ -155,6 +170,7 @@ def _sse_event_name(data: str) -> str:
 async def publish_chat_created(
     *,
     org_id: str,
+    created_by: str,
     chat_id: str,
     title: str,
     project_id: str | None,
@@ -164,6 +180,7 @@ async def publish_chat_created(
     payload = json.dumps(
         {
             "type": "chat.created",
+            "created_by": created_by,
             "chat_id": chat_id,
             "title": title,
             "project_id": project_id,
@@ -183,9 +200,9 @@ async def publish_chat_created(
         await client.aclose()
 
 
-async def publish_chat_deleted(*, org_id: str, chat_id: str) -> None:
+async def publish_chat_deleted(*, org_id: str, created_by: str, chat_id: str) -> None:
     payload = json.dumps(
-        {"type": "chat.deleted", "chat_id": chat_id},
+        {"type": "chat.deleted", "created_by": created_by, "chat_id": chat_id},
         separators=(",", ":"),
     )
     client = Redis.from_url(
@@ -199,9 +216,16 @@ async def publish_chat_deleted(*, org_id: str, chat_id: str) -> None:
         await client.aclose()
 
 
-async def publish_chat_title(*, org_id: str, chat_id: str, title: str, updated_at: str) -> None:
+async def publish_chat_title(
+    *, org_id: str, created_by: str, chat_id: str, title: str, updated_at: str
+) -> None:
     payload = json.dumps(
-        {"chat_id": chat_id, "title": title, "updated_at": updated_at},
+        {
+            "created_by": created_by,
+            "chat_id": chat_id,
+            "title": title,
+            "updated_at": updated_at,
+        },
         separators=(",", ":"),
     )
     client = Redis.from_url(
@@ -219,9 +243,15 @@ async def iter_chat_title_sse(
     org_id: str,
     request: Request,
     *,
+    user_id: str | None = None,
+    is_admin: bool = False,
     redis_client: Redis | None = None,
 ) -> AsyncIterator[str]:
-    """Yield SSE frames for one org. Closes the Redis subscription on exit."""
+    """Yield authorized chat metadata events for the organization.
+
+    Non-admin callers receive only events for chats they own. The same Redis
+    channel remains organization-wide for administrators and publishers.
+    """
     owns_client = redis_client is None
     client = redis_client or Redis.from_url(
         get_settings().redis_url,
@@ -249,6 +279,13 @@ async def iter_chat_title_sse(
                 data = data.decode()
             if not isinstance(data, str) or not data:
                 continue
+            if user_id is not None and not is_admin:
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("created_by") != user_id:
+                    continue
             yield f"event: {_sse_event_name(data)}\ndata: {data}\n\n"
     finally:
         try:

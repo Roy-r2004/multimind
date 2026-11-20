@@ -23,18 +23,21 @@ SAVED_VERDICT_UNIQUE_COLUMNS = (
 )
 
 
-def savable_verdict_statement(verdict_id: str, org_id: str):
+def savable_verdict_statement(verdict_id: str, org_id: str, *, owner_id: str | None = None):
+    conditions = [
+        Verdict.id == verdict_id,
+        Chat.org_id == org_id,
+        cast(Turn.status, String).in_(
+            [TurnStatus.COMPLETED.name, TurnStatus.PARTIAL.name]
+        ),
+    ]
+    if owner_id is not None:
+        conditions.append(Chat.created_by == owner_id)
     return (
         select(Verdict, Turn, Chat)
         .join(Turn, Turn.id == Verdict.turn_id)
         .join(Chat, Chat.id == Turn.chat_id)
-        .where(
-            Verdict.id == verdict_id,
-            Chat.org_id == org_id,
-            cast(Turn.status, String).in_(
-                [TurnStatus.COMPLETED.name, TurnStatus.PARTIAL.name]
-            ),
-        )
+        .where(*conditions)
     )
 
 
@@ -48,7 +51,14 @@ class SavedVerdictService:
                 existing, original_chat_exists=await self._original_chat_exists(db, existing)
             )
 
-        result = await db.execute(savable_verdict_statement(verdict_id, auth.org_id))
+        owner_id = (
+            None
+            if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+            else auth.user.id
+        )
+        result = await db.execute(
+            savable_verdict_statement(verdict_id, auth.org_id, owner_id=owner_id)
+        )
         row = result.first()
         if row is None:
             raise NotFoundError("Verdict", verdict_id)

@@ -16,6 +16,7 @@ from app.db.models import (
     Chat,
     ContentLabel,
     ModelAnswer,
+    OrgRole,
     Project,
     SavedDocument,
     SavedDocumentLabel,
@@ -353,7 +354,15 @@ class SavedDocumentService:
             )
         )
         turn = result.scalar_one_or_none()
-        if turn is None or turn.chat is None or turn.chat.org_id != auth.org_id:
+        if (
+            turn is None
+            or turn.chat is None
+            or turn.chat.org_id != auth.org_id
+            or (
+                auth.role not in (OrgRole.OWNER, OrgRole.ADMIN)
+                and turn.chat.created_by != auth.user.id
+            )
+        ):
             raise NotFoundError("Turn", turn_id)
         return turn, turn.chat, turn.verdict, list(turn.model_answers or [])
 

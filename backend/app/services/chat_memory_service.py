@@ -476,6 +476,8 @@ class ChatMemoryService:
         rows.reverse()  # chronological oldest → newest
         partition = partition_history_by_recent_budget(rows, max_tokens=max_tokens, max_turns=limit)
         chat = await db.get(Chat, chat_id)
+        if chat is None:
+            return []
         persisted_through_index = -1
         if chat is not None and (chat.rolling_memory or "").strip():
             ids = [turn.id for turn, _ in rows]
@@ -610,7 +612,7 @@ class ChatMemoryService:
         while stale_retries < CHAT_MEMORY_MAX_CAS_RETRIES:
             await db.rollback()
             chat = await db.get(Chat, chat_id, populate_existing=True)
-            if chat is None:
+            if chat is None or chat.org_id != org_id:
                 return merged
             eligible = await self.list_eligible_turns_oldest_first(db, chat_id)
             to_merge = self.newly_expired_turns(
@@ -637,11 +639,13 @@ class ChatMemoryService:
             stale_retries += 1
         return merged
 
-    async def invalidate_memory(self, db: AsyncSession, *, chat_id: str) -> bool:
+    async def invalidate_memory(
+        self, db: AsyncSession, *, chat_id: str, org_id: str
+    ) -> bool:
         """Make stale memory unavailable and advance its compare-and-swap stamp."""
         result = await db.execute(
             update(Chat)
-            .where(Chat.id == chat_id)
+            .where(Chat.id == chat_id, Chat.org_id == org_id)
             .values(
                 rolling_memory=None,
                 rolling_memory_through_turn_id=None,
@@ -723,7 +727,7 @@ class ChatMemoryService:
             return False
 
         now = datetime.now(UTC)
-        statement = update(Chat).where(Chat.id == chat_id)
+        statement = update(Chat).where(Chat.id == chat_id, Chat.org_id == org_id)
         statement = statement.where(
             Chat.rolling_memory.is_(None)
             if expected_memory is None
@@ -887,6 +891,7 @@ class ChatMemoryService:
         *,
         chat_id: str,
         custom_instructions: str | None,
+        org_id: str,
     ) -> bool:
         """Seed destination chat rolling_memory once from a stored handoff.
 
@@ -898,7 +903,7 @@ class ChatMemoryService:
             return False
 
         chat = await db.get(Chat, chat_id)
-        if chat is None:
+        if chat is None or chat.org_id != org_id:
             return False
         if (chat.rolling_memory or "").strip():
             return False

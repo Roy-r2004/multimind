@@ -69,20 +69,23 @@ async def test_title_publish_waits_for_commit_and_stays_in_org(
     monkeypatch.setattr("app.services.chat_title_events.publish_chat_title", capture)
     other = await create_other_auth(db)
     chat = await chat_service.create_chat(db, auth, ChatCreateRequest(title="Original"))
+    chat_id = chat.id
+    chat_owner_id = auth.user.id
     await db.commit()
 
-    await chat_service.update_chat(db, auth, chat.id, ChatUpdateRequest(title="Renamed"))
+    await chat_service.update_chat(db, auth, chat_id, ChatUpdateRequest(title="Renamed"))
     await db.rollback()
     await asyncio.sleep(0)
     assert published == []
 
-    await chat_service.update_chat(db, auth, chat.id, ChatUpdateRequest(title="Renamed"))
+    await chat_service.update_chat(db, auth, chat_id, ChatUpdateRequest(title="Renamed"))
     await db.commit()
     await asyncio.sleep(0)
     assert published == [
         {
             "org_id": auth.org_id,
-            "chat_id": chat.id,
+            "created_by": chat_owner_id,
+            "chat_id": chat_id,
             "title": "Renamed",
             "updated_at": published[0]["updated_at"],
         }
@@ -96,7 +99,7 @@ async def test_title_publish_waits_for_commit_and_stays_in_org(
     assert len(published) == 1
 
     await chat_service.update_chat(
-        db, auth, chat.id, ChatUpdateRequest(project_id=None)
+        db, auth, chat_id, ChatUpdateRequest(project_id=None)
     )
     await db.commit()
     await asyncio.sleep(0)
@@ -124,6 +127,7 @@ async def test_created_publish_waits_for_commit_and_stays_in_org(
     await asyncio.sleep(0)
     assert len(published) == 1
     assert published[0]["org_id"] == auth.org_id
+    assert published[0]["created_by"] == auth.user.id
     assert published[0]["org_id"] != other.org_id
     assert published[0]["chat_id"] == chat.id
     assert published[0]["title"] == "Fresh"

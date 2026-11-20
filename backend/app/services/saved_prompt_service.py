@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import AuthContext
 from app.core.exceptions import NotFoundError, ValidationError
-from app.db.models import Chat, ContentLabel, SavedPrompt, SavedPromptLabel, Turn, Verdict
+from app.db.models import Chat, ContentLabel, OrgRole, SavedPrompt, SavedPromptLabel, Turn, Verdict
 from app.schemas.api import SavedPromptLabelBrief, SavedPromptResponse
 from app.services.saved_document_service import saved_document_service
 
@@ -185,7 +185,15 @@ class SavedPromptService:
             )
         )
         turn = result.scalar_one_or_none()
-        if turn is None or turn.chat is None or turn.chat.org_id != auth.org_id:
+        if (
+            turn is None
+            or turn.chat is None
+            or turn.chat.org_id != auth.org_id
+            or (
+                auth.role not in (OrgRole.OWNER, OrgRole.ADMIN)
+                and turn.chat.created_by != auth.user.id
+            )
+        ):
             raise NotFoundError("Turn", turn_id)
         verdict = turn.verdict
         if verdict is None or not (verdict.text or "").strip():

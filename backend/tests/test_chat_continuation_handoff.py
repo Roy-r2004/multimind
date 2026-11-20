@@ -559,6 +559,7 @@ async def test_same_org_reference_builds_handoff_and_seeds_once(handoff_env):
             db,
             chat_id=chat_b.id,
             custom_instructions=(await db.get(Turn, turn.id)).custom_instructions,
+            org_id=handoff_env.org_id,
         )
         assert again is False
         await db.commit()
