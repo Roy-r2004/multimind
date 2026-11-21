@@ -50,6 +50,23 @@ def test_association_with_public_funding_can_still_be_eligible():
     assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
 
 
+@pytest.mark.parametrize(
+    "operator_type",
+    [MapsOperatorType.PRIVATE_COMPANY.value, MapsOperatorType.NONPROFIT.value],
+)
+def test_private_for_profit_and_nonprofit_residential_centers_are_eligible(operator_type):
+    place = make_place(
+        ownership_status=MapsOwnershipStatus.CONFIRMED_NON_GOVERNMENT.value,
+        operator_type=operator_type,
+        funding_type=MapsFundingType.PUBLIC.value,
+        facility_type=MapsFacilityType.RESIDENTIAL_ADDICTION_REHAB.value,
+        organization_scope=MapsOrganizationScope.FACILITY.value,
+        addiction_focus_confirmed=True,
+    )
+
+    assert compute_client_eligibility(place) == MapsClientEligibility.ELIGIBLE.value
+
+
 def test_public_hospital_is_excluded():
     place = make_place(
         ownership_status=MapsOwnershipStatus.OWNERSHIP_UNKNOWN.value,

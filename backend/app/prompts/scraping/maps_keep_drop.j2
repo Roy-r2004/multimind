@@ -7,14 +7,15 @@ KEEP only when the evidence clearly supports ALL of:
 - It is physically located in {{ state_name }}, {{ country_name }}.
 {% endif %}
 - It is an addiction-treatment facility offering inpatient / residential care (rehab, detox, therapeutic community, addiction ward run as a residential treatment center) — not an outpatient-only service.
-- It is private, nonprofit, or NGO-operated — not government-run and not government-funded.
+- It is privately operated, whether for-profit or nonprofit (including NGO/association operators); government-operated centers are excluded.
+- Public funding alone does not make a privately operated center government-operated.
 - Addiction treatment is a primary, formal program of the facility — not a side offering of a general clinic.
 
 DROP when it is any of:
 {% if state_name %}
 - Located outside {{ state_name }} or in a different state/country.
 {% endif %}
-- Any government / public funding or operation (public hospital, CHU, EPSP, state or municipal facility).
+- Government operation (public hospital, CHU, EPSP, state or municipal facility).
 - Outpatient-only, telehealth-only / virtual-only, or referral-only (refers patients elsewhere rather than treating them on-site).
 - A solo doctor, individual practitioner, or private cabinet (psychiatrist/psychologist/addictologue working alone).
 - A general psychiatric or mental health clinic where addiction treatment is not the primary, formal program.

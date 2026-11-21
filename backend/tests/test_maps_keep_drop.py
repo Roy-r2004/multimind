@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,18 @@ from app.services.scraping.maps_keep_drop_service import (
     classify_place_keep_drop,
     run_keep_drop_pass,
 )
+
+
+def test_keep_drop_prompts_accept_both_private_profit_types_and_exclude_government_operators():
+    prompt_dir = Path(__file__).parents[1] / "app" / "prompts" / "scraping"
+    primary = (prompt_dir / "maps_keep_drop.j2").read_text(encoding="utf-8")
+    sonar = (prompt_dir / "maps_keep_drop_sonar.j2").read_text(encoding="utf-8")
+
+    for prompt in (primary, sonar):
+        assert "for-profit or nonprofit" in prompt or "whether for-profit or nonprofit" in prompt
+        assert "government-operated" in prompt
+        assert "Public funding alone" in prompt
+    assert "Any government / public funding or operation" not in primary
 
 
 def _run(auth, **kwargs):

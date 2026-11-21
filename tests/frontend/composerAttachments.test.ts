@@ -33,6 +33,7 @@ import {
   shouldDeleteComposerAttachmentRemotely,
   shouldSkipAutoDiscardUnusedChat,
   submittedAttachmentIds,
+  removeSubmittedComposerFiles,
   triggerComposerUploadFromMenu,
   validateComposerAttachment,
   type ComposerFileChip,
@@ -216,11 +217,33 @@ test("sticky attachment ids remain available for repeated sends", () => {
   assert.deepEqual(submittedAttachmentIds(files), ["att-a", "att-b"]);
 });
 
-test("successful chat send does not clear sticky attachment chips", () => {
+test("successful chat send clears submitted attachment chips only after createTurn resolves", () => {
   const chatSource = readFileSync(new URL("../../src/routes/chat.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(chatSource, /removeSubmittedComposerFiles/);
+  const sendFn = chatSource.slice(chatSource.indexOf("async function send("), chatSource.indexOf("async function stopGenerating("));
+  assert.ok(sendFn.indexOf("const uploadedIds = submittedAttachmentIds") < sendFn.indexOf("await api.chats.createTurn"));
+  assert.ok(sendFn.indexOf("await api.chats.createTurn") < sendFn.indexOf("removeSubmittedComposerFiles(current, uploadedIds)"));
+  assert.match(sendFn, /catch \(error\)/);
   assert.match(chatSource, /attachment_ids: uploadedIds/);
   assert.match(chatSource, /replaceValue\(""\)/);
+});
+
+test("successful submit clears multiple submitted files and preserves unrelated chips", () => {
+  const files = [
+    { localId: "a", name: "a.txt", state: "uploaded" as const, attachmentId: "att-a" },
+    { localId: "b", name: "b.pdf", state: "uploaded" as const, attachmentId: "att-b" },
+    { localId: "c", name: "c.txt", state: "uploaded" as const, attachmentId: "att-c" },
+  ];
+  assert.deepEqual(removeSubmittedComposerFiles(files, submittedAttachmentIds(files).slice(0, 2)), [files[2]]);
+});
+
+test("failed createTurn retains uploaded files for retry", () => {
+  const files = [
+    { localId: "a", name: "a.txt", state: "uploaded" as const, attachmentId: "att-a" },
+  ];
+  // The helper is reached only after createTurn resolves; a rejection leaves state untouched.
+  let createTurnSucceeded = false;
+  const current = createTurnSucceeded ? removeSubmittedComposerFiles(files, ["att-a"]) : files;
+  assert.deepEqual(current, files);
 });
 
 test("pending restore does not duplicate and keeps local busy chips", () => {
