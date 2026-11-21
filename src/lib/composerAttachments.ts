@@ -230,6 +230,18 @@ export function submittedAttachmentIds(files: ComposerFileChip[]): string[] {
     .map((file) => file.attachmentId as string);
 }
 
+/** Remove only the uploaded chips included in a successfully accepted turn. */
+export function removeSubmittedComposerFiles(
+  files: ComposerFileChip[],
+  attachmentIds: string[],
+): ComposerFileChip[] {
+  if (attachmentIds.length === 0) return files;
+  const submitted = new Set(attachmentIds);
+  return files.filter(
+    (file) => !(file.state === "uploaded" && file.attachmentId && submitted.has(file.attachmentId)),
+  );
+}
+
 export type PendingAttachmentItem = {
   id: string;
   filename: string;

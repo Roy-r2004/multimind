@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -45,6 +46,14 @@ test("shouldClearReferenceAfterSend keeps a successful single reference", () => 
   assert.equal(shouldClearReferenceAfterSend(true, 1), false);
   assert.equal(shouldClearReferenceAfterSend(true, 2), true);
   assert.equal(shouldClearReferenceAfterSend(false), false);
+});
+
+test("attachment clearing does not change single reference behavior", () => {
+  const chatSource = readFileSync(new URL("../../src/routes/chat.tsx", import.meta.url), "utf8");
+  const sendFn = chatSource.slice(chatSource.indexOf("async function send("), chatSource.indexOf("async function stopGenerating("));
+  assert.match(sendFn, /\.\.\.createTurnReferenceFields\(refChats\)/);
+  assert.match(sendFn, /shouldClearReferenceAfterSend\(true, refChats\.length\)/);
+  assert.match(chatSource, /setRefChats\(\[\]\)/);
 });
 
 test("normal send without reference stays unchanged shape", () => {

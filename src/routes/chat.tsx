@@ -94,6 +94,7 @@ import {
   shouldDeleteComposerAttachmentRemotely,
   shouldSkipAutoDiscardUnusedChat,
   submittedAttachmentIds,
+  removeSubmittedComposerFiles,
   triggerComposerUploadFromMenu,
   applySuccessfulAttachmentTranscription,
   beginAttachmentTranscription,
@@ -1045,6 +1046,7 @@ export function ChatPage() {
         attachment_ids: uploadedIds,
         ...createTurnReferenceFields(refChats),
       });
+      setFiles((current) => removeSubmittedComposerFiles(current, uploadedIds));
       if (typeof window !== "undefined") {
         window.localStorage.removeItem(`multimind:draft:${hadActiveChat ? chatId : "new"}`);
       }
