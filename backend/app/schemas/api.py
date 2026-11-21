@@ -118,6 +118,14 @@ class ModelSetResponse(BaseModel):
     is_system: bool = False
 
 
+class ModelSetSelectionResponse(BaseModel):
+    model_set_id: str | None = None
+
+
+class ModelSetSelectionRequest(BaseModel):
+    model_set_id: str | None = None
+
+
 class ModelSetCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str = ""

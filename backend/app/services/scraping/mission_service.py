@@ -187,7 +187,18 @@ class ScrapingMissionService:
         self, db: AsyncSession, auth: AuthContext, model_set_id: str | None
     ) -> ModelSet:
         query = select(ModelSet).where(
-            (ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True))
+            (ModelSet.is_system.is_(True))
+            | (
+                (ModelSet.org_id == auth.org_id)
+                if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                else (
+                    (ModelSet.org_id == auth.org_id)
+                    & (
+                        ModelSet.owner_user_id.is_(None)
+                        | (ModelSet.owner_user_id == auth.user.id)
+                    )
+                )
+            )
         )
         if model_set_id is not None:
             query = query.where(ModelSet.slug == model_set_id)

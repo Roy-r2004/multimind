@@ -118,7 +118,7 @@ function ModelSetsPage() {
 
           <div className="mt-6 grid gap-4 md:grid-cols-2">
             {filtered.map((s, index) => {
-              const isSystemSet = SYSTEM_MODEL_SETS.has(s.id);
+              const isSystemSet = s.isSystem ?? SYSTEM_MODEL_SETS.has(s.id);
               const Icon = SET_ICONS[s.id] ?? Layers;
               const iconGrad = SET_ICON_COLORS[s.id] ?? "from-sky-500 to-blue-600";
               const verdict = modelById(s.verdictModel);
@@ -175,7 +175,7 @@ function ModelSetsPage() {
                           setEditing(s.id);
                         }}
                         title={
-                          shouldCloneSystemModelSet(s.id, SYSTEM_MODEL_SETS)
+                          isSystemSet
                             ? "Customize set"
                             : "Edit set"
                         }
@@ -241,7 +241,7 @@ function ModelSetsPage() {
             setShowCreate(false);
           }}
           onUpdate={async (modelSet) => {
-            if (shouldCloneSystemModelSet(modelSet.id, SYSTEM_MODEL_SETS)) {
+            if (modelSet.isSystem ?? shouldCloneSystemModelSet(modelSet.id, SYSTEM_MODEL_SETS)) {
               await createModelSet({
                 ...modelSet,
                 name: clonedSystemModelSetName(modelSet.name),

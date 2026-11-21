@@ -85,6 +85,7 @@ function mapModelSet(s: ApiModelSet): ModelSet {
     customInstructions: s.custom_instructions ?? undefined,
     refereeSystemPrompt: s.referee_system_prompt ?? undefined,
     effectiveRefereePrompt: s.effective_referee_prompt ?? undefined,
+    isSystem: s.is_system ?? false,
   };
 }
 
@@ -135,10 +136,11 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     const requestAuth = { token: auth.token, orgId: auth.orgId };
     setIsLoading(true);
     try {
-      const [chatList, projectList, setList] = await Promise.all([
+      const [chatList, projectList, setList, selection] = await Promise.all([
         api.chats.list(auth),
         api.projects.list(auth),
         api.modelSets.list(auth),
+        api.modelSets.getSelection(auth),
       ]);
 
       const currentAuth = authHeaders();
@@ -157,7 +159,14 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       setProjects(projectList.map(mapProject));
       const mappedModelSets = setList.map(mapModelSet);
       setModelSets(mappedModelSets);
-      setActiveModelSetIdState((activeId) => selectExistingModelSetId(mappedModelSets, activeId));
+      setActiveModelSetIdState((activeId) =>
+        selectExistingModelSetId(
+          mappedModelSets,
+          selection.model_set_id && mappedModelSets.some((set) => set.id === selection.model_set_id)
+            ? selection.model_set_id
+            : activeId,
+        ),
+      );
     } finally {
       if (requestGeneration === refreshGenerationRef.current) {
         setIsLoading(false);
@@ -211,17 +220,32 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
 
   const setActiveModelSetId = useCallback((id: string) => {
     setActiveModelSetIdState(id);
-  }, []);
+    const auth = authHeaders();
+    if (auth) void api.modelSets.setSelection(auth, id).catch(() => undefined);
+  }, [authHeaders]);
 
   const setActiveChatId = useCallback(
     (id: string | null) => {
       const previousId = activeChatIdRef.current;
       setActiveChatIdState(id);
       if (id === null && previousId !== null) {
-        setActiveModelSetIdState(() => selectExistingModelSetId(modelSets, ""));
+        const auth = authHeaders();
+        if (!auth) {
+          setActiveModelSetIdState(selectExistingModelSetId(modelSets, ""));
+          return;
+        }
+        void api.modelSets
+          .getSelection(auth)
+          .then(({ model_set_id }) => {
+            const selected = model_set_id && modelSets.some((set) => set.id === model_set_id)
+              ? model_set_id
+              : selectExistingModelSetId(modelSets, "");
+            setActiveModelSetIdState(selected);
+          })
+          .catch(() => setActiveModelSetIdState(selectExistingModelSetId(modelSets, "")));
       }
     },
-    [modelSets],
+    [modelSets, authHeaders],
   );
 
   const createModelSet = useCallback(

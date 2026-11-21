@@ -12,6 +12,7 @@ export type ModelSet = {
   customInstructions?: string;
   refereeSystemPrompt?: string;
   effectiveRefereePrompt?: string;
+  isSystem?: boolean;
 };
 
 export type Strategy = "Reconcile" | "Synthesize" | "Rank" | "Pick Best" | "Debate" | "Referee";

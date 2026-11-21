@@ -56,9 +56,11 @@ async def create_model_set(
     slug: str = "research-set",
     models: list[str] | None = None,
     verdict_model: str = "gpt-4.1",
+    owner_user_id: str | None = None,
 ) -> ModelSet:
     model_set = ModelSet(
         org_id=auth.org_id,
+        owner_user_id=owner_user_id,
         slug=slug,
         name=slug,
         description="",

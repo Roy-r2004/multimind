@@ -12,7 +12,7 @@ from app.core.exceptions import (
     NotFoundError,
     ValidationError,
 )
-from app.db.models import ModelSet, OrgRole, Strategy
+from app.db.models import ModelSet, OrgMembership, OrgRole, Strategy, User
 from app.llm.prompt_engine import STRICT_REFEREE_BEHAVIOR
 from app.schemas.api import ModelSetCreateRequest, ModelSetUpdateRequest, StrategyEnum
 from app.services.domain_service import BEST_FOR_MAX_LEN, MODEL_ID_MAX_LEN, model_set_service
@@ -39,6 +39,145 @@ async def test_create_model_set_success(db, auth: AuthContext) -> None:
     assert created.is_system is False
     assert created.models == ["gpt-4.1", "claude"]
     assert created.effective_referee_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_user_owned_sets_are_isolated_within_same_organization(db, auth: AuthContext) -> None:
+    chafic = User(email="chafic@example.com", hashed_password="x", full_name="Chafic")
+    fred = User(email="fred@example.com", hashed_password="x", full_name="Fred")
+    db.add_all([chafic, fred])
+    await db.flush()
+    db.add_all(
+        [
+            OrgMembership(org_id=auth.org_id, user_id=chafic.id, role=OrgRole.MEMBER),
+            OrgMembership(org_id=auth.org_id, user_id=fred.id, role=OrgRole.MEMBER),
+        ]
+    )
+    await db.flush()
+    chafic_auth = AuthContext(user=chafic, org_id=auth.org_id, role=OrgRole.MEMBER)
+    fred_auth = AuthContext(user=fred, org_id=auth.org_id, role=OrgRole.MEMBER)
+
+    chafic_set = await model_set_service.create(
+        db, chafic_auth, _create_request(name="Chafic set")
+    )
+    fred_set = await model_set_service.create(db, fred_auth, _create_request(name="Fred set"))
+
+    chafic_list = {item.id for item in await model_set_service.list(db, chafic_auth)}
+    fred_list = {item.id for item in await model_set_service.list(db, fred_auth)}
+    assert chafic_set.id in chafic_list and fred_set.id not in chafic_list
+    assert fred_set.id in fred_list and chafic_set.id not in fred_list
+
+    with pytest.raises(ForbiddenError):
+        await model_set_service.update(db, fred_auth, chafic_set.id, ModelSetUpdateRequest(name="Tampered"))
+    with pytest.raises(ForbiddenError):
+        await model_set_service.delete(db, fred_auth, chafic_set.id)
+    with pytest.raises(ForbiddenError):
+        await model_set_service.update(
+            db, chafic_auth, fred_set.id, ModelSetUpdateRequest(name="Tampered")
+        )
+    with pytest.raises(ForbiddenError):
+        await model_set_service.delete(db, chafic_auth, fred_set.id)
+
+    await model_set_service.update(
+        db, fred_auth, fred_set.id, ModelSetUpdateRequest(name="Fred updated")
+    )
+    row = (await db.execute(select(ModelSet).where(ModelSet.slug == chafic_set.id))).scalar_one()
+    assert row.name == "Chafic set"
+    fred_row = (
+        await db.execute(select(ModelSet).where(ModelSet.slug == fred_set.id))
+    ).scalar_one()
+    assert fred_row.name == "Fred updated"
+
+
+@pytest.mark.asyncio
+async def test_admin_can_manage_other_members_model_sets(db, auth: AuthContext) -> None:
+    member = User(email="member@example.com", hashed_password="x", full_name="Member")
+    db.add(member)
+    await db.flush()
+    member_set = await create_model_set(db, auth, slug="member-owned", owner_user_id=member.id)
+    updated = await model_set_service.update(
+        db, auth, member_set.slug, ModelSetUpdateRequest(name="Admin edited")
+    )
+    assert updated.name == "Admin edited"
+
+
+@pytest.mark.asyncio
+async def test_model_set_selection_is_persisted_per_user(db, auth: AuthContext) -> None:
+    fred = User(email="fred@example.com", hashed_password="x", full_name="Fred")
+    db.add(fred)
+    await db.flush()
+    fred_auth = AuthContext(user=fred, org_id=auth.org_id, role=OrgRole.MEMBER)
+    chafic_set = await model_set_service.create(db, auth, _create_request(name="Chafic"))
+    fred_set = await model_set_service.create(db, fred_auth, _create_request(name="Fred"))
+
+    await model_set_service.set_selection(db, auth, chafic_set.id)
+    await model_set_service.set_selection(db, fred_auth, fred_set.id)
+
+    assert await model_set_service.get_selection(db, auth) == chafic_set.id
+    assert await model_set_service.get_selection(db, fred_auth) == fred_set.id
+    with pytest.raises(NotFoundError):
+        await model_set_service.set_selection(db, fred_auth, chafic_set.id)
+
+
+@pytest.mark.asyncio
+async def test_legacy_ultimate_is_visible_selectable_but_admin_only_to_edit(
+    db, auth: AuthContext
+) -> None:
+    chafic = User(email="chafic@example.com", hashed_password="x", full_name="Chafic")
+    fred = User(email="fred@example.com", hashed_password="x", full_name="Fred")
+    db.add_all([chafic, fred])
+    await db.flush()
+    chafic_auth = AuthContext(user=chafic, org_id=auth.org_id, role=OrgRole.MEMBER)
+    fred_auth = AuthContext(user=fred, org_id=auth.org_id, role=OrgRole.MEMBER)
+    ultimate = ModelSet(
+        org_id=None,
+        owner_user_id=None,
+        slug="set-7edaefc8",
+        name="Chafic ultimate model set",
+        description="Existing configuration",
+        models=["gpt-4.1", "claude"],
+        verdict_model="gpt-4.1",
+        strategy=Strategy.REFEREE,
+        best_for="",
+        is_system=True,
+    )
+    db.add(ultimate)
+    await db.flush()
+
+    chafic_sets = {item.id for item in await model_set_service.list(db, chafic_auth)}
+    fred_sets = {item.id for item in await model_set_service.list(db, fred_auth)}
+    assert ultimate.slug in chafic_sets and ultimate.slug in fred_sets
+    assert await model_set_service.set_selection(db, chafic_auth, ultimate.slug) == ultimate.slug
+    assert await model_set_service.set_selection(db, fred_auth, ultimate.slug) == ultimate.slug
+
+    from app.services.chat_service import chat_service
+
+    assert (await chat_service._resolve_model_set(db, chafic_auth, ultimate.slug)).slug == ultimate.slug
+    assert (await chat_service._resolve_model_set(db, fred_auth, ultimate.slug)).slug == ultimate.slug
+    with pytest.raises(ForbiddenError, match="organization admins"):
+        await model_set_service.update(
+            db, chafic_auth, ultimate.slug, ModelSetUpdateRequest(name="Changed")
+        )
+
+
+@pytest.mark.asyncio
+async def test_unassigned_legacy_org_set_is_read_only_to_members(db, auth: AuthContext) -> None:
+    chafic = User(email="chafic@example.com", hashed_password="x", full_name="Chafic")
+    fred = User(email="fred@example.com", hashed_password="x", full_name="Fred")
+    db.add_all([chafic, fred])
+    await db.flush()
+    chafic_auth = AuthContext(user=chafic, org_id=auth.org_id, role=OrgRole.MEMBER)
+    fred_auth = AuthContext(user=fred, org_id=auth.org_id, role=OrgRole.MEMBER)
+    legacy = await create_model_set(db, auth, slug="legacy-unassigned")
+
+    assert legacy.slug in {s.id for s in await model_set_service.list(db, chafic_auth)}
+    assert await model_set_service.set_selection(db, chafic_auth, legacy.slug) == legacy.slug
+    with pytest.raises(ForbiddenError):
+        await model_set_service.update(
+            db, chafic_auth, legacy.slug, ModelSetUpdateRequest(name="Chafic changed")
+        )
+    with pytest.raises(ForbiddenError):
+        await model_set_service.delete(db, fred_auth, legacy.slug)
 
 
 @pytest.mark.asyncio

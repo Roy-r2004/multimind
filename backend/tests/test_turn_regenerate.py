@@ -199,6 +199,36 @@ async def test_owner_can_regenerate_and_reuse_model_set(db_setup):
 
 
 @pytest.mark.asyncio
+async def test_regenerate_resolves_historical_set_after_ownership_transfer(db_setup):
+    Session = db_setup.Session
+    turn = await _complete_turn(Session, chat_id=db_setup.chat_id, user_message="Historical")
+    async with Session() as db:
+        model_set = (await db.execute(select(ModelSet).where(ModelSet.slug == "regen-set"))).scalar_one()
+        model_set.owner_user_id = db_setup.viewer_auth.user.id
+        chat = await db.get(Chat, db_setup.chat_id)
+        chat.model_set_id = model_set.slug
+        await db.commit()
+
+    async with Session() as db:
+        result = await chat_service.regenerate_turn(
+            db,
+            db_setup.auth,
+            db_setup.chat_id,
+            turn.id,
+            TurnRegenerateRequest(prompt="Reuse historical set"),
+        )
+
+    assert result.new_turn.model_set_id == "regen-set"
+    assert result.model_set_fallback is False
+    async with Session() as db:
+        chat = await db.get(Chat, db_setup.chat_id)
+        resolved = await chat_service._resolve_historical_model_set(
+            db, db_setup.auth, chat, "regen-set"
+        )
+    assert resolved.owner_user_id == db_setup.viewer_auth.user.id
+
+
+@pytest.mark.asyncio
 async def test_regenerate_genuinely_summarized_turn_rebuilds_only_surviving_history(
     db_setup, monkeypatch
 ):
@@ -635,7 +665,8 @@ async def test_viewer_and_wrong_org_cannot_regenerate(db_setup):
     t1 = await _complete_turn(Session, chat_id=db_setup.chat_id, user_message="Secret")
 
     async with Session() as db:
-        with pytest.raises(ForbiddenError):
+        # Chat lookup intentionally hides existence from non-owners.
+        with pytest.raises(NotFoundError):
             await chat_service.regenerate_turn(
                 db,
                 db_setup.viewer_auth,

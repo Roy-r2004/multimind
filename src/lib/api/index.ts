@@ -53,6 +53,7 @@ import type {
   ApiModel,
   ApiModelSearchResult,
   ApiModelSet,
+  ApiModelSetSelection,
   ApiPricingCatalog,
   ApiProject,
   ApiProjectDetail,
@@ -800,6 +801,17 @@ export const api = {
   modelSets: {
     list: (auth: Auth) =>
       apiRequest<ApiModelSet[]>("/model-sets", { token: auth.token, orgId: auth.orgId }),
+
+    getSelection: (auth: Auth) =>
+      apiRequest<ApiModelSetSelection>("/model-sets/selection", { token: auth.token, orgId: auth.orgId }),
+
+    setSelection: (auth: Auth, modelSetId: string | null) =>
+      apiRequest<ApiModelSetSelection>("/model-sets/selection", {
+        method: "PUT",
+        body: { model_set_id: modelSetId },
+        token: auth.token,
+        orgId: auth.orgId,
+      }),
 
     create: (
       auth: Auth,

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import AuthContext
 from app.core.exceptions import AppError, NotFoundError, ValidationError
 from app.core.logging import get_logger
-from app.db.models import ModelSet
+from app.db.models import ModelSet, OrgRole
 from app.llm.catalog import estimate_tokens, get_model
 from app.llm.pricing import get_pricing_service
 from app.llm.providers import LLMResponse, get_provider_registry
@@ -401,7 +401,18 @@ class PromptBuilderService:
         result = await db.execute(
             select(ModelSet).where(
                 ModelSet.slug == slug,
-                (ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True)),
+                (ModelSet.is_system.is_(True))
+                | (
+                    (ModelSet.org_id == auth.org_id)
+                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                    else (
+                        (ModelSet.org_id == auth.org_id)
+                        & (
+                            ModelSet.owner_user_id.is_(None)
+                            | (ModelSet.owner_user_id == auth.user.id)
+                        )
+                    )
+                ),
             )
         )
         model_set = result.scalar_one_or_none()

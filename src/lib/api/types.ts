@@ -57,6 +57,8 @@ export type ApiModelSet = {
   is_system?: boolean;
 };
 
+export type ApiModelSetSelection = { model_set_id: string | null };
+
 export type ApiProject = {
   id: string;
   name: string;
