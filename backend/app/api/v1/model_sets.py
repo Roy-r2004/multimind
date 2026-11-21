@@ -8,10 +8,30 @@ from app.schemas.api import (
     ModelSetCreateRequest,
     ModelSetResponse,
     ModelSetUpdateRequest,
+    ModelSetSelectionRequest,
+    ModelSetSelectionResponse,
 )
 from app.services.domain_service import model_set_service
 
 router = APIRouter()
+
+
+@router.get("/selection", response_model=ModelSetSelectionResponse)
+async def get_model_set_selection(
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return ModelSetSelectionResponse(model_set_id=await model_set_service.get_selection(db, auth))
+
+
+@router.put("/selection", response_model=ModelSetSelectionResponse)
+async def set_model_set_selection(
+    data: ModelSetSelectionRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    slug = await model_set_service.set_selection(db, auth, data.model_set_id)
+    return ModelSetSelectionResponse(model_set_id=slug)
 
 
 @router.get("", response_model=list[ModelSetResponse])

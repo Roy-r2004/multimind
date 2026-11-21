@@ -1,12 +1,10 @@
-/** Model Sets page: which system slugs PATCH in place vs clone-on-save. */
-
-export const IN_PLACE_EDITABLE_SYSTEM_SLUG = "set-7edaefc8";
+/** System model sets are copied into a private set before edits are saved. */
 
 export function shouldCloneSystemModelSet(
   id: string,
   systemSetIds: ReadonlySet<string>,
 ): boolean {
-  return systemSetIds.has(id) && id !== IN_PLACE_EDITABLE_SYSTEM_SLUG;
+  return systemSetIds.has(id);
 }
 
 export function clonedSystemModelSetName(name: string): string {

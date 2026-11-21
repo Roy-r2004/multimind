@@ -426,6 +426,9 @@ class ModelSet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "model_sets"
 
     org_id: Mapped[str | None] = UuidFK("organizations", nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     slug: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)

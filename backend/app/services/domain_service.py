@@ -31,6 +31,7 @@ from app.db.models import (
     ScrapingMission,
     Strategy,
     Template,
+    UserPreferences,
     Verdict,
 )
 from app.llm.catalog import is_builtin_model_id
@@ -246,10 +247,52 @@ class ModelSetService:
     async def list(self, db: AsyncSession, auth: AuthContext) -> list[ModelSetResponse]:
         result = await db.execute(
             select(ModelSet)
-            .where((ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True)))
+            .where(self._visible_to_user(auth))
             .order_by(ModelSet.is_system.desc(), ModelSet.name)
         )
         return [self._response(s) for s in result.scalars().all()]
+
+    async def get_selection(self, db: AsyncSession, auth: AuthContext) -> str | None:
+        result = await db.execute(
+            select(UserPreferences.default_model_set_id).where(
+                UserPreferences.user_id == auth.user.id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def set_selection(
+        self, db: AsyncSession, auth: AuthContext, slug: str | None
+    ) -> str | None:
+        if slug:
+            # Resolve through the same visibility predicate used for chat execution.
+            result = await db.execute(
+                select(ModelSet).where(
+                    ModelSet.slug == slug, self._visible_to_user(auth)
+                )
+            )
+            if result.scalar_one_or_none() is None:
+                raise NotFoundError("ModelSet", slug)
+        result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == auth.user.id)
+        )
+        prefs = result.scalar_one_or_none()
+        if prefs is None:
+            prefs = UserPreferences(user_id=auth.user.id, default_model_set_id=slug)
+            db.add(prefs)
+        else:
+            prefs.default_model_set_id = slug
+        await db.commit()
+        return slug
+
+    @staticmethod
+    def _visible_to_user(auth: AuthContext):
+        organization_sets = (ModelSet.org_id == auth.org_id) & (
+            ModelSet.owner_user_id.is_(None)
+            | (ModelSet.owner_user_id == auth.user.id)
+        )
+        if auth.role in (OrgRole.OWNER, OrgRole.ADMIN):
+            return ModelSet.is_system.is_(True) | (ModelSet.org_id == auth.org_id)
+        return ModelSet.is_system.is_(True) | organization_sets
 
     async def create(
         self, db: AsyncSession, auth: AuthContext, data: ModelSetCreateRequest
@@ -271,6 +314,7 @@ class ModelSetService:
             )
             model_set = ModelSet(
                 org_id=auth.org_id,
+                owner_user_id=auth.user.id,
                 slug=slug,
                 name=data.name,
                 description=data.description,
@@ -383,9 +427,15 @@ class ModelSetService:
         if model_set.is_system:
             if model_set.slug not in UPDATABLE_SYSTEM_SLUGS:
                 raise ForbiddenError("System model sets cannot be modified")
+            if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+                raise ForbiddenError("System model sets can only be modified by organization admins")
             return model_set
         if model_set.org_id != auth.org_id:
             raise ForbiddenError("Model set belongs to another organization")
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN) and (
+            model_set.owner_user_id is None or model_set.owner_user_id != auth.user.id
+        ):
+            raise ForbiddenError("Model set belongs to another user")
         return model_set
 
     async def _get_editable(self, db: AsyncSession, auth: AuthContext, slug: str) -> ModelSet:
@@ -397,6 +447,10 @@ class ModelSetService:
             raise ForbiddenError("System model sets cannot be modified")
         if model_set.org_id != auth.org_id:
             raise ForbiddenError("Model set belongs to another organization")
+        if auth.role not in (OrgRole.OWNER, OrgRole.ADMIN) and (
+            model_set.owner_user_id is None or model_set.owner_user_id != auth.user.id
+        ):
+            raise ForbiddenError("Model set belongs to another user")
         return model_set
 
     def _response(self, s: ModelSet) -> ModelSetResponse:

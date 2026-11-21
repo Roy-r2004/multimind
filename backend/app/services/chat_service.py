@@ -922,13 +922,16 @@ class ChatService:
         return self._turn_response(restored, saved_verdict_ids)
 
     async def _resolve_model_set_for_regenerate(
-        self, db: AsyncSession, auth: AuthContext, model_set_id: str
+        self, db: AsyncSession, auth: AuthContext, model_set_id: str, chat: Chat
     ) -> tuple[ModelSet, bool]:
         """Resolve the original model set; fall back to a system default if missing."""
         try:
             return await self._resolve_model_set(db, auth, model_set_id), False
         except NotFoundError:
-            pass
+            try:
+                return await self._resolve_historical_model_set(db, auth, chat, model_set_id), False
+            except NotFoundError:
+                pass
 
         preferred = await db.execute(
             select(ModelSet).where(
@@ -940,7 +943,20 @@ class ChatService:
         if model_set is None:
             fallback = await db.execute(
                 select(ModelSet)
-                .where((ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True)))
+                .where(
+                    (ModelSet.is_system.is_(True))
+                    | (
+                        (ModelSet.org_id == auth.org_id)
+                        if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                        else (
+                            (ModelSet.org_id == auth.org_id)
+                            & (
+                                ModelSet.owner_user_id.is_(None)
+                                | (ModelSet.owner_user_id == auth.user.id)
+                            )
+                        )
+                    )
+                )
                 .order_by(ModelSet.is_system.desc(), ModelSet.name.asc())
                 .limit(1)
             )
@@ -950,6 +966,23 @@ class ChatService:
                 f"Original model set '{model_set_id}' is unavailable and no fallback model set exists."
             )
         return model_set, True
+
+    async def _resolve_historical_model_set(
+        self, db: AsyncSession, auth: AuthContext, chat: Chat, slug: str
+    ) -> ModelSet:
+        """Allow only a chat's creator/admin to reuse its exact historical model set."""
+        if chat.created_by != auth.user.id and auth.role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            raise NotFoundError("ModelSet", slug)
+        result = await db.execute(
+            select(ModelSet).where(
+                ModelSet.slug == slug,
+                (ModelSet.is_system.is_(True) | (ModelSet.org_id == auth.org_id)),
+            )
+        )
+        model_set = result.scalar_one_or_none()
+        if model_set is None:
+            raise NotFoundError("ModelSet", slug)
+        return model_set
 
     async def regenerate_turn(
         self,
@@ -1024,11 +1057,18 @@ class ChatService:
                 model_set = await self._resolve_model_set(db, auth, data.model_set_id)
                 used_fallback = False
             elif locked_chat.model_set_id is not None:
-                model_set = await self._resolve_model_set(db, auth, locked_chat.model_set_id)
+                try:
+                    model_set = await self._resolve_model_set(
+                        db, auth, locked_chat.model_set_id
+                    )
+                except NotFoundError:
+                    model_set = await self._resolve_historical_model_set(
+                        db, auth, locked_chat, locked_chat.model_set_id
+                    )
                 used_fallback = False
             else:
                 model_set, used_fallback = await self._resolve_model_set_for_regenerate(
-                    db, auth, target.model_set_id
+                    db, auth, target.model_set_id, locked_chat
                 )
 
             now = datetime.now(UTC)
@@ -1195,7 +1235,18 @@ class ChatService:
         result = await db.execute(
             select(ModelSet).where(
                 ModelSet.slug == model_set_id,
-                (ModelSet.org_id == auth.org_id) | (ModelSet.is_system.is_(True)),
+                (ModelSet.is_system.is_(True))
+                | (
+                    (ModelSet.org_id == auth.org_id)
+                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                    else (
+                        (ModelSet.org_id == auth.org_id)
+                        & (
+                            ModelSet.owner_user_id.is_(None)
+                            | (ModelSet.owner_user_id == auth.user.id)
+                        )
+                    )
+                ),
             )
         )
         model_set = result.scalar_one_or_none()
@@ -1587,8 +1638,13 @@ class ChatService:
             }
             return
 
-        model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
         chat = await self.get_chat(db, auth, turn.chat_id)
+        try:
+            model_set = await self._resolve_model_set(db, auth, turn.model_set_id)
+        except NotFoundError:
+            model_set = await self._resolve_historical_model_set(
+                db, auth, chat, turn.model_set_id
+            )
         user_brain_context = await brain_service.get_context_for_user(
             db,
             auth.user.id,

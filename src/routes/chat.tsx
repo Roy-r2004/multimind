@@ -720,7 +720,7 @@ export function ChatPage() {
   }, [apiTurns, loading, scrollThreadToLatest, updateThreadScrollState]);
 
   useEffect(() => {
-    if (!activeChatId || !activeChat?.modelSetId || !modelSets.length) return;
+    if (!activeChatId || !modelSets.length) return;
     const activation = modelSetActivationRef.current;
     if (
       !shouldApplyModelSetRestore({
@@ -732,9 +732,10 @@ export function ChatPage() {
     ) {
       return;
     }
-    if (!modelSets.some((item) => item.id === activeChat.modelSetId)) return;
+    const chatModelSetId = activeChat?.modelSetId;
+    if (chatModelSetId && !modelSets.some((item) => item.id === chatModelSetId)) return;
     modelSetRestoredForChatRef.current = activeChatId;
-    setActiveModelSetId(activeChat.modelSetId);
+    if (chatModelSetId) setActiveModelSetId(chatModelSetId);
   }, [activeChatId, activeChat?.modelSetId, modelSets, setActiveModelSetId]);
 
   useEffect(() => {
@@ -1906,7 +1907,7 @@ export function ChatPage() {
         onClose={() => setShowCouncil(false)}
         currentSet={set}
         onSave={async (next) => {
-          if (set && modelSets.some((s) => s.id === set.id) && !SYSTEM_MODEL_SETS.has(set.id)) {
+          if (set && modelSets.some((s) => s.id === set.id) && !set.isSystem) {
             await updateModelSet({ ...next, id: set.id });
             await selectModelSet(set.id);
             return;
@@ -1922,7 +1923,9 @@ export function ChatPage() {
       <ModelSetModal
         open={showCreateSet}
         onClose={() => setShowCreateSet(false)}
-        onCreate={createModelSet}
+        onCreate={async (modelSet) => {
+          await createModelSet(modelSet);
+        }}
       />
 
       <Modal
@@ -2731,7 +2734,7 @@ function ModelSetPickerModal({
         onClose={() => setEditing(null)}
         initial={editing}
         onUpdate={async (s) => {
-          if (SYSTEM_MODEL_SETS.has(s.id)) {
+          if (s.isSystem ?? SYSTEM_MODEL_SETS.has(s.id)) {
             const created = await createModelSet({
               ...s,
               name: s.name.startsWith("My ") ? s.name : `My ${s.name}`,

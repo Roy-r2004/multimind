@@ -420,7 +420,18 @@ class LessonService:
         result = await db.execute(
             select(ModelSet).where(
                 ModelSet.slug == model_set_id,
-                (ModelSet.org_id == auth.org_id) | (ModelSet.org_id.is_(None)),
+                (ModelSet.is_system.is_(True))
+                | (
+                    (ModelSet.org_id == auth.org_id)
+                    if auth.role in (OrgRole.OWNER, OrgRole.ADMIN)
+                    else (
+                        (ModelSet.org_id == auth.org_id)
+                        & (
+                            ModelSet.owner_user_id.is_(None)
+                            | (ModelSet.owner_user_id == auth.user.id)
+                        )
+                    )
+                ),
             )
         )
         model_set = result.scalar_one_or_none()
