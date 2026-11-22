@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 
 SAFETY_MARGIN_TOKENS = 512
 CONSERVATIVE_CONTEXT_WINDOW = 32_768
+UNIVERSAL_OUTPUT_TOKEN_LIMIT = 50_000
+UNKNOWN_MODEL_OUTPUT_TOKEN_LIMIT = 4_096
 MIN_OUTPUT_TOKENS = 256
 SECTION_OUTPUT_TOKENS = 800
 COVERAGE_SECTION_CHARS = 4_000
@@ -206,24 +208,74 @@ def assess_legacy_excerpt(
 
 def lookup_context_window(model_id: str) -> tuple[int, str]:
     """Return (window, source). Missing catalog metadata uses a conservative window."""
-    service = get_pricing_service()
     model = get_model(model_id)
-    metadata = service.get_slug_metadata(model.provider_model) or {}
+    return lookup_context_window_for_slug(model.provider_model)
+
+
+def lookup_context_window_for_slug(model_slug: str) -> tuple[int, str]:
+    """Resolve a context window for an explicit OpenRouter slug (including fallbacks)."""
+    service = get_pricing_service()
+    metadata = service.get_slug_metadata(model_slug) or {}
     value = metadata.get("context_length")
     if not isinstance(value, int) or value <= 0:
         service.load_persisted_context_lengths()
-        metadata = service.get_slug_metadata(model.provider_model) or {}
+        metadata = service.get_slug_metadata(model_slug) or {}
         value = metadata.get("context_length")
     if isinstance(value, int) and value > 0:
         return value, "provider_metadata"
     return CONSERVATIVE_CONTEXT_WINDOW, "conservative_estimate"
 
 
+def lookup_model_output_limit(model_slug: str) -> tuple[int, str]:
+    """Return the safe output allowance for a provider model slug.
+
+    Prefer OpenRouter's top-provider capability. If output metadata is absent,
+    use a conservative 4K cap instead of assuming support for the app ceiling.
+    """
+    service = get_pricing_service()
+    # Use the same normalized slug that the provider payload will send.
+    from app.llm.providers import resolve_openrouter_model_slug
+
+    routed_slug = resolve_openrouter_model_slug(model_slug)
+    metadata = service.get_slug_metadata(routed_slug) or {}
+    if not metadata and ":" in routed_slug:
+        metadata = service.get_slug_metadata(routed_slug.split(":", 1)[0]) or {}
+    if not service.output_metadata_is_reliable():
+        metadata = {}
+    top_provider = metadata.get("top_provider")
+    has_provider_limit = (
+        isinstance(top_provider, dict) and "max_completion_tokens" in top_provider
+    )
+    provider_limit = (
+        top_provider.get("max_completion_tokens")
+        if isinstance(top_provider, dict)
+        else None
+    )
+    model_limit = metadata.get("max_completion_tokens")
+    valid_provider_limit = (
+        isinstance(provider_limit, int) and not isinstance(provider_limit, bool) and provider_limit > 0
+    )
+    valid_model_limit = (
+        isinstance(model_limit, int) and not isinstance(model_limit, bool) and model_limit > 0
+    )
+    value = provider_limit if has_provider_limit else model_limit
+    valid_value = valid_provider_limit if has_provider_limit else valid_model_limit
+    if valid_value and isinstance(value, int):
+        return min(UNIVERSAL_OUTPUT_TOKEN_LIMIT, value), "provider_metadata"
+
+    logger.warning(
+        "llm_output_limit_unknown_using_conservative_fallback",
+        model_slug=model_slug,
+        fallback_tokens=UNKNOWN_MODEL_OUTPUT_TOKEN_LIMIT,
+    )
+    return UNKNOWN_MODEL_OUTPUT_TOKEN_LIMIT, "conservative_estimate"
+
+
 def output_reserve(window_tokens: int, requested_output_tokens: int) -> int | None:
     room = window_tokens - SAFETY_MARGIN_TOKENS - 1_024
-    if room < MIN_OUTPUT_TOKENS:
+    if room < MIN_OUTPUT_TOKENS or requested_output_tokens <= 0:
         return None
-    return min(max(requested_output_tokens, MIN_OUTPUT_TOKENS), room)
+    return min(requested_output_tokens, room)
 
 
 def strip_baked_attachment_block(text: str | None) -> str | None:

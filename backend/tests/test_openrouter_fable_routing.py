@@ -19,6 +19,8 @@ def test_fable_5_uses_exacto_and_allows_provider_fallbacks() -> None:
         max_tokens=128,
     )
     assert payload["model"] == CLAUDE_FABLE_5_ROUTED_SLUG
+    assert payload["max_completion_tokens"] == 128
+    assert "max_tokens" not in payload
     assert payload["provider"] == {"allow_fallbacks": True}
 
 
@@ -38,6 +40,8 @@ def test_other_models_keep_default_routing_shape() -> None:
         max_tokens=128,
     )
     assert payload["model"] == "openai/gpt-4.1"
+    assert payload["max_completion_tokens"] == 128
+    assert "max_tokens" not in payload
     assert "provider" not in payload
     assert "reasoning" not in payload
     assert "plugins" not in payload
