@@ -38,6 +38,8 @@ from app.services.document_context import (
     is_context_overflow_error,
     load_section_progress,
     lookup_context_window,
+    lookup_context_window_for_slug,
+    lookup_model_output_limit,
     output_reserve,
     prepare_model_context,
     render_section_findings,
@@ -56,8 +58,8 @@ MODEL_ANSWER_FAILED_MESSAGE = "A model failed to respond."
 TURN_FAILED_CODE = "TURN_FAILED"
 TURN_FAILED_MESSAGE = "Turn failed."
 VERDICT_MAX_ATTEMPTS = 2
-VERDICT_MAX_TOKENS = 15000
-COUNCIL_MAX_TOKENS = 20000
+VERDICT_MAX_TOKENS = 50_000
+COUNCIL_MAX_TOKENS = 50_000
 SECTION_READ_MAX_TOKENS = 800
 VERDICT_DEFAULT_REASON = "Synthesized from model responses."
 ULTIMATE_MODEL_SET_ID = "set-7edaefc8"
@@ -633,7 +635,11 @@ class TurnOrchestrator:
             supporting_context=None,
         )
         window, source = lookup_context_window(ctx.verdict_model_id)
-        reserved = output_reserve(window, VERDICT_MAX_TOKENS)
+        supported_output, _output_source = lookup_model_output_limit(
+            get_model(ctx.verdict_model_id).provider_model
+        )
+        requested_output = min(VERDICT_MAX_TOKENS, supported_output)
+        reserved = output_reserve(window, requested_output)
         if reserved is None:
             raise DocumentContextOverflow(
                 f"The verdict prompt for {ctx.verdict_model_id} was not sent. "
@@ -661,7 +667,7 @@ class TurnOrchestrator:
             fixed_system=fixed,
             references=references,
             documents=self._sources(ctx),
-            requested_output_tokens=VERDICT_MAX_TOKENS,
+            requested_output_tokens=requested_output,
             context_window=window,
             window_source=source,
             runtime_token_budget=document_budget,
@@ -801,7 +807,10 @@ class TurnOrchestrator:
                     fixed_system=fixed_system,
                     references=self._references_for_call(ctx),
                     documents=self._sources(ctx),
-                    requested_output_tokens=COUNCIL_MAX_TOKENS,
+                    requested_output_tokens=min(
+                        COUNCIL_MAX_TOKENS,
+                        lookup_model_output_limit(model.provider_model)[0],
+                    ),
                     plan_complete_sections=True,
                     completed_section_indexes=completed_section_indexes(progress),
                 )
@@ -898,6 +907,7 @@ class TurnOrchestrator:
                 else:
                     candidates = [model.provider_model, *fallback_chain]
                     for index, candidate in enumerate(candidates):
+                        await self._ensure_not_deleted(db, ctx.turn_id)
                         log_fields = {
                             "turn_id": ctx.turn_id,
                             "model_set_id": ctx.model_set_id,
@@ -906,6 +916,35 @@ class TurnOrchestrator:
                             "fallback_index": index,
                             "fallback_used": index > 0,
                         }
+                        candidate_window, candidate_window_source = (
+                            lookup_context_window_for_slug(candidate)
+                        )
+                        candidate_output_limit, _candidate_output_source = (
+                            lookup_model_output_limit(candidate)
+                        )
+                        candidate_max_tokens = output_reserve(
+                            candidate_window,
+                            min(COUNCIL_MAX_TOKENS, candidate_output_limit),
+                        )
+                        if candidate_max_tokens is None or context_exceeds_budget(
+                            system,
+                            ctx.user_message,
+                            candidate_window,
+                            candidate_max_tokens,
+                        ):
+                            logger.warning(
+                                "council_fallback_skipped_context_budget",
+                                **log_fields,
+                                context_window=candidate_window,
+                                context_window_source=candidate_window_source,
+                                output_tokens=candidate_max_tokens,
+                            )
+                            if index == len(candidates) - 1:
+                                raise DocumentContextOverflow(
+                                    f"The assembled prompt for fallback model {candidate} exceeds its "
+                                    f"context budget ({candidate_window} tokens, {candidate_window_source}) and was not sent."
+                                )
+                            continue
                         try:
                             response = await self._await_provider_complete(
                                 ctx.turn_id,
@@ -913,7 +952,7 @@ class TurnOrchestrator:
                                     system=system,
                                     user=ctx.user_message,
                                     model=candidate,
-                                    max_tokens=max_tokens,
+                                    max_tokens=candidate_max_tokens,
                                     allow_provider_fallbacks=True,
                                 ),
                             )
@@ -1043,8 +1082,9 @@ class TurnOrchestrator:
                 },
             )
 
-        if self._sources(ctx):
-            await get_pricing_service().ensure_context_metadata()
+        # Capability metadata is needed for output reservations even when the
+        # current turn has no document attachments.
+        await get_pricing_service().ensure_context_metadata()
 
         all_tasks = [asyncio.create_task(call_model(model_id)) for model_id in ctx.model_ids]
 

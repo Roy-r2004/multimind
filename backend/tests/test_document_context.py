@@ -1029,6 +1029,53 @@ def test_verified_context_window_is_used_for_a_large_document(tmp_path, monkeypa
     assert text not in (unknown.runtime_context or "")
 
 
+@pytest.mark.parametrize(
+    "metadata,expected,source",
+    [
+        ({"top_provider": {"max_completion_tokens": 75_000}}, 50_000, "provider_metadata"),
+        ({"top_provider": {"max_completion_tokens": 12_345}}, 12_345, "provider_metadata"),
+        ({"max_completion_tokens": 8_192}, 8_192, "provider_metadata"),
+        ({}, 4_096, "conservative_estimate"),
+        ({"top_provider": {"max_completion_tokens": None}}, 4_096, "conservative_estimate"),
+        ({"top_provider": {"max_completion_tokens": 0}}, 4_096, "conservative_estimate"),
+        ({"top_provider": {"max_completion_tokens": "50000"}}, 4_096, "conservative_estimate"),
+        (
+            {"top_provider": {"max_completion_tokens": 0}, "max_completion_tokens": 50_000},
+            4_096,
+            "conservative_estimate",
+        ),
+    ],
+)
+def test_model_output_limit_respects_capability_metadata(monkeypatch, metadata, expected, source):
+    from app.llm.pricing import get_pricing_service
+    from app.services.document_context import lookup_model_output_limit
+
+    pricing = get_pricing_service()
+    slug = "test/output-capability"
+    monkeypatch.setattr(pricing, "output_metadata_is_reliable", lambda: True)
+    monkeypatch.setitem(pricing._meta_by_slug, slug, metadata)
+
+    assert lookup_model_output_limit(slug) == (expected, source)
+
+
+def test_routed_model_variant_uses_base_model_capability_if_variant_metadata_is_absent(monkeypatch):
+    from app.llm.pricing import get_pricing_service
+    from app.services.document_context import lookup_model_output_limit
+
+    pricing = get_pricing_service()
+    monkeypatch.setattr(pricing, "output_metadata_is_reliable", lambda: True)
+    monkeypatch.setitem(
+        pricing._meta_by_slug,
+        "test/routed-model",
+        {"top_provider": {"max_completion_tokens": 16_000}},
+    )
+
+    assert lookup_model_output_limit("test/routed-model:nitro") == (
+        16_000,
+        "provider_metadata",
+    )
+
+
 def test_several_documents_keep_end_facts_when_the_window_fits():
     documents = []
     for index in range(3):

@@ -423,7 +423,7 @@ def build_openrouter_chat_payload(
             {"role": "user", "content": build_openrouter_user_content(user, images)},
         ],
         "temperature": DEFAULT_LLM_TEMPERATURE if temperature is None else temperature,
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
         "usage": {"include": True},
     }
     provider = openrouter_provider_preferences(model)

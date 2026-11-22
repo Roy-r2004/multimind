@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ logger = get_logger(__name__)
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 FALLBACK_PRICE = {"input": 0.002, "output": 0.004}
+MAX_OUTPUT_METADATA_STALE_SECONDS = 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class OpenRouterPricingService:
         self._by_model_id: dict[str, ModelPricing] = {}
         self._meta_by_slug: dict[str, dict[str, Any]] = {}
         self._last_refresh: datetime | None = None
+        self._metadata_fetched_at: datetime | None = None
         self._lock = asyncio.Lock()
         self.load_persisted_context_lengths()
 
@@ -109,10 +111,11 @@ class OpenRouterPricingService:
             for item in payload.get("data", []):
                 slug = item.get("id")
                 pricing = item.get("pricing")
-                if not slug or not pricing:
+                if not slug:
                     continue
-                slug_map[slug] = self._pricing_from_or_entry(slug, pricing)
                 meta_map[slug] = item
+                if isinstance(pricing, dict):
+                    slug_map[slug] = self._pricing_from_or_entry(slug, pricing)
 
             self._by_slug = slug_map
             self._meta_by_slug = meta_map
@@ -136,6 +139,7 @@ class OpenRouterPricingService:
                     self._by_model_id[model_id] = or_pricing
 
             self._last_refresh = datetime.now(UTC)
+            self._metadata_fetched_at = self._last_refresh
             self.persist_context_lengths()
             logger.info(
                 "openrouter_pricing_refreshed",
@@ -150,10 +154,10 @@ class OpenRouterPricingService:
             await self.refresh()
 
     async def ensure_context_metadata(self) -> None:
-        """Load verified OpenRouter context lengths. No completion call.
+        """Load OpenRouter context and output metadata. No completion call.
 
-        A missing API key keeps the last cached lengths and otherwise leaves
-        lookup on the conservative fallback. Tests do not hit the network.
+        A missing API key keeps the last cached metadata; output capabilities
+        older than the stale grace period use the conservative fallback.
         """
         self.load_persisted_context_lengths()
         settings = get_settings()
@@ -172,6 +176,35 @@ class OpenRouterPricingService:
             return 0
         if not isinstance(payload, dict):
             return 0
+        models = payload.get("models")
+        fetched_at = payload.get("fetched_at")
+        if isinstance(models, dict):
+            parsed_at = None
+            if isinstance(fetched_at, str):
+                try:
+                    candidate_at = datetime.fromisoformat(fetched_at)
+                    if candidate_at.tzinfo is not None:
+                        parsed_at = candidate_at.astimezone(UTC)
+                except ValueError:
+                    pass
+            if (
+                parsed_at is not None
+                and self._metadata_fetched_at is not None
+                and parsed_at <= self._metadata_fetched_at
+            ):
+                return 0
+            for slug, meta in models.items():
+                if isinstance(slug, str) and isinstance(meta, dict):
+                    current = dict(self._meta_by_slug.get(slug) or {})
+                    current.update(meta)
+                    current.setdefault("id", slug)
+                    self._meta_by_slug[slug] = current
+            if parsed_at is not None:
+                self._metadata_fetched_at = parsed_at
+                self._last_refresh = parsed_at
+            return len(models)
+
+        # Backward-compatible reader for the previous slug -> context length cache.
         loaded = 0
         for slug, value in payload.items():
             if not isinstance(slug, str) or not isinstance(value, int) or value <= 0:
@@ -186,19 +219,32 @@ class OpenRouterPricingService:
         return loaded
 
     def persist_context_lengths(self) -> None:
-        payload: dict[str, int] = {}
-        for slug, meta in self._meta_by_slug.items():
-            value = meta.get("context_length")
-            if isinstance(value, int) and value > 0:
-                payload[slug] = value
-        if not payload:
+        if not self._meta_by_slug:
             return
+        now = self._metadata_fetched_at or datetime.now(UTC)
+        fields = ("context_length", "max_completion_tokens", "top_provider")
+        models = {
+            slug: {key: meta[key] for key in fields if key in meta}
+            for slug, meta in self._meta_by_slug.items()
+        }
+        payload = {"fetched_at": now.isoformat(), "models": models}
         path = Path(get_settings().openrouter_context_cache_path)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(payload), encoding="utf-8")
         except OSError:
             logger.warning("openrouter_context_cache_write_failed", path=str(path))
+
+    def output_metadata_is_reliable(self) -> bool:
+        """Whether cached output capability data is fresh or within stale grace."""
+        fetched_at = self._metadata_fetched_at
+        if fetched_at is None:
+            return False
+        now = datetime.now(UTC)
+        if fetched_at > now + timedelta(minutes=5):
+            return False
+        age = max(0.0, (now - fetched_at).total_seconds())
+        return age <= MAX_OUTPUT_METADATA_STALE_SECONDS
 
     def get_pricing(self, model_id: str) -> ModelPricing:
         if model_id in self._by_model_id:

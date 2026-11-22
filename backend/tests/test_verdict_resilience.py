@@ -51,8 +51,9 @@ VERDICT_USER_PROMPT = "Produce the verdict JSON now."
 class ScriptedProvider:
     """Answers always succeed; the verdict call follows a script."""
 
-    def __init__(self, verdict_script: list[object]) -> None:
+    def __init__(self, verdict_script: list[object], *, answer_text: str | None = None) -> None:
         self._verdict_script = list(verdict_script)
+        self.answer_text = answer_text
         self.verdict_calls = 0
         self.answer_calls = 0
         self.answer_max_tokens: list[int] = []
@@ -75,7 +76,10 @@ class ScriptedProvider:
         self.answer_calls += 1
         self.answer_max_tokens.append(max_tokens)
         return LLMResponse(
-            text=f"Answer from {model}", tokens_input=10, tokens_output=5, confidence=90
+            text=self.answer_text or f"Answer from {model}",
+            tokens_input=10,
+            tokens_output=5,
+            confidence=90,
         )
 
     def parse_json_response(self, text: str):
@@ -97,7 +101,18 @@ class ScriptedRegistry:
 
 
 @pytest.fixture
-async def env(tmp_path):
+async def env(tmp_path, monkeypatch):
+    from app.llm.pricing import get_pricing_service
+
+    async def no_metadata_refresh():
+        return None
+
+    monkeypatch.setattr(
+        get_pricing_service(), "ensure_context_metadata", no_metadata_refresh
+    )
+    monkeypatch.setattr(
+        get_pricing_service(), "output_metadata_is_reliable", lambda: True
+    )
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'verdict.db'}", poolclass=NullPool
     )
@@ -211,17 +226,26 @@ async def test_single_model_completes_without_referee_verdict_or_verdict_cost(en
 
 
 @pytest.mark.asyncio
-async def test_multi_model_still_calls_referee_and_persists_verdict_cost(env):
+async def test_multi_model_still_calls_referee_and_persists_verdict_cost(env, monkeypatch):
     Session, ids, _auth = env
+    from app.llm.pricing import get_pricing_service
+
+    pricing = get_pricing_service()
+    for slug in ("openai/gpt-4.1", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro"):
+        monkeypatch.setitem(pricing._meta_by_slug, slug, {
+            "id": slug,
+            "context_length": 200_000,
+            "top_provider": {"max_completion_tokens": 60_000},
+        })
     provider = ScriptedProvider(['{"text":"Use the plan","reason":"Agreement."}'])
 
     turn, verdict, answers = await _run(Session, ids, provider)
 
     assert provider.answer_calls == 2
     assert provider.verdict_calls == 1
-    assert VERDICT_MAX_TOKENS == 15000
-    assert provider.answer_max_tokens == [20000, 20000]
-    assert provider.verdict_max_tokens == [15000]
+    assert VERDICT_MAX_TOKENS == 50_000
+    assert provider.answer_max_tokens == [50_000, 50_000]
+    assert provider.verdict_max_tokens == [50_000]
     assert turn.status == TurnStatus.COMPLETED
     assert len(answers) == 2
     assert verdict is not None
@@ -235,6 +259,64 @@ async def test_multi_model_still_calls_referee_and_persists_verdict_cost(env):
             )
         ).scalars().all()
     assert len(verdict_costs) == 1
+
+
+@pytest.mark.asyncio
+async def test_long_council_and_verdict_text_is_emitted_and_persisted(env, monkeypatch):
+    Session, ids, _auth = env
+    from app.llm.pricing import get_pricing_service
+
+    pricing = get_pricing_service()
+    for slug in ("openai/gpt-4.1", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro"):
+        monkeypatch.setitem(pricing._meta_by_slug, slug, {
+            "id": slug,
+            "context_length": 200_000,
+            "top_provider": {"max_completion_tokens": 60_000},
+        })
+    long_answer = "A" * 120_000
+    long_verdict = "V" * 100_000
+    provider = ScriptedProvider(
+        [json.dumps({"text": long_verdict, "reason": "complete"})],
+        answer_text=long_answer,
+    )
+    events: list[tuple[str, dict]] = []
+
+    turn, verdict, answers = await _run(Session, ids, provider, events)
+
+    assert turn.status == TurnStatus.COMPLETED
+    assert verdict is not None and verdict.text == long_verdict
+    assert len(answers) == 2 and all(answer.text == long_answer for answer in answers)
+    answer_events = [data for event, data in events if event == "model_answer_completed"]
+    assert len(answer_events) == 2 and all(data["text"] == long_answer for data in answer_events)
+    verdict_events = [data for event, data in events if event == "verdict_completed"]
+    assert len(verdict_events) == 1 and verdict_events[0]["text"] == long_verdict
+
+
+@pytest.mark.asyncio
+async def test_selected_models_with_lower_output_caps_get_independent_reservations(env, monkeypatch):
+    Session, ids, _auth = env
+    from app.llm.pricing import get_pricing_service
+
+    pricing = get_pricing_service()
+    caps = {
+        "openai/gpt-4.1": 9_000,
+        "anthropic/claude-sonnet-4": 4_000,
+        "google/gemini-2.5-pro": 7_000,
+    }
+    for slug, cap in caps.items():
+        monkeypatch.setitem(pricing._meta_by_slug, slug, {
+            "id": slug,
+            "context_length": 200_000,
+            "top_provider": {"max_completion_tokens": cap},
+        })
+    provider = ScriptedProvider(['{"text":"Verdict","reason":"ok"}'])
+
+    turn, verdict, answers = await _run(Session, ids, provider)
+
+    assert turn.status == TurnStatus.COMPLETED and verdict is not None
+    assert len(answers) == 2
+    assert provider.answer_max_tokens == [9_000, 4_000]
+    assert provider.verdict_max_tokens == [7_000]
 
 
 @pytest.mark.asyncio

@@ -72,6 +72,28 @@ async def db(tmp_path):
     ],
 )
 async def test_council_slots(db, auth, monkeypatch, primary, failures, set_id, expected, success):
+    from app.llm.pricing import get_pricing_service
+
+    output_caps = {
+        PRO: 40_000,
+        ASTRA: 8_192,
+        GPT: 55_000,
+        GEMINI: 30_000,
+        FLASH: 6_000,
+        "openai/gpt-4.1": 55_000,
+    }
+    pricing = get_pricing_service()
+    async def no_metadata_refresh():
+        return None
+
+    monkeypatch.setattr(pricing, "ensure_context_metadata", no_metadata_refresh)
+    monkeypatch.setattr(pricing, "output_metadata_is_reliable", lambda: True)
+    for slug, cap in output_caps.items():
+        monkeypatch.setitem(pricing._meta_by_slug, slug, {
+            "id": slug,
+            "context_length": 200_000,
+            "top_provider": {"max_completion_tokens": cap},
+        })
     targeted = set_id == "set-7edaefc8" and primary in (PRO, GEMINI)
     if not targeted:
 
@@ -93,15 +115,16 @@ async def test_council_slots(db, auth, monkeypatch, primary, failures, set_id, e
     db.add(turn)
     await db.commit()
     turn_id = turn.id
-    calls, verdict_calls, events = [], [], []
+    calls, call_caps, verdict_calls, events = [], [], [], []
     deleted = False
 
     async def complete(**kwargs):
         nonlocal deleted
         model = kwargs["model"]
-        if kwargs["max_tokens"] != 20000:
+        if kwargs.get("user") == "Produce the verdict JSON now.":
             assert "allow_provider_fallbacks" not in kwargs
             verdict_calls.append(model)
+            assert kwargs["max_tokens"] == 50_000
             return LLMResponse(
                 text='{"text":"Verdict","reason":"ok"}',
                 tokens_input=4,
@@ -110,8 +133,10 @@ async def test_council_slots(db, auth, monkeypatch, primary, failures, set_id, e
             )
         if model == "openai/gpt-4.1":
             assert "allow_provider_fallbacks" not in kwargs
+            assert kwargs["max_tokens"] == min(50_000, output_caps[model])
             return LLMResponse(text="Other Council answer", tokens_input=1, tokens_output=1)
         calls.append(model)
+        call_caps.append(kwargs["max_tokens"])
         if targeted:
             assert kwargs["allow_provider_fallbacks"] is True
         else:
@@ -172,6 +197,7 @@ async def test_council_slots(db, auth, monkeypatch, primary, failures, set_id, e
     else:
         await orchestrator.run(db, ctx, emit)
     assert calls == expected
+    assert call_caps == [min(50_000, output_caps.get(slug, 4_096)) for slug in expected]
     rows = (
         (await db.execute(select(ModelAnswer).where(ModelAnswer.turn_id == turn_id)))
         .scalars()

@@ -42,7 +42,7 @@ from app.llm.providers import ProviderRegistry
 logger = get_logger(__name__)
 
 # Debate calls return short, structured JSON — a fraction of Council/Verdict's
-# free-text budgets (COUNCIL_MAX_TOKENS=20000, VERDICT_MAX_TOKENS=15000 in
+# free-text budgets (COUNCIL_MAX_TOKENS=50000, VERDICT_MAX_TOKENS=50000 in
 # orchestrator.py). These are independent constants; changing Council/Verdict
 # budgets never affects Debate Mode and vice versa.
 DEBATE_CHALLENGE_MAX_TOKENS = 3_000
